@@ -1,0 +1,51 @@
+# Python caches and packaging
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Test and local temp output
+.pytest_cache/
+.tmp/
+.coverage
+
+# Build artifacts
+build/
+dist/
+bin/
+obj/
+
+# Virtual environments
+venv/
+.venv/
+.agents/
+.codex/
+.claude/
+.zcode/
+
+# Editor settings
+.idea/
+.vscode/
+
+# OS files
+Thumbs.db
+
+# Local archived legacy code
+old/
+
+# 训练相关
+data/human/job/
+artifacts/
+
+# 敏感数据
+.env
+
+# 其他数据
+docs/黑魔技能说明.md
+docs/fru-conversion-failures-2026-07-09.md
+docs/onnx-export-readiness-issues-2026-08-12.md
+docs/polyglot-debug-handoff-2026-07-09.md
+*.pdf
+docs/对比.md
+
+# .NET test results
+TestResults/

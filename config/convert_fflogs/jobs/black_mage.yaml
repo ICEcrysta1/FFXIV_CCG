@@ -1,0 +1,8 @@
+job:
+  key: black_mage
+
+gcd_detection:
+  probe_skill_game_id: 3577
+  probe_skill_cast_time_seconds: 2.0
+  haste_excluded_buff_game_ids:
+    - 1000737

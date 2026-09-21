@@ -1,0 +1,10 @@
+convert_fflogs:
+  default_worker_count: 6
+  gcd_detection_defaults:
+    probe_skill_game_id: 0
+    fallback_seconds: 2.5
+    min_probe_casts: 4
+    min_gap_samples: 3
+    histogram_lower_ms: 1800
+    histogram_upper_ms: 2600
+    histogram_bin_width_ms: 10

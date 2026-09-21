@@ -1,0 +1,8 @@
+# -*- coding: utf-8 -*-
+# ONNX CUDA 导出/运行可选依赖；与 requirements-onnx.txt 二选一安装。
+# 先安装 requirements.txt 中固定的 torch 2.12.0+cu132；ORT 1.27 的 PyPI/NuGet
+# GPU 包使用 CUDA 13.0 / cuDNN 9，可在 CUDA 13.x 驱动上运行。
+onnx==1.22.0
+onnxruntime-gpu==1.27.0
+onnxscript==0.7.1
+jsonschema==4.23.0

@@ -1,0 +1,3 @@
+precision:
+  int_dtype: int32
+  float_dtype: float32

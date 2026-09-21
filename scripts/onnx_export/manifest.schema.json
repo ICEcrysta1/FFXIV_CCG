@@ -1,0 +1,582 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ffxiv-ccg.local/schemas/onnx-manifest-v6.json",
+  "title": "FFXIV_CCG ONNX Deployment Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "manifest_version",
+    "format",
+    "opset",
+    "contract",
+    "checkpoint",
+    "model",
+    "capacity_report",
+    "golden",
+    "exporter"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "manifest.schema.json"
+    },
+    "manifest_version": {
+      "const": 6
+    },
+    "format": {
+      "const": "onnx"
+    },
+    "opset": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "contract": {
+      "$ref": "#/$defs/contract"
+    },
+    "checkpoint": {
+      "$ref": "#/$defs/hashedArtifact"
+    },
+    "capacity_report": {
+      "$ref": "#/$defs/hashedArtifact"
+    },
+    "golden": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case",
+        "format",
+        "float_encoding",
+        "inputs",
+        "outputs"
+      ],
+      "properties": {
+        "case": {
+          "type": "string",
+          "minLength": 1
+        },
+        "format": {
+          "const": "deterministic-npz-v2"
+        },
+        "float_encoding": {
+          "enum": [
+            "native-numpy",
+            "uint16-little-endian-bfloat16-bits"
+          ]
+        },
+        "inputs": {
+          "$ref": "#/$defs/hashedArtifact"
+        },
+        "outputs": {
+          "$ref": "#/$defs/hashedArtifact"
+        }
+      }
+    },
+    "model": {
+      "$ref": "#/$defs/model"
+    },
+    "exporter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "dynamo",
+        "torch",
+        "onnx",
+        "onnxscript",
+        "onnxruntime",
+        "manifest_schema_sha256"
+      ],
+      "properties": {
+        "path": {
+          "const": "torch.onnx.export"
+        },
+        "dynamo": {
+          "const": true
+        },
+        "torch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "onnx": {
+          "type": "string",
+          "minLength": 1
+        },
+        "onnxscript": {
+          "type": "string",
+          "minLength": 1
+        },
+        "onnxruntime": {
+          "type": "string",
+          "minLength": 1
+        },
+        "manifest_schema_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "hashedArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "filename",
+        "sha256"
+      ],
+      "properties": {
+        "filename": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "tensorSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "dtype",
+        "shape",
+        "semantic"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dtype": {
+          "enum": [
+            "tensor(bool)",
+            "tensor(int64)",
+            "tensor(float)",
+            "tensor(float16)",
+            "tensor(bfloat16)"
+          ]
+        },
+        "shape": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "semantic": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "lengthStats": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "min",
+        "p50",
+        "p95",
+        "p99",
+        "max"
+      ],
+      "properties": {
+        "min": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "p50": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "p95": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "p99": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "job_tag",
+        "precision",
+        "capacity",
+        "data_spec",
+        "model_input_contract",
+        "model_config",
+        "vocab",
+        "state_layout",
+        "scene_layout",
+        "tensor_inputs",
+        "tensor_outputs",
+        "host_postprocessing",
+        "capacity_provenance",
+        "signatures"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": 9
+        },
+        "job_tag": {
+          "type": "string",
+          "minLength": 1
+        },
+        "precision": {
+          "enum": [
+            "float32",
+            "float16",
+            "bf16"
+          ]
+        },
+        "capacity": {
+          "type": "object"
+        },
+        "data_spec": {
+          "type": "object"
+        },
+        "model_input_contract": {
+          "type": "object"
+        },
+        "model_config": {
+          "type": "object"
+        },
+        "vocab": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "size",
+            "padding_vocab_id",
+            "entries"
+          ],
+          "properties": {
+            "size": {
+              "type": "integer",
+              "minimum": 2
+            },
+            "padding_vocab_id": {
+              "const": 0
+            },
+            "entries": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "raw_skill_id",
+                  "vocab_id"
+                ],
+                "properties": {
+                  "raw_skill_id": {
+                    "type": "integer"
+                  },
+                  "vocab_id": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              }
+            }
+          }
+        },
+        "state_layout": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "group_key",
+              "feature_keys"
+            ],
+            "properties": {
+              "group_key": {
+                "type": "string",
+                "minLength": 1
+              },
+              "feature_keys": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "scene_layout": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "scene_type_id",
+              "context_key",
+              "feature_keys"
+            ],
+            "properties": {
+              "scene_type_id": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "context_key": {
+                "type": "string",
+                "minLength": 1
+              },
+              "feature_keys": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "tensor_inputs": {
+          "type": "array",
+          "minItems": 12,
+          "maxItems": 12,
+          "items": {
+            "$ref": "#/$defs/tensorSpec"
+          }
+        },
+        "tensor_outputs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "$ref": "#/$defs/tensorSpec"
+          }
+        },
+        "host_postprocessing": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "candidate_legal_mask",
+            "raw_logits_order",
+            "repetition",
+            "repetition_policy",
+            "sampling_policy"
+          ],
+          "properties": {
+            "candidate_legal_mask": {"type": "object"},
+            "raw_logits_order": {"const": "data_spec.candidate_action_keys"},
+            "repetition": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["mode", "skills", "penalty"],
+              "properties": {
+                "mode": {"enum": ["none", "whitelist", "blacklist"]},
+                "skills": {
+                  "type": "array",
+                  "items": {"type": "string"}
+                },
+                "penalty": {"type": "number", "minimum": 0}
+              }
+            },
+            "repetition_policy": {"const": "host"},
+            "sampling_policy": {"const": "host"}
+          }
+        },
+        "capacity_provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "history_capacity_source",
+            "scene_capacity_source",
+            "over_capacity",
+            "report_filename",
+            "semantic_sha256",
+            "evidence"
+          ],
+          "properties": {
+            "history_capacity_source": {
+              "const": "checkpoint.model_config.history_capacity"
+            },
+            "scene_capacity_source": {
+              "const": "checkpoint.model_config.scene_capacity"
+            },
+            "over_capacity": {
+              "const": "reject"
+            },
+            "report_filename": {
+              "const": "capacity_report.json"
+            },
+            "semantic_sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "evidence": {
+              "type": "object",
+              "required": ["scene_capacity", "history_capacity", "evidence"],
+              "properties": {
+                "scene_capacity": {"type": "integer", "minimum": 1},
+                "history_capacity": {"type": "integer", "minimum": 1},
+                "evidence": {"type": "object"}
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "signatures": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "candidate_order_sha256",
+            "skill_feature_order_sha256",
+            "state_schema_sha256",
+            "scene_schema_sha256",
+            "vocab_sha256",
+            "normalizer_sha256",
+            "model_input_contract_sha256",
+            "model_config_sha256",
+            "deployment_contract_sha256"
+          ],
+          "properties": {
+            "candidate_order_sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "skill_feature_order_sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "state_schema_sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "scene_schema_sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "vocab_sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "normalizer_sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "model_input_contract_sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "model_config_sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "deployment_contract_sha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          }
+        }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "filename",
+        "sha256",
+        "size_bytes",
+        "external_data",
+        "external_files",
+        "pt_parameter_count",
+        "pt_state_tensor_count",
+        "pt_state_bytes",
+        "onnx_float_initializer_count",
+        "onnx_float_initializer_bytes",
+        "onnx_float_initializer_dtype_counts",
+        "onnx_requested_precision_initializer_count",
+        "onnx_other_float_initializer_count",
+        "onnx_other_float_initializer_max_elements",
+        "retained_float_initializer_ratio",
+        "contract_sha256",
+        "checkpoint_sha256"
+      ],
+      "properties": {
+        "filename": {
+          "type": "string"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "external_data": {
+          "type": "boolean"
+        },
+        "external_files": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "pt_parameter_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pt_state_tensor_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pt_state_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "onnx_float_initializer_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "onnx_float_initializer_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "onnx_float_initializer_dtype_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["bfloat16", "float16", "float32", "float64"],
+          "properties": {
+            "bfloat16": {"type": "integer", "minimum": 0},
+            "float16": {"type": "integer", "minimum": 0},
+            "float32": {"type": "integer", "minimum": 0},
+            "float64": {"type": "integer", "minimum": 0}
+          }
+        },
+        "onnx_requested_precision_initializer_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "onnx_other_float_initializer_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "onnx_other_float_initializer_max_elements": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "retained_float_initializer_ratio": {
+          "type": "number",
+          "minimum": 0.98,
+          "maximum": 2
+        },
+        "contract_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "checkpoint_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,48 @@
+# 系统级共享定义。
+# 这里放跨职业共用的系统时序参数、状态与动作。
+# 基准 GCD 和技能表时间基准统一放在这里，避免职业配置承担系统层职责。
+timing:
+  base_gcd: 2.5  # 当前角色实际基础 GCD，单位秒；后续可改成任意真实配装值，例如 2.17
+  skill_table_base_gcd: 2.5  # 技能表里的 cast_time / recast_time 是按这个基准 GCD 写的，系统层会按实际 GCD 等比缩放
+
+mp_recovery:
+  tick_interval_seconds: 3.0  # 公共自然回蓝 tick 间隔
+  in_combat_amount: 200  # 战斗内每个自然回蓝 tick 恢复的 MP
+
+potency:
+  burst_potion_multiplier: 1.08  # 爆发药统一按 8% 伤害倍率折算
+  raid_buff_window_multiplier: 1.10  # 团辅窗口统一按 10% 伤害倍率折算
+
+raid_buff_window:
+  # 转换 FFLogs 时，用哪些已记录技能作为团辅窗口的时间标记。
+  # 同一窗口内命中的多个标记技能会合并，并取触发时间平均值。
+  marker_skills: [amplifier]
+  duration_seconds: 20.0
+
+statuses:
+  burst_potion:
+    # 爆发药对应的共享增益状态。
+    # 这里保留独立 status id，供所有职业共用。
+    game_id: 1000049
+    duration: 30.0
+    max_stacks: 1
+  raid_buff_window:
+    # 团辅窗口统一状态。
+    # 接实时游戏时，无论来源是背刺、占卜、连祷还是其他团队爆发窗口，
+    # 系统层都统一折算成这一个共享 Buff，避免把外部团队细节塞进职业状态机。
+    game_id: 1000050
+    duration: 20.0
+    max_stacks: 1
+
+skills:
+  potion:
+    # 爆发药：系统层共享 oGCD，不属于黑魔专属技能。
+    # 这里继续沿用旧黑魔状态机里的虚拟 id=99999，方便模型直接输出同一套动作 id。
+    game_id: 99999
+    name: 爆发药
+    kind: ogcd
+    behavior: grant_status
+    value: 1.00
+    cooldown: 270.0
+    applies_statuses: [burst_potion]
+    tags: [burst, utility, virtual, system]

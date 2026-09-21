@@ -1,0 +1,30 @@
+# 黑魔人工数据 canonical 候选顺序。
+# 统计范围：当前本地人工 compiled cache 的全部决策样本；ogcd_wait 作为系统动作纳入排序。
+# 候选集合必须与 compiled cache 严格全等；新增或删除技能后必须同步更新本文件。
+# 在当前候选集合内，频率相同或未在样本中出现的动作按原有候选顺序稳定收尾。
+candidate_order:
+  1: ogcd_wait
+  2: fire_iv
+  3: paradox
+  4: transpose
+  5: xenoglossy
+  6: high_thunder
+  7: flare_star
+  8: despair
+  9: fire_iii
+  10: blizzard_iv
+  11: blizzard_iii
+  12: triplecast
+  13: swiftcast
+  14: ley_lines
+  15: manafont
+  16: amplifier
+  17: umbral_soul
+  18: flare
+  19: potion
+  20: foul
+  21: high_thunder_ii
+  22: freeze
+  23: lucid_dreaming
+  24: high_fire_ii
+  25: high_blizzard_ii

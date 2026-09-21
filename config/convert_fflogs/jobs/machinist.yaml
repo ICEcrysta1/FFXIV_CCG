@@ -1,0 +1,6 @@
+job:
+  key: machinist
+
+gcd_detection:
+  probe_skill_game_id: 7411
+  haste_excluded_buff_game_ids: []

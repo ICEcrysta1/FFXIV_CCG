@@ -1,0 +1,60 @@
+# 黑魔 Artzip 模型契约。
+# 数据/输出路径、模型架构和运行精度属于同一份模型参数配置。
+
+# ------------------------------
+# 数据与输出
+# ------------------------------
+
+# 原始 FFLogs JSON 输入根目录；训练启动时只读取这里的文件，不向该目录写入转换结果。
+raw_data_dir: data/human/job/black_mage/raw
+
+# checkpoint、训练日志和最终模型的主线输出目录；所有当前模型变体共用该目录。
+output_dir: artifacts/checkpoints/black_mage/artzip_bc
+
+# 模型权重精度；分析、回放、GRPO 和导出共用这一项，不允许按输出拆分。
+# 黑魔当前使用 bf16，要求 CUDA 设备；输入 cache 仍保持 float32。
+precision: bf16
+
+# ------------------------------
+# 模型架构
+# ------------------------------
+
+model:
+  # Transformer token 的主维度；必须能被 n_heads 整除。
+  d_model: 768
+
+  # 技能与对应状态在进入 Transformer 前的融合维度；修改后需要重新训练 checkpoint。
+  pair_embedding_dim: 512
+
+  # Transformer 编码层数。
+  n_layers: 12
+
+  # 注意力头数量；d_model 必须能被该值整除。
+  n_heads: 12
+
+  # K/V 头数量；1 表示 MQA，可改为 n_heads 的合法因数做 GQA。
+  num_kv_heads: 1
+
+  # FFN 隐藏宽度；SwiGLU 的门控投影会按模型实现使用对应内部宽度。
+  ff_dim: 3072
+
+  # Transformer 每层采用 Pre-LN；LayerNorm 位于注意力/FFN 子层之前。
+  transformer_norm_first: true
+
+  # Transformer FFN 激活：gelu / relu / swiglu；切换后需要重新训练。
+  transformer_activation: swiglu
+
+  # 沿深度对 embedding、attention/FFN 输出做 Full AttnRes；启用后需重新训练。
+  full_attention_residuals: false
+
+  # Transformer 与候选 scorer 的 dropout 概率。
+  dropout: 0.1
+
+  # RoPE 的基础频率参数。
+  rope_theta: 10000.0
+
+  # 模型最多接收的技能历史条数；物理 token 总长由上下文容量自动换算。
+  history_capacity: 384
+
+  # 部署侧 scene 容量上限；必须不小于语料实测 scene 长度最大值。
+  scene_capacity: 200

@@ -1,0 +1,119 @@
+# 黑魔 Artzip 预训练配置。
+
+# ------------------------------
+# 训练运行参数
+# ------------------------------
+
+training:
+  # 每个 GPU batch 的样本数；显存不足时优先降低此值。
+  batch_size: 20
+
+  # 最大训练轮数。
+  max_epochs: 8
+
+  # AdamW 优化器学习率。
+  learning_rate: 0.0001
+
+  # AdamW 权重衰减系数。
+  weight_decay: 0.01
+
+  # 学习率 warmup 的更新步数。
+  warmup_steps: 500
+
+  # 按 raw JSON 文件划分训练集和验证集的比例；文件不会被拆到两边。
+  train_split: 0.9
+
+  # 数据划分、候选打乱和采样过程使用的随机种子。
+  seed: 42
+
+  # 训练时释放 FFN 中间激活，并在反向传播时重算；验证和推理不启用。
+  activation_checkpoint_ffn: true
+
+  # 训练时释放 Attention 中间激活，并在反向传播时重算；验证和推理不启用。
+  activation_checkpoint_attention: true
+
+  # ----------------------------
+  # DataLoader 与 CPU/GPU 传输
+  # ----------------------------
+
+  # Windows 下 DataLoader worker 数量；0 表示主进程加载，通常更稳定。
+  num_workers: 0
+
+  # num_workers > 0 时，每个 worker 预取的 batch 数。
+  prefetch_factor: 2
+
+  # 是否保持 DataLoader worker 常驻；num_workers=0 时无效。
+  persistent_workers: true
+
+  # 是否使用 pinned memory 加速 CPU 到 CUDA 的拷贝。
+  pin_memory: true
+
+  # 编译缓存每个 shard 的样本数；只影响磁盘分片大小和访问局部性。
+  compiled_cache_shard_size: 768
+
+  # 所有源 cache 之间最多同时驻留多少个编译 shard；只影响内存占用。
+  compiled_cache_max_shards: 16
+
+  # 首次编译缓存时使用的独立进程数；每个 worker 处理一个 raw JSON。
+  compiled_cache_workers: 4
+
+  # ----------------------------
+  # 训练增强
+  # ----------------------------
+
+  # 仅训练集随机移除早期历史，保留最近 min_recent 条；scene 和候选始终完整。
+  history_truncation:
+    enabled: true
+    probability: 0.33
+    min_recent: 4
+  # 人工数据定义的 canonical 候选技能顺序；推理始终使用该顺序。
+  candidate_order_file: candidate_order.yaml
+
+  # 仅训练集随机打乱候选，并同步重排候选技能、状态、合法性和 label。
+  candidate_shuffle:
+    enabled: false
+    probability: 1.0
+  # 可选的技能价值辅助损失；不会修改推理 logits 或绕过状态机合法性。
+  value_preference:
+    enabled: true
+    loss_weight: 0.05
+    margin_scale: 0.25
+  # 训练期间的验证集 PPG 与空场景自回归 PPG 评估。
+  ppg:
+    enabled: true
+    gcd_count: 128
+    normalization: 1000.0
+  # 连续重复动作的 soft penalty；只降低候选 logit，不改变状态机合法性。
+  repetition:
+    mode: whitelist
+    skills: [fire_iv, xenoglossy, foul, flare]
+    penalty: 1.0
+  # 可选运行时显存调试；开启后写入 output_dir/runtime_memory.jsonl。
+  runtime_debug:
+    enabled: false
+    max_steps: 1
+    synchronize: true
+    output_filename: runtime_memory.jsonl
+
+# ------------------------------
+# 序列过采样
+# ------------------------------
+
+oversampling:
+  # 是否启用职业专用的完整动作序列过采样。
+  enabled: false
+
+  # 这些动作从序列匹配比较中忽略；命中区间内仍跟随整段样本加权。
+  ignored_actions: [high_thunder, high_thunder_ii, xenoglossy, foul, ley_lines]
+
+  # 每条规则按单个 raw JSON 的完整 label 时间线匹配；命中后整段样本加权。
+  # weight=4 表示按基础样本的 4 倍频率出现，重叠规则取最高权重。
+  rules:
+    - sequence: [paradox, transpose, paradox, fire_iii(0)]
+      weight: 4
+    - sequence: [transpose, swiftcast, blizzard_iii(0), blizzard_iv, paradox, transpose]
+      weight: 4
+    - sequence: [transpose, blizzard_iii(0), blizzard_iv, paradox, transpose]
+      weight: 4
+    - sequence: [transpose, triplecast, blizzard_iii(0), blizzard_iv, paradox, transpose]
+      weight: 3

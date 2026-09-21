@@ -1,0 +1,328 @@
+# 黑魔职业配置。
+# 这里只放黑魔的静态定义：资源上限、时间参数、状态定义和技能定义。
+job:
+  key: black_mage
+  name: 黑魔法师
+
+timing:
+  ley_lines_haste_multiplier: 0.85  # 站在黑魔纹内时，GCD/recast 乘这个系数
+  polyglot_interval: 30.0  # 有元素态时，每隔多少秒涨 1 层通晓
+  default_fight_remaining: 600.0  # 未指定战斗剩余时间时的默认值，单位秒
+
+resources:
+  # 量谱上限同时作为状态机限制和训练输入归一化上限。
+  astral_fire:
+    max_value: 3
+  umbral_ice:
+    max_value: 3
+  umbral_hearts:
+    max_value: 3
+  astral_soul:
+    max_value: 6
+  polyglot:
+    max_value: 3
+  polyglot_timer:
+    max_value: 30
+  paradox_ready:
+    max_value: 1
+  thundercloud_ready:
+    max_value: 1
+  firestarter_ready:
+    max_value: 1
+
+statuses:
+  ley_lines:
+    game_id: 737
+    duration: 20.0
+    max_stacks: 1
+  triplecast:
+    game_id: 1211
+    duration: 15.0
+    max_stacks: 3
+  swiftcast:
+    game_id: 167
+    duration: 10.0
+    max_stacks: 1
+  lucid_dreaming:
+    game_id: 1204
+    duration: 21.0
+    max_stacks: 1
+  manaward:
+    game_id: 168
+    duration: 20.0
+    max_stacks: 1
+  surecast:
+    game_id: 160
+    duration: 6.0
+    max_stacks: 1
+
+skills:
+  # value 只供训练辅助 loss 读取，不写入 PT，也不作为模型输入；黑魔技能当前统一为 1.00。
+  fire_iii:
+    game_id: 152
+    name: 爆炎
+    kind: gcd
+    behavior: fire_iii
+    potency: 290
+    value: 1.10
+    cast_time: 3.5
+    recast_time: 2.5
+    mp_cost: 2000
+    aoe_secondary_reduction: 1.00
+    tags: [fire, stance]
+  high_fire_ii:
+    game_id: 25794
+    name: 高烈炎
+    kind: gcd
+    behavior: high_fire_ii
+    potency: 100
+    value: 1.00
+    cast_time: 3.0
+    recast_time: 2.5
+    mp_cost: 1500
+    max_targets: 99
+    aoe_secondary_reduction: 0.00
+    tags: [fire, stance, aoe]
+  fire_iv:
+    game_id: 3577
+    name: 炽炎
+    kind: gcd
+    behavior: fire_iv
+    potency: 300
+    value: 1.00
+    cast_time: 2.0
+    recast_time: 2.5
+    mp_cost: 800
+    aoe_secondary_reduction: 1.00
+    tags: [fire, spender]
+  despair:
+    game_id: 16505
+    name: 绝望
+    kind: gcd
+    behavior: despair
+    potency: 350
+    value: 1.00
+    cast_time: 0.0
+    recast_time: 2.5
+    mp_cost: full
+    mp_cost_floor: 1
+    aoe_secondary_reduction: 1.00
+    tags: [fire, finisher]
+  flare:
+    game_id: 162
+    name: 核爆
+    kind: gcd
+    behavior: flare
+    potency: 240
+    value: 1.00
+    cast_time: 2.0
+    recast_time: 2.5
+    mp_cost: full
+    mp_cost_floor: 800
+    max_targets: 99
+    aoe_secondary_reduction: 0.30
+    tags: [fire, spender, aoe]
+  flare_star:
+    game_id: 36989
+    name: 耀星
+    kind: gcd
+    behavior: flare_star
+    potency: 500
+    value: 1.00
+    cast_time: 2.0
+    recast_time: 2.5
+    max_targets: 99
+    aoe_secondary_reduction: 0.65
+    tags: [fire, spender, aoe]
+  blizzard_iii:
+    game_id: 154
+    name: 冰封
+    kind: gcd
+    behavior: blizzard_iii
+    potency: 290
+    value: 1.00
+    cast_time: 3.5
+    recast_time: 2.5
+    mp_cost: 800
+    aoe_secondary_reduction: 1.00
+    tags: [ice, stance]
+  blizzard_iv:
+    game_id: 3576
+    name: 冰澈
+    kind: gcd
+    behavior: blizzard_iv
+    potency: 300
+    value: 1.00
+    cast_time: 2.0
+    recast_time: 2.5
+    mp_cost: 800
+    aoe_secondary_reduction: 1.00
+    tags: [ice, generator]
+  freeze:
+    game_id: 159
+    name: 玄冰
+    kind: gcd
+    behavior: freeze
+    potency: 120
+    value: 1.00
+    cast_time: 2.0
+    recast_time: 2.5
+    mp_cost: 1000
+    max_targets: 99
+    aoe_secondary_reduction: 0.00
+    tags: [ice, generator, aoe]
+  high_blizzard_ii:
+    game_id: 25795
+    name: 高冰冻
+    kind: gcd
+    behavior: high_blizzard_ii
+    potency: 100
+    value: 1.00
+    cast_time: 3.0
+    recast_time: 2.5
+    mp_cost: 800
+    max_targets: 99
+    aoe_secondary_reduction: 0.00
+    tags: [ice, stance, aoe]
+  paradox:
+    game_id: 25797
+    name: 悖论
+    kind: gcd
+    behavior: paradox
+    potency: 540
+    value: 1.00
+    cast_time: 0.0
+    recast_time: 2.5
+    aoe_secondary_reduction: 1.00
+    tags: [proc, fire, ice]
+  xenoglossy:
+    game_id: 16507
+    name: 异言
+    kind: gcd
+    behavior: polyglot_spender
+    potency: 890
+    value: 1.00
+    cast_time: 0.0
+    recast_time: 2.5
+    aoe_secondary_reduction: 1.00
+    tags: [polyglot]
+  foul:
+    game_id: 7422
+    name: 秽浊
+    kind: gcd
+    behavior: polyglot_spender
+    potency: 600
+    value: 1.00
+    cast_time: 0.0
+    recast_time: 2.5
+    max_targets: 99
+    aoe_secondary_reduction: 0.25
+    tags: [polyglot, aoe]
+  high_thunder:
+    game_id: 36986
+    name: 高闪雷
+    kind: gcd
+    behavior: thundercloud_dot
+    potency: 150
+    value: 1.00
+    cast_time: 0.0
+    recast_time: 2.5
+    dot_potency: 60
+    dot_duration: 30.0
+    aoe_secondary_reduction: 1.00
+    tags: [thunder, proc]
+    dot_key: high_thunder
+  high_thunder_ii:
+    game_id: 36987
+    name: 高震雷
+    kind: gcd
+    behavior: thundercloud_dot
+    potency: 100
+    value: 1.00
+    cast_time: 0.0
+    recast_time: 2.5
+    dot_potency: 40
+    dot_duration: 24.0
+    max_targets: 99
+    aoe_secondary_reduction: 0.00
+    tags: [thunder, proc, aoe]
+    dot_key: high_thunder
+  transpose:
+    game_id: 149
+    name: 星灵移位
+    kind: ogcd
+    behavior: transpose
+    value: 1.00
+    cooldown: 5.0
+    aoe_secondary_reduction: 1.00
+    tags: [stance]
+  umbral_soul:
+    game_id: 16506
+    name: 灵极魂
+    kind: gcd
+    behavior: umbral_soul
+    value: 1.00
+    cast_time: 0.0
+    recast_time: 2.5
+    aoe_secondary_reduction: 1.00
+    tags: [ice, downtime]
+  ley_lines:
+    game_id: 3573
+    name: 黑魔纹
+    kind: ogcd
+    behavior: grant_status
+    value: 1.00
+    cooldown: 120.0
+    charges: 2
+    aoe_secondary_reduction: 1.00
+    applies_statuses: [ley_lines]
+    tags: [buff]
+  manafont:
+    game_id: 158
+    name: 魔泉
+    kind: ogcd
+    behavior: manafont
+    value: 1.00
+    cooldown: 100.0
+    aoe_secondary_reduction: 1.00
+    tags: [resource]
+  triplecast:
+    game_id: 7421
+    name: 三连咏唱
+    kind: ogcd
+    behavior: grant_status
+    value: 1.00
+    cooldown: 60.0
+    charges: 2
+    aoe_secondary_reduction: 1.00
+    applies_statuses: [triplecast]
+    tags: [buff]
+  amplifier:
+    game_id: 25796
+    name: 详述
+    kind: ogcd
+    behavior: amplifier
+    value: 1.00
+    cooldown: 120.0
+    aoe_secondary_reduction: 1.00
+    tags: [polyglot]
+  swiftcast:
+    game_id: 7561
+    name: 即刻咏唱
+    kind: ogcd
+    behavior: grant_status
+    value: 1.00
+    cooldown: 40.0
+    aoe_secondary_reduction: 1.00
+    applies_statuses: [swiftcast]
+    tags: [buff]
+  lucid_dreaming:
+    game_id: 7562
+    name: 醒梦
+    kind: ogcd
+    behavior: grant_status
+    value: 1.00
+    cooldown: 60.0
+    aoe_secondary_reduction: 1.00
+    applies_statuses: [lucid_dreaming]
+    tags: [buff]

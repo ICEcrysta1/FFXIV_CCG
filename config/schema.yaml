@@ -1,0 +1,110 @@
+# 状态机、输出与训练层共享的稳定 schema 定义。
+# C#（FightEngine）与 Python（common/）都从本文件加载，定义修改只改这一处；
+# 动态部分（职业量谱/Buff/DoT 列表）仍由各自运行时从职业配置推导。
+# 注意：state_vector_fields 新增字段时，必须同步实现 C# 侧 switch 臂与 Python 侧取值器
+#（player/buff/target_buff 三组各一份），否则运行期会显式抛 InvalidOperationException/KeyError
+#（fail-loud 守护，不会静默错位）。
+schema_version: 1
+
+contracts:
+  slidecast_window_seconds: 0.5
+  scene_epsilon: 0.000001
+  # Python SidecarBackend 与 C# SidecarHost 共用的 JSON Lines 运行时契约版本。
+  # 6：绝对时间动作、policy 决策和外部事实分别提交；动作响应与完整观测分离。
+  # 7：新增 validate_at 只读探测；observe_at 响应补 next_scheduled_event_time。
+  #    宿主接受技能提交与场景外部事实（可选中/移动/目标数/团辅）；
+  #    回放调用方把移动事实提交给状态机，训练样本转换仍可在输出层合成移动字段。
+  # 8：移除动画锁状态与输出；秒制观测提供完整 cast_remaining_seconds 供调用方调度。
+  sidecar_contract_version: 8
+  scene_context_absolute_mode: "absolute_from_fight_scene_context"
+  scene_context_keys:
+    targetable: "targetable_window_context"
+    forced_movement: "forced_movement_context"
+    raid_buff: "raid_buff_window_context"
+    target_count: "target_count_window_context"
+
+scene_context:
+  window_time_fields:
+    - "start_offset_seconds"
+    - "end_offset_seconds"
+    - "duration_seconds"
+  targetable_segment_kinds:
+    - "combat"
+    - "downtime"
+    - "combat_final"
+  raid_buff_window_source_keys:
+    - "amplifier"
+  window_extra_fields:
+    targetable:
+      - "targetable"
+    forced_movement: []
+    raid_buff:
+      - "source.{key}"
+    target_count:
+      - "target_count"
+
+canonical_output:
+  schema_version: 7
+  token_key: "tokens"
+  top_level_keys:
+    - "job_tag"
+    - "schema_version"
+    - "scene_context"
+    - "skill_history_context"
+    - "state_history_context"
+    - "candidate_skill_context"
+    - "candidate_state_context"
+  state_vector_groups:
+    player_state:
+      feature_keys_field: "player_state_feature_keys"
+      context_key: "player"
+    buff_state:
+      feature_keys_field: "buff_state_feature_keys"
+      context_key: null
+    # 该分组由 state_vector_fields 的两个条目按序拼接：
+    # 先 target_buff_dot_state（按注册 DoT 逐个展开），后 target_buff_fixed（固定威力字段）
+    target_buff_state:
+      feature_keys_field: "target_buff_state_feature_keys"
+      context_key: null
+    resource_state:
+      feature_keys_field: "resource_state_feature_keys"
+      context_key: "resources"
+
+state_vector_fields:
+  player_state:
+    - "mp"
+    - "max_mp"
+    - "mp_ratio"
+    - "time_seconds"
+    - "current_gcd_seconds"
+    - "gcd_index"
+    - "fight_remaining_seconds"
+    - "gcd_remaining_seconds"
+    - "gcd_remaining_gcds"
+    - "weave_window_seconds"
+    - "weave_window_gcds"
+    - "ogcd_window_seconds"
+    - "ogcd_window_gcds"
+    - "boss_targetable"
+    - "next_untargetable_in_seconds"
+    - "next_untargetable_in_gcds"
+    - "downtime_remaining_seconds"
+    - "downtime_remaining_gcds"
+    - "is_moving"
+    - "ogcds_weaved"
+    - "max_ogcd_per_window"
+  buff_state:
+    - "active"
+    - "remaining_seconds"
+    - "remaining_gcds"
+    - "stacks"
+  target_buff_dot_state:
+    - "active"
+    - "remaining_seconds"
+    - "remaining_gcds"
+    - "stacks"
+  target_buff_fixed:
+    - "target.cumulative_dot_potency"
+    - "target.cumulative_potency"
+    - "target.current_potency"
+    - "target.current_gcd_dot_potency"

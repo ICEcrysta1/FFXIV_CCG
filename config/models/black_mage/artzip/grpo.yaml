@@ -1,0 +1,52 @@
+# 黑魔 Artzip GRPO 后训练配置。
+
+grpo:
+  # 每个真实场景先跑 1 条贪心基准，再生成 16 条采样轨迹并完成奖励标注。
+  group_size: 16
+  # 每轮处理的真实场景数；可按显存和 Sidecar 吞吐调大。
+  prompt_batch_size: 8
+
+  # GRPO 外层更新轮数。
+  max_iterations: 10
+  # 自回归只按时间终止；null 表示运行到每个 raw 场景自身的战斗结束时间。
+  # 当前 Artzip 使用 1200 秒；其他模型可填写自己的正数秒数。
+  max_duration_seconds: 1200
+
+  # 自回归采样温度；值越高，组内轨迹差异越大。
+  temperature: 1.3
+
+  # 采样时保留的累计概率质量；1.0 表示不截断候选。
+  top_p: 1.0
+
+  # 只有整轮 rollout/标注完成后，才进入这里的真实反向更新。
+  inner_updates: 1
+
+  # 每次策略更新从 rollout 决策中取出的 minibatch 大小。
+  minibatch_size: 64
+
+  # GRPO AdamW 学习率。
+  learning_rate: 0.000001
+
+  # GRPO AdamW 权重衰减系数。
+  weight_decay: 0.0
+
+  # GRPO 学习率 warmup 更新步数。
+  warmup_steps: 20
+
+  # clipped surrogate ratio 的下界裁剪比例。
+  clip_low: 0.2
+
+  # clipped surrogate ratio 的上界裁剪比例。
+  clip_high: 0.2
+
+  # 行为策略与当前策略之间的 KL 惩罚权重。
+  kl_coefficient: 0.001
+
+  # 更新后贪心 PPG 低于更新前时允许的最大下降量。
+  greedy_guard_tolerance: 0.0
+
+  # 优势标准差的相对尺度下限，避免低方差组放大梯度。
+  advantage_scale_floor_ratio: 0.1
+
+  # 优势的对称裁剪上限。
+  advantage_clip: 5.0

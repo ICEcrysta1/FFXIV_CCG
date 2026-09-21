@@ -1,0 +1,26 @@
+# 项目总配置。
+# 这里只放与当前运行目标相关的全局开关和职业配置入口。
+project:
+  name: Context Combat Generator
+  version: 1.0.0
+
+runtime:
+  strict_validation: true
+  system_config: config/system.yaml
+  job_configs:
+    black_mage: config/skills/black_mage.yaml
+    machinist: config/skills/machinist.yaml
+
+engine_timing:
+  # 容量一动作队列窗口：时间锁在此窗口内时保留请求并在 ready_at 自动执行。
+  # 默认窗口为 0.6s，用于模拟严重网络延迟下的请求排队；转换器将其作为时序匹配容差，状态机用于容量一队列。
+  # 状态机与 FFLogs 转换器都在该窗口内保留请求，并在 ready_at 自动执行。
+  action_queue_window_seconds: 0.6
+
+decision_timing:
+  post_gcd_delay_seconds: 0.05  # GCD 完整读条结束后的决策间隔，瞬发同样适用
+  gcd_request_lead_seconds: 0.05  # 下一 GCD 就绪前提前提交请求
+  ogcd_interval_seconds: 0.1  # 调用方在两次操作之间预留的动画时间，状态机不消费
+
+engine_resources:
+  max_mp: 10000  # 全职业共享的标准 MP 上限

@@ -1,0 +1,241 @@
+"""训练 checkpoint 的保存、续训校验和运行状态恢复。"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import asdict
+import random
+from pathlib import Path
+
+import torch
+
+from common.torch_serialization import safe_torch_load
+from common.policy.data import ModelInputContract, DataSpec
+
+from ..config import RunConfig
+from common.policy.model import CandidateTransformerModel
+
+
+def _top1_val_ppg_average(top1_accuracy: float, normalized_val_ppg: float) -> float:
+    """把 top1 与独立验证集 PPG（已归一）合成主评分。"""
+    return (float(top1_accuracy) + float(normalized_val_ppg)) / 2.0
+
+
+def _best_metric_key(
+    metrics: dict[str, float],
+    *,
+    ppg_enabled: bool,
+) -> tuple[float, float, float, float]:
+    """按主评分、top1、top3、value loss 构造可直接比较的排序键。"""
+    score = (
+        metrics["top1_val_ppg_average"]
+        if ppg_enabled
+        else metrics["top1_accuracy"]
+    )
+    return (
+        float(score),
+        float(metrics["top1_accuracy"]),
+        float(metrics["top3_accuracy"]),
+        -float(metrics["value_preference_loss"]),
+    )
+
+
+def _epoch_checkpoint_name(epoch: int, metrics: dict[str, float]) -> str:
+    """生成包含本轮 PPG 的 checkpoint 文件名。"""
+    ppg = metrics.get("val_ppg")
+    if ppg is None:
+        return f"epoch_{epoch:03d}.pt"
+    return f"epoch_{epoch:03d}_val_ppg_{float(ppg):.2f}.pt"
+
+
+def _load_resume_checkpoint(path: Path) -> dict[str, object]:
+    """读取并校验续训 checkpoint。"""
+    path = Path(path).resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"resume checkpoint not found: {path}")
+    payload = safe_torch_load(path)
+    if not isinstance(payload, Mapping):
+        raise ValueError("resume checkpoint must be a mapping")
+    return dict(payload)
+
+
+def _validate_resume_checkpoint(
+    checkpoint: Mapping[str, object],
+    *,
+    data_spec: DataSpec,
+    dataset,
+    config: RunConfig,
+    input_contract: ModelInputContract,
+) -> int:
+    """确保续训 checkpoint 与当前数据、模型和归一化契约完全一致。"""
+    checkpoint_data_spec = checkpoint.get("data_spec")
+    if not isinstance(checkpoint_data_spec, Mapping):
+        raise ValueError("resume checkpoint missing data_spec")
+    DataSpec.from_dict(dict(checkpoint_data_spec)).assert_compatible_with(data_spec)
+
+    checkpoint_contract = ModelInputContract.from_checkpoint(checkpoint)
+    checkpoint_contract.assert_matches_data_spec(data_spec)
+    checkpoint_contract.schema.assert_compatible_with(dataset.schema)
+    if checkpoint_contract.normalizer_contract != input_contract.normalizer_contract:
+        raise ValueError("resume checkpoint normalization contract mismatch")
+
+    checkpoint_model_config = checkpoint.get("model_config")
+    if not isinstance(checkpoint_model_config, Mapping):
+        raise ValueError("resume checkpoint missing model_config")
+    normalized_model_config = asdict(
+        CandidateTransformerModel.checkpoint_model_config(dict(checkpoint))
+    )
+    if normalized_model_config != asdict(config.model):
+        raise ValueError("resume checkpoint model config mismatch")
+
+    checkpoint_precision = checkpoint.get("training_precision")
+    if checkpoint_precision is not None and str(checkpoint_precision) != config.precision:
+        raise ValueError("resume checkpoint training precision mismatch")
+    if not isinstance(checkpoint.get("model_state_dict"), Mapping):
+        raise ValueError("resume checkpoint missing model_state_dict")
+    if not isinstance(checkpoint.get("optimizer_state_dict"), Mapping):
+        raise ValueError("resume checkpoint missing optimizer_state_dict")
+
+    epoch = checkpoint.get("epoch")
+    if isinstance(epoch, bool):
+        raise ValueError("resume checkpoint epoch must be an integer")
+    try:
+        normalized_epoch = int(epoch)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("resume checkpoint epoch must be an integer") from exc
+    if normalized_epoch < 1:
+        raise ValueError("resume checkpoint epoch must be >= 1")
+    return normalized_epoch
+
+
+def _restore_scheduler_state(scheduler, checkpoint: Mapping[str, object], *, completed_steps: int) -> None:
+    """恢复 scheduler；旧 checkpoint 没有 scheduler 时按已完成 batch 定位。"""
+    scheduler_state = checkpoint.get("scheduler_state_dict")
+    if isinstance(scheduler_state, Mapping):
+        scheduler.load_state_dict(dict(scheduler_state))
+        return
+
+    scheduler.last_epoch = int(completed_steps)
+    scheduler._step_count = max(1, int(completed_steps) + 1)
+    scheduler._last_lr = [group["lr"] for group in scheduler.optimizer.param_groups]
+
+
+def _checkpoint_metrics(checkpoint: Mapping[str, object]) -> dict[str, float]:
+    metrics = checkpoint.get("metrics")
+    if not isinstance(metrics, Mapping):
+        return {}
+    return {str(key): float(value) for key, value in metrics.items()}
+
+
+def _metric_state_from_checkpoint(
+    checkpoint: Mapping[str, object],
+    *,
+    ppg_enabled: bool,
+) -> tuple[tuple[float, float, float, float] | None, dict[str, float]]:
+    metrics = checkpoint.get("best_val_metrics")
+    if not isinstance(metrics, Mapping):
+        metrics = checkpoint.get("metrics")
+    if not isinstance(metrics, Mapping):
+        return None, {}
+    normalized_metrics = {str(key): float(value) for key, value in metrics.items()}
+    try:
+        key = _best_metric_key(normalized_metrics, ppg_enabled=ppg_enabled)
+    except KeyError:
+        return None, {}
+    return key, normalized_metrics
+
+
+def _restore_best_state(
+    checkpoint: Mapping[str, object],
+    resume_path: Path,
+    *,
+    ppg_enabled: bool,
+) -> tuple[tuple[float, float, float, float] | None, dict[str, float]]:
+    """恢复 best 指标；兼容尚未保存 best 元数据的 epoch checkpoint。"""
+    best_key = checkpoint.get("best_key")
+    best_metrics = checkpoint.get("best_val_metrics")
+    if isinstance(best_key, (list, tuple)) and len(best_key) == 4 and isinstance(best_metrics, Mapping):
+        return (
+            tuple(float(value) for value in best_key),
+            {str(key): float(value) for key, value in best_metrics.items()},
+        )
+
+    best_path = Path(resume_path).resolve().parent / "best.pt"
+    if best_path.is_file() and best_path != Path(resume_path).resolve():
+        best_checkpoint = _load_resume_checkpoint(best_path)
+        restored = _metric_state_from_checkpoint(best_checkpoint, ppg_enabled=ppg_enabled)
+        if restored[0] is not None:
+            return restored
+
+    return _metric_state_from_checkpoint(checkpoint, ppg_enabled=ppg_enabled)
+
+
+def _capture_rng_state() -> dict[str, object]:
+    state: dict[str, object] = {
+        "python": random.getstate(),
+        "torch": torch.get_rng_state(),
+    }
+    if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+        state["cuda"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def _restore_rng_state(checkpoint: Mapping[str, object]) -> None:
+    state = checkpoint.get("rng_state")
+    if not isinstance(state, Mapping):
+        return
+    if state.get("python") is not None:
+        random.setstate(state["python"])
+    if state.get("torch") is not None:
+        torch.set_rng_state(state["torch"])
+    cuda_state = state.get("cuda")
+    if (
+        cuda_state is not None
+        and torch.cuda.is_available()
+        and torch.cuda.device_count() > 0
+    ):
+        if not isinstance(cuda_state, (list, tuple)):
+            raise ValueError("checkpoint CUDA RNG state must be a list")
+        device_count = torch.cuda.device_count()
+        if len(cuda_state) != device_count:
+            raise ValueError(
+                "checkpoint CUDA RNG state device count mismatch: "
+                f"checkpoint={len(cuda_state)}, current={device_count}"
+            )
+        torch.cuda.set_rng_state_all(cuda_state)
+
+
+def _save_checkpoint(
+    path,
+    model,
+    optimizer,
+    epoch,
+    config,
+    data_spec,
+    metrics,
+    *,
+    input_contract: ModelInputContract,
+    scheduler=None,
+    best_key: tuple[float, float, float, float] | None = None,
+    best_val_metrics: Mapping[str, float] | None = None,
+) -> None:
+    payload = {
+        "epoch": epoch,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "model_config": asdict(config.model),
+        "data_spec": asdict(data_spec),
+        "job_tag": data_spec.job_tag,
+        "input_contract": input_contract.to_dict(),
+        "training_precision": config.precision,
+        "run_config": asdict(config),
+        "metrics": metrics,
+        "rng_state": _capture_rng_state(),
+    }
+    if scheduler is not None:
+        payload["scheduler_state_dict"] = scheduler.state_dict()
+    if best_key is not None:
+        payload["best_key"] = tuple(float(value) for value in best_key)
+    if best_val_metrics is not None:
+        payload["best_val_metrics"] = dict(best_val_metrics)
+    torch.save(payload, path)

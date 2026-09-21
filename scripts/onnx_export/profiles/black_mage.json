@@ -1,0 +1,113 @@
+{
+  "profile_version": 1,
+  "job_tag": "black_mage",
+  "vocab_entries": [
+    {
+      "raw_skill_id": 99999,
+      "vocab_id": 1
+    },
+    {
+      "raw_skill_id": 25796,
+      "vocab_id": 2
+    },
+    {
+      "raw_skill_id": 154,
+      "vocab_id": 3
+    },
+    {
+      "raw_skill_id": 3576,
+      "vocab_id": 4
+    },
+    {
+      "raw_skill_id": 16505,
+      "vocab_id": 5
+    },
+    {
+      "raw_skill_id": 152,
+      "vocab_id": 6
+    },
+    {
+      "raw_skill_id": 3577,
+      "vocab_id": 7
+    },
+    {
+      "raw_skill_id": 162,
+      "vocab_id": 8
+    },
+    {
+      "raw_skill_id": 36989,
+      "vocab_id": 9
+    },
+    {
+      "raw_skill_id": 7422,
+      "vocab_id": 10
+    },
+    {
+      "raw_skill_id": 159,
+      "vocab_id": 11
+    },
+    {
+      "raw_skill_id": 25795,
+      "vocab_id": 12
+    },
+    {
+      "raw_skill_id": 25794,
+      "vocab_id": 13
+    },
+    {
+      "raw_skill_id": 36986,
+      "vocab_id": 14
+    },
+    {
+      "raw_skill_id": 36987,
+      "vocab_id": 15
+    },
+    {
+      "raw_skill_id": 3573,
+      "vocab_id": 16
+    },
+    {
+      "raw_skill_id": 7562,
+      "vocab_id": 17
+    },
+    {
+      "raw_skill_id": 158,
+      "vocab_id": 18
+    },
+    {
+      "raw_skill_id": 25797,
+      "vocab_id": 19
+    },
+    {
+      "raw_skill_id": 7561,
+      "vocab_id": 20
+    },
+    {
+      "raw_skill_id": 149,
+      "vocab_id": 21
+    },
+    {
+      "raw_skill_id": 7421,
+      "vocab_id": 22
+    },
+    {
+      "raw_skill_id": 16506,
+      "vocab_id": 23
+    },
+    {
+      "raw_skill_id": 16507,
+      "vocab_id": 24
+    },
+    {
+      "raw_skill_id": 0,
+      "vocab_id": 25
+    }
+  ],
+  "evidence": {
+    "method": "one_time_raw_corpus_scan",
+    "fight_count": 1912,
+    "scene_length_p99": 116,
+    "scene_length_max": 160,
+    "recorded_at": "2026-08-12"
+  }
+}

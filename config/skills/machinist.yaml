@@ -1,0 +1,230 @@
+# 机工士职业配置。
+# 口径：国际服 Patch 7.5、Lv.100 PvE；首批收录机工基础循环与完整野火，不实现 Queen。
+job:
+  key: machinist
+  name: 机工士
+
+timing:
+  combo_duration: 30.0
+  wildfire_duration: 10.0
+  wildfire_potency_per_hit: 240.0
+  default_fight_remaining: 600.0
+
+resources:
+  # 资源上限由职业配置提供，状态机只负责按这些上限归一化和统计溢出。
+  heat:
+    max_value: 100
+  battery:
+    max_value: 100
+  combo_stage:
+    max_value: 2
+  combo_remaining:
+    max_value: 30
+  wildfire_active:
+    max_value: 1
+  # 上限必须与 timing.wildfire_duration 一致；配置加载器会 fail-fast 校验，避免
+  # duration 变更后通用资源归一化仍按旧上限静默截断。
+  wildfire_remaining:
+    max_value: 10
+  wildfire_hits:
+    max_value: 6
+
+statuses:
+  overheated:
+    # 本地语义状态 ID；真实日志状态 ID 待 FFLogs 样本复核。
+    game_id: 2000001
+    duration: 10.0
+    max_stacks: 5
+  free_hypercharge:
+    game_id: 2000002
+    duration: 30.0
+    max_stacks: 1
+  full_metal_machinist:
+    game_id: 2000003
+    duration: 30.0
+    max_stacks: 1
+  reassemble:
+    game_id: 851
+    duration: 5.0
+    max_stacks: 1
+  excavator_ready:
+    game_id: 2000004
+    duration: 30.0
+    max_stacks: 1
+
+skills:
+  # value 是训练辅助值；职业状态机可按运行时状态解析它，整备使下一个符合条件的武器技能 value 提升为 2.00。
+  # 整备是给后续技能的状态，是否触发保证命中由状态机按当前状态判断，不提高整备自身的 value。
+  heated_split_shot:
+    game_id: 7411
+    name: 热分裂弹
+    kind: gcd
+    behavior: mch_combo_one
+    potency: 220
+    value: 1.00
+    cast_time: 0.0
+    recast_time: 2.5
+    requires_target: true
+    tags: [weaponskill, single_target_weaponskill, combo, filler]
+  heated_slug_shot:
+    game_id: 7412
+    name: 热独头弹
+    kind: gcd
+    behavior: mch_combo_two
+    potency: 140
+    value: 1.00
+    cast_time: 0.0
+    recast_time: 2.5
+    requires_target: true
+    tags: [weaponskill, single_target_weaponskill, combo, filler]
+  heated_clean_shot:
+    game_id: 7413
+    name: 热狙击弹
+    kind: gcd
+    behavior: mch_combo_three
+    potency: 160
+    value: 1.00
+    cast_time: 0.0
+    recast_time: 2.5
+    requires_target: true
+    tags: [weaponskill, single_target_weaponskill, combo, filler]
+  drill:
+    game_id: 16498
+    name: 钻头
+    kind: gcd
+    behavior: mch_tool
+    potency: 660
+    value: 1.00
+    cast_time: 0.0
+    recast_time: 2.5
+    cooldown: 20.0
+    charges: 2
+    requires_target: true
+    tags: [weaponskill, single_target_weaponskill, tool, burst]
+  air_anchor:
+    game_id: 16500
+    name: 空气锚
+    kind: gcd
+    behavior: mch_air_anchor
+    potency: 660
+    value: 1.00
+    cast_time: 0.0
+    recast_time: 2.5
+    cooldown: 40.0
+    requires_target: true
+    tags: [weaponskill, single_target_weaponskill, tool, battery, burst]
+  chain_saw:
+    game_id: 25788
+    name: 回转飞锯
+    kind: gcd
+    behavior: mch_chain_saw
+    potency: 660
+    value: 1.00
+    cast_time: 0.0
+    recast_time: 2.5
+    cooldown: 60.0
+    max_targets: 99
+    requires_target: true
+    tags: [weaponskill, tool, battery, burst, aoe]
+  excavator:
+    game_id: 36981
+    name: 掘地飞轮
+    kind: gcd
+    behavior: mch_excavator
+    potency: 660
+    value: 1.00
+    cast_time: 0.0
+    recast_time: 2.5
+    max_targets: 99
+    requires_target: true
+    tags: [weaponskill, tool, battery, burst, aoe, replacement_action]
+  blazing_shot:
+    game_id: 36978
+    name: 烈焰弹
+    kind: gcd
+    behavior: mch_blazing_shot
+    potency: 240
+    value: 1.00
+    cast_time: 0.0
+    recast_time: 1.5
+    requires_target: true
+    tags: [weaponskill, single_target_weaponskill, overheated, burst]
+  full_metal_field:
+    game_id: 36982
+    name: 全金属爆发
+    kind: gcd
+    behavior: mch_full_metal_field
+    potency: 900
+    value: 2.00
+    cast_time: 0.0
+    recast_time: 2.5
+    max_targets: 99
+    requires_target: true
+    tags: [weaponskill, tool, burst, aoe, replacement_action, reassemble_immune]
+  hypercharge:
+    game_id: 17209
+    name: 超荷
+    kind: ogcd
+    behavior: mch_hypercharge
+    value: 1.00
+    cooldown: 10.0
+    tags: [heat_spender, burst]
+  wildfire:
+    game_id: 2878
+    name: 野火
+    kind: ogcd
+    behavior: mch_wildfire
+    value: 1.00
+    cooldown: 120.0
+    requires_target: true
+    tags: [target_debuff, delayed_potency, burst]
+  detonator:
+    game_id: 16766
+    name: 起爆
+    kind: ogcd
+    behavior: mch_detonator
+    value: 1.00
+    cooldown: 1.0
+    requires_target: true
+    tags: [target_debuff, delayed_potency, replacement_action, burst]
+  barrel_stabilizer:
+    game_id: 7414
+    name: 枪管加热
+    kind: ogcd
+    behavior: mch_barrel_stabilizer
+    value: 1.00
+    cooldown: 120.0
+    tags: [resource, burst]
+  reassemble:
+    game_id: 2876
+    name: 整备
+    kind: ogcd
+    behavior: mch_reassemble
+    value: 1.00
+    cooldown: 55.0
+    charges: 2
+    tags: [buff, burst]
+  double_check:
+    game_id: 36979
+    name: 双将
+    kind: ogcd
+    behavior: mch_direct_ability
+    potency: 180
+    value: 1.00
+    cooldown: 30.0
+    charges: 3
+    max_targets: 99
+    requires_target: true
+    tags: [ability, weave, minor_cooldown, aoe]
+  checkmate:
+    game_id: 36980
+    name: 将死
+    kind: ogcd
+    behavior: mch_direct_ability
+    potency: 180
+    value: 1.00
+    cooldown: 30.0
+    charges: 3
+    max_targets: 99
+    requires_target: true
+    tags: [ability, weave, minor_cooldown, aoe]

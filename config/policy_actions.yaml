@@ -1,0 +1,9 @@
+# 模型策略控制动作。这里的条目不属于游戏技能，不进入 FightEngine SkillBook。
+policy_actions:
+  ogcd_wait:
+    raw_id: 0
+    name: 空输出
+    candidate_kind: ogcd
+    behavior: end_weave_window
+    value: 1.00
+    tags: [sentinel, policy]

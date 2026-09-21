@@ -1,0 +1,8 @@
+# 训练数据归一化配置。
+normalizer:
+  mp_max: 10000
+  fight_time_max: 1800
+  target_count_max: 3
+  remaining_gcds_max: 48
+  current_potency_max: 2500
+  cumulative_potency_mode: log1p  # log1p | divide
