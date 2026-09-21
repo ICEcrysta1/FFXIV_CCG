@@ -12,7 +12,7 @@
 - 如果最新 tag 还是上一版，就不要乱编新版本号；先以最新 tag 为基准决定下一个版本，或者继续写在 `Unreleased`。
 - 默认不允许顺手 `git commit`，`git push`，除非我要求了。
 - commit的时候保持提交信息用fix: docs: feat:等清晰的前缀，然后commit内容使用中文。
-- 不允许commit到main，严禁推送到main，commit之前需要检查，如果检查会推送到main需要停止commit并且告知用户，如果用户执意推送到main，你需要拒绝。
+- 不允许commit到main，除了文档更新，其余代码变更严禁推送到main，commit之前需要检查，如果检查会推送到main需要停止commit并且告知用户，如果用户执意推送到main，你需要拒绝。
 
 ### 例外
 
