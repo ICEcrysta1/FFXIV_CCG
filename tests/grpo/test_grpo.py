@@ -17,6 +17,7 @@ from grpo.config import GrpoConfig, GrpoRunConfig, load_grpo_config
 from grpo.trainer import (
     GrpoDecision,
     _restore_grpo_rollback_state,
+    _save_grpo_checkpoint,
     _detach_batch_to_cpu,
     _update_policy,
     collate_grpo_decisions,
@@ -51,6 +52,32 @@ def test_grpo_import_does_not_require_pretraining_package():
         text=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_grpo_checkpoint_save_rejects_missing_model_variant(tmp_path):
+    config = GrpoRunConfig(
+        raw_data_dir=tmp_path,
+        output_dir=tmp_path,
+        job_tag=None,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="GRPO checkpoint model_variant must be configured",
+    ):
+        _save_grpo_checkpoint(
+            tmp_path / "checkpoint.pt",
+            model=None,
+            optimizer=None,
+            scheduler=None,
+            iteration=1,
+            config=config,
+            grpo=GrpoConfig(),
+            data_spec=None,
+            input_contract=None,
+            precision="float32",
+            metrics={},
+        )
 
 
 def _decision(*, history_length: int, scene_length: int, action_index: int) -> GrpoDecision:

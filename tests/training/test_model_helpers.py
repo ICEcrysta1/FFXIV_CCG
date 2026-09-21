@@ -1022,6 +1022,22 @@ def test_training_helpers_and_epoch_metrics(tmp_path, monkeypatch):
     assert saved["input_contract"]["normalizer"]["config"]["fight_time_max"] == 1800.0
 
 
+def test_checkpoint_save_rejects_missing_model_variant(tmp_path):
+    config = RunConfig(raw_data_dir=tmp_path, output_dir=tmp_path, job_tag=None)
+
+    with pytest.raises(ValueError, match="checkpoint model_variant must be configured"):
+        training_module._save_checkpoint(
+            tmp_path / "checkpoint.pt",
+            None,
+            None,
+            1,
+            config,
+            None,
+            {},
+            input_contract=None,
+        )
+
+
 def test_select_training_raw_paths_covers_grouped_selection_branches(tmp_path):
     first = tmp_path / "FRU"
     second = tmp_path / "M12s"

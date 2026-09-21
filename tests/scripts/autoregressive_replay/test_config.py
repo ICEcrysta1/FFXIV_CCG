@@ -188,6 +188,27 @@ def test_replay_config_rejects_onnx_model_variant_mismatch(monkeypatch, tmp_path
         load_replay_config()
 
 
+def test_replay_config_reports_missing_onnx_model_variant_for_reexport(
+    monkeypatch,
+    tmp_path,
+):
+    package = tmp_path / "deployment"
+    package.mkdir()
+    (package / "manifest.json").write_text(
+        '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":384}},"model":{}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_BACKEND", "onnxruntime")
+    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE", str(package))
+    monkeypatch.setenv("FFXIV_JOB_TAG", "black_mage")
+
+    with pytest.raises(
+        ValueError,
+        match="missing model_variant; re-export the package",
+    ):
+        load_replay_config()
+
+
 def test_replay_config_reports_the_actual_missing_onnx_routing_field(
     monkeypatch,
     tmp_path,
