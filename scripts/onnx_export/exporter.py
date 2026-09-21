@@ -2,26 +2,26 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import asdict
-from datetime import datetime, timezone
 import json
 import math
-from pathlib import Path
 import shutil
 import tempfile
 import time
 import uuid
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 
 import torch
 
-from common.torch_serialization import safe_torch_load
+from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, ModelInputContract
 from common.policy.model import (
     CandidateTransformerModel,
     repetition_config_from_checkpoint,
 )
-from common.policy.config import ModelConfig
+from common.torch_serialization import safe_torch_load
 
 from .artifact_io import (
     file_sha256,
@@ -29,7 +29,7 @@ from .artifact_io import (
     write_deterministic_npz,
 )
 from .config import OnnxExportConfig
-from .contract import CapacityContract, OUTPUT_NAMES, TENSOR_INPUT_NAMES, make_inputs
+from .contract import OUTPUT_NAMES, TENSOR_INPUT_NAMES, CapacityContract, make_inputs
 from .deployment_contract import (
     DEPLOYMENT_MANIFEST_VERSION,
     MANIFEST_SCHEMA_FILENAME,
@@ -37,13 +37,13 @@ from .deployment_contract import (
     DeploymentManifest,
 )
 from .deployment_profile import DeploymentProfile
-from .policy import OnnxPolicy
 from .ort_runtime import (
     ORT_PROVIDER_CUDA,
     create_ort_session,
     is_cpu_fallback_disabled,
     resolve_ort_providers,
 )
+from .policy import OnnxPolicy
 from .precision import (
     PRECISION_BF16,
     PRECISION_FLOAT16,
@@ -65,9 +65,49 @@ from .tensor_runtime import (
 )
 from .validation import validate_ort_matrix, validate_pytorch_matrix
 
-
 PUBLISH_RENAME_ATTEMPTS = 5
 PUBLISH_RENAME_DELAY_SECONDS = 0.5
+
+
+@dataclass(frozen=True)
+class _ExportContracts:
+    """导出期间复用的 checkpoint 与部署契约上下文。"""
+
+    checkpoint_hash: str
+    policy: OnnxPolicy
+    data_spec: DataSpec
+    vocab_size: int
+    dtype: torch.dtype
+    model_variant: str
+    resolved_profile_path: Path
+    capacity_report: Mapping[str, object]
+    contract: CapacityContract
+    deployment_contract: DeploymentContract
+    contract_payload: Mapping[str, object]
+    contract_sha256: object
+
+
+@dataclass(frozen=True)
+class _ExportArtifacts:
+    """已导出并完成 ONNX 图验收的产物。"""
+
+    model_path: Path
+    external_files: list[str]
+    external_artifacts: list[dict[str, object]]
+    alignment: dict[str, object]
+    golden_inputs: tuple[torch.Tensor, ...]
+
+
+@dataclass(frozen=True)
+class _RuntimeValidation:
+    """ORT 会话、golden 运行和精度矩阵的验收结果。"""
+
+    resolved_ort_providers: tuple[str, ...]
+    active_ort_providers: tuple[str, ...]
+    runtime_golden_inputs: tuple[torch.Tensor, ...]
+    runtime_golden_outputs: torch.Tensor
+    pytorch_matrix: dict[str, object]
+    ort_matrix: dict[str, object]
 
 
 def export_from_config(config: OnnxExportConfig) -> Path:
@@ -131,11 +171,13 @@ def load_policy(
     """只从 checkpoint 读取部署所需字段，不恢复训练状态。"""
     checkpoint = safe_torch_load(checkpoint_path, mmap=True)
     if not isinstance(checkpoint, Mapping):
-        raise ValueError("checkpoint must be a mapping")
+        raise ValueError("checkpoint must be a mapping")  # noqa: TRY004
     data_spec_payload = checkpoint.get("data_spec")
     state_dict = checkpoint.get("model_state_dict")
     if not isinstance(data_spec_payload, Mapping) or not isinstance(state_dict, Mapping):
-        raise ValueError("checkpoint missing data_spec or model_state_dict")
+        raise ValueError(  # noqa: TRY004
+            "checkpoint missing data_spec or model_state_dict"
+        )
     data_spec = DataSpec.from_dict(dict(data_spec_payload))
     input_contract = ModelInputContract.from_checkpoint(checkpoint)
     input_contract.assert_matches_data_spec(data_spec)
@@ -167,6 +209,52 @@ def _build_package(
     ort_provider: str,
     validation_devices: tuple[str, ...],
 ) -> None:
+    onnx, ort, onnxscript = _validate_export_environment(
+        precision=precision,
+        ort_provider=ort_provider,
+        validation_devices=validation_devices,
+    )
+    contracts = _load_policy_contracts(
+        checkpoint_path=checkpoint_path,
+        deployment_profile_path=deployment_profile_path,
+        precision=precision,
+    )
+    artifacts = _export_and_stamp(
+        onnx=onnx,
+        contracts=contracts,
+        package_dir=package_dir,
+        opset=opset,
+        precision=precision,
+    )
+    validation = _verify_runtime(
+        ort=ort,
+        contracts=contracts,
+        artifacts=artifacts,
+        ort_provider=ort_provider,
+        validation_devices=validation_devices,
+    )
+    _write_package_documents(
+        checkpoint_path=checkpoint_path,
+        package_dir=package_dir,
+        opset=opset,
+        precision=precision,
+        ort_provider=ort_provider,
+        onnx=onnx,
+        ort=ort,
+        onnxscript=onnxscript,
+        contracts=contracts,
+        artifacts=artifacts,
+        validation=validation,
+    )
+
+
+def _validate_export_environment(
+    *,
+    precision: str,
+    ort_provider: str,
+    validation_devices: tuple[str, ...],
+):
+    """导入导出依赖并执行精度、设备与 ORT provider 门禁。"""
     onnx, ort, onnxscript = _import_onnx_dependencies()
     if precision == PRECISION_BF16:
         if ort_provider != ORT_PROVIDER_CUDA:
@@ -198,7 +286,17 @@ def _build_package(
             "float16 ONNX export validation requires a non-CPU ORT provider; "
             "use CUDAExecutionProvider or export float32"
         )
-    checkpoint_hash_before = file_sha256(checkpoint_path)
+    return onnx, ort, onnxscript
+
+
+def _load_policy_contracts(
+    *,
+    checkpoint_path: Path,
+    deployment_profile_path: Path | None,
+    precision: str,
+) -> _ExportContracts:
+    """加载 checkpoint、部署 profile 和部署契约。"""
+    checkpoint_hash = file_sha256(checkpoint_path)
     policy, data_spec, vocab_size, dtype, checkpoint = load_policy(
         checkpoint_path,
         precision=precision,
@@ -253,25 +351,49 @@ def _build_package(
     )
     contract_payload = deployment_contract.to_dict()
     contract_sha256 = contract_payload["signatures"]["deployment_contract_sha256"]
-
-    golden_inputs = make_inputs(
-        data_spec,
-        contract,
+    return _ExportContracts(
+        checkpoint_hash=checkpoint_hash,
+        policy=policy,
+        data_spec=data_spec,
         vocab_size=vocab_size,
+        dtype=dtype,
+        model_variant=model_variant,
+        resolved_profile_path=resolved_profile_path,
+        capacity_report=capacity_report,
+        contract=contract,
+        deployment_contract=deployment_contract,
+        contract_payload=contract_payload,
+        contract_sha256=contract_sha256,
+    )
+
+
+def _export_and_stamp(
+    *,
+    onnx,
+    contracts: _ExportContracts,
+    package_dir: Path,
+    opset: int,
+    precision: str,
+) -> _ExportArtifacts:
+    """生成 golden 输入、导出 ONNX，并完成 metadata、图和参数精度验收。"""
+    golden_inputs = make_inputs(
+        contracts.data_spec,
+        contracts.contract,
+        vocab_size=contracts.vocab_size,
         scene_valid=0,
         history_valid=0,
-        dtype=dtype,
+        dtype=contracts.dtype,
         seed=20260812,
     )
-    deployment_contract.validate_tensor_inputs(golden_inputs)
+    contracts.deployment_contract.validate_tensor_inputs(golden_inputs)
     with torch.no_grad():
-        golden_outputs = policy(*golden_inputs)
+        golden_outputs = contracts.policy(*golden_inputs)
     if not torch.isfinite(golden_outputs).all():
         raise AssertionError("PyTorch golden output contains NaN/Inf")
 
     model_path = package_dir / "model.onnx"
     torch.onnx.export(
-        policy,
+        contracts.policy,
         golden_inputs,
         model_path,
         input_names=TENSOR_INPUT_NAMES,
@@ -289,16 +411,16 @@ def _build_package(
     _set_onnx_metadata(
         model_proto,
         {
-            "ffxiv.checkpoint_sha256": checkpoint_hash_before,
-            "ffxiv.deployment_contract_sha256": str(contract_sha256),
-            "ffxiv.job_tag": data_spec.job_tag,
-            "ffxiv.history_capacity": str(contract.history_capacity),
-            "ffxiv.scene_capacity": str(contract.scene_capacity),
-            "ffxiv.candidate_count": str(data_spec.num_candidates),
-            "ffxiv.state_dim": str(data_spec.state_dim),
-            "ffxiv.skill_feature_dim": str(data_spec.skill_feature_dim),
-            "ffxiv.scene_dim": str(data_spec.scene_dim),
-            "ffxiv.num_scene_types": str(data_spec.num_scene_types),
+            "ffxiv.checkpoint_sha256": contracts.checkpoint_hash,
+            "ffxiv.deployment_contract_sha256": str(contracts.contract_sha256),
+            "ffxiv.job_tag": contracts.data_spec.job_tag,
+            "ffxiv.history_capacity": str(contracts.contract.history_capacity),
+            "ffxiv.scene_capacity": str(contracts.contract.scene_capacity),
+            "ffxiv.candidate_count": str(contracts.data_spec.num_candidates),
+            "ffxiv.state_dim": str(contracts.data_spec.state_dim),
+            "ffxiv.skill_feature_dim": str(contracts.data_spec.skill_feature_dim),
+            "ffxiv.scene_dim": str(contracts.data_spec.scene_dim),
+            "ffxiv.num_scene_types": str(contracts.data_spec.num_scene_types),
             "ffxiv.precision": precision,
         },
     )
@@ -309,8 +431,8 @@ def _build_package(
     onnx.checker.check_model(inferred)
     _assert_onnx_metadata(
         model_proto,
-        checkpoint_sha256=checkpoint_hash_before,
-        contract_sha256=str(contract_sha256),
+        checkpoint_sha256=contracts.checkpoint_hash,
+        contract_sha256=str(contracts.contract_sha256),
         precision=precision,
     )
     external_files = _external_data_files(model_proto)
@@ -330,14 +452,32 @@ def _build_package(
         )
 
     alignment = _model_alignment(
-        policy.model,
+        contracts.policy.model,
         model_proto,
         precision=precision,
         tensor_proto=onnx.TensorProto,
     )
+    return _ExportArtifacts(
+        model_path=model_path,
+        external_files=external_files,
+        external_artifacts=external_artifacts,
+        alignment=alignment,
+        golden_inputs=golden_inputs,
+    )
+
+
+def _verify_runtime(
+    *,
+    ort,
+    contracts: _ExportContracts,
+    artifacts: _ExportArtifacts,
+    ort_provider: str,
+    validation_devices: tuple[str, ...],
+) -> _RuntimeValidation:
+    """创建 ORT 会话并执行运行时契约与 PyTorch/ORT 精度矩阵门禁。"""
     session, resolved_ort_providers, active_ort_providers = create_ort_session(
         ort,
-        model_path,
+        artifacts.model_path,
         ort_provider,
     )
     golden_device = (
@@ -345,19 +485,19 @@ def _build_package(
         if active_ort_providers[0] == ORT_PROVIDER_CUDA
         else torch.device("cpu")
     )
-    policy.to(device=golden_device, dtype=dtype)
+    contracts.policy.to(device=golden_device, dtype=contracts.dtype)
     runtime_golden_inputs = tuple(
-        tensor.to(device=golden_device) for tensor in golden_inputs
+        tensor.to(device=golden_device) for tensor in artifacts.golden_inputs
     )
     with torch.no_grad():
-        runtime_golden_outputs = policy(*runtime_golden_inputs)
+        runtime_golden_outputs = contracts.policy(*runtime_golden_inputs)
     if not torch.isfinite(runtime_golden_outputs).all():
         raise AssertionError("PyTorch runtime golden output contains NaN/Inf")
     _assert_runtime_contract(
         session,
         runtime_golden_inputs,
         runtime_golden_outputs,
-        deployment_contract=deployment_contract,
+        deployment_contract=contracts.deployment_contract,
     )
 
     pytorch_matrix: dict[str, object] = {}
@@ -365,94 +505,148 @@ def _build_package(
         if device_name == "cuda" and not torch.cuda.is_available():
             raise RuntimeError("CUDA padding validation requested but CUDA is unavailable")
         pytorch_matrix[device_name] = validate_pytorch_matrix(
-            policy,
-            data_spec,
-            contract,
-            vocab_size=vocab_size,
-            dtype=dtype,
+            contracts.policy,
+            contracts.data_spec,
+            contracts.contract,
+            vocab_size=contracts.vocab_size,
+            dtype=contracts.dtype,
             device=torch.device(device_name),
         )
     ort_matrix = validate_ort_matrix(
         session,
-        policy,
-        data_spec,
-        contract,
-        vocab_size=vocab_size,
-        dtype=dtype,
+        contracts.policy,
+        contracts.data_spec,
+        contracts.contract,
+        vocab_size=contracts.vocab_size,
+        dtype=contracts.dtype,
         reference_device=golden_device,
     )
+    return _RuntimeValidation(
+        resolved_ort_providers=tuple(resolved_ort_providers),
+        active_ort_providers=tuple(active_ort_providers),
+        runtime_golden_inputs=runtime_golden_inputs,
+        runtime_golden_outputs=runtime_golden_outputs,
+        pytorch_matrix=pytorch_matrix,
+        ort_matrix=ort_matrix,
+    )
 
+
+def _write_package_documents(
+    *,
+    checkpoint_path: Path,
+    package_dir: Path,
+    opset: int,
+    precision: str,
+    ort_provider: str,
+    onnx,
+    ort,
+    onnxscript,
+    contracts: _ExportContracts,
+    artifacts: _ExportArtifacts,
+    validation: _RuntimeValidation,
+) -> None:
+    """落盘 golden、报告和 manifest，并执行最终 manifest 自校验。"""
     input_arrays = {
         name: tensor_to_golden_array(tensor)
         for name, tensor in zip(
             TENSOR_INPUT_NAMES,
-            runtime_golden_inputs,
+            validation.runtime_golden_inputs,
             strict=True,
         )
     }
     output_arrays = {
-        OUTPUT_NAMES[0]: tensor_to_golden_array(runtime_golden_outputs)
+        OUTPUT_NAMES[0]: tensor_to_golden_array(validation.runtime_golden_outputs)
     }
     write_deterministic_npz(package_dir / "golden_inputs.npz", input_arrays)
     write_deterministic_npz(package_dir / "golden_outputs.npz", output_arrays)
-    _write_json(package_dir / "capacity_report.json", capacity_report)
+    _write_json(package_dir / "capacity_report.json", contracts.capacity_report)
     schema_source = Path(__file__).with_name(MANIFEST_SCHEMA_FILENAME)
     schema_target = package_dir / MANIFEST_SCHEMA_FILENAME
     shutil.copyfile(schema_source, schema_target)
 
     checkpoint_hash_after = file_sha256(checkpoint_path)
-    if checkpoint_hash_before != checkpoint_hash_after:
+    if contracts.checkpoint_hash != checkpoint_hash_after:
         raise RuntimeError("checkpoint changed during export")
     report = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "status": "graph_validated",
         "release_gate": "requires_rollout_parity",
-        "checkpoint_sha256_before": checkpoint_hash_before,
+        "checkpoint_sha256_before": contracts.checkpoint_hash,
         "checkpoint_sha256_after": checkpoint_hash_after,
-        "deployment_contract_sha256": contract_sha256,
-        "capacity_report_sha256": capacity_report["semantic_sha256"],
-        "deployment_profile": str(resolved_profile_path),
+        "deployment_contract_sha256": contracts.contract_sha256,
+        "capacity_report_sha256": contracts.capacity_report["semantic_sha256"],
+        "deployment_profile": str(contracts.resolved_profile_path),
         "onnx_checker": "passed",
         "shape_inference": "passed",
         "ort_session": "passed",
-        "ort_provider": active_ort_providers[0],
-        "ort_provider_chain": list(active_ort_providers),
-        "ort_requested_provider_chain": list(resolved_ort_providers),
+        "ort_provider": validation.active_ort_providers[0],
+        "ort_provider_chain": list(validation.active_ort_providers),
+        "ort_requested_provider_chain": list(validation.resolved_ort_providers),
         "ort_cpu_fallback_disabled": is_cpu_fallback_disabled(ort_provider),
         "runtime_targets": runtime_targets(
             precision=precision,
             ort_version=str(ort.__version__),
-            provider=active_ort_providers[0],
+            provider=validation.active_ort_providers[0],
         ),
         "precision": precision,
         "golden_format": GOLDEN_FORMAT,
         "golden_float_encoding": golden_encoding(precision),
-        "model_alignment": alignment,
-        "pytorch_padding_matrix": pytorch_matrix,
-        "ort_padding_matrix": ort_matrix,
+        "model_alignment": artifacts.alignment,
+        "pytorch_padding_matrix": validation.pytorch_matrix,
+        "ort_padding_matrix": validation.ort_matrix,
     }
     _write_json(package_dir / "export_report.json", report)
 
-    manifest = {
+    manifest = _build_manifest(
+        checkpoint_path=checkpoint_path,
+        package_dir=package_dir,
+        opset=opset,
+        precision=precision,
+        onnx=onnx,
+        ort=ort,
+        onnxscript=onnxscript,
+        contracts=contracts,
+        artifacts=artifacts,
+        schema_target=schema_target,
+    )
+    _write_json(package_dir / "manifest.json", manifest)
+    DeploymentManifest.load(package_dir / "manifest.json", verify_files=True)
+
+
+def _build_manifest(
+    *,
+    checkpoint_path: Path,
+    package_dir: Path,
+    opset: int,
+    precision: str,
+    onnx,
+    ort,
+    onnxscript,
+    contracts: _ExportContracts,
+    artifacts: _ExportArtifacts,
+    schema_target: Path,
+) -> dict[str, object]:
+    """装配部署 manifest；文件哈希由最终落盘内容计算。"""
+    return {
         "$schema": MANIFEST_SCHEMA_FILENAME,
         "manifest_version": DEPLOYMENT_MANIFEST_VERSION,
         "format": "onnx",
         "opset": opset,
-        "contract": contract_payload,
+        "contract": contracts.contract_payload,
         "checkpoint": {
             "filename": checkpoint_path.name,
-            "sha256": checkpoint_hash_before,
+            "sha256": contracts.checkpoint_hash,
         },
         "model": {
-            "filename": model_path.name,
-            "model_variant": model_variant,
-            "sha256": file_sha256(model_path),
-            "size_bytes": model_path.stat().st_size,
-            "external_data": bool(external_files),
-            "external_files": external_artifacts,
-            **alignment,
-            "contract_sha256": contract_sha256,
-            "checkpoint_sha256": checkpoint_hash_before,
+            "filename": artifacts.model_path.name,
+            "model_variant": contracts.model_variant,
+            "sha256": file_sha256(artifacts.model_path),
+            "size_bytes": artifacts.model_path.stat().st_size,
+            "external_data": bool(artifacts.external_files),
+            "external_files": artifacts.external_artifacts,
+            **artifacts.alignment,
+            "contract_sha256": contracts.contract_sha256,
+            "checkpoint_sha256": contracts.checkpoint_hash,
         },
         "capacity_report": {
             "filename": "capacity_report.json",
@@ -481,8 +675,6 @@ def _build_package(
             "manifest_schema_sha256": file_sha256(schema_target),
         },
     }
-    _write_json(package_dir / "manifest.json", manifest)
-    DeploymentManifest.load(package_dir / "manifest.json", verify_files=True)
 
 
 def _assert_runtime_contract(
@@ -699,7 +891,9 @@ def _assert_onnx_metadata(
 def _required_mapping(payload: Mapping[str, object], key: str) -> Mapping[str, object]:
     value = payload.get(key)
     if not isinstance(value, Mapping):
-        raise ValueError(f"checkpoint missing {key}")
+        raise ValueError(  # noqa: TRY004
+            f"checkpoint missing {key}"
+        )
     return value
 
 
