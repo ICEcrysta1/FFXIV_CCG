@@ -26,6 +26,18 @@ Python code, or other repository components.
 Copyright notices for the relevant material identify ICE_crystal and, for
 the original Machinist implementation, SpikeHS.
 
+## 训练配置最低要求
+
+以下是项目训练的最低硬件要求，适用于专门降低模型规模和训练负载后的最低训练配置：
+
+| 项目 | 最低要求 | 说明 |
+|---|---|---|
+| GPU 显存 | `>= 4 GiB` | 低于此容量不属于支持范围。 |
+| GPU 型号 | NVIDIA RTX 3050 或更新型号 | RTX 3050 已完成实际训练验证。 |
+| 系统内存 | `>= 16 GiB` | 用于 raw JSON、compiled cache、DataLoader 和训练进程。 |
+
+当前 `artzip` 配置不是最低训练配置，不能按上述最低硬件要求直接运行；它需要更高的显存和计算资源。最低硬件测试应使用单独缩小后的模型与训练 YAML，不应把当前 `artzip` 配置的失败归因于最低硬件要求本身。
+
 
 ## 项目结构
 
