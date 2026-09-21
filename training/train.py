@@ -113,8 +113,9 @@ def main() -> None:
     result = run_training(config, **training_kwargs)
     spec = result["data_spec"]
     logging.info(
-        "训练完成: job=%s candidates=%d state_dim=%d scene_dim=%d skill_dim=%d output=%s",
+        "训练完成: job=%s model_variant=%s candidates=%d state_dim=%d scene_dim=%d skill_dim=%d output=%s",
         spec.job_tag,
+        config.model_variant,
         spec.num_candidates,
         spec.state_dim,
         spec.scene_dim,

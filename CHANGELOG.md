@@ -6,6 +6,7 @@
 
 ### Changed
 
+- 补充 ONNX manifest 的 `contract`、`model`、`capacity`、`history_capacity` 缺失字段负例测试；训练模型初始化与完成日志输出 `model_variant`，便于区分多变体训练。
 - 新增 `FFXIV_MODEL_VARIANT` 配置：`FFXIV_JOB_TAG` 选择职业，`FFXIV_MODEL_VARIANT` 选择职业目录下的模型变体；训练、转换、回放、模型分析、GRPO 和 ONNX 流程统一解析 `config/models/<job_tag>/<variant>/config.yaml`，不再依赖职业目录下唯一变体自动扫描。
 - 统一显式职业与模型变体参数的空值语义；checkpoint、GRPO checkpoint 和 ONNX manifest 记录并校验 `model_variant`，禁止同职业不同变体的模型产物混用，并将 ONNX manifest 升级到 v7。
 

@@ -162,8 +162,9 @@ def run_training(
     if callable(set_runtime_debug):
         set_runtime_debug(debug_recorder)
     logger.info(
-        "模型: job=%s candidates=%d state=%d scene=%d skill_features=%d layers=%d d_model=%d activation=%s ff_dim=%d precision=%s ffn_checkpoint=%s attention_checkpoint=%s device=%s",
+        "模型: job=%s model_variant=%s candidates=%d state=%d scene=%d skill_features=%d layers=%d d_model=%d activation=%s ff_dim=%d precision=%s ffn_checkpoint=%s attention_checkpoint=%s device=%s",
         data_spec.job_tag,
+        config.model_variant,
         data_spec.num_candidates,
         data_spec.state_dim,
         data_spec.scene_dim,

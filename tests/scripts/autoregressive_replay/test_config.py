@@ -230,6 +230,47 @@ def test_replay_config_reports_the_actual_missing_onnx_routing_field(
         load_replay_config()
 
 
+@pytest.mark.parametrize(
+    ("manifest", "missing_field"),
+    [
+        (
+            '{"model":{"model_variant":"artzip"}}',
+            "contract",
+        ),
+        (
+            '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":384}}}',
+            "model",
+        ),
+        (
+            '{"contract":{"job_tag":"black_mage"},"model":{"model_variant":"artzip"}}',
+            "capacity",
+        ),
+        (
+            '{"contract":{"job_tag":"black_mage","capacity":{}},"model":{"model_variant":"artzip"}}',
+            "history_capacity",
+        ),
+    ],
+)
+def test_replay_config_reports_each_missing_onnx_routing_field(
+    monkeypatch,
+    tmp_path,
+    manifest,
+    missing_field,
+):
+    package = tmp_path / "deployment"
+    package.mkdir()
+    (package / "manifest.json").write_text(manifest, encoding="utf-8")
+    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_BACKEND", "onnxruntime")
+    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE", str(package))
+    monkeypatch.setenv("FFXIV_JOB_TAG", "black_mage")
+
+    with pytest.raises(
+        ValueError,
+        match=rf"missing replay routing field '{missing_field}'",
+    ):
+        load_replay_config()
+
+
 def test_replay_top_p_parser_defaults_to_no_filter(monkeypatch):
     monkeypatch.delenv("AUTOREGRESSIVE_REPLAY_TOP_P", raising=False)
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from dataclasses import asdict, replace
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1274,7 +1275,8 @@ def test_run_training_rejects_device_and_data_contract_errors(tmp_path, monkeypa
         )
 
 
-def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch):
+def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
     schema = TrainingSchema(
         serialization_format="test",
         sample_schema_version=1,
@@ -1391,6 +1393,7 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch):
         raw_data_dir=tmp_path / "configured-data",
         output_dir=tmp_path / "configured-output",
         job_tag="black_mage",
+        model_variant="artzip",
         max_epochs=2,
         model=ModelConfig(d_model=8, pair_embedding_dim=4, n_layers=1, n_heads=2, ff_dim=16),
     )
@@ -1412,6 +1415,10 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch):
     assert result["last_val_metrics"]["val_ppg"] == pytest.approx(900.0)
     assert result["output_dir"] == tmp_path / "override-output"
     assert calls["vocab_job_tag"] == "black_mage"
+    assert any(
+        "模型: job=black_mage model_variant=artzip" in record.getMessage()
+        for record in caplog.records
+    )
     assert [entry[0].name for entry in calls["checkpoints"]] == [
         "epoch_001_val_ppg_700.00.pt",
         "best.pt",
@@ -1440,10 +1447,11 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch):
         {
             "epoch": 1,
             "model_state_dict": resume_model.state_dict(),
-            "optimizer_state_dict": resume_optimizer.state_dict(),
-            "model_config": asdict(config.model),
-            "data_spec": asdict(DataSpec.from_dataset(dataset)),
-            "input_contract": resume_input_contract.to_dict(),
+                "optimizer_state_dict": resume_optimizer.state_dict(),
+                "model_config": asdict(config.model),
+                "data_spec": asdict(DataSpec.from_dataset(dataset)),
+                "model_variant": "artzip",
+                "input_contract": resume_input_contract.to_dict(),
             "training_precision": config.precision,
             "metrics": {
                 "loss": 1.0,
