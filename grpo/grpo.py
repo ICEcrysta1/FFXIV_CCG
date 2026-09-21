@@ -25,6 +25,7 @@ from common.policy.config import (
     resolve_policy_device,
     resolve_policy_model_config_path,
     resolve_policy_model_job_tag,
+    resolve_policy_model_variant,
 )
 from grpo.config import load_grpo_config, load_grpo_run_config
 from grpo.trainer import run_grpo_training
@@ -120,6 +121,7 @@ def main() -> None:
     config = replace(
         config,
         job_tag=resolve_policy_model_job_tag(config_path),
+        model_variant=resolve_policy_model_variant(config_path),
         **(
             {"raw_data_dir": resolve_project_path(args.raw_data_dir, project_root=PROJECT_ROOT)}
             if args.raw_data_dir is not None

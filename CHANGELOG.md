@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### Changed
+
+- 训练程序化入口在模型初始化前统一拒绝缺失或空白的 `model_variant`，避免日志输出 `None` 与保存端校验时机不一致，并补充入口负例测试。
+- 补充 ONNX manifest 的 `contract`、`model`、`capacity`、`history_capacity` 缺失字段负例测试；训练模型初始化与完成日志输出 `model_variant`，便于区分多变体训练。
+- 新增 `FFXIV_MODEL_VARIANT` 配置：`FFXIV_JOB_TAG` 选择职业，`FFXIV_MODEL_VARIANT` 选择职业目录下的模型变体；训练、转换、回放、模型分析、GRPO 和 ONNX 流程统一解析 `config/models/<job_tag>/<variant>/config.yaml`，不再依赖职业目录下唯一变体自动扫描。
+- 统一显式职业与模型变体参数的空值语义；checkpoint、GRPO checkpoint 和 ONNX manifest 记录并校验 `model_variant`，禁止同职业不同变体的模型产物混用，并将 ONNX manifest 升级到 v7。
+
+- 保存 checkpoint 前强制要求 `model_variant` 非空；补充 ONNX manifest 变体不匹配、resume 变体不匹配和直接保存契约测试，旧 manifest 缺少变体时提示重新导出。
+- 修复 ONNX manifest 缺少 `contract`、`job_tag` 或其他路由字段时被错误归因成缺少 `model_variant` 的诊断问题，并补充实际缺失字段回归测试。
+
 ## [0.1.0] - 2026-09-21
 
 ### Added

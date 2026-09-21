@@ -36,3 +36,4 @@ def pytest_configure(config):
 def project_job_tag(monkeypatch):
     """为测试显式提供项目统一职业标签。"""
     monkeypatch.setenv("FFXIV_JOB_TAG", "black_mage")
+    monkeypatch.setenv("FFXIV_MODEL_VARIANT", "artzip")

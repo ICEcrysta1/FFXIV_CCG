@@ -25,6 +25,7 @@ class StubRunConfig:
     raw_data_dir: Path
     output_dir: Path
     job_tag: str | None
+    model_variant: str | None = None
 
 
 def _install_fake_training_modules(monkeypatch):
@@ -147,6 +148,7 @@ def test_train_main_forwards_cli_overrides(monkeypatch, caplog, tmp_path):
     monkeypatch.setattr(train_cli, "resolve_policy_model_config_path", resolve_config)
     monkeypatch.setattr(train_cli, "load_run_config", load_config)
     monkeypatch.setattr(train_cli, "resolve_policy_model_job_tag", resolve_job_tag)
+    monkeypatch.setattr(train_cli, "resolve_policy_model_variant", lambda _path: "artzip")
     monkeypatch.setattr(train_cli, "resolve_policy_device", resolve_device)
     monkeypatch.setattr(train_cli, "run_training", fake_run_training)
     monkeypatch.setattr(train_cli, "_prepare_training_caches", fake_prepare_training_caches)
@@ -196,7 +198,10 @@ def test_train_main_forwards_cli_overrides(monkeypatch, caplog, tmp_path):
         "device_name": "cuda:0",
         "resume_path": tmp_path / "epoch_009.pt",
     }
-    assert any("训练完成: job=black_mage" in record.getMessage() for record in caplog.records)
+    assert any(
+        "训练完成: job=black_mage model_variant=artzip" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_train_main_uses_config_and_environment_defaults(monkeypatch):
@@ -226,6 +231,7 @@ def test_train_main_uses_config_and_environment_defaults(monkeypatch):
     monkeypatch.setattr(train_cli, "resolve_policy_model_config_path", resolve_config)
     monkeypatch.setattr(train_cli, "load_run_config", lambda path: loaded_config)
     monkeypatch.setattr(train_cli, "resolve_policy_model_job_tag", resolve_job_tag)
+    monkeypatch.setattr(train_cli, "resolve_policy_model_variant", lambda _path: "artzip")
     monkeypatch.setattr(train_cli, "resolve_policy_device", resolve_device)
 
     def fake_run_training(config, **kwargs):

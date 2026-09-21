@@ -140,7 +140,12 @@ def test_load_root_dotenv_uses_python_dotenv_parser(monkeypatch, tmp_path: Path)
 def test_checkpoint_exposes_job_tag_at_top_level(tmp_path: Path):
     model = torch.nn.Linear(1, 1)
     optimizer = torch.optim.AdamW(model.parameters())
-    config = RunConfig(raw_data_dir=tmp_path, output_dir=tmp_path, job_tag=None)
+    config = RunConfig(
+        raw_data_dir=tmp_path,
+        output_dir=tmp_path,
+        job_tag=None,
+        model_variant="artzip",
+    )
     data_spec = DataSpec(
         job_tag="black_mage",
         num_candidates=1,
@@ -182,6 +187,7 @@ def test_checkpoint_exposes_job_tag_at_top_level(tmp_path: Path):
     payload = safe_torch_load(checkpoint_path)
 
     assert payload["job_tag"] == "black_mage"
+    assert payload["model_variant"] == "artzip"
     assert payload["data_spec"]["job_tag"] == "black_mage"
 
 
@@ -936,6 +942,7 @@ def test_model_analysis_attention_output_and_main(monkeypatch, tmp_path):
     )
     output_dir = tmp_path / "main-output"
     output_dir.mkdir(parents=True)
+    torch.save({"model_variant": "artzip"}, tmp_path / "best.pt")
     monkeypatch.setattr(analysis_main, "resolve_policy_model_config_path", lambda _path: tmp_path / "config.yaml")
     monkeypatch.setattr(analysis_main, "resolve_policy_checkpoint_path", lambda _path: tmp_path / "best.pt")
     monkeypatch.setattr(analysis_main, "load_run_config", lambda _path: SimpleNamespace(
@@ -947,6 +954,7 @@ def test_model_analysis_attention_output_and_main(monkeypatch, tmp_path):
         precision="float32",
     ))
     monkeypatch.setattr(analysis_main, "resolve_policy_model_job_tag", lambda _path: "black_mage")
+    monkeypatch.setattr(analysis_main, "resolve_policy_model_variant", lambda _path: "artzip")
     monkeypatch.setattr(analysis_main, "resolve_policy_cache_dir", lambda _job: tmp_path / ".cache")
     analysis_context_calls = []
     monkeypatch.setattr(

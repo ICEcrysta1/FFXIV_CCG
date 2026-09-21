@@ -142,6 +142,7 @@ class GrpoRunConfig:
     raw_data_dir: Path
     output_dir: Path
     job_tag: str | None
+    model_variant: str | None = None
     seed: int = 42
     precision: str = "float32"
     compiled_cache_shard_size: int = 512

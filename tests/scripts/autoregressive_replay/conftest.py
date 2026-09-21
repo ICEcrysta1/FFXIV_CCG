@@ -26,6 +26,7 @@ def prepare_replay_files(monkeypatch, tmp_path):
     torch.save(
         {
             "job_tag": "black_mage",
+            "model_variant": "artzip",
             "data_spec": {"job_tag": "black_mage"},
         },
         checkpoint,

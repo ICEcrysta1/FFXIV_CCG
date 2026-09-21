@@ -54,6 +54,7 @@ class RunConfig:
     raw_data_dir: Path
     output_dir: Path
     job_tag: str | None
+    model_variant: str | None = None
     batch_size: int = 32
     max_epochs: int = 50
     history_truncation_enabled: bool = False

@@ -13,6 +13,7 @@ from common.policy.config import (
     resolve_policy_cache_dir,
     resolve_policy_model_config_path,
     resolve_policy_model_job_tag,
+    resolve_policy_model_variant,
 )
 from training.config import load_run_config
 
@@ -51,6 +52,7 @@ def main() -> None:
     model_config_path = resolve_policy_model_config_path()
     run_config = load_run_config(model_config_path)
     configured_job_tag = resolve_policy_model_job_tag(model_config_path)
+    resolve_policy_model_variant(model_config_path)
     resolved_job_tag = resolve_convert_fflogs_job_tag(args.job_tag)
     if configured_job_tag != resolved_job_tag:
         raise ValueError(

@@ -205,6 +205,7 @@ def _build_package(
     )
     input_contract = ModelInputContract.from_checkpoint(checkpoint)
     model_config = _required_mapping(checkpoint, "model_config")
+    model_variant = _required_text(checkpoint, "model_variant")
     checkpoint_history_capacity = int(model_config.get("history_capacity", -1))
     if checkpoint_history_capacity < 1:
         raise ValueError("checkpoint.model_config.history_capacity must be >= 1")
@@ -444,6 +445,7 @@ def _build_package(
         },
         "model": {
             "filename": model_path.name,
+            "model_variant": model_variant,
             "sha256": file_sha256(model_path),
             "size_bytes": model_path.stat().st_size,
             "external_data": bool(external_files),
@@ -699,6 +701,13 @@ def _required_mapping(payload: Mapping[str, object], key: str) -> Mapping[str, o
     if not isinstance(value, Mapping):
         raise ValueError(f"checkpoint missing {key}")
     return value
+
+
+def _required_text(payload: Mapping[str, object], key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"checkpoint missing {key}")
+    return value.strip()
 
 
 def _publish_directory(temp_dir: Path, output_dir: Path, *, overwrite: bool) -> None:

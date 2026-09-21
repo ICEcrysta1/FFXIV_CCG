@@ -14,7 +14,10 @@ from common.policy.config import (
     resolve_policy_checkpoint_path,
     resolve_policy_model_config_path,
     resolve_policy_model_job_tag,
+    resolve_policy_model_variant,
+    validate_policy_model_variant,
 )
+from common.torch_serialization import safe_torch_load
 from training.config import load_run_config
 
 from .common import (
@@ -94,6 +97,15 @@ def main() -> None:
     checkpoint_path = args.checkpoint or resolve_policy_checkpoint_path(model_config_path)
     run_config = load_run_config(model_config_path)
     job_tag = resolve_policy_model_job_tag(model_config_path)
+    model_variant = resolve_policy_model_variant(model_config_path)
+    checkpoint_payload = safe_torch_load(checkpoint_path)
+    if not isinstance(checkpoint_payload, dict):
+        raise ValueError(f"checkpoint must be a mapping: {checkpoint_path}")
+    validate_policy_model_variant(
+        checkpoint_payload,
+        model_variant,
+        artifact_name="checkpoint",
+    )
     raw_root = run_config.raw_data_dir
     cache_dir = resolve_policy_cache_dir(job_tag)
     device_name = "cuda" if args.device == "auto" else args.device

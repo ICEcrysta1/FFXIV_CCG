@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ffxiv-ccg.local/schemas/onnx-manifest-v6.json",
+  "$id": "https://ffxiv-ccg.local/schemas/onnx-manifest-v7.json",
   "title": "FFXIV_CCG ONNX Deployment Manifest",
   "type": "object",
   "additionalProperties": false,
@@ -21,7 +21,7 @@
       "const": "manifest.schema.json"
     },
     "manifest_version": {
-      "const": 6
+      "const": 7
     },
     "format": {
       "const": "onnx"
@@ -484,6 +484,7 @@
       "additionalProperties": false,
       "required": [
         "filename",
+        "model_variant",
         "sha256",
         "size_bytes",
         "external_data",
@@ -504,6 +505,10 @@
       "properties": {
         "filename": {
           "type": "string"
+        },
+        "model_variant": {
+          "type": "string",
+          "minLength": 1
         },
         "sha256": {
           "$ref": "#/$defs/sha256"

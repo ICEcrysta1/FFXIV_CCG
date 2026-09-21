@@ -13,7 +13,11 @@ import torch
 
 from common.torch_serialization import safe_torch_load
 from common.torch_runtime import autocast_context, move_batch
-from common.policy.config import resolve_policy_cache_dir, resolve_policy_grpo_dir
+from common.policy.config import (
+    resolve_policy_cache_dir,
+    resolve_policy_grpo_dir,
+    validate_policy_model_variant,
+)
 from common.policy.data import DataSpec
 from common.policy.model.repetition import (
     apply_repetition_penalty,
@@ -537,6 +541,10 @@ def _save_grpo_checkpoint(
     metrics: Mapping[str, float],
 ) -> None:
     """保存可被现有 replay/ONNX 流程读取的自描述 GRPO checkpoint。"""
+    model_variant = getattr(config, "model_variant", None)
+    if not isinstance(model_variant, str) or not model_variant.strip():
+        raise ValueError("GRPO checkpoint model_variant must be configured before saving")
+    model_variant = model_variant.strip()
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "epoch": int(iteration),
@@ -548,6 +556,7 @@ def _save_grpo_checkpoint(
         "model_config": asdict(config.model),
         "data_spec": asdict(data_spec),
         "job_tag": data_spec.job_tag,
+        "model_variant": model_variant,
         "input_contract": input_contract.to_dict(),
         "training_precision": precision,
         "run_config": asdict(config),
@@ -643,6 +652,12 @@ def run_grpo_training(
     data_spec = backend.data_spec
     input_contract = backend.input_contract
     model = backend.model
+    if config.model_variant is not None:
+        validate_policy_model_variant(
+            backend.checkpoint,
+            config.model_variant,
+            artifact_name="GRPO checkpoint",
+        )
     model_config = model.config
     if asdict(model_config) != asdict(config.model):
         raise ValueError(
@@ -675,6 +690,7 @@ def run_grpo_training(
         max_history=config.model.history_capacity,
         device=device_name,
         job_tag=data_spec.job_tag,
+        model_variant=config.model_variant,
         initial_action=None,
         use_kv_cache=False,
         backend="pytorch",

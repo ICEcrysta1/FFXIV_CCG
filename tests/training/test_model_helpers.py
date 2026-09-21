@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from dataclasses import asdict, replace
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,6 +13,7 @@ import torch
 from torch import nn
 import yaml
 
+import common.project_config as project_config_module
 from common.torch_runtime import autocast_context, model_dtype, move_batch
 from common.torch_serialization import safe_torch_load
 from scripts.convert_fflogs import cache as cache_module
@@ -193,7 +195,7 @@ def test_load_run_config_rejects_enabled_removed_scorer_switch_aliases(
         )
 
 
-def test_policy_config_resolvers_select_job_from_env_and_cover_path_branches(monkeypatch, tmp_path):
+def test_policy_config_resolvers_select_job_and_variant_from_env_and_cover_path_branches(monkeypatch, tmp_path):
     config_path = _write_config(
         tmp_path,
         {"raw_data_dir": "data", "output_dir": "artifacts/checkpoints"},
@@ -202,6 +204,7 @@ def test_policy_config_resolvers_select_job_from_env_and_cover_path_branches(mon
     assert policy_config_module.resolve_policy_model_config_path(config_path) == config_path.resolve()
 
     monkeypatch.setenv(policy_config_module.PROJECT_JOB_TAG_ENV, "black_mage")
+    monkeypatch.setenv(policy_config_module.PROJECT_MODEL_VARIANT_ENV, "artzip")
     selected_config = policy_config_module.resolve_policy_model_config_path()
     assert selected_config == (
         policy_config_module.PROJECT_ROOT
@@ -212,6 +215,7 @@ def test_policy_config_resolvers_select_job_from_env_and_cover_path_branches(mon
 
     black_mage_config = selected_config
     assert policy_config_module.resolve_policy_model_job_tag(black_mage_config) == "black_mage"
+    assert policy_config_module.resolve_policy_model_variant(black_mage_config) == "artzip"
 
     with pytest.raises(ValueError, match="must live under"):
         policy_config_module.resolve_policy_model_job_tag(tmp_path / "config.yaml")
@@ -240,6 +244,44 @@ def test_policy_config_resolvers_select_job_from_env_and_cover_path_branches(mon
         "model.pt",
     )
     assert relative_checkpoint.name == "model.pt"
+
+
+@pytest.mark.parametrize("resolver_name", ["resolve_project_job_tag", "resolve_project_model_variant"])
+def test_project_resolvers_reject_explicit_blank_instead_of_falling_back(
+    monkeypatch,
+    tmp_path,
+    resolver_name,
+):
+    monkeypatch.setenv("FFXIV_JOB_TAG", "black_mage")
+    monkeypatch.setenv("FFXIV_MODEL_VARIANT", "artzip")
+
+    resolver = getattr(project_config_module, resolver_name)
+    with pytest.raises(ValueError, match="missing"):
+        resolver(project_root=tmp_path, explicit="  ")
+
+
+def test_policy_config_resolver_requires_model_variant(monkeypatch):
+    """未指定模型变体时不得回退到目录扫描。"""
+    monkeypatch.setattr(policy_config_module, "load_root_dotenv", lambda _root: None)
+    monkeypatch.setattr(project_config_module, "load_root_dotenv", lambda _root: None)
+    monkeypatch.setenv(policy_config_module.PROJECT_JOB_TAG_ENV, "black_mage")
+    monkeypatch.delenv(policy_config_module.PROJECT_MODEL_VARIANT_ENV, raising=False)
+
+    with pytest.raises(
+        ValueError,
+        match="missing FFXIV_MODEL_VARIANT",
+    ):
+        policy_config_module.resolve_policy_model_config_path()
+
+
+@pytest.mark.parametrize("invalid_variant", [".", "..", "nested/artzip", "C:/artzip"])
+def test_policy_config_resolver_rejects_variant_path(monkeypatch, invalid_variant):
+    """模型变体只能是职业目录下的单级目录名。"""
+    monkeypatch.setenv(policy_config_module.PROJECT_JOB_TAG_ENV, "black_mage")
+    monkeypatch.setenv(policy_config_module.PROJECT_MODEL_VARIANT_ENV, invalid_variant)
+
+    with pytest.raises(ValueError, match="single model variant directory name"):
+        policy_config_module.resolve_policy_model_config_path()
 
 
 def test_load_run_config_parses_ppg_settings(tmp_path):
@@ -968,7 +1010,7 @@ def test_training_helpers_and_epoch_metrics(tmp_path, monkeypatch):
         model,
         optimizer,
         1,
-        config,
+        replace(config, model_variant="artzip"),
         spec,
         validation_metrics,
         input_contract=input_contract,
@@ -976,8 +1018,25 @@ def test_training_helpers_and_epoch_metrics(tmp_path, monkeypatch):
     saved = safe_torch_load(checkpoint)
     assert saved["epoch"] == 1
     assert saved["job_tag"] == "black_mage"
+    assert saved["model_variant"] == "artzip"
     assert saved["data_spec"]["num_candidates"] == 2
     assert saved["input_contract"]["normalizer"]["config"]["fight_time_max"] == 1800.0
+
+
+def test_checkpoint_save_rejects_missing_model_variant(tmp_path):
+    config = RunConfig(raw_data_dir=tmp_path, output_dir=tmp_path, job_tag=None)
+
+    with pytest.raises(ValueError, match="checkpoint model_variant must be configured"):
+        training_module._save_checkpoint(
+            tmp_path / "checkpoint.pt",
+            None,
+            None,
+            1,
+            config,
+            None,
+            {},
+            input_contract=None,
+        )
 
 
 def test_select_training_raw_paths_covers_grouped_selection_branches(tmp_path):
@@ -1182,7 +1241,12 @@ def test_resolve_training_loss_and_autocast_success_paths(monkeypatch):
 
 
 def test_run_training_rejects_device_and_data_contract_errors(tmp_path, monkeypatch):
-    config = RunConfig(raw_data_dir=tmp_path, output_dir=tmp_path, job_tag="black_mage")
+    config = RunConfig(
+        raw_data_dir=tmp_path,
+        output_dir=tmp_path,
+        job_tag="black_mage",
+        model_variant="artzip",
+    )
     monkeypatch.setattr(training_module.torch.cuda, "is_available", lambda: False)
     with pytest.raises(RuntimeError, match="CUDA is required"):
         training_module.run_training(config, raw_paths=[tmp_path / "one.json"], device_name="cuda")
@@ -1216,7 +1280,31 @@ def test_run_training_rejects_device_and_data_contract_errors(tmp_path, monkeypa
         )
 
 
-def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch):
+@pytest.mark.parametrize("model_variant", [None, "  "])
+def test_run_training_rejects_missing_model_variant_before_loading_data(
+    tmp_path,
+    model_variant,
+):
+    config = RunConfig(
+        raw_data_dir=tmp_path,
+        output_dir=tmp_path,
+        job_tag="black_mage",
+        model_variant=model_variant,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="training model_variant must be configured before initialization",
+    ):
+        training_module.run_training(
+            config,
+            raw_paths=[tmp_path / "prepared.json"],
+            device_name="cpu",
+        )
+
+
+def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
     schema = TrainingSchema(
         serialization_format="test",
         sample_schema_version=1,
@@ -1333,6 +1421,7 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch):
         raw_data_dir=tmp_path / "configured-data",
         output_dir=tmp_path / "configured-output",
         job_tag="black_mage",
+        model_variant="artzip",
         max_epochs=2,
         model=ModelConfig(d_model=8, pair_embedding_dim=4, n_layers=1, n_heads=2, ff_dim=16),
     )
@@ -1354,6 +1443,10 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch):
     assert result["last_val_metrics"]["val_ppg"] == pytest.approx(900.0)
     assert result["output_dir"] == tmp_path / "override-output"
     assert calls["vocab_job_tag"] == "black_mage"
+    assert any(
+        "模型: job=black_mage model_variant=artzip" in record.getMessage()
+        for record in caplog.records
+    )
     assert [entry[0].name for entry in calls["checkpoints"]] == [
         "epoch_001_val_ppg_700.00.pt",
         "best.pt",
@@ -1382,10 +1475,11 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch):
         {
             "epoch": 1,
             "model_state_dict": resume_model.state_dict(),
-            "optimizer_state_dict": resume_optimizer.state_dict(),
-            "model_config": asdict(config.model),
-            "data_spec": asdict(DataSpec.from_dataset(dataset)),
-            "input_contract": resume_input_contract.to_dict(),
+                "optimizer_state_dict": resume_optimizer.state_dict(),
+                "model_config": asdict(config.model),
+                "data_spec": asdict(DataSpec.from_dataset(dataset)),
+                "model_variant": "artzip",
+                "input_contract": resume_input_contract.to_dict(),
             "training_precision": config.precision,
             "metrics": {
                 "loss": 1.0,
@@ -1480,6 +1574,7 @@ def _resume_validation_context(tmp_path: Path, *, max_epochs: int = 3):
         raw_data_dir=tmp_path / "raw",
         output_dir=tmp_path / "output",
         job_tag="black_mage",
+        model_variant="artzip",
         max_epochs=max_epochs,
         model=ModelConfig(d_model=8, pair_embedding_dim=4, n_layers=1, n_heads=2, ff_dim=16),
     )
@@ -1496,6 +1591,7 @@ def _resume_validation_context(tmp_path: Path, *, max_epochs: int = 3):
         "optimizer_state_dict": optimizer.state_dict(),
         "model_config": asdict(config.model),
         "data_spec": asdict(data_spec),
+        "model_variant": "artzip",
         "input_contract": input_contract.to_dict(),
         "training_precision": config.precision,
         "metrics": {
@@ -1548,6 +1644,35 @@ def test_validate_resume_checkpoint_rejects_contract_mismatches(
         checkpoint[field] = {**checkpoint[field], **value}
     else:
         checkpoint[field] = value
+
+    with pytest.raises(ValueError, match=message):
+        training_module._validate_resume_checkpoint(
+            checkpoint,
+            data_spec=context.data_spec,
+            dataset=context.dataset,
+            config=context.config,
+            input_contract=context.input_contract,
+        )
+
+
+@pytest.mark.parametrize(
+    ("model_variant", "message"),
+    [
+        (None, "resume checkpoint missing model_variant"),
+        ("other_variant", "resume checkpoint model variant mismatch"),
+    ],
+)
+def test_validate_resume_checkpoint_rejects_model_variant_mismatch(
+    tmp_path,
+    model_variant,
+    message,
+):
+    context = _resume_validation_context(tmp_path)
+    checkpoint = dict(context.checkpoint)
+    if model_variant is None:
+        checkpoint.pop("model_variant")
+    else:
+        checkpoint["model_variant"] = model_variant
 
     with pytest.raises(ValueError, match=message):
         training_module._validate_resume_checkpoint(

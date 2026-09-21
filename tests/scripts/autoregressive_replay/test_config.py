@@ -15,7 +15,7 @@ def test_replay_config_loads_dotenv_before_resolving_backend(monkeypatch, tmp_pa
     package = tmp_path / "deployment"
     package.mkdir()
     (package / "manifest.json").write_text(
-        '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":384}}}',
+        '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":384}},"model":{"model_variant":"artzip"}}',
         encoding="utf-8",
     )
     scene = tmp_path / "scene.json"
@@ -66,7 +66,14 @@ def test_replay_config_reads_env_overrides(monkeypatch, tmp_path):
 
     checkpoint = tmp_path / "model.pt"
     scene = tmp_path / "scene.json"
-    torch.save({"job_tag": "black_mage", "data_spec": {"job_tag": "black_mage"}}, checkpoint)
+    torch.save(
+        {
+            "job_tag": "black_mage",
+            "model_variant": "artzip",
+            "data_spec": {"job_tag": "black_mage"},
+        },
+        checkpoint,
+    )
     scene.write_text("{}", encoding="utf-8", newline="\n")
     config = load_replay_config()
 
@@ -97,6 +104,19 @@ def test_replay_config_enables_kv_cache_by_default(monkeypatch, tmp_path, prepar
     assert config.use_kv_cache is True
 
 
+def test_replay_config_rejects_checkpoint_model_variant_mismatch(
+    monkeypatch,
+    prepare_replay_files,
+):
+    checkpoint, _scene = prepare_replay_files
+    payload = torch.load(checkpoint, weights_only=False)
+    payload["model_variant"] = "other_variant"
+    torch.save(payload, checkpoint)
+
+    with pytest.raises(ValueError, match="checkpoint model_variant"):
+        load_replay_config()
+
+
 def test_replay_config_allows_explicit_float32_cpu_analysis(monkeypatch, tmp_path, prepare_replay_files):
     config = load_replay_config(
         device="cpu",
@@ -111,7 +131,7 @@ def test_replay_config_routes_onnx_job_from_manifest(monkeypatch, tmp_path):
     package = tmp_path / "deployment"
     package.mkdir()
     (package / "manifest.json").write_text(
-        '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":384}}}',
+        '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":384}},"model":{"model_variant":"artzip"}}',
         encoding="utf-8",
     )
     scene = tmp_path / "scene.json"
@@ -142,7 +162,7 @@ def test_replay_config_rejects_onnx_job_mismatch(monkeypatch, tmp_path):
     package = tmp_path / "deployment"
     package.mkdir()
     (package / "manifest.json").write_text(
-        '{"contract":{"job_tag":"machinist","capacity":{"history_capacity":384}}}',
+        '{"contract":{"job_tag":"machinist","capacity":{"history_capacity":384}},"model":{"model_variant":"artzip"}}',
         encoding="utf-8",
     )
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_BACKEND", "onnxruntime")
@@ -150,6 +170,104 @@ def test_replay_config_rejects_onnx_job_mismatch(monkeypatch, tmp_path):
     monkeypatch.setenv("FFXIV_JOB_TAG", "black_mage")
 
     with pytest.raises(ValueError, match="ONNX job_tag"):
+        load_replay_config()
+
+
+def test_replay_config_rejects_onnx_model_variant_mismatch(monkeypatch, tmp_path):
+    package = tmp_path / "deployment"
+    package.mkdir()
+    (package / "manifest.json").write_text(
+        '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":384}},"model":{"model_variant":"other_variant"}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_BACKEND", "onnxruntime")
+    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE", str(package))
+    monkeypatch.setenv("FFXIV_JOB_TAG", "black_mage")
+
+    with pytest.raises(ValueError, match="ONNX model_variant"):
+        load_replay_config()
+
+
+def test_replay_config_reports_missing_onnx_model_variant_for_reexport(
+    monkeypatch,
+    tmp_path,
+):
+    package = tmp_path / "deployment"
+    package.mkdir()
+    (package / "manifest.json").write_text(
+        '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":384}},"model":{}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_BACKEND", "onnxruntime")
+    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE", str(package))
+    monkeypatch.setenv("FFXIV_JOB_TAG", "black_mage")
+
+    with pytest.raises(
+        ValueError,
+        match="missing model_variant; re-export the package",
+    ):
+        load_replay_config()
+
+
+def test_replay_config_reports_the_actual_missing_onnx_routing_field(
+    monkeypatch,
+    tmp_path,
+):
+    package = tmp_path / "deployment"
+    package.mkdir()
+    (package / "manifest.json").write_text(
+        '{"contract":{"capacity":{"history_capacity":384}},"model":{"model_variant":"artzip"}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_BACKEND", "onnxruntime")
+    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE", str(package))
+    monkeypatch.setenv("FFXIV_JOB_TAG", "black_mage")
+
+    with pytest.raises(
+        ValueError,
+        match="missing replay routing field 'job_tag'",
+    ):
+        load_replay_config()
+
+
+@pytest.mark.parametrize(
+    ("manifest", "missing_field"),
+    [
+        (
+            '{"model":{"model_variant":"artzip"}}',
+            "contract",
+        ),
+        (
+            '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":384}}}',
+            "model",
+        ),
+        (
+            '{"contract":{"job_tag":"black_mage"},"model":{"model_variant":"artzip"}}',
+            "capacity",
+        ),
+        (
+            '{"contract":{"job_tag":"black_mage","capacity":{}},"model":{"model_variant":"artzip"}}',
+            "history_capacity",
+        ),
+    ],
+)
+def test_replay_config_reports_each_missing_onnx_routing_field(
+    monkeypatch,
+    tmp_path,
+    manifest,
+    missing_field,
+):
+    package = tmp_path / "deployment"
+    package.mkdir()
+    (package / "manifest.json").write_text(manifest, encoding="utf-8")
+    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_BACKEND", "onnxruntime")
+    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE", str(package))
+    monkeypatch.setenv("FFXIV_JOB_TAG", "black_mage")
+
+    with pytest.raises(
+        ValueError,
+        match=rf"missing replay routing field '{missing_field}'",
+    ):
         load_replay_config()
 
 

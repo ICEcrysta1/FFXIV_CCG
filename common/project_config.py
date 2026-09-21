@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 
 PROJECT_JOB_TAG_ENV = "FFXIV_JOB_TAG"
+PROJECT_MODEL_VARIANT_ENV = "FFXIV_MODEL_VARIANT"
 
 
 def resolve_project_path(value: object, *, project_root: Path) -> Path:
@@ -35,15 +36,45 @@ def resolve_project_job_tag(
     explicit: str | None = None,
 ) -> str:
     """解析项目统一职业标签；显式参数优先，其次读取根目录 `.env`。"""
-    if explicit:
-        return str(explicit).strip()
-    load_root_dotenv(project_root)
-    value = os.environ.get(PROJECT_JOB_TAG_ENV)
-    if value:
-        return str(value).strip()
-    raise ValueError(
-        f"missing {PROJECT_JOB_TAG_ENV}; set it in the project .env"
-    )
+    value = explicit
+    if value is None:
+        load_root_dotenv(project_root)
+        value = os.environ.get(PROJECT_JOB_TAG_ENV)
+    if value is None or not str(value).strip():
+        raise ValueError(
+            f"missing {PROJECT_JOB_TAG_ENV}; set it in the project .env"
+        )
+    return str(value).strip()
+
+
+def resolve_project_model_variant(
+    *,
+    project_root: Path,
+    explicit: str | None = None,
+) -> str:
+    """解析策略模型变体目录名；显式参数优先，其次读取根目录 `.env`。"""
+    if explicit is None:
+        load_root_dotenv(project_root)
+        value = os.environ.get(PROJECT_MODEL_VARIANT_ENV)
+    else:
+        value = explicit
+    if value is None or not str(value).strip():
+        raise ValueError(
+            f"missing {PROJECT_MODEL_VARIANT_ENV}; set it in the project .env"
+        )
+
+    variant = str(value).strip()
+    variant_path = Path(variant)
+    if (
+        variant in {".", ".."}
+        or variant_path.is_absolute()
+        or len(variant_path.parts) != 1
+    ):
+        raise ValueError(
+            f"{PROJECT_MODEL_VARIANT_ENV} must be a single model variant directory name, "
+            f"got {variant!r}"
+        )
+    return variant
 
 
 def resolve_registered_job_tags(project_root: Path) -> tuple[str, ...]:

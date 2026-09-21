@@ -20,6 +20,7 @@ from common.policy.config import (
     resolve_policy_device,
     resolve_policy_model_config_path,
     resolve_policy_model_job_tag,
+    resolve_policy_model_variant,
 )
 from training.config import load_run_config
 from training.loop import run_training
@@ -94,6 +95,7 @@ def main() -> None:
     config = replace(
         load_run_config(config_path),
         job_tag=resolve_policy_model_job_tag(config_path),
+        model_variant=resolve_policy_model_variant(config_path),
         **({"raw_data_dir": args.raw_data_dir} if args.raw_data_dir is not None else {}),
     )
     raw_paths = _prepare_training_caches(config, args.max_files)
@@ -111,8 +113,9 @@ def main() -> None:
     result = run_training(config, **training_kwargs)
     spec = result["data_spec"]
     logging.info(
-        "训练完成: job=%s candidates=%d state_dim=%d scene_dim=%d skill_dim=%d output=%s",
+        "训练完成: job=%s model_variant=%s candidates=%d state_dim=%d scene_dim=%d skill_dim=%d output=%s",
         spec.job_tag,
+        config.model_variant,
         spec.num_candidates,
         spec.state_dim,
         spec.scene_dim,

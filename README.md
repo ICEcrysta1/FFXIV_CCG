@@ -223,7 +223,7 @@ python training/train.py --resume artifacts/checkpoints/black_mage/artzip_bc/epo
 | 参数 | 默认值/来源 | 说明 |
 |---|---|---|
 | `-h` / `--help` | — | 显示帮助并退出。 |
-| `--config PATH` | 根目录 `.env` 的 `FFXIV_JOB_TAG` 自动选择 `config/models/<job_tag>/*/config.yaml` | 指定模型配置清单。 |
+| `--config PATH` | 根目录 `.env` 的 `FFXIV_JOB_TAG` + `FFXIV_MODEL_VARIANT` 自动选择 `config/models/<job_tag>/<variant>/config.yaml` | 指定模型配置清单。 |
 | `--raw-data-dir DIR` | 模型 YAML 的 `raw_data_dir` | 覆盖 raw JSON 目录。 |
 | `--output-dir DIR` | 模型 YAML 的 `output_dir` | 覆盖 checkpoint 输出目录。 |
 | `--epochs N` | 当前配置 `8` | 覆盖训练轮数。 |
@@ -252,7 +252,7 @@ python -m grpo --checkpoint artifacts/checkpoints/black_mage/artzip_bc/best.pt -
 | 参数 | 当前生效值/来源 | 说明 |
 |---|---|---|
 | `-h` / `--help` | — | 显示帮助并退出。 |
-| `--config PATH` | `.env` 的 `FFXIV_JOB_TAG` 自动选择模型配置 | 指定模型配置清单。 |
+| `--config PATH` | `.env` 的 `FFXIV_JOB_TAG` + `FFXIV_MODEL_VARIANT` 自动选择模型配置 | 指定模型配置清单。 |
 | `--checkpoint PATH` | `TRAINING_MODEL_CHECKPOINT`，否则配置输出目录中的 `best.pt` | GRPO 初始 BC/GRPO checkpoint。 |
 | `--raw-data-dir DIR` | 模型 YAML 的 `raw_data_dir` | 覆盖真实训练场景目录。 |
 | `--max-files N` | 全部有效文件 | 限制用于 GRPO 的真实训练场景文件数，必须 `>=1`。 |
@@ -389,7 +389,7 @@ $env:RUN_REAL_ONNX_EXPORT="1"
 python -m pytest tests/scripts/onnx_export/test_real_checkpoint_padding.py -q
 ```
 
-该命令会真实读取职业 profile 与 checkpoint 的 `model_config` 容量，验证 vocab 行数与 `total_token_count == scene_capacity + history_capacity + candidate_count + 1`，并以 BF16/CUDA 执行完整 export/checker/ORT/padding 流程。manifest v6 统一容量契约（物理 token 总长按 `scene_capacity + history_capacity + candidate_count + 1` 换算，移除 `max_sequence_length`），与旧 v1-v5 部署包不兼容；升级后必须重新导出，loader 会给出明确的 `re-export` 错误。
+该命令会真实读取职业 profile 与 checkpoint 的 `model_config` 容量，验证 vocab 行数与 `total_token_count == scene_capacity + history_capacity + candidate_count + 1`，并以 BF16/CUDA 执行完整 export/checker/ORT/padding 流程。manifest v7 统一容量契约并记录 `model_variant`（物理 token 总长按 `scene_capacity + history_capacity + candidate_count + 1` 换算，移除 `max_sequence_length`），与旧 v1-v6 部署包不兼容；升级后必须重新导出，loader 会给出明确的 `re-export` 错误。
 
 模型小于 2 GiB 时强制使用单个 `model.onnx`；如果后续大模型需要 external data，manifest 会记录配套文件。部署包只包含推理权重和输入契约，不写入 checkpoint 中的 optimizer、scheduler 或随机状态。
 
@@ -403,7 +403,7 @@ python -m scripts.model_analysis --loss-landscape
 |---|---|---|
 | `-h` / `--help` | — | 显示帮助并退出。 |
 | `--checkpoint PATH` | 模型 YAML 输出目录中的 checkpoint | 模型 checkpoint。 |
-| `--model-config PATH` | 根目录 `.env` 的 `FFXIV_JOB_TAG` 自动选择 | 模型配置清单。 |
+| `--model-config PATH` | 根目录 `.env` 的 `FFXIV_JOB_TAG` + `FFXIV_MODEL_VARIANT` 自动选择 | 模型配置清单。 |
 | `--raw-json PATH` | 按训练 YAML 自动寻找 | 分析用 raw JSON；对应 compiled cache 缺失或过期时自动编译。 |
 | `--output DIR` | `artifacts/model_analysis` | 输出目录。 |
 | `--max-samples N` | `256` | 分析样本数；`<=0` 表示整份 compiled cache。 |
@@ -425,7 +425,8 @@ python -m scripts.model_analysis --loss-landscape
 复制 `.env.example` 为 `.env` 并按需修改:
 
 - `FFXIV_JOB_TAG` — 项目统一职业标签；转换、训练、模型分析、自回归回放和状态机路由共用
-- `config/models/<job_tag>/*/config.yaml` — 训练、模型分析和回放共用的配置清单；由 `.env` 的 `FFXIV_JOB_TAG` 自动选择，清单分别引用 `model.yaml`、`training.yaml` 和 `grpo.yaml`
+- `FFXIV_MODEL_VARIANT` — 模型变体目录名，例如 `artzip`；与 `FFXIV_JOB_TAG` 共同选择 `config/models/<job_tag>/<variant>/config.yaml`
+- `config/models/<job_tag>/<variant>/config.yaml` — 训练、模型分析和回放共用的配置清单；由 `.env` 的职业标签和模型变体共同选择，清单分别引用 `model.yaml`、`training.yaml` 和 `grpo.yaml`
 - `TRAINING_CACHE_ROOT` — compiled cache 根目录；默认 `data/human/job`
 - `TRAINING_MODEL_CHECKPOINT` — checkpoint 文件名
 - `TRAINING_DEVICE` — 训练设备 (cuda/cpu)
@@ -524,7 +525,7 @@ ScatterND with reduction=='none' only guarantees to be correct if indices are no
 
 普通 ORT 回放默认显式请求 `CUDAExecutionProvider`，并通过 ORT session 配置禁止节点静默回落 CPU；初始化或图分配失败会直接报错。`export_report.json` 分别记录请求链、ORT 注册链和 `ort_cpu_fallback_disabled`，避免把 ORT 自动显示的 CPU provider 误读为实际允许回落。
 
-当前 `scripts.autoregressive_replay` 是仓库内的状态机回放/验收入口，不是只携带 ONNX 部署包即可运行的独立宿主。即使选择 ORT backend，它仍会读取由 `FFXIV_JOB_TAG` 自动选择的配置清单及其 `model.yaml`、`training.yaml` 中的 raw 数据目录和 compiled cache 分片参数，并要求 `model.history_capacity` 与 manifest 一致。未来若向仓库外分发模型，需要另建只依赖 manifest 和宿主输入契约的部署运行时，不能直接复制本 CLI。
+当前 `scripts.autoregressive_replay` 是仓库内的状态机回放/验收入口，不是只携带 ONNX 部署包即可运行的独立宿主。即使选择 ORT backend，它仍会读取由 `FFXIV_JOB_TAG` 与 `FFXIV_MODEL_VARIANT` 共同选择的配置清单及其 `model.yaml`、`training.yaml` 中的 raw 数据目录和 compiled cache 分片参数，并要求 `model.history_capacity` 与 manifest 一致。未来若向仓库外分发模型，需要另建只依赖 manifest 和宿主输入契约的部署运行时，不能直接复制本 CLI。
 
 ### 仅通过 `.env` 配置的参数
 
@@ -532,8 +533,9 @@ ScatterND with reduction=='none' only guarantees to be correct if indices are no
 
 | `.env` 参数 | 默认值 | 用法与约束 |
 |---|---|---|
-| `FFXIV_JOB_TAG` | 项目职业配置 | 状态机职业，并自动选择 `config/skills/<job_tag>.yaml`、`config/models/<job_tag>/*/config.yaml`；checkpoint、manifest 和 scene/cache 的职业必须与它一致。 |
-| `config/models/<job_tag>/*/config.yaml` | 按 `FFXIV_JOB_TAG` 自动选择 | 配置清单；`model.yaml` 提供 raw/output、模型架构和统一 precision，`training.yaml` 提供训练/DataLoader/增强/序列过采样，`grpo.yaml` 提供 GRPO 采样与更新参数。PT/ORT 回放共用合并后的视图，避免生成两套 cache 签名。 |
+| `FFXIV_JOB_TAG` | 项目职业配置 | 状态机职业，并选择 `config/skills/<job_tag>.yaml`；模型配置目录由它与 `FFXIV_MODEL_VARIANT` 共同确定，checkpoint、manifest 和 scene/cache 的职业必须与它一致。 |
+| `FFXIV_MODEL_VARIANT` | `artzip`（`.env.example`） | 模型变体目录名，例如 `artzip`；与 `FFXIV_JOB_TAG=black_mage` 组合后解析为 `config/models/black_mage/artzip/config.yaml`。 |
+| `config/models/<job_tag>/<variant>/config.yaml` | 按 `FFXIV_JOB_TAG` + `FFXIV_MODEL_VARIANT` 自动选择 | 配置清单；`model.yaml` 提供 raw/output、模型架构和统一 precision，`training.yaml` 提供训练/DataLoader/增强/序列过采样，`grpo.yaml` 提供 GRPO 采样与更新参数。PT/ORT 回放共用合并后的视图，避免生成两套 cache 签名。 |
 | `TRAINING_MODEL_CHECKPOINT` | `.env.example` 为 `best.pt` | `AUTOREGRESSIVE_REPLAY_CHECKPOINT` 和 `--checkpoint` 都未设置时，用于从训练配置的 `output_dir` 选择 checkpoint；相对路径相对该输出目录解析。 |
 | `TRAINING_DEVICE` | `cuda` | `AUTOREGRESSIVE_REPLAY_DEVICE` 和 `--device` 都未设置时，作为 PyTorch 回放设备。不会控制 ORT EP。 |
 | `AUTOREGRESSIVE_REPLAY_INITIAL_ACTION` | `fire_iii` | 模型开始预测前强制执行的首步技能；设为空字符串则不强制首步。输出 Markdown 会把它标记为“强制”。 |

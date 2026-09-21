@@ -25,7 +25,7 @@ from .tensor_runtime import GOLDEN_FORMAT, golden_encoding
 
 # 候选合法性与 Sidecar 执行语义变化后，旧导出包不得继续被部署侧接受。
 DEPLOYMENT_CONTRACT_VERSION = 9
-DEPLOYMENT_MANIFEST_VERSION = 6
+DEPLOYMENT_MANIFEST_VERSION = 7
 MANIFEST_SCHEMA_FILENAME = "manifest.schema.json"
 
 
