@@ -51,8 +51,8 @@ def test_parity_fixed_capacity_batch_stays_on_reference_device(tmp_path):
         _require_tensor,
     )
     from scripts.onnx_export import CapacityContract, TENSOR_INPUT_NAMES
-    from scripts.onnx_export.contract import make_inputs, slice_dynamic_inputs
-    from scripts.onnx_export.deployment_contract import TensorSpec
+    from scripts.onnx_export.contracts.contract import make_inputs, slice_dynamic_inputs
+    from scripts.onnx_export.contracts.deployment_contract import TensorSpec
 
     checkpoint = tmp_path / "model.pt"
     data_spec, _input_contract = _write_small_checkpoint(checkpoint)

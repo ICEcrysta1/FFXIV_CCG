@@ -6,14 +6,14 @@ from dataclasses import asdict, dataclass
 
 import torch
 
-from .contract import (
+from ..contracts.contract import (
     CapacityContract,
     TENSOR_INPUT_NAMES,
     fill_padding_values,
     make_inputs,
     slice_dynamic_inputs,
 )
-from .policy import _build_batch
+from ..policy.policy import _build_batch
 from .precision import precision_tolerances
 from .tensor_runtime import run_ort_tensors
 

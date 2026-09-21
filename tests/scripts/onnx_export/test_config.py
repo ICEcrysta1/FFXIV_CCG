@@ -8,15 +8,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from scripts.onnx_export.config import (
+from scripts.onnx_export.config.config import (
     derive_onnx_output_dir,
     load_export_config,
     load_parity_config,
 )
 from scripts.onnx_export import __main__ as export_main
 from scripts.onnx_export import workflow
-from scripts.onnx_export.release_policy import minimum_empty_action_budget
-from scripts.onnx_export.runtime_targets import (
+from scripts.onnx_export.release.policy import minimum_empty_action_budget
+from scripts.onnx_export.runtime.runtime_targets import (
     BF16_TARGET_ONNX_VERSION,
     BF16_TARGET_ONNXSCRIPT_VERSION,
     BF16_TARGET_ORT_VERSION,
@@ -97,7 +97,7 @@ def test_parity_config_reads_dedicated_env(monkeypatch, tmp_path):
 
 def test_parity_config_derives_default_empty_action_budget(monkeypatch):
     monkeypatch.setattr(
-        "scripts.onnx_export.config.load_root_dotenv",
+        "scripts.onnx_export.config.config.load_root_dotenv",
         lambda _root: None,
     )
     for name in (

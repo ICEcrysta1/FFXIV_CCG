@@ -398,7 +398,7 @@ Sidecar JSON Lines 请求示例：
 | `config/models/black_mage/artzip/candidate_order.yaml` | `candidate_order` | 保持 1..25 和现有相对顺序；第 1 项 `ogcd_wait` 改由 policy registry 验证。 |
 | `config/models/black_mage/artzip/training.yaml` | oversampling 注释/候选相关配置 | 更新 wait 为 policy control 的说明，其他用户正在试验的模型参数不得被覆盖。模型架构与精度位于同目录 `model.yaml`，GRPO 参数位于 `grpo.yaml`。 |
 | `common/models.py` | `StateSnapshot.ogcd_wait_boundary_pending`、clone | 删除 Sidecar 镜像字段。 |
-| `scripts/onnx_export/deployment_contract.py` | `DEPLOYMENT_CONTRACT_VERSION` | 同步新的历史/决策时间语义。 |
+| `scripts/onnx_export/contracts/deployment_contract.py` | `DEPLOYMENT_CONTRACT_VERSION` | 同步新的历史/决策时间语义。 |
 | `scripts/onnx_export/manifest.schema.json` | contract 常量/schema | 同步 deployment contract。 |
 | `scripts/onnx_export/profiles/black_mage.json` | vocab/candidate/profile action kind | 重新生成并继续保留 raw skill id 0 和 25 候选，同时标记它来自 policy action 配置。 |
 | `AGENTS.md` | 项目结构和职责说明 | 新目录/文件落地后按首字母顺序更新。 |

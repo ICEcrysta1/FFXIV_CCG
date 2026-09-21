@@ -9,8 +9,8 @@ import numpy as np
 import pytest
 import torch
 
-from scripts.onnx_export.artifact_io import write_deterministic_npz
-from scripts.onnx_export.tensor_runtime import (
+from scripts.onnx_export.io.artifact_io import write_deterministic_npz
+from scripts.onnx_export.runtime.tensor_runtime import (
     run_ort_tensors,
     tensor_to_golden_array,
 )

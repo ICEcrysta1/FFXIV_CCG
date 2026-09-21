@@ -10,15 +10,14 @@ from scripts.autoregressive_replay.outputs import write_markdown
 from scripts.autoregressive_replay.parity import run_rollout_parity
 from scripts.autoregressive_replay.replay import AutoregressiveReplay
 
-from .config import load_export_config, load_parity_config
-from .deployment_contract import DeploymentManifest
-from .exporter import export_from_config
-from .ort_runtime import ORT_PROVIDER_CUDA
-from .precision import PRECISION_BF16, parity_max_abs_tolerance
-from .release import verify_release
-from .release_policy import validate_release_scenario_request
-from .runtime_targets import validate_bf16_export_environment_versions
-
+from .config.config import load_export_config, load_parity_config
+from .contracts.deployment_contract import DeploymentManifest
+from .export import export_from_config
+from .release.policy import validate_release_scenario_request
+from .release.release import verify_release
+from .runtime.ort_runtime import ORT_PROVIDER_CUDA
+from .runtime.precision import PRECISION_BF16, parity_max_abs_tolerance
+from .runtime.runtime_targets import validate_bf16_export_environment_versions
 
 WORKFLOW_ACTIONS = (
     "all",
@@ -214,7 +213,7 @@ def _run_all() -> int:
             print(f"{scenario} parity 未通过，已继续下一项：{exc}")
     print_release_status()
     if failures:
-        print("")
+        print()
         print("ONNX 图已经导出并保留，但发布门禁未通过。")
         print("部署包状态为 parity_failed，不能声明与 PyTorch 逐决策等价。")
         for failure in failures:

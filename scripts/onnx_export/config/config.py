@@ -14,12 +14,12 @@ from common.policy.config import (
     resolve_policy_model_config_path,
 )
 
-from .ort_runtime import ORT_PROVIDER_CUDA
-from .precision import PRECISION_BF16, SUPPORTED_PRECISIONS
-from .release_policy import (
+from ..release.policy import (
     RELEASE_EMPTY_MIN_GCDS,
     minimum_empty_action_budget,
 )
+from ..runtime.ort_runtime import ORT_PROVIDER_CUDA
+from ..runtime.precision import PRECISION_BF16, SUPPORTED_PRECISIONS
 
 
 # 导出与回放共用同一模型来源、部署包、ORT Provider 和实战 scene。

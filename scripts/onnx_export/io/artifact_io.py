@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 import hashlib
 import io
 import json
-from pathlib import Path
 import tempfile
 import zipfile
+from collections.abc import Mapping
+from pathlib import Path
 
 import numpy as np
 
