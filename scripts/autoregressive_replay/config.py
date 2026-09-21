@@ -316,6 +316,11 @@ def _load_onnx_metadata(package_path: Path) -> dict[str, object]:
             "history_capacity": int(contract["capacity"]["history_capacity"]),
         }
     except KeyError as exc:
+        missing = str(exc.args[0]) if exc.args else "?"
+        if missing != "model_variant":
+            raise ValueError(
+                f"ONNX manifest is missing replay routing field {missing!r}"
+            ) from exc
         raise ValueError(
             "ONNX manifest is missing model_variant; re-export the package"
         ) from exc
