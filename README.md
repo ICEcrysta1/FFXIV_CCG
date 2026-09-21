@@ -29,20 +29,19 @@ the original Machinist implementation, SpikeHS.
 
 ## 项目结构
 
-```
-common/        跨顶层模块复用的公共函数
-Combat.Sim/    C# 战斗状态机、SidecarHost、CLI 导出宿主与 xUnit 测试
-config/        模拟器、职业和 tensor 精度 YAML 配置
-data/          训练数据 (不进入版本控制)
-  human/job/<job>/
-    raw/       FFLogs 原始 JSON，只读输入
-    .cache/    raw JSON 直接编译出的最终 compiled cache
-scripts/       辅助脚本 (FFLogs 抓取、日志转换、模型分析、模型回放)
-training/      训练公共层与模型架构
-tests/         测试目录
-artifacts/     checkpoint、模型分析和回放等运行产物
-preview/       README 和项目展示资源，不承载业务代码
-```
+| 路径 | 职责 |
+|---|---|
+| `common/` | 跨顶层模块复用的公共函数 |
+| `Combat.Sim/` | C# 战斗状态机、SidecarHost、CLI 导出宿主与 xUnit 测试 |
+| `config/` | 模拟器、职业、模型和 tensor 精度 YAML 配置 |
+| `data/` | 训练数据（不进入版本控制）；`human/job/<job>/raw/` 保存只读 FFLogs 原始 JSON，`.cache/` 保存最终 compiled cache |
+| `docs/` | 项目结构、架构设计、GRPO 和时间线状态机等说明文档 |
+| `grpo/` | 独立 GRPO 后训练入口、rollout 存储与训练逻辑 |
+| `scripts/` | FFLogs 抓取、日志转换、模型分析、ONNX 导出和模型回放工具 |
+| `training/` | 训练公共层、数据管线与模型架构 |
+| `tests/` | Python、C# Sidecar 和各工具测试 |
+| `artifacts/` | checkpoint、模型分析、回放和部署等运行产物 |
+| `preview/` | README 和项目展示资源，不承载业务代码 |
 
 训练和分析都直接消费 `raw/` 对应的 `.cache/`。项目不再保留 raw JSON 到训练 PT 之间的中间格式；`.cache/` 缺失或签名过期时由转换脚本生成。
 
@@ -64,7 +63,11 @@ python main.py list-actions
 python main.py smoke
 ```
 
-可选参数 `--job-tag` 可指定职业路由，默认读取根目录 `.env` 中的 `FFXIV_JOB_TAG`。
+| 参数 | 默认值/来源 | 说明 |
+|---|---|---|
+| `-h` / `--help` | — | 显示帮助并退出。 |
+| `command` | 必填 | `validate` 打印配置概览；`list-skills` 列出已启用技能；`list-actions` 列出初始合法动作；`smoke` 运行最小循环。 |
+| `--job-tag JOB_TAG` | 根目录 `.env` 的 `FFXIV_JOB_TAG` | 指定职业 tag，选择对应状态机路由。 |
 
 ### scripts/fflogs_scraper.py — FFLogs 数据拉取
 
@@ -87,11 +90,45 @@ python scripts/fflogs_scraper.py encounters -z 39
 python scripts/fflogs_scraper.py encounters
 ```
 
-子命令:
+| 层级 | 参数/命令 | 默认值 | 说明 |
+|---|---|---|---|
+| 全局 | `-h` / `--help` | — | 显示帮助并退出。 |
+| 全局 | `-v` / `--verbose` | 关闭 | 输出详细日志。 |
+| 子命令 | `single` | 未指定时使用 | 下载单个报告；可提供 URL，或使用 `--report`、`--fight`、`--source`。 |
+| 子命令 | `batch` | — | 按排行榜批量下载，支持 `--encounter`、`--zone`、`--spec-name`、`--bracket`、`--metric`、`--max-pages`、`--mode`、`--output`。 |
+| 子命令 | `encounters` | — | 列出全部 zones，或列出指定 zone 的 encounters。 |
 
-- `single` — 单报告下载，支持 `--events-only` `--damage-only` `--output` `--output-dir`
-- `batch` — 按 encounter 排行批量下载，支持 `--bracket` `--metric` `--mode` `--output`
-- `encounters` — 列出 zones 或 zone 下的 encounters
+`single` 参数：
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `url` | 无 | FFLogs 报告 URL；与 `--report` 二选一提供。 |
+| `--report REPORT` / `-r` | 无 | FFLogs 报告码。 |
+| `--fight FIGHT` / `-f` | `0` | Fight ID；`0` 表示全部，`-1` 表示最后一场。 |
+| `--source SOURCE` / `-s` | 无 | 玩家 source ID。 |
+| `--output PATH` / `-o` | 无 | 指定输出文件路径。 |
+| `--output-dir DIR` | `data` | 输出目录；未指定 `--output` 时使用。 |
+| `--events-only` | 关闭 | 只拉取事件数据。 |
+| `--damage-only` | 关闭 | 只拉取伤害表。 |
+
+`batch` 参数：
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--encounter ID` / `-e` | 无 | Encounter ID。 |
+| `--zone ID` / `-z` | 无 | Zone ID；用于指定 zone 或列出 encounters。 |
+| `--spec-name NAME` | `BlackMage` | 职业名。 |
+| `--bracket {0,6}` / `-b` | `0` | 分段；`6` 为金 100%，`0` 为全部。 |
+| `--metric {dps,rdps,ndps,adps}` | `rdps` | 排行指标。 |
+| `--max-pages N` | `10` | 最多翻页数。 |
+| `--mode {default,events-only,damage-only}` / `-m` | `default` | 下载模式。 |
+| `--output DIR` / `-o` | `data` | 输出目录。 |
+
+`encounters` 参数：
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--zone ID` / `-z` | 无 | 指定 zone 时列出其 encounters；省略时列出全部 zones。 |
 
 ### Combat.Sim — 转换与回放的 C# 状态机后端
 
@@ -106,6 +143,13 @@ dotnet build Combat.Sim/SidecarHost/SidecarHost.csproj --configuration Debug
 `SidecarHost` 与 Python 客户端都从 `config/schema.yaml` 读取并校验运行时契约版本。旧 DLL（例如仍输出没有 `value` 的技能 token）会在
 `init` 阶段被 Python 客户端拒绝；新版 DLL 使用旧的 `config/schema.yaml` 时会因缺少必需的
 `contracts.scene_epsilon` 或 `contracts.sidecar_contract_version` 直接失败。因此 DLL 与配置必须来自同一版本，不能只替换其中一部分；启动转换或回放前应先执行真实 Sidecar init 握手。
+
+| 操作 | 命令/入口 | 说明 |
+|---|---|---|
+| 重建宿主 | `dotnet build Combat.Sim/SidecarHost/SidecarHost.csproj --configuration Debug` | 修改 `FightEngine`、`SidecarHost` 或 `config/schema.yaml` 后必须执行。 |
+| 转换 FFLogs | `python -m scripts.convert_fflogs.cli` | 由 Python 转换入口驱动 Sidecar 状态机。 |
+| 自回归回放 | `python -m scripts.autoregressive_replay` | 由回放入口驱动 Sidecar 状态机。 |
+| 运行时握手 | Sidecar `init` | 启动转换或回放前校验 DLL、schema 和 token 契约版本。 |
 
 ### scripts/convert_fflogs/cli.py — FFLogs 原始 JSON 直接编译最终训练缓存
 
@@ -128,16 +172,17 @@ python -m scripts.convert_fflogs.cli data/fflogs_xxx.json --cache-root .tmp/blac
 python -m scripts.convert_fflogs.cli data/human/job/black_mage/raw --workers 4
 ```
 
-参数:
-
-- `inputs` — 原始 FFLogs JSON 文件列表，可省略；省略时自动扫描 `.env` 职业目录下的 `raw/`
-- `--job-tag` — 职业标识，默认依次读取 `.env` 和 `config/convert_fflogs/default.yaml`
-- `--source` — 玩家 sourceID，默认优先读取 JSON 内的 `source_id`
-- `--encounter` — 覆盖副本名
-- `--cache-root` — 最终 compiled cache 根目录；省略时使用 `data/human/job/<job>/.cache`
-- `--shard-size` — 覆盖最终缓存 shard 大小
-- `--downtime-gap` — downtime 判定伤害间隙阈值 (默认 3.0)
-- `--workers` — 并行进程数，`1` 强制串行
+| 参数 | 默认值/来源 | 说明 |
+|---|---|---|
+| `-h` / `--help` | — | 显示帮助并退出。 |
+| `inputs` | 省略时读取训练 YAML 的 `raw_data_dir` | 原始 FFLogs JSON 文件或目录；目录会递归扫描 `.json`。 |
+| `--job-tag JOB_TAG` | `.env`/模型配置 | 用于解析动作的职业标签。 |
+| `--source SOURCE` | 无；优先使用 JSON 的 `source_id` | 覆盖 JSON 中的玩家 source ID。 |
+| `--encounter NAME` | 无 | 覆盖 JSON 中的副本名称。 |
+| `--cache-root DIR` | `data/human/job/<job>/.cache` | 指定 compiled cache 根目录。 |
+| `--shard-size N` | 当前模型训练配置为 `768` | 覆盖最终缓存 shard 大小。 |
+| `--workers N` | `config/convert_fflogs/default.yaml` 的 `6` | 并行进程数；`1` 强制串行。 |
+| `--downtime-gap SECONDS` | `6.0` | downtime 判定的伤害间隔阈值。 |
 
 省略 `inputs` 时，只扫描训练 YAML 的 `raw_data_dir`；最终缓存统一写入
 `data/human/job/<job>/.cache/`，例如 `raw/FRU/fight.json` 会生成对应的 compiled manifest 和 shard。缓存签名包含 raw 文件与转换参数，训练启动时也会自动调用同一脚本层入口补齐。单个 raw JSON 转换失败会记录错误并跳过；训练的 `--max-files` 配额会继续从同一副本目录的后备 JSON 补位，直到达到该副本的有效文件数要求，候选耗尽时才报告缺口并停止训练。
@@ -163,25 +208,83 @@ python training/train.py --max-files 3
 python training/train.py --resume artifacts/checkpoints/black_mage/artzip_bc/epoch_009_ppg_569.63.pt
 ```
 
-参数:
-
-- `--config` — 可选的显式模型 YAML；省略时读取根目录 `.env` 的 `FFXIV_JOB_TAG`，自动选择 `config/models/<job_tag>/*/config.yaml`
-- `--raw-data-dir` — 覆盖 YAML 中的 raw JSON 目录
-- `--output-dir` — 覆盖 checkpoint 输出目录
-- `--epochs` — 覆盖训练轮数
-- `--batch-size` — 覆盖 batch size
-- `--lr` — 覆盖学习率
-- `--max-files` — 按副本目录比例选择最多 N 个有效 raw JSON 文件；转换失败时从同副本后备文件补位 (smoke/test 用)
-- `--device` — `cuda` 或 `cpu`
-- `--resume` — 从指定 checkpoint 继续训练；恢复模型、optimizer、scheduler 和 best 指标，训练从 checkpoint 的下一轮开始
+| 参数 | 默认值/来源 | 说明 |
+|---|---|---|
+| `-h` / `--help` | — | 显示帮助并退出。 |
+| `--config PATH` | 根目录 `.env` 的 `FFXIV_JOB_TAG` 自动选择 `config/models/<job_tag>/*/config.yaml` | 指定模型配置清单。 |
+| `--raw-data-dir DIR` | 模型 YAML 的 `raw_data_dir` | 覆盖 raw JSON 目录。 |
+| `--output-dir DIR` | 模型 YAML 的 `output_dir` | 覆盖 checkpoint 输出目录。 |
+| `--epochs N` | 当前配置 `8` | 覆盖训练轮数。 |
+| `--batch-size N` | 当前配置 `20` | 覆盖 batch size。 |
+| `--lr RATE` | 当前配置 `0.0001` | 覆盖学习率。 |
+| `--max-files N` | 全部有效 raw JSON | 按副本目录比例最多使用 N 个文件；转换失败时从同副本后备文件补位。 |
+| `--device {cuda,cpu}` | 根目录 `.env` 的 `TRAINING_DEVICE`，默认 `cuda` | 覆盖训练设备。 |
+| `--resume PATH` | 不续训 | 从指定 checkpoint 继续训练，恢复 optimizer、scheduler 和 best 指标。 |
 
 训练启动时会先调用 `scripts.convert_fflogs` 把选中的 raw JSON 编译到 `data/human/job/<job>/.cache/`，然后训练数据集直接读取 compiled cache；不会向 `raw/` 写入转换结果，也不会生成中间训练 PT。compiled cache 保存完整历史，模型配置中的 `model.history_capacity` 仅在读取样本时裁剪模型窗口，调整它不会触发 cache 重建。
 checkpoint 会在每轮保存续训所需的 optimizer、scheduler、best 指标和随机状态；旧 checkpoint 缺少 scheduler 或随机状态时仍可按已完成轮次回退恢复，但要保证模型配置、数据 schema 和归一化契约与当前训练配置一致。
 安全提示：续训需要使用 `torch.load(weights_only=False)` 恢复完整 checkpoint 元数据，因此只应加载可信来源的 checkpoint；不要对不明来源的文件执行 `--resume`。
 
+### grpo — GRPO 后训练
+
+使用真实训练集场景执行带贪心基准保护的 GRPO 后训练。默认输出到预训练输出目录的同级 `<run>_grpo/`，不会覆盖 BC checkpoint；CLI 参数优先于 `grpo.yaml`。
+
+```bash
+# 使用当前职业配置和默认 BC checkpoint 启动 GRPO
+python -m grpo
+
+# 显式指定起始 checkpoint 和独立输出目录
+python -m grpo --checkpoint artifacts/checkpoints/black_mage/artzip_bc/best.pt --output-dir artifacts/checkpoints/black_mage/artzip_bc_grpo
+```
+
+| 参数 | 当前生效值/来源 | 说明 |
+|---|---|---|
+| `-h` / `--help` | — | 显示帮助并退出。 |
+| `--config PATH` | `.env` 的 `FFXIV_JOB_TAG` 自动选择模型配置 | 指定模型配置清单。 |
+| `--checkpoint PATH` | `TRAINING_MODEL_CHECKPOINT`，否则配置输出目录中的 `best.pt` | GRPO 初始 BC/GRPO checkpoint。 |
+| `--raw-data-dir DIR` | 模型 YAML 的 `raw_data_dir` | 覆盖真实训练场景目录。 |
+| `--max-files N` | 全部有效文件 | 限制用于 GRPO 的真实训练场景文件数，必须 `>=1`。 |
+| `--output-dir DIR` | `<training.output_dir>_grpo` | 覆盖 GRPO 输出目录；默认与 BC 输出目录隔离。 |
+| `--device {cpu,cuda}` | 根目录 `.env` 的 `TRAINING_DEVICE` | 覆盖运行设备。 |
+| `--precision {float32,float16,bf16}` | 模型配置的 `precision`，当前为 `bf16` | 覆盖运行精度。 |
+| `--samples-per-scene N` / `--group-size N` | `grpo.yaml: 16` | 每个场景的采样轨迹条数，不含贪心基准。 |
+| `--prompt-batch-size N` | `grpo.yaml: 8` | 每轮处理的真实场景数。 |
+| `--iterations N` | `grpo.yaml: 10` | GRPO 外层更新轮数。 |
+| `--max-duration-seconds SECONDS` | `grpo.yaml: 1200` | 每条自回归轨迹的统一时间上限；配置为 `null` 时跟随场景结束时间。 |
+| `--temperature X` | `grpo.yaml: 1.3` | 采样温度，必须大于 `0`。 |
+| `--top-p X` | `grpo.yaml: 1.0` | 累计概率质量，范围为 `(0,1]`。 |
+| `--inner-updates N` | `grpo.yaml: 1` | 每轮 rollout 后的策略更新次数。 |
+| `--minibatch-size N` | `grpo.yaml: 64` | 每次策略更新使用的 rollout 决策数。 |
+| `--lr RATE` | `grpo.yaml: 0.000001` | GRPO AdamW 学习率。 |
+| `--warmup-steps N` | `grpo.yaml: 20` | 学习率 warmup 更新步数。 |
+| `--clip-low X` | `grpo.yaml: 0.2` | clipped surrogate ratio 下界裁剪比例。 |
+| `--clip-high X` | `grpo.yaml: 0.2` | clipped surrogate ratio 上界裁剪比例。 |
+| `--kl-coefficient X` | `grpo.yaml: 0.001` | 行为策略与当前策略之间的 KL 惩罚权重。 |
+| `--greedy-guard-tolerance X` | `grpo.yaml: 0.0` | 更新后贪心 PPG 允许低于更新前的最大下降量。 |
+| `--advantage-scale-floor-ratio X` | `grpo.yaml: 0.1` | 优势标准差的相对尺度下限。 |
+| `--advantage-clip X` | `grpo.yaml: 5.0` | 优势的对称裁剪上限。 |
+
 ### scripts/onnx_export — 独立 ONNX 部署包导出
 
 ONNX 导出是 checkpoint 的独立后处理，不进入训练循环。正式部署精度与当前训练主线一致，固定为 BF16，并要求支持原生 BF16 的 NVIDIA GPU、PyTorch CUDA 和 ORT CUDA EP。CPU extras 只用于 FP32 小模型开发测试，不用于正式模型发布：
+
+| 参数 | 默认值/来源 | 说明 |
+|---|---|---|
+| `-h` / `--help` | — | 显示帮助并退出。 |
+| `--checkpoint PATH` | `.env` 的 `AUTOREGRESSIVE_REPLAY_CHECKPOINT`，否则按当前模型配置选择 | 导出的完整 checkpoint。 |
+| `--output-dir DIR` | 按 checkpoint 路径推导 `artifacts/exports/<job>/<run>` | ONNX 部署包输出目录。 |
+| `--deployment-profile PATH` | `.env` 的 `ONNX_EXPORT_DEPLOYMENT_PROFILE`，否则按职业读取内置 profile | 固化部署画像。 |
+| `--opset N` | `.env` 的 `ONNX_EXPORT_OPSET`，默认 `18` | ONNX opset。 |
+| `--precision {bf16,float32,float16}` | `.env` 的 `ONNX_EXPORT_PRECISION`，默认 `bf16` | 导出精度；正式发布使用 BF16。 |
+| `--ort-provider NAME` | `.env` 的 `AUTOREGRESSIVE_REPLAY_ORT_PROVIDER`，默认 `CUDAExecutionProvider` | 临时覆盖 ORT Execution Provider。 |
+| `--validation-devices DEVICES` | `.env` 的 `ONNX_EXPORT_VALIDATION_DEVICES`，默认 `cuda` | 逗号分隔的 padding 验收设备，例如 `cpu,cuda`。 |
+| `--overwrite` / `--no-overwrite` | `.env` 的 `ONNX_EXPORT_OVERWRITE`，默认关闭 | 是否在全部验证通过后原子替换已有部署包。 |
+
+`scripts.onnx_export.workflow` 的正式工作流参数：
+
+| 参数 | 可选值 | 说明 |
+|---|---|---|
+| `action` | `all`、`env`、`empty-parity`、`scene-parity`、`verify`、`run` | 分别执行完整流程、环境检查、空 scene parity、真实 scene parity、发布状态校验或 ONNX 回放。 |
 
 根目录提供 [onnx_pipeline.ps1](./onnx_pipeline.ps1) 作为 PT → ONNX → parity → 发布校验的一键入口。脚本本身不保存模型路径、opset、精度、Provider、容量或门禁步数，只负责调用 Python；所有协作环境差异统一写在根目录 `.env`：
 
@@ -284,20 +387,24 @@ python -m pytest tests/scripts/onnx_export/test_real_checkpoint_padding.py -q
 python -m scripts.model_analysis --loss-landscape
 ```
 
-参数:
-
-- `--checkpoint` — 模型 checkpoint 路径
-- `--model-config` — 模型 YAML 配置
-- `--raw-json` — 分析用 raw JSON；对应 compiled cache 从职业 `.cache` 读取，缺失或过期时自动调用 `scripts.convert_fflogs.cli` 编译
-- `--output` — 输出目录 (默认 `artifacts/model_analysis`)
-- `--max-samples` — 分析样本数 (默认 256)
-- `--max-tokens` — 每层保留最大 token 数 (默认 20000)
-- `--loss-landscape` — 在同一轮分析中追加导出逐 Transformer 层损失地图
-- `--loss-landscape-resolution` — 每层损失地图单轴采样点数，必须是奇数 (默认 21)
-- `--loss-landscape-radius` — filter-normalized 参数扰动半径 (默认 0.5)
-- `--loss-landscape-max-samples` — 损失地图固定样本数；默认复用 `--max-samples`
-- `--loss-landscape-seed` — 逐层正交参数方向的可复现随机种子 (默认 3407)
-- `--device` — `auto` / `cpu` / `cuda`
+| 参数 | 默认值/来源 | 说明 |
+|---|---|---|
+| `-h` / `--help` | — | 显示帮助并退出。 |
+| `--checkpoint PATH` | 模型 YAML 输出目录中的 checkpoint | 模型 checkpoint。 |
+| `--model-config PATH` | 根目录 `.env` 的 `FFXIV_JOB_TAG` 自动选择 | 模型配置清单。 |
+| `--raw-json PATH` | 按训练 YAML 自动寻找 | 分析用 raw JSON；对应 compiled cache 缺失或过期时自动编译。 |
+| `--output DIR` | `artifacts/model_analysis` | 输出目录。 |
+| `--max-samples N` | `256` | 分析样本数；`<=0` 表示整份 compiled cache。 |
+| `--max-tokens N` | `20000` | 每层最多保留的有效 token 数。 |
+| `--batch-size N` | `16` | 分析前向 batch size。 |
+| `--loss-landscape` | 关闭 | 在基础分析图之外追加逐 Transformer 层损失地图。 |
+| `--loss-landscape-only` | 关闭 | 仅导出损失地图，跳过其他分析图。 |
+| `--loss-landscape-resolution N` | `31` | 每层损失地图单轴采样点数；必须是大于等于 `3` 的奇数。 |
+| `--loss-landscape-radius X` | `0.5` | filter-normalized 参数方向的正负扰动半径。 |
+| `--loss-landscape-max-samples N` | 跟随 `--max-samples` | 损失地图固定样本数；`0` 表示完整数据集。 |
+| `--loss-landscape-seed N` | `3407` | 逐层正交参数方向的可复现随机种子。 |
+| `--attention-steps N` | `28` | 开场注意力图使用 compiled cache 中前 N 个真实决策样本。 |
+| `--device {auto,cpu,cuda}` | `auto` | 选择分析设备；`auto` 按当前配置优先使用 CUDA。 |
 
 基础生成结果包括 hidden 分布、每层 hidden 2D/3D PCA、skill/pair embedding 和 attention。传入 `--loss-landscape` 后，loss 会和这些图由同一条命令导出，并保存逐 Transformer 层的 300 DPI 3D 曲面、2D 等高线、float64 `.npz` 原始网格和方向元数据。所有模型前向统一使用模型配置 `model.yaml` 的 `precision`（当前主配置为 BF16），不提供按输出拆分的精度开关；loss 汇总值单独以 float64 累加。为控制峰值显存，程序会在基础图完成后释放 hidden/attention/PCA 上下文，再以相同 checkpoint、数据和精度执行 loss 阶段。该步骤会在固定样本集上反复执行前向计算，计算量约为 `层数 × 分辨率² × ceil(样本数 / batch-size)`，分辨率每增加一倍，计算量约增加到四倍。
 
@@ -369,6 +476,7 @@ python -m scripts.autoregressive_replay --backend pytorch --scene-mode empty --m
 | `--max-history N` | 无 | checkpoint/manifest 的正式容量 | 仅用于显式历史截断实验。正常 PyTorch 回放读取 checkpoint，ORT 回放读取 manifest，不允许 `.env` 再定义一份正式容量。 |
 | `--history-ablation N [N ...]` | 无 | 无 | 先生成一条完整自回归轨迹，再在相同状态快照上分别只给模型最近 N 条历史；截断预测不会反过来污染后续状态。会额外生成 `_history_N.md` 文件。每个 N 必须 `>= 0` 且不能重复；N 大于当前可用历史时等价于保留全部可用历史，通常应选择不超过基准 `--max-history` 的值。 |
 | `--device {cuda,cpu}` | `AUTOREGRESSIVE_REPLAY_DEVICE`，再回退 `TRAINING_DEVICE` | `cuda` | 只控制 PyTorch backend 的模型和 tensor 设备。BF16 checkpoint/parity 必须使用 CUDA，程序不再静默改成 FP32。ORT backend 的执行位置由 `--ort-provider` 决定；live batch 可在 CPU 装配，但正式 BF16 输入通过 DLPack/I/O Binding 送入 CUDA。 |
+| `--precision {bf16,float32,float16}` | 无 | `bf16` | PyTorch 回放权重精度；可用 `--device cpu --precision float32` 显式分析 BF16 checkpoint，ONNX 精度仍以 manifest 为准。 |
 | `--use-kv-cache` | `AUTOREGRESSIVE_REPLAY_USE_KV_CACHE` | PyTorch 开启，ORT 关闭 | 显式开启 PyTorch 模型内部 scene/history 前缀 KV cache。新轨迹或上下文截断时自动 reset。首版 ONNX backend 不支持 KV cache，开启会报错。 |
 | `--no-use-kv-cache` | `AUTOREGRESSIVE_REPLAY_USE_KV_CACHE` | 同上 | 显式关闭 PyTorch KV cache。PT/ORT parity 必须关闭，确保参考路径与无 cache 的 ONNX 图一致。 |
 
