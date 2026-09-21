@@ -230,7 +230,13 @@ def _is_rope_frequency_initializer(
     *,
     float_data_type: int,
 ) -> bool:
-    """识别 RoPE 为三角函数保留的 FP32 频率常量。"""
+    """识别 RoPE 为三角函数保留的 FP32 频率常量。
+
+    BF16/FP16 的 ONNX Runtime 不接受 BF16/FP16 作为 Cos/Sin 输入，
+    因此这一个非训练参数常量必须保持 FP32。导出器可能把它保留为
+    ``inv_freq``，也可能把它 reshape 成匿名 initializer；按值匹配可以
+    避免依赖具体 exporter 命名。
+    """
     if initializer.data_type != float_data_type:
         return False
     from common.policy.model.position_encoding import (
