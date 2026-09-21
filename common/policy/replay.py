@@ -31,6 +31,7 @@ class AutoregressiveReplayConfig:
     max_history: int = 128
     device: str = "cuda"
     job_tag: str | None = None
+    model_variant: str | None = None
     initial_action: str | None = "fire_iii"
     initial_time_seconds: float | None = None
     base_gcd: float | None = None

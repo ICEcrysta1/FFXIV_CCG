@@ -88,6 +88,16 @@ def _validate_resume_checkpoint(
     if normalized_model_config != asdict(config.model):
         raise ValueError("resume checkpoint model config mismatch")
 
+    if config.model_variant is not None:
+        checkpoint_model_variant = checkpoint.get("model_variant")
+        if not isinstance(checkpoint_model_variant, str) or not checkpoint_model_variant.strip():
+            raise ValueError("resume checkpoint missing model_variant")
+        if checkpoint_model_variant.strip() != config.model_variant:
+            raise ValueError(
+                "resume checkpoint model variant mismatch: "
+                f"{checkpoint_model_variant!r} != {config.model_variant!r}"
+            )
+
     checkpoint_precision = checkpoint.get("training_precision")
     if checkpoint_precision is not None and str(checkpoint_precision) != config.precision:
         raise ValueError("resume checkpoint training precision mismatch")
@@ -226,6 +236,7 @@ def _save_checkpoint(
         "model_config": asdict(config.model),
         "data_spec": asdict(data_spec),
         "job_tag": data_spec.job_tag,
+        "model_variant": config.model_variant,
         "input_contract": input_contract.to_dict(),
         "training_precision": config.precision,
         "run_config": asdict(config),

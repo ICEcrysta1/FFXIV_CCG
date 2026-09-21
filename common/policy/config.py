@@ -238,6 +238,16 @@ def resolve_policy_model_config_path(explicit_path: Path | None = None) -> Path:
 
 def resolve_policy_model_job_tag(config_path: Path) -> str:
     """从策略模型 YAML 路径解析并校验职业标签。"""
+    return _resolve_policy_model_identity(config_path)[0]
+
+
+def resolve_policy_model_variant(config_path: Path) -> str:
+    """从策略模型 YAML 路径解析并校验模型变体。"""
+    return _resolve_policy_model_identity(config_path)[1]
+
+
+def _resolve_policy_model_identity(config_path: Path) -> tuple[str, str]:
+    """从策略模型路径解析并校验职业与模型变体。"""
     models_root = POLICY_MODEL_ROOT.resolve()
     resolved_path = Path(config_path).resolve()
     try:
@@ -247,16 +257,51 @@ def resolve_policy_model_job_tag(config_path: Path) -> str:
             "policy model config must live under "
             f"{models_root}, got {resolved_path}"
         ) from exc
-    if len(relative_path.parts) < 2 or not relative_path.parts[0]:
-        raise ValueError(f"cannot derive policy model job tag from model config: {resolved_path}")
+    if (
+        len(relative_path.parts) < 3
+        or not relative_path.parts[0]
+        or not relative_path.parts[1]
+    ):
+        raise ValueError(
+            "cannot derive policy model job tag and variant from model config: "
+            f"{resolved_path}"
+        )
     path_job_tag = relative_path.parts[0]
+    path_variant = relative_path.parts[1]
     job_tag = resolve_project_job_tag(project_root=PROJECT_ROOT)
     if job_tag != path_job_tag:
         raise ValueError(
             f"{PROJECT_JOB_TAG_ENV}={job_tag!r} does not match policy model path job "
             f"{path_job_tag!r}: {resolved_path}"
         )
-    return job_tag
+    variant = resolve_project_model_variant(project_root=PROJECT_ROOT)
+    if variant != path_variant:
+        raise ValueError(
+            f"{PROJECT_MODEL_VARIANT_ENV}={variant!r} does not match policy model path "
+            f"variant {path_variant!r}: {resolved_path}"
+        )
+    return job_tag, variant
+
+
+def validate_policy_model_variant(
+    payload: Mapping[str, object],
+    expected_variant: str,
+    *,
+    artifact_name: str,
+) -> None:
+    """校验模型产物记录的变体，禁止同职业不同变体混用。"""
+    actual_variant = payload.get("model_variant")
+    if not isinstance(actual_variant, str) or not actual_variant.strip():
+        raise ValueError(
+            f"{artifact_name} missing model_variant; regenerate it with the current "
+            "model configuration"
+        )
+    actual_variant = actual_variant.strip()
+    if actual_variant != expected_variant:
+        raise ValueError(
+            f"{artifact_name} model_variant {actual_variant!r} does not match "
+            f"configured model_variant {expected_variant!r}"
+        )
 
 
 def resolve_policy_device(explicit_device: str | None = None) -> str:

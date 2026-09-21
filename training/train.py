@@ -20,6 +20,7 @@ from common.policy.config import (
     resolve_policy_device,
     resolve_policy_model_config_path,
     resolve_policy_model_job_tag,
+    resolve_policy_model_variant,
 )
 from training.config import load_run_config
 from training.loop import run_training
@@ -94,6 +95,7 @@ def main() -> None:
     config = replace(
         load_run_config(config_path),
         job_tag=resolve_policy_model_job_tag(config_path),
+        model_variant=resolve_policy_model_variant(config_path),
         **({"raw_data_dir": args.raw_data_dir} if args.raw_data_dir is not None else {}),
     )
     raw_paths = _prepare_training_caches(config, args.max_files)

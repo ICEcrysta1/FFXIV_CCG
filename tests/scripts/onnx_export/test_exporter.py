@@ -879,7 +879,7 @@ def test_small_bf16_model_exports_and_runs_on_strict_cuda(tmp_path, activation):
     )
 
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["manifest_version"] == 6
+    assert manifest["manifest_version"] == 7
     assert manifest["contract"]["contract_version"] == 9
     assert manifest["contract"]["precision"] == "bf16"
     assert manifest["exporter"]["onnxscript"] == BF16_TARGET_ONNXSCRIPT_VERSION
@@ -1008,6 +1008,7 @@ def _write_small_checkpoint(
             "data_spec": asdict(data_spec),
             "input_contract": input_contract.to_dict(),
             "model_config": asdict(config),
+            "model_variant": "artzip",
             "run_config": {},
             "model_state_dict": model.state_dict(),
             # 部署加载必须忽略这些训练字段。

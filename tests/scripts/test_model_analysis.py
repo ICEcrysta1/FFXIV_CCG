@@ -936,6 +936,7 @@ def test_model_analysis_attention_output_and_main(monkeypatch, tmp_path):
     )
     output_dir = tmp_path / "main-output"
     output_dir.mkdir(parents=True)
+    torch.save({"model_variant": "artzip"}, tmp_path / "best.pt")
     monkeypatch.setattr(analysis_main, "resolve_policy_model_config_path", lambda _path: tmp_path / "config.yaml")
     monkeypatch.setattr(analysis_main, "resolve_policy_checkpoint_path", lambda _path: tmp_path / "best.pt")
     monkeypatch.setattr(analysis_main, "load_run_config", lambda _path: SimpleNamespace(
@@ -947,6 +948,7 @@ def test_model_analysis_attention_output_and_main(monkeypatch, tmp_path):
         precision="float32",
     ))
     monkeypatch.setattr(analysis_main, "resolve_policy_model_job_tag", lambda _path: "black_mage")
+    monkeypatch.setattr(analysis_main, "resolve_policy_model_variant", lambda _path: "artzip")
     monkeypatch.setattr(analysis_main, "resolve_policy_cache_dir", lambda _job: tmp_path / ".cache")
     analysis_context_calls = []
     monkeypatch.setattr(

@@ -19,6 +19,8 @@ from common.policy.config import (
     resolve_policy_device,
     resolve_policy_model_config_path,
     resolve_policy_model_job_tag,
+    resolve_policy_model_variant,
+    validate_policy_model_variant,
 )
 from common.policy.replay import AutoregressiveReplayConfig
 from common.torch_serialization import safe_torch_load
@@ -78,6 +80,7 @@ def load_replay_config(
     model_config_path = resolve_policy_model_config_path()
     model_config = load_model_config(model_config_path)
     model_job_tag = resolve_policy_model_job_tag(model_config_path)
+    model_variant = resolve_policy_model_variant(model_config_path)
     source_config = load_policy_config(model_config_path)
     training_raw = source_config.get("training", {}) or {}
     if not isinstance(training_raw, dict):
@@ -98,6 +101,7 @@ def load_replay_config(
         onnx_package_path = _resolve_onnx_package(onnx_package)
         onnx_metadata = _load_onnx_metadata(onnx_package_path)
         job_tag = str(onnx_metadata["job_tag"])
+        onnx_model_variant = str(onnx_metadata["model_variant"])
         if configured_job_tag and configured_job_tag != job_tag:
             raise ValueError(
                 f"ONNX job_tag {job_tag!r} does not match configured job_tag "
@@ -107,6 +111,11 @@ def load_replay_config(
             raise ValueError(
                 f"ONNX job_tag {job_tag!r} does not match training model config job "
                 f"{model_job_tag!r}"
+            )
+        if onnx_model_variant != model_variant:
+            raise ValueError(
+                f"ONNX model_variant {onnx_model_variant!r} does not match training "
+                f"model variant {model_variant!r}"
             )
         checkpoint_path = None
         model_history_capacity = int(onnx_metadata["history_capacity"])
@@ -123,6 +132,11 @@ def load_replay_config(
             "data_spec"
         ].get("job_tag")
         checkpoint_job_tag = _optional_text(checkpoint_job_tag)
+        validate_policy_model_variant(
+            checkpoint_payload,
+            model_variant,
+            artifact_name="checkpoint",
+        )
         job_tag = model_job_tag
         if checkpoint_job_tag and job_tag and checkpoint_job_tag != job_tag:
             raise ValueError(
@@ -205,6 +219,7 @@ def load_replay_config(
             ).strip().lower()
         ),
         job_tag=job_tag,
+        model_variant=model_variant,
         initial_action=_optional_text(
             os.environ.get(AUTOREGRESSIVE_REPLAY_INITIAL_ACTION_ENV, "fire_iii")
         ),
@@ -294,8 +309,10 @@ def _load_onnx_metadata(package_path: Path) -> dict[str, object]:
     payload = json.loads((package_dir / "manifest.json").read_text(encoding="utf-8"))
     try:
         contract = payload["contract"]
+        model = payload["model"]
         return {
             "job_tag": str(contract["job_tag"]),
+            "model_variant": str(model["model_variant"]),
             "history_capacity": int(contract["capacity"]["history_capacity"]),
         }
     except (KeyError, TypeError, ValueError) as exc:

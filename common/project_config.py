@@ -36,15 +36,15 @@ def resolve_project_job_tag(
     explicit: str | None = None,
 ) -> str:
     """解析项目统一职业标签；显式参数优先，其次读取根目录 `.env`。"""
-    if explicit:
-        return str(explicit).strip()
-    load_root_dotenv(project_root)
-    value = os.environ.get(PROJECT_JOB_TAG_ENV)
-    if value:
-        return str(value).strip()
-    raise ValueError(
-        f"missing {PROJECT_JOB_TAG_ENV}; set it in the project .env"
-    )
+    value = explicit
+    if value is None:
+        load_root_dotenv(project_root)
+        value = os.environ.get(PROJECT_JOB_TAG_ENV)
+    if value is None or not str(value).strip():
+        raise ValueError(
+            f"missing {PROJECT_JOB_TAG_ENV}; set it in the project .env"
+        )
+    return str(value).strip()
 
 
 def resolve_project_model_variant(

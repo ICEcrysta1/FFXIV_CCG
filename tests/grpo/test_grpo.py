@@ -399,6 +399,7 @@ class _StubConfig:
     raw_data_dir: Path
     output_dir: Path
     job_tag: str | None
+    model_variant: str | None = None
 
 
 def test_grpo_cli_forwards_max_files_and_overrides(monkeypatch, capsys, tmp_path):
@@ -415,6 +416,7 @@ def test_grpo_cli_forwards_max_files_and_overrides(monkeypatch, capsys, tmp_path
     monkeypatch.setattr(cli, "load_grpo_run_config", lambda path: input_config)
     monkeypatch.setattr(cli, "load_grpo_config", lambda path: GrpoConfig())
     monkeypatch.setattr(cli, "resolve_policy_model_job_tag", lambda path: "black_mage")
+    monkeypatch.setattr(cli, "resolve_policy_model_variant", lambda path: "artzip")
     monkeypatch.setattr(cli, "resolve_policy_device", lambda value: "cpu")
     monkeypatch.setattr(cli, "resolve_policy_checkpoint_path", lambda path: tmp_path / "best.pt")
     monkeypatch.setattr(

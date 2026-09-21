@@ -389,7 +389,7 @@ $env:RUN_REAL_ONNX_EXPORT="1"
 python -m pytest tests/scripts/onnx_export/test_real_checkpoint_padding.py -q
 ```
 
-该命令会真实读取职业 profile 与 checkpoint 的 `model_config` 容量，验证 vocab 行数与 `total_token_count == scene_capacity + history_capacity + candidate_count + 1`，并以 BF16/CUDA 执行完整 export/checker/ORT/padding 流程。manifest v6 统一容量契约（物理 token 总长按 `scene_capacity + history_capacity + candidate_count + 1` 换算，移除 `max_sequence_length`），与旧 v1-v5 部署包不兼容；升级后必须重新导出，loader 会给出明确的 `re-export` 错误。
+该命令会真实读取职业 profile 与 checkpoint 的 `model_config` 容量，验证 vocab 行数与 `total_token_count == scene_capacity + history_capacity + candidate_count + 1`，并以 BF16/CUDA 执行完整 export/checker/ORT/padding 流程。manifest v7 统一容量契约并记录 `model_variant`（物理 token 总长按 `scene_capacity + history_capacity + candidate_count + 1` 换算，移除 `max_sequence_length`），与旧 v1-v6 部署包不兼容；升级后必须重新导出，loader 会给出明确的 `re-export` 错误。
 
 模型小于 2 GiB 时强制使用单个 `model.onnx`；如果后续大模型需要 external data，manifest 会记录配套文件。部署包只包含推理权重和输入契约，不写入 checkpoint 中的 optimizer、scheduler 或随机状态。
 

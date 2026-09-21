@@ -214,6 +214,7 @@ def test_policy_config_resolvers_select_job_and_variant_from_env_and_cover_path_
 
     black_mage_config = selected_config
     assert policy_config_module.resolve_policy_model_job_tag(black_mage_config) == "black_mage"
+    assert policy_config_module.resolve_policy_model_variant(black_mage_config) == "artzip"
 
     with pytest.raises(ValueError, match="must live under"):
         policy_config_module.resolve_policy_model_job_tag(tmp_path / "config.yaml")
@@ -242,6 +243,20 @@ def test_policy_config_resolvers_select_job_and_variant_from_env_and_cover_path_
         "model.pt",
     )
     assert relative_checkpoint.name == "model.pt"
+
+
+@pytest.mark.parametrize("resolver_name", ["resolve_project_job_tag", "resolve_project_model_variant"])
+def test_project_resolvers_reject_explicit_blank_instead_of_falling_back(
+    monkeypatch,
+    tmp_path,
+    resolver_name,
+):
+    monkeypatch.setenv("FFXIV_JOB_TAG", "black_mage")
+    monkeypatch.setenv("FFXIV_MODEL_VARIANT", "artzip")
+
+    resolver = getattr(project_config_module, resolver_name)
+    with pytest.raises(ValueError, match="missing"):
+        resolver(project_root=tmp_path, explicit="  ")
 
 
 def test_policy_config_resolver_requires_model_variant(monkeypatch):
@@ -994,7 +1009,7 @@ def test_training_helpers_and_epoch_metrics(tmp_path, monkeypatch):
         model,
         optimizer,
         1,
-        config,
+        replace(config, model_variant="artzip"),
         spec,
         validation_metrics,
         input_contract=input_contract,
@@ -1002,6 +1017,7 @@ def test_training_helpers_and_epoch_metrics(tmp_path, monkeypatch):
     saved = safe_torch_load(checkpoint)
     assert saved["epoch"] == 1
     assert saved["job_tag"] == "black_mage"
+    assert saved["model_variant"] == "artzip"
     assert saved["data_spec"]["num_candidates"] == 2
     assert saved["input_contract"]["normalizer"]["config"]["fight_time_max"] == 1800.0
 
