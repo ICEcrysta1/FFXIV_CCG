@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- 新增 `FFXIV_MODEL_VARIANT` 配置：`FFXIV_JOB_TAG` 选择职业，`FFXIV_MODEL_VARIANT` 选择职业目录下的模型变体；训练、转换、回放、模型分析、GRPO 和 ONNX 流程统一解析 `config/models/<job_tag>/<variant>/config.yaml`，不再依赖职业目录下唯一变体自动扫描。
+
 ## [0.1.0] - 2026-09-21
 
 ### Added

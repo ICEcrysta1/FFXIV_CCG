@@ -9,8 +9,10 @@ from pathlib import Path
 
 from common.project_config import (
     PROJECT_JOB_TAG_ENV,
+    PROJECT_MODEL_VARIANT_ENV,
     load_root_dotenv,
     resolve_project_job_tag,
+    resolve_project_model_variant,
     resolve_project_path,
 )
 from common.yaml_config import load_yaml_mapping
@@ -209,30 +211,26 @@ def load_policy_config(
 
 
 def resolve_policy_model_config_path(explicit_path: Path | None = None) -> Path:
-    """按 ``.env`` 的职业标签自动解析策略模型 YAML。"""
+    """按 ``.env`` 的职业标签和模型变体解析策略模型 YAML。"""
     if explicit_path is not None:
         path = resolve_project_path(explicit_path, project_root=PROJECT_ROOT)
     else:
         load_root_dotenv(PROJECT_ROOT)
         job_tag = resolve_project_job_tag(project_root=PROJECT_ROOT)
-        job_root = POLICY_MODEL_ROOT / job_tag
-        candidates = sorted(job_root.glob("*/config.yaml"))
-        if not candidates:
-            direct_config = job_root / "config.yaml"
-            if direct_config.is_file():
-                candidates = [direct_config]
-        if not candidates:
+        variant = resolve_project_model_variant(project_root=PROJECT_ROOT)
+        path = POLICY_MODEL_ROOT / job_tag / variant / "config.yaml"
+        if not path.is_file():
+            job_root = POLICY_MODEL_ROOT / job_tag
+            available = sorted(
+                child.name
+                for child in job_root.iterdir()
+                if child.is_dir() and (child / "config.yaml").is_file()
+            ) if job_root.is_dir() else []
+            suffix = f"; available variants: {', '.join(available)}" if available else ""
             raise FileNotFoundError(
-                f"no policy model config found for {job_tag!r}; expected "
-                f"{job_root / '<variant>' / 'config.yaml'}"
+                f"no policy model config found for job {job_tag!r}, "
+                f"variant {variant!r}: {path}{suffix}"
             )
-        if len(candidates) > 1:
-            formatted = ", ".join(str(candidate) for candidate in candidates)
-            raise ValueError(
-                f"multiple policy model configs found for {job_tag!r}; "
-                f"select one explicitly: {formatted}"
-            )
-        path = candidates[0]
     if not path.is_file():
         raise FileNotFoundError(f"policy model config not found: {path}")
     return path

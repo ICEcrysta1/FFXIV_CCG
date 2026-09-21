@@ -12,6 +12,7 @@ import torch
 from torch import nn
 import yaml
 
+import common.project_config as project_config_module
 from common.torch_runtime import autocast_context, model_dtype, move_batch
 from common.torch_serialization import safe_torch_load
 from scripts.convert_fflogs import cache as cache_module
@@ -193,7 +194,7 @@ def test_load_run_config_rejects_enabled_removed_scorer_switch_aliases(
         )
 
 
-def test_policy_config_resolvers_select_job_from_env_and_cover_path_branches(monkeypatch, tmp_path):
+def test_policy_config_resolvers_select_job_and_variant_from_env_and_cover_path_branches(monkeypatch, tmp_path):
     config_path = _write_config(
         tmp_path,
         {"raw_data_dir": "data", "output_dir": "artifacts/checkpoints"},
@@ -202,6 +203,7 @@ def test_policy_config_resolvers_select_job_from_env_and_cover_path_branches(mon
     assert policy_config_module.resolve_policy_model_config_path(config_path) == config_path.resolve()
 
     monkeypatch.setenv(policy_config_module.PROJECT_JOB_TAG_ENV, "black_mage")
+    monkeypatch.setenv(policy_config_module.PROJECT_MODEL_VARIANT_ENV, "artzip")
     selected_config = policy_config_module.resolve_policy_model_config_path()
     assert selected_config == (
         policy_config_module.PROJECT_ROOT
@@ -240,6 +242,30 @@ def test_policy_config_resolvers_select_job_from_env_and_cover_path_branches(mon
         "model.pt",
     )
     assert relative_checkpoint.name == "model.pt"
+
+
+def test_policy_config_resolver_requires_model_variant(monkeypatch):
+    """未指定模型变体时不得回退到目录扫描。"""
+    monkeypatch.setattr(policy_config_module, "load_root_dotenv", lambda _root: None)
+    monkeypatch.setattr(project_config_module, "load_root_dotenv", lambda _root: None)
+    monkeypatch.setenv(policy_config_module.PROJECT_JOB_TAG_ENV, "black_mage")
+    monkeypatch.delenv(policy_config_module.PROJECT_MODEL_VARIANT_ENV, raising=False)
+
+    with pytest.raises(
+        ValueError,
+        match="missing FFXIV_MODEL_VARIANT",
+    ):
+        policy_config_module.resolve_policy_model_config_path()
+
+
+@pytest.mark.parametrize("invalid_variant", [".", "..", "nested/artzip", "C:/artzip"])
+def test_policy_config_resolver_rejects_variant_path(monkeypatch, invalid_variant):
+    """模型变体只能是职业目录下的单级目录名。"""
+    monkeypatch.setenv(policy_config_module.PROJECT_JOB_TAG_ENV, "black_mage")
+    monkeypatch.setenv(policy_config_module.PROJECT_MODEL_VARIANT_ENV, invalid_variant)
+
+    with pytest.raises(ValueError, match="single model variant directory name"):
+        policy_config_module.resolve_policy_model_config_path()
 
 
 def test_load_run_config_parses_ppg_settings(tmp_path):
