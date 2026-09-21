@@ -541,6 +541,10 @@ def _save_grpo_checkpoint(
     metrics: Mapping[str, float],
 ) -> None:
     """保存可被现有 replay/ONNX 流程读取的自描述 GRPO checkpoint。"""
+    model_variant = getattr(config, "model_variant", None)
+    if not isinstance(model_variant, str) or not model_variant.strip():
+        raise ValueError("GRPO checkpoint model_variant must be configured before saving")
+    model_variant = model_variant.strip()
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "epoch": int(iteration),
@@ -552,7 +556,7 @@ def _save_grpo_checkpoint(
         "model_config": asdict(config.model),
         "data_spec": asdict(data_spec),
         "job_tag": data_spec.job_tag,
-        "model_variant": config.model_variant,
+        "model_variant": model_variant,
         "input_contract": input_contract.to_dict(),
         "training_precision": precision,
         "run_config": asdict(config),

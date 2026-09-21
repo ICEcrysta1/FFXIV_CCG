@@ -1522,6 +1522,7 @@ def _resume_validation_context(tmp_path: Path, *, max_epochs: int = 3):
         raw_data_dir=tmp_path / "raw",
         output_dir=tmp_path / "output",
         job_tag="black_mage",
+        model_variant="artzip",
         max_epochs=max_epochs,
         model=ModelConfig(d_model=8, pair_embedding_dim=4, n_layers=1, n_heads=2, ff_dim=16),
     )
@@ -1538,6 +1539,7 @@ def _resume_validation_context(tmp_path: Path, *, max_epochs: int = 3):
         "optimizer_state_dict": optimizer.state_dict(),
         "model_config": asdict(config.model),
         "data_spec": asdict(data_spec),
+        "model_variant": "artzip",
         "input_contract": input_contract.to_dict(),
         "training_precision": config.precision,
         "metrics": {
@@ -1590,6 +1592,35 @@ def test_validate_resume_checkpoint_rejects_contract_mismatches(
         checkpoint[field] = {**checkpoint[field], **value}
     else:
         checkpoint[field] = value
+
+    with pytest.raises(ValueError, match=message):
+        training_module._validate_resume_checkpoint(
+            checkpoint,
+            data_spec=context.data_spec,
+            dataset=context.dataset,
+            config=context.config,
+            input_contract=context.input_contract,
+        )
+
+
+@pytest.mark.parametrize(
+    ("model_variant", "message"),
+    [
+        (None, "resume checkpoint missing model_variant"),
+        ("other_variant", "resume checkpoint model variant mismatch"),
+    ],
+)
+def test_validate_resume_checkpoint_rejects_model_variant_mismatch(
+    tmp_path,
+    model_variant,
+    message,
+):
+    context = _resume_validation_context(tmp_path)
+    checkpoint = dict(context.checkpoint)
+    if model_variant is None:
+        checkpoint.pop("model_variant")
+    else:
+        checkpoint["model_variant"] = model_variant
 
     with pytest.raises(ValueError, match=message):
         training_module._validate_resume_checkpoint(

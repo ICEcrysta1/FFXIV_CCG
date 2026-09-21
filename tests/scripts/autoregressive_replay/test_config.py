@@ -173,6 +173,21 @@ def test_replay_config_rejects_onnx_job_mismatch(monkeypatch, tmp_path):
         load_replay_config()
 
 
+def test_replay_config_rejects_onnx_model_variant_mismatch(monkeypatch, tmp_path):
+    package = tmp_path / "deployment"
+    package.mkdir()
+    (package / "manifest.json").write_text(
+        '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":384}},"model":{"model_variant":"other_variant"}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_BACKEND", "onnxruntime")
+    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE", str(package))
+    monkeypatch.setenv("FFXIV_JOB_TAG", "black_mage")
+
+    with pytest.raises(ValueError, match="ONNX model_variant"):
+        load_replay_config()
+
+
 def test_replay_top_p_parser_defaults_to_no_filter(monkeypatch):
     monkeypatch.delenv("AUTOREGRESSIVE_REPLAY_TOP_P", raising=False)
 

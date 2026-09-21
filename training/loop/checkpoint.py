@@ -229,6 +229,10 @@ def _save_checkpoint(
     best_key: tuple[float, float, float, float] | None = None,
     best_val_metrics: Mapping[str, float] | None = None,
 ) -> None:
+    model_variant = getattr(config, "model_variant", None)
+    if not isinstance(model_variant, str) or not model_variant.strip():
+        raise ValueError("checkpoint model_variant must be configured before saving")
+    model_variant = model_variant.strip()
     payload = {
         "epoch": epoch,
         "model_state_dict": model.state_dict(),
@@ -236,7 +240,7 @@ def _save_checkpoint(
         "model_config": asdict(config.model),
         "data_spec": asdict(data_spec),
         "job_tag": data_spec.job_tag,
-        "model_variant": config.model_variant,
+        "model_variant": model_variant,
         "input_contract": input_contract.to_dict(),
         "training_precision": config.precision,
         "run_config": asdict(config),
