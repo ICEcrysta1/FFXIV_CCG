@@ -13,16 +13,16 @@ import torch
 from common.torch_runtime import autocast_context, model_dtype
 from common.torch_serialization import safe_torch_load
 from scripts.onnx_export import DeploymentManifest, TENSOR_INPUT_NAMES
-from scripts.onnx_export.ort_runtime import (
+from scripts.onnx_export.runtime.ort_runtime import (
     ORT_PROVIDER_CUDA,
     create_ort_session,
 )
-from scripts.onnx_export.precision import (
+from scripts.onnx_export.runtime.precision import (
     PRECISION_BF16,
     onnx_torch_dtype,
 )
-from scripts.onnx_export.release import RELEASE_REPORT_FILENAME, verify_release
-from scripts.onnx_export.tensor_runtime import run_ort_tensors
+from scripts.onnx_export.release.release import RELEASE_REPORT_FILENAME, verify_release
+from scripts.onnx_export.runtime.tensor_runtime import run_ort_tensors
 from common.policy.data import DataSpec, ModelInputContract, SkillVocab
 from common.policy.model import (
     CandidateTransformerModel,

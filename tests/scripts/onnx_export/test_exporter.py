@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
-from copy import deepcopy
 import json
+from copy import deepcopy
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,55 +12,56 @@ import numpy as np
 import pytest
 import torch
 
+from common.policy.config import ModelConfig
+from common.policy.data import DataSpec, ModelInputContract, Normalizer
+from common.policy.data.schema import SceneWindowSchema, TrainingSchema
+from common.policy.model import CandidateTransformerModel
 from common.torch_serialization import safe_torch_load
 from scripts.autoregressive_replay.backends import (
     OrtPolicyBackend,
     PyTorchPolicyBackend,
     compare_backend_logits,
 )
-from scripts.onnx_export import CapacityContract, DeploymentManifest, TENSOR_INPUT_NAMES
-from scripts.onnx_export import release as release_module
-from scripts.onnx_export.artifact_io import (
+from scripts.onnx_export import TENSOR_INPUT_NAMES, CapacityContract, DeploymentManifest
+from scripts.onnx_export import export as export_module
+from scripts.onnx_export.release import release as release_module
+from scripts.onnx_export.io.artifact_io import (
     normalize_torch_reports,
     write_deterministic_npz,
 )
-from scripts.onnx_export.contract import make_inputs, slice_dynamic_inputs
-from scripts.onnx_export.deployment_profile import DeploymentProfile
-from scripts.onnx_export import exporter as exporter_module
-from scripts.onnx_export.exporter import export_package
-from scripts.onnx_export.ort_runtime import (
+from scripts.onnx_export.contracts.contract import make_inputs, slice_dynamic_inputs
+from scripts.onnx_export.contracts.deployment_profile import DeploymentProfile
+from scripts.onnx_export.export import export_package
+from scripts.onnx_export.export import environment as environment_module
+from scripts.onnx_export.export import publish as publish_module
+from scripts.onnx_export.runtime.ort_runtime import (
     ORT_DISABLE_CPU_FALLBACK_KEY,
     create_ort_session,
     ort_session_options,
     ort_session_providers,
     resolve_ort_providers,
 )
-from scripts.onnx_export.precision import (
+from scripts.onnx_export.runtime.precision import (
     onnx_torch_dtype,
     parity_max_abs_tolerance,
     precision_onnx_data_type,
 )
-from scripts.onnx_export.release import (
+from scripts.onnx_export.release.release import (
     parity_artifact_bindings,
     record_parity_result,
     record_successful_parity,
     verify_release,
 )
-from scripts.onnx_export.release_policy import minimum_empty_action_budget
-from scripts.onnx_export.runtime_targets import (
+from scripts.onnx_export.release.policy import minimum_empty_action_budget
+from scripts.onnx_export.runtime.runtime_targets import (
     BF16_TARGET_ONNX_VERSION,
     BF16_TARGET_ONNXSCRIPT_VERSION,
     BF16_TARGET_ORT_VERSION,
 )
-from scripts.onnx_export.tensor_runtime import (
+from scripts.onnx_export.runtime.tensor_runtime import (
     GOLDEN_BF16_ENCODING,
     tensor_to_golden_array,
 )
-from common.policy.data import ModelInputContract, Normalizer
-from common.policy.data.schema import SceneWindowSchema, TrainingSchema
-from common.policy.config import ModelConfig
-from common.policy.data import DataSpec
-from common.policy.model import CandidateTransformerModel
 
 
 def test_exception_note_falls_back_to_stderr(capsys):
@@ -109,7 +110,7 @@ def test_failed_export_keeps_previous_valid_directory(tmp_path, monkeypatch):
     def fail(**_kwargs):
         raise RuntimeError("validation failed")
 
-    monkeypatch.setattr("scripts.onnx_export.exporter._build_package", fail)
+    monkeypatch.setattr("scripts.onnx_export.export.api._build_package", fail)
     with pytest.raises(RuntimeError, match="validation failed"):
         export_package(
             checkpoint_path=checkpoint,
@@ -134,8 +135,8 @@ def test_publish_directory_retries_transient_windows_access_denied(monkeypatch):
             if attempts["count"] < 3:
                 raise PermissionError(5, "access denied")
 
-    monkeypatch.setattr(exporter_module.time, "sleep", lambda _seconds: None)
-    exporter_module._rename_with_retry(
+    monkeypatch.setattr(publish_module.time, "sleep", lambda _seconds: None)
+    publish_module.rename_with_retry(
         FlakyPath(),
         object(),
         operation="test rename",
@@ -282,8 +283,8 @@ def test_direct_bf16_export_rejects_unpinned_exporter_versions(
     checkpoint = tmp_path / "checkpoint.pt"
     checkpoint.write_bytes(b"not-read")
     monkeypatch.setattr(
-        exporter_module,
-        "_import_onnx_dependencies",
+        environment_module,
+        "import_onnx_dependencies",
         lambda: (
             SimpleNamespace(__version__=BF16_TARGET_ONNX_VERSION),
             SimpleNamespace(__version__=BF16_TARGET_ORT_VERSION),
@@ -406,7 +407,10 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
     pytest.importorskip("onnxruntime")
     pytest.importorskip("onnxscript")
     checkpoint = tmp_path / "checkpoint.pt"
-    data_spec, input_contract = _write_small_checkpoint(checkpoint, activation=activation)
+    data_spec, _input_contract = _write_small_checkpoint(
+        checkpoint,
+        activation=activation,
+    )
     profile = tmp_path / "deployment-profile.json"
     _write_small_profile(profile)
     output = tmp_path / "deployment"
@@ -919,14 +923,14 @@ def test_load_policy_rejects_removed_candidate_shared_semantics(tmp_path):
     torch.save(payload, checkpoint)
 
     with pytest.raises(ValueError, match="removed candidate-shared RoPE"):
-        exporter_module.load_policy(checkpoint, precision="float32")
+        export_module.load_policy(checkpoint, precision="float32")
 
 
 @pytest.mark.parametrize("activation", ("gelu", "swiglu"))
 def test_load_policy_preserves_ffn_weights_and_rejects_mislabeled_activation(tmp_path, activation):
     checkpoint = tmp_path / "checkpoint.pt"
     _write_small_checkpoint(checkpoint, activation=activation)
-    policy, _, _, _, payload = exporter_module.load_policy(checkpoint, precision="float32")
+    policy, _, _, _, payload = export_module.load_policy(checkpoint, precision="float32")
     assert policy.model.config.transformer_activation == activation
     for name, tensor in policy.model.state_dict().items():
         torch.testing.assert_close(tensor, payload["model_state_dict"][name], atol=0, rtol=0)
@@ -939,7 +943,7 @@ def test_load_policy_preserves_ffn_weights_and_rejects_mislabeled_activation(tmp
     mislabeled = tmp_path / "mislabeled.pt"
     torch.save(payload, mislabeled)
     with pytest.raises(RuntimeError, match=r"Error\(s\) in loading state_dict"):
-        exporter_module.load_policy(mislabeled, precision="float32")
+        export_module.load_policy(mislabeled, precision="float32")
 
 
 def _write_small_checkpoint(

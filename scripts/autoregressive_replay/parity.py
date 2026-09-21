@@ -10,13 +10,13 @@ from pathlib import Path
 from .backends import OrtPolicyBackend, ParityPolicyBackend
 from .config import AutoregressiveReplayConfig
 from .replay import AutoregressiveReplay
-from scripts.onnx_export.release import (
+from scripts.onnx_export.release.release import (
     RELEASE_GATE_VERSION,
     parity_artifact_bindings,
     package_runtime_targets,
     record_parity_result,
 )
-from scripts.onnx_export.precision import parity_max_abs_tolerance
+from scripts.onnx_export.runtime.precision import parity_max_abs_tolerance
 
 
 def run_rollout_parity(

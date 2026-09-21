@@ -8,8 +8,8 @@ import pytest
 import torch
 
 from scripts.onnx_export import CapacityContract, OnnxPolicy
-from scripts.onnx_export.policy import stable_masked_softmax
-from scripts.onnx_export.validation import validate_pytorch_matrix
+from scripts.onnx_export.policy.policy import stable_masked_softmax
+from scripts.onnx_export.runtime.validation import validate_pytorch_matrix
 from common.policy.config import ModelConfig
 from common.policy.data import DataSpec
 from common.policy.model import (

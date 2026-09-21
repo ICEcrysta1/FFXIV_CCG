@@ -24,15 +24,15 @@ from common.policy.config import (
 )
 from common.policy.replay import AutoregressiveReplayConfig
 from common.torch_serialization import safe_torch_load
-from scripts.onnx_export.config import (
+from scripts.onnx_export.config.config import (
     AUTOREGRESSIVE_REPLAY_CHECKPOINT_ENV,
     AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE_ENV,
     AUTOREGRESSIVE_REPLAY_ORT_PROVIDER_ENV,
     AUTOREGRESSIVE_REPLAY_SCENE_JSON_ENV,
     resolve_onnx_package_path,
 )
-from scripts.onnx_export.ort_runtime import ORT_PROVIDER_CUDA
-from scripts.onnx_export.precision import SUPPORTED_PRECISIONS
+from scripts.onnx_export.runtime.ort_runtime import ORT_PROVIDER_CUDA
+from scripts.onnx_export.runtime.precision import SUPPORTED_PRECISIONS
 AUTOREGRESSIVE_REPLAY_BACKEND_ENV = "AUTOREGRESSIVE_REPLAY_BACKEND"
 AUTOREGRESSIVE_REPLAY_OUTPUT_ENV = "AUTOREGRESSIVE_REPLAY_OUTPUT"
 AUTOREGRESSIVE_REPLAY_SCENE_MODE_ENV = "AUTOREGRESSIVE_REPLAY_SCENE_MODE"

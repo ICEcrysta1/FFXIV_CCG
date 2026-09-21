@@ -6,6 +6,7 @@
 
 ### Changed
 
+- 按功能组整理 `scripts/onnx_export` 目录：将导出执行模块平铺到 `export/`，并将配置、部署契约、运行时、发布、policy 与产物 I/O 分别归入独立子目录；删除旧的巨型 `exporter.py` 入口，迁移内部导入和测试，CLI 使用方式保持不变。
 - 拆分 ONNX 导出器的环境门禁、checkpoint/部署契约加载、ONNX 盖章、运行时验证、产物文档和 manifest 装配，保持原有导出行为与验收顺序不变，并整理 Ruff 检查。
 - 训练程序化入口在模型初始化前统一拒绝缺失或空白的 `model_variant`，避免日志输出 `None` 与保存端校验时机不一致，并补充入口负例测试。
 - 补充 ONNX manifest 的 `contract`、`model`、`capacity`、`history_capacity` 缺失字段负例测试；训练模型初始化与完成日志输出 `model_variant`，便于区分多变体训练。

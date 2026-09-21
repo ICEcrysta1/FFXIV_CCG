@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from scripts.onnx_export.precision import SUPPORTED_PRECISIONS
+from scripts.onnx_export.runtime.precision import SUPPORTED_PRECISIONS
 
 from .config import load_replay_config
 from .outputs import write_markdown

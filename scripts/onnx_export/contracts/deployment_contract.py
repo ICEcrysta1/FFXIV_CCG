@@ -12,15 +12,15 @@ import torch
 from common.policy.data import DataSpec, ModelInputContract
 from common.policy.model.repetition import parse_repetition_config
 
-from .artifact_io import file_sha256
+from ..io.artifact_io import file_sha256
 from .contract import CapacityContract, OUTPUT_NAMES, TENSOR_INPUT_NAMES
 from .deployment_profile import stable_sha256
-from .precision import (
+from ..runtime.precision import (
     SUPPORTED_PRECISIONS,
     onnx_torch_dtype,
     precision_onnx_dtype,
 )
-from .tensor_runtime import GOLDEN_FORMAT, golden_encoding
+from ..runtime.tensor_runtime import GOLDEN_FORMAT, golden_encoding
 
 
 # 候选合法性与 Sidecar 执行语义变化后，旧导出包不得继续被部署侧接受。
@@ -473,7 +473,7 @@ class DeploymentManifest:
                 "unsupported deployment manifest version; re-export the package: "
                 f"{version} != {DEPLOYMENT_MANIFEST_VERSION}"
             )
-        schema_path = Path(__file__).with_name(MANIFEST_SCHEMA_FILENAME)
+        schema_path = Path(__file__).resolve().parents[1] / MANIFEST_SCHEMA_FILENAME
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         try:
             import jsonschema

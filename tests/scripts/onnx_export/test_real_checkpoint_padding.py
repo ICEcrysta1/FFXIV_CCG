@@ -9,14 +9,13 @@ from pathlib import Path
 import pytest
 import torch
 
+from common.policy.config import ModelConfig
+from common.policy.data.input_contract import INPUT_CONTRACT_VERSION
 from common.torch_serialization import safe_torch_load
 from scripts.onnx_export import CapacityContract, DeploymentManifest
-from scripts.onnx_export.deployment_profile import DeploymentProfile
-from scripts.onnx_export.exporter import export_package, load_policy
-from scripts.onnx_export.validation import validate_pytorch_matrix
-from common.policy.data.input_contract import INPUT_CONTRACT_VERSION
-from common.policy.config import ModelConfig
-
+from scripts.onnx_export.contracts.deployment_profile import DeploymentProfile
+from scripts.onnx_export.export import export_package, load_policy
+from scripts.onnx_export.runtime.validation import validate_pytorch_matrix
 
 CHECKPOINT_PATH = Path("artifacts/checkpoints/black_mage/artzip_bc/best.pt")
 

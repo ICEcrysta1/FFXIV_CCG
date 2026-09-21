@@ -5,9 +5,9 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .config import load_export_config
-from .exporter import export_from_config
-from .precision import SUPPORTED_PRECISIONS
+from .export import export_from_config
+from .config.config import load_export_config
+from .runtime.precision import SUPPORTED_PRECISIONS
 
 
 def main() -> int:

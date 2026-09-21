@@ -9,12 +9,12 @@ import json
 from pathlib import Path
 import sys
 
-from .artifact_io import file_sha256, json_payload_sha256, write_json_atomic
-from .deployment_contract import DeploymentManifest
-from .ort_runtime import ORT_PROVIDER_CUDA
-from .precision import parity_max_abs_tolerance
-from .release_policy import validate_release_scenario_request
-from .runtime_targets import runtime_targets, validate_runtime_targets
+from ..io.artifact_io import file_sha256, json_payload_sha256, write_json_atomic
+from ..contracts.deployment_contract import DeploymentManifest
+from ..runtime.ort_runtime import ORT_PROVIDER_CUDA
+from ..runtime.precision import parity_max_abs_tolerance
+from ..runtime.runtime_targets import runtime_targets, validate_runtime_targets
+from .policy import validate_release_scenario_request
 
 
 RELEASE_REPORT_FILENAME = "release_report.json"
