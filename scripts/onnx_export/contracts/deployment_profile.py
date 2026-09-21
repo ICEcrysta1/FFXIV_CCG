@@ -64,7 +64,11 @@ class DeploymentProfile:
         normalized = str(job_tag)
         if re.fullmatch(r"[a-z][a-z0-9_]*", normalized) is None:
             raise ValueError(f"unsafe deployment profile job_tag: {job_tag!r}")
-        return Path(__file__).with_name("profiles") / f"{normalized}.json"
+        return (
+            Path(__file__).resolve().parents[1]
+            / "profiles"
+            / f"{normalized}.json"
+        )
 
     def to_capacity_report(
         self,

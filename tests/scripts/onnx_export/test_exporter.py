@@ -24,16 +24,23 @@ from scripts.autoregressive_replay.backends import (
 )
 from scripts.onnx_export import TENSOR_INPUT_NAMES, CapacityContract, DeploymentManifest
 from scripts.onnx_export import export as export_module
-from scripts.onnx_export.release import release as release_module
+from scripts.onnx_export.contracts.contract import make_inputs, slice_dynamic_inputs
+from scripts.onnx_export.contracts.deployment_profile import DeploymentProfile
+from scripts.onnx_export.export import environment as environment_module
+from scripts.onnx_export.export import export_package
+from scripts.onnx_export.export import publish as publish_module
 from scripts.onnx_export.io.artifact_io import (
     normalize_torch_reports,
     write_deterministic_npz,
 )
-from scripts.onnx_export.contracts.contract import make_inputs, slice_dynamic_inputs
-from scripts.onnx_export.contracts.deployment_profile import DeploymentProfile
-from scripts.onnx_export.export import export_package
-from scripts.onnx_export.export import environment as environment_module
-from scripts.onnx_export.export import publish as publish_module
+from scripts.onnx_export.release import release as release_module
+from scripts.onnx_export.release.policy import minimum_empty_action_budget
+from scripts.onnx_export.release.release import (
+    parity_artifact_bindings,
+    record_parity_result,
+    record_successful_parity,
+    verify_release,
+)
 from scripts.onnx_export.runtime.ort_runtime import (
     ORT_DISABLE_CPU_FALLBACK_KEY,
     create_ort_session,
@@ -46,13 +53,6 @@ from scripts.onnx_export.runtime.precision import (
     parity_max_abs_tolerance,
     precision_onnx_data_type,
 )
-from scripts.onnx_export.release.release import (
-    parity_artifact_bindings,
-    record_parity_result,
-    record_successful_parity,
-    verify_release,
-)
-from scripts.onnx_export.release.policy import minimum_empty_action_budget
 from scripts.onnx_export.runtime.runtime_targets import (
     BF16_TARGET_ONNX_VERSION,
     BF16_TARGET_ONNXSCRIPT_VERSION,
@@ -222,6 +222,19 @@ def test_default_deployment_profile_rejects_unsafe_job_tag():
         DeploymentProfile.default_path("../black_mage")
     with pytest.raises(ValueError, match="unsafe"):
         DeploymentProfile.default_path(r"..\black_mage")
+
+
+def test_default_deployment_profile_path_targets_profile_directory():
+    path = DeploymentProfile.default_path("black_mage")
+
+    assert path == (
+        Path(__file__).resolve().parents[3]
+        / "scripts"
+        / "onnx_export"
+        / "profiles"
+        / "black_mage.json"
+    )
+    assert path.is_file()
 
 
 def test_multiple_torch_reports_are_combined(tmp_path):
