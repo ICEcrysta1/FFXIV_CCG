@@ -1241,7 +1241,12 @@ def test_resolve_training_loss_and_autocast_success_paths(monkeypatch):
 
 
 def test_run_training_rejects_device_and_data_contract_errors(tmp_path, monkeypatch):
-    config = RunConfig(raw_data_dir=tmp_path, output_dir=tmp_path, job_tag="black_mage")
+    config = RunConfig(
+        raw_data_dir=tmp_path,
+        output_dir=tmp_path,
+        job_tag="black_mage",
+        model_variant="artzip",
+    )
     monkeypatch.setattr(training_module.torch.cuda, "is_available", lambda: False)
     with pytest.raises(RuntimeError, match="CUDA is required"):
         training_module.run_training(config, raw_paths=[tmp_path / "one.json"], device_name="cuda")
@@ -1271,6 +1276,29 @@ def test_run_training_rejects_device_and_data_contract_errors(tmp_path, monkeypa
         training_module.run_training(
             replace(config, job_tag=None),
             raw_paths=[tmp_path / "one.json"],
+            device_name="cpu",
+        )
+
+
+@pytest.mark.parametrize("model_variant", [None, "  "])
+def test_run_training_rejects_missing_model_variant_before_loading_data(
+    tmp_path,
+    model_variant,
+):
+    config = RunConfig(
+        raw_data_dir=tmp_path,
+        output_dir=tmp_path,
+        job_tag="black_mage",
+        model_variant=model_variant,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="training model_variant must be configured before initialization",
+    ):
+        training_module.run_training(
+            config,
+            raw_paths=[tmp_path / "prepared.json"],
             device_name="cpu",
         )
 

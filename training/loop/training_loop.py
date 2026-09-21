@@ -97,6 +97,11 @@ def run_training(
     device = torch.device(device_name)
     if not raw_paths:
         raise FileNotFoundError("no prepared raw JSON files supplied for training")
+    model_variant = config.model_variant
+    if not isinstance(model_variant, str) or not model_variant.strip():
+        raise ValueError("training model_variant must be configured before initialization")
+    if model_variant != model_variant.strip():
+        config = replace(config, model_variant=model_variant.strip())
 
     train_loader, val_loader, train_dataset, val_dataset = build_dataloaders_fn(
         raw_paths,
