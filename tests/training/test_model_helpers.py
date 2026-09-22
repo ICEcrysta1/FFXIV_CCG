@@ -125,12 +125,35 @@ def _write_config(tmp_path: Path, payload: object) -> Path:
         ({"training": {"ppg": [1]}}, "training.ppg must be a mapping"),
         ({"training": {"ppg": {"gcd_count": 0}}}, "gcd_count must be >= 1"),
         ({"training": {"ppg": {"normalization": 0}}}, "normalization must be > 0"),
+        ({"training": {"max_files": 0}}, "max_files must be >= 1 or null"),
+        ({"training": {"max_files": -3}}, "max_files must be >= 1 or null"),
+        (
+            {"training": {"max_files": True}},
+            "max_files must be a positive integer or null",
+        ),
+        (
+            {"training": {"max_files": "many"}},
+            "max_files must be a positive integer or null",
+        ),
         ({"training": {"precision": "int8"}}, "precision must be one of"),
     ],
 )
 def test_load_run_config_rejects_invalid_values(tmp_path, payload, message):
     with pytest.raises(ValueError, match=message):
         config_module.load_run_config(_write_config(tmp_path, payload))
+
+
+def test_load_run_config_parses_max_files(tmp_path: Path):
+    """training.max_files 限制参与训练与验证的 raw JSON 文件数，null 表示不限制。"""
+    unlimited = config_module.load_run_config(
+        _write_config(tmp_path, {"training": {"max_files": None}})
+    )
+    assert unlimited.max_files is None
+
+    limited = config_module.load_run_config(
+        _write_config(tmp_path, {"training": {"max_files": 12}})
+    )
+    assert limited.max_files == 12
 
 
 @pytest.mark.parametrize(

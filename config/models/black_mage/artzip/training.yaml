@@ -20,6 +20,10 @@ training:
   # 学习率 warmup 的更新步数。
   warmup_steps: 500
 
+  # 参与训练和验证的 raw JSON 文件数上限；null 表示使用 raw 目录下全部有效文件。
+  # 选择时按副本子目录比例分配，再按 train_split 划分训练集与验证集。
+  max_files: 1280
+
   # 按 raw JSON 文件划分训练集和验证集的比例；文件不会被拆到两边。
   train_split: 0.9
 
@@ -71,6 +75,7 @@ training:
     enabled: true
     probability: 0.33
     min_recent: 4
+
   # 人工数据定义的 canonical 候选技能顺序；推理始终使用该顺序。
   candidate_order_file: candidate_order.yaml
 

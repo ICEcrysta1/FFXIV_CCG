@@ -85,7 +85,12 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=None, help="覆盖训练轮数")
     parser.add_argument("--batch-size", type=int, default=None, help="覆盖 batch size")
     parser.add_argument("--lr", type=float, default=None, help="覆盖学习率")
-    parser.add_argument("--max-files", type=int, default=None, help="按副本目录比例最多使用 N 个 raw JSON 文件做 smoke/test")
+    parser.add_argument(
+        "--max-files",
+        type=int,
+        default=None,
+        help="覆盖 training.max_files：按副本目录比例最多使用 N 个 raw JSON 文件；省略时读取 YAML",
+    )
     parser.add_argument("--device", default=None, help="覆盖根目录 .env 中的训练设备：cuda 或 cpu")
     parser.add_argument("--resume", type=Path, default=None, help="从指定 checkpoint 继续训练")
     args = parser.parse_args()
@@ -98,7 +103,15 @@ def main() -> None:
         model_variant=resolve_policy_model_variant(config_path),
         **({"raw_data_dir": args.raw_data_dir} if args.raw_data_dir is not None else {}),
     )
-    raw_paths = _prepare_training_caches(config, args.max_files)
+    max_files = args.max_files if args.max_files is not None else config.max_files
+    if max_files is not None and max_files < 1:
+        raise ValueError("--max-files must be >= 1")
+    logging.info(
+        "raw JSON 数量上限: %s（来源: %s）",
+        "全部有效文件" if max_files is None else max_files,
+        "--max-files" if args.max_files is not None else "training.max_files",
+    )
+    raw_paths = _prepare_training_caches(config, max_files)
     training_kwargs = {
         "raw_paths": raw_paths,
         "output_dir": args.output_dir,
