@@ -14,6 +14,7 @@ param(
     [ValidateSet(
         "menu",
         "train",
+        "resume",
         "grpo",
         "export",
         "analysis",
@@ -28,6 +29,31 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = $PSScriptRoot
 $ProjectPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
 $ScraperScript = Join-Path $ProjectRoot "scripts\fflogs_scraper.py"
+# 由项目自己的 .env / YAML 解析器给出当前职业、模型变体和产物目录，脚本不自行解析配置。
+$CheckpointProbe = @'
+import json
+
+from common.policy.config import (
+    resolve_policy_model_config_path,
+    resolve_policy_model_job_tag,
+    resolve_policy_model_variant,
+)
+from training.config import load_run_config
+
+config_path = resolve_policy_model_config_path()
+run_config = load_run_config(config_path)
+print(
+    json.dumps(
+        {
+            "job_tag": resolve_policy_model_job_tag(config_path),
+            "model_variant": resolve_policy_model_variant(config_path),
+            "config_path": str(config_path),
+            "output_dir": str(run_config.output_dir),
+            "max_files": run_config.max_files,
+        }
+    )
+)
+'@
 
 function Show-Menu {
     Write-Host ""
@@ -35,21 +61,23 @@ function Show-Menu {
     Write-Host "所有命令都使用项目 .venv，参数读取 config/ 与根目录 .env。"
     Write-Host ""
     Write-Host "  1. 训练（BC 预训练）"
-    Write-Host "  2. GRPO 后训练"
-    Write-Host "  3. ONNX 导出（导出 + PT/ORT parity 门禁 + 发布校验）"
-    Write-Host "  4. 模型分析图生成（不含损失地形图）"
-    Write-Host "  5. 模型自回归回放"
-    Write-Host "  6. FFLogs 数据下载"
+    Write-Host "  2. 恢复训练（选择已有 checkpoint）"
+    Write-Host "  3. GRPO 后训练"
+    Write-Host "  4. ONNX 导出（导出 + PT/ORT parity 门禁 + 发布校验）"
+    Write-Host "  5. 模型分析图生成（不含损失地形图）"
+    Write-Host "  6. 模型自回归回放"
+    Write-Host "  7. FFLogs 数据下载"
     Write-Host "  0. 退出"
     Write-Host ""
     $choice = Read-Host "请输入选项编号"
     $resolvedChoice = switch ($choice) {
         "1" { "train" }
-        "2" { "grpo" }
-        "3" { "export" }
-        "4" { "analysis" }
-        "5" { "replay" }
-        "6" { "fflogs" }
+        "2" { "resume" }
+        "3" { "grpo" }
+        "4" { "export" }
+        "5" { "analysis" }
+        "6" { "replay" }
+        "7" { "fflogs" }
         "0" { "exit" }
         default { throw "未知选项：$choice" }
     }
@@ -73,6 +101,70 @@ function Invoke-FFLogsDownload {
     return $LASTEXITCODE
 }
 
+function Get-ResumeTarget {
+    $raw = $CheckpointProbe | & $ProjectPython -
+    if ($LASTEXITCODE -ne 0) {
+        throw "读取模型配置失败，请检查根目录 .env 的 FFXIV_JOB_TAG 与 FFXIV_MODEL_VARIANT。"
+    }
+    try {
+        return ($raw | Out-String | ConvertFrom-Json)
+    }
+    catch {
+        throw "无法解析模型配置输出：$raw"
+    }
+}
+
+function Invoke-ResumeTraining {
+    $target = Get-ResumeTarget
+    $directory = [string]$target.output_dir
+    Write-Host ""
+    Write-Host ("当前 .env 配置：FFXIV_JOB_TAG={0}，FFXIV_MODEL_VARIANT={1}" -f $target.job_tag, $target.model_variant)
+    Write-Host ("模型配置：{0}" -f $target.config_path)
+    Write-Host ("checkpoint 目录：{0}" -f $directory)
+    $maxFiles = if ($null -eq $target.max_files) { "全部有效文件" } else { [string]$target.max_files }
+    Write-Host ("训练数据上限：{0}（来自模型 YAML 的 training.max_files）" -f $maxFiles)
+
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+        throw "找不到 checkpoint 目录：$directory（请先执行一次训练）"
+    }
+    $checkpoints = @(Get-ChildItem -LiteralPath $directory -Filter "*.pt" -File)
+    if ($checkpoints.Count -eq 0) {
+        throw "checkpoint 目录中没有 .pt 文件：$directory"
+    }
+    # 中间 checkpoint 按名称升序在前，best.pt 与 final.pt 依次排后。
+    $ordered = @()
+    $ordered += @(
+        $checkpoints |
+            Where-Object { $_.Name -notin @("best.pt", "final.pt") } |
+            Sort-Object -Property Name
+    )
+    $ordered += @($checkpoints | Where-Object { $_.Name -eq "best.pt" })
+    $ordered += @($checkpoints | Where-Object { $_.Name -eq "final.pt" })
+
+    Write-Host ""
+    for ($index = 0; $index -lt $ordered.Count; $index++) {
+        Write-Host ("  {0,2}. {1}" -f ($index + 1), $ordered[$index].Name)
+    }
+    Write-Host ""
+    $choice = (Read-Host "请输入要恢复训练的 checkpoint 编号（直接回车取消）").Trim()
+    if ([string]::IsNullOrWhiteSpace($choice)) {
+        Write-Host "已取消恢复训练。"
+        return 0
+    }
+    if ($choice -notmatch "^\d+$") {
+        throw "无效的编号：$choice"
+    }
+    $selected = [int]$choice
+    if ($selected -lt 1 -or $selected -gt $ordered.Count) {
+        throw "编号超出范围：$choice（可选 1 ~ $($ordered.Count)）"
+    }
+    $checkpoint = $ordered[$selected - 1].FullName
+    Write-Host ""
+    Write-Host ("恢复训练：{0}" -f $checkpoint)
+    & $ProjectPython -m training.train --resume $checkpoint
+    return $LASTEXITCODE
+}
+
 function Invoke-Tool {
     param(
         [Parameter(Mandatory)]
@@ -84,6 +176,9 @@ function Invoke-Tool {
         "train" {
             & $ProjectPython -m training.train
             $exitCode = $LASTEXITCODE
+        }
+        "resume" {
+            $exitCode = Invoke-ResumeTraining
         }
         "grpo" {
             & $ProjectPython -m grpo

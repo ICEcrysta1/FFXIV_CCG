@@ -135,6 +135,18 @@ def _write_config(tmp_path: Path, payload: object) -> Path:
             {"training": {"max_files": "many"}},
             "max_files must be a positive integer or null",
         ),
+        (
+            {"training": {"max_files": 1.9}},
+            "max_files must be a positive integer or null",
+        ),
+        (
+            {"training": {"max_files": 1.0}},
+            "max_files must be a positive integer or null",
+        ),
+        (
+            {"training": {"max_files": "12"}},
+            "max_files must be a positive integer or null",
+        ),
         ({"training": {"precision": "int8"}}, "precision must be one of"),
     ],
 )

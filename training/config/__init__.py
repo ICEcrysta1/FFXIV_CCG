@@ -123,23 +123,17 @@ def load_run_config(path: Path) -> RunConfig:
     max_files_raw = training_raw.get("max_files")
     if max_files_raw is None:
         max_files = None
-    elif isinstance(max_files_raw, bool):
+    elif isinstance(max_files_raw, bool) or not isinstance(max_files_raw, int):
         raise ValueError(
             "training.max_files must be a positive integer or null, "
             f"got {max_files_raw!r}"
         )
+    elif max_files_raw < 1:
+        raise ValueError(
+            f"training.max_files must be >= 1 or null, got {max_files_raw!r}"
+        )
     else:
-        try:
-            max_files = int(max_files_raw)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                "training.max_files must be a positive integer or null, "
-                f"got {max_files_raw!r}"
-            ) from exc
-        if max_files < 1:
-            raise ValueError(
-                f"training.max_files must be >= 1 or null, got {max_files_raw!r}"
-            )
+        max_files = max_files_raw
     history_truncation_raw = training_raw.get("history_truncation", {}) or {}
     if not isinstance(history_truncation_raw, dict):
         raise ValueError("training.history_truncation must be a mapping")
