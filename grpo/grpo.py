@@ -63,7 +63,7 @@ def main() -> None:
         "--checkpoint",
         type=Path,
         default=None,
-        help="初始 BC/GRPO checkpoint；缺省读取 TRAINING_MODEL_CHECKPOINT 或 best.pt",
+        help="初始 BC/GRPO checkpoint；缺省使用模型配置 output_dir 中的 best.pt",
     )
     parser.add_argument("--raw-data-dir", type=Path, default=None)
     parser.add_argument(
