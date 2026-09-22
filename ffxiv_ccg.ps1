@@ -48,14 +48,24 @@ bc_resumable, bc_rejected = collect_checkpoint_candidates(
     max_epochs=run_config.max_epochs,
 )
 grpo_output_dir = run_config.output_dir.parent / f"{run_config.output_dir.name}_grpo"
-if grpo_output_dir.is_dir():
+grpo_output_dirs = tuple(
+    sorted(
+        {
+            path
+            for path in run_config.output_dir.parent.glob(
+                f"{run_config.output_dir.name}_grpo*"
+            )
+            if path.is_dir()
+        }
+    )
+)
+grpo_candidates = []
+for directory in grpo_output_dirs:
     grpo_resumable, grpo_rejected = collect_checkpoint_candidates(
-        grpo_output_dir,
+        directory,
         max_epochs=run_config.max_epochs,
     )
-    grpo_candidates = (*grpo_resumable, *grpo_rejected)
-else:
-    grpo_candidates = ()
+    grpo_candidates.extend((*grpo_resumable, *grpo_rejected))
 
 def serialize_candidates(items, source):
     return [
@@ -77,7 +87,11 @@ print(
             "model_variant": resolve_policy_model_variant(config_path),
             "config_path": str(config_path),
             "output_dir": str(run_config.output_dir),
-            "grpo_output_dir": str(grpo_output_dir) if grpo_output_dir.is_dir() else None,
+            "grpo_output_dir": (
+                [str(path) for path in grpo_output_dirs]
+                if grpo_output_dirs
+                else None
+            ),
             "max_files": run_config.max_files,
             "max_epochs": run_config.max_epochs,
             "resumable": serialize_candidates(bc_resumable, "bc"),
@@ -205,8 +219,10 @@ function Show-CheckpointTargetSummary {
     Write-Host ("当前 .env 配置：FFXIV_JOB_TAG={0}，FFXIV_MODEL_VARIANT={1}" -f $Target.job_tag, $Target.model_variant)
     Write-Host ("模型配置：{0}" -f $Target.config_path)
     Write-Host ("BC checkpoint 目录：{0}" -f $Target.output_dir)
-    if ($null -ne $Target.grpo_output_dir) {
-        Write-Host ("GRPO checkpoint 目录：{0}" -f $Target.grpo_output_dir)
+    foreach ($directory in @($Target.grpo_output_dir)) {
+        if ($null -ne $directory) {
+            Write-Host ("GRPO checkpoint 目录：{0}" -f $directory)
+        }
     }
     $maxFiles = if ($null -eq $Target.max_files) { "全部有效文件" } else { [string]$Target.max_files }
     Write-Host ("训练数据上限：{0}（来自模型 YAML 的 training.max_files）" -f $maxFiles)
@@ -220,7 +236,7 @@ function Select-ToolCheckpoint {
     )
 
     $directories = @(
-        @($Target.output_dir, $Target.grpo_output_dir) |
+        @([string]$Target.output_dir) + @($Target.grpo_output_dir) |
             Where-Object { $null -ne $_ -and (Test-Path -LiteralPath ([string]$_) -PathType Container) }
     )
     if ($directories.Count -eq 0) {
@@ -284,8 +300,8 @@ function Invoke-Tool {
         "resume" {
             if ([string]$selectedCheckpoint.source -eq "grpo") {
                 Write-Host ""
-                Write-Host ("恢复 GRPO 后训练：{0}" -f $selectedCheckpoint.path)
-                & $ProjectPython -m grpo --checkpoint $selectedCheckpoint.path
+                Write-Host ("恢复 GRPO 后训练（恢复优化器、调度器、RNG 与 iteration）：{0}" -f $selectedCheckpoint.path)
+                & $ProjectPython -m grpo --resume $selectedCheckpoint.path
                 $exitCode = $LASTEXITCODE
             }
             else {

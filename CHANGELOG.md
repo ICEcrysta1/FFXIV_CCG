@@ -14,6 +14,9 @@
 
 ### Changed
 
+- 完善 GRPO checkpoint 恢复：新增 `python -m grpo --resume <checkpoint>`，恢复 optimizer、scheduler、RNG 与已完成的 iteration，并从下一轮继续；菜单 2 的 GRPO 选择改走完整续训，菜单 3 的 `--checkpoint` 继续保留权重热启动语义。
+- 防止 GRPO 恢复覆盖原实验历史：从 `best.pt`、`iteration_*.pt` 或 `final.pt` 分支恢复时自动创建独立续训目录，保留旧 best 基线；`latest.pt` 才在原目录追加，并让统一菜单扫描和区分多个 GRPO 输出目录。
+
 - 修复 `ffxiv_ccg.ps1 -Action grpo/export/analysis/replay` 仍进入 checkpoint 交互菜单的问题：非菜单调用现在支持 `-Checkpoint <路径>`，省略时使用配置解析出的默认 checkpoint；`resume` 在非交互模式下也不会读取 `Read-Host`，数据上限不一致时需显式使用 `-ForceResumeDataMismatch`。
 - 修复强制接受 `training.max_files` 不一致后仍沿用旧验证集 best 基线的问题：强制续训会清空旧 `best_key` 与 `best_val_metrics`，让当前数据集重新建立 `best.pt`。
 - 修复续训时 checkpoint 与当前配置的 `training.max_files` 不一致却静默更换训练集和验证集的问题：默认在 PS1 菜单中警告并以 `N`/直接回车取消，输入 `Y` 后才强制继续；命令行提供 `--force-resume-data-mismatch`，程序化训练入口同步支持显式强制参数。恢复候选读取 checkpoint 保存的数据上限并继续以 YAML/命令行当前值为训练数据权威来源。

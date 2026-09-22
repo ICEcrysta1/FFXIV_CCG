@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
 import logging
-from pathlib import Path
 import sys
-
+from dataclasses import replace
+from pathlib import Path
 
 if __package__ in {None, ""}:
     # 允许从项目根目录直接执行 `python grpo/grpo.py`。
@@ -17,7 +16,6 @@ if __package__ in {None, ""}:
 
 import torch
 
-from common.project_config import resolve_project_path
 from common.policy.config import (
     PROJECT_ROOT,
     resolve_policy_cache_dir,
@@ -27,6 +25,7 @@ from common.policy.config import (
     resolve_policy_model_job_tag,
     resolve_policy_model_variant,
 )
+from common.project_config import resolve_project_path
 from grpo.config import load_grpo_config, load_grpo_run_config
 from grpo.trainer import run_grpo_training
 
@@ -64,6 +63,13 @@ def main() -> None:
         type=Path,
         default=None,
         help="初始 BC/GRPO checkpoint；缺省使用模型配置 output_dir 中的 best.pt",
+    )
+    parser.add_argument(
+        "--resume",
+        dest="resume_checkpoint",
+        type=Path,
+        default=None,
+        help="从 GRPO checkpoint 完整续训，恢复 optimizer/scheduler/RNG/iteration",
     )
     parser.add_argument("--raw-data-dir", type=Path, default=None)
     parser.add_argument(
@@ -104,6 +110,8 @@ def main() -> None:
     parser.add_argument("--advantage-scale-floor-ratio", type=float, default=None)
     parser.add_argument("--advantage-clip", type=float, default=None)
     args = parser.parse_args()
+    if args.checkpoint is not None and args.resume_checkpoint is not None:
+        parser.error("--checkpoint 与 --resume 不能同时使用")
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -171,9 +179,10 @@ def main() -> None:
         ),
     )
 
+    selected_checkpoint = args.resume_checkpoint or args.checkpoint
     checkpoint_path = (
-        resolve_project_path(args.checkpoint, project_root=PROJECT_ROOT)
-        if args.checkpoint is not None
+        resolve_project_path(selected_checkpoint, project_root=PROJECT_ROOT)
+        if selected_checkpoint is not None
         else resolve_policy_checkpoint_path(config_path)
     )
     raw_paths = _prepare_grpo_scenes(config, args.max_files)
@@ -188,6 +197,7 @@ def main() -> None:
         output_dir=output_dir,
         device_name=resolve_policy_device(args.device),
         precision=args.precision,
+        resume=args.resume_checkpoint is not None,
     )
     print(result["final_checkpoint"])
 

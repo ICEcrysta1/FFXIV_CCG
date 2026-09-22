@@ -96,7 +96,8 @@ function Select-FfxivCcgCheckpoint {
     Write-Host ""
     Write-Host "可用 checkpoint："
     foreach ($entry in $entries) {
-        Write-Host ("  {0,3}. {1}（{2}，{3} {4}）" -f $entry.Key, $entry.Candidate.name, $entry.SourceLabel, $entry.ProgressLabel, $entry.Candidate.epoch)
+        $directoryLabel = [IO.Path]::GetFileName([string]$entry.Candidate.output_dir)
+        Write-Host ("  {0,3}. {1}（{2}，{3} {4}，目录 {5}）" -f $entry.Key, $entry.Candidate.name, $entry.SourceLabel, $entry.ProgressLabel, $entry.Candidate.epoch, $directoryLabel)
     }
     Write-Host ""
     $choice = (Read-Host $Prompt).Trim()
