@@ -50,6 +50,7 @@ print(
             "config_path": str(config_path),
             "output_dir": str(run_config.output_dir),
             "max_files": run_config.max_files,
+            "max_epochs": run_config.max_epochs,
         }
     )
 )
@@ -131,19 +132,41 @@ function Invoke-ResumeTraining {
     if ($checkpoints.Count -eq 0) {
         throw "checkpoint 目录中没有 .pt 文件：$directory"
     }
-    # 中间 checkpoint 按名称升序在前，best.pt 与 final.pt 依次排后。
+    # final.pt 的 epoch 固定等于当前 max_epochs，epoch 达到上限的中间 checkpoint 也会被
+    # 训练的续训校验拒绝，先过滤掉，避免准备完 cache 才失败。
+    $maxEpochs = [int]$target.max_epochs
+    $resumable = @()
+    $skipped = @()
+    foreach ($item in $checkpoints) {
+        $epochMatch = [regex]::Match($item.Name, "^epoch_(\d+)")
+        if ($item.Name -eq "final.pt") {
+            $skipped += $item
+        }
+        elseif ($epochMatch.Success -and [int]$epochMatch.Groups[1].Value -ge $maxEpochs) {
+            $skipped += $item
+        }
+        else {
+            $resumable += $item
+        }
+    }
+    if ($resumable.Count -eq 0) {
+        throw "没有可续训的 checkpoint：目录内 $($checkpoints.Count) 个 .pt 都已达到 training.max_epochs=$maxEpochs，请先提高该值。"
+    }
+    # 中间 checkpoint 按名称升序在前，best.pt 排后。
     $ordered = @()
-    $ordered += @(
-        $checkpoints |
-            Where-Object { $_.Name -notin @("best.pt", "final.pt") } |
-            Sort-Object -Property Name
-    )
-    $ordered += @($checkpoints | Where-Object { $_.Name -eq "best.pt" })
-    $ordered += @($checkpoints | Where-Object { $_.Name -eq "final.pt" })
+    $ordered += @($resumable | Where-Object { $_.Name -ne "best.pt" } | Sort-Object -Property Name)
+    $ordered += @($resumable | Where-Object { $_.Name -eq "best.pt" })
 
     Write-Host ""
     for ($index = 0; $index -lt $ordered.Count; $index++) {
         Write-Host ("  {0,2}. {1}" -f ($index + 1), $ordered[$index].Name)
+    }
+    if ($skipped.Count -gt 0) {
+        Write-Host ""
+        Write-Host ("已跳过 {0} 个不可续训的 checkpoint（epoch 已达 training.max_epochs={1}，需先提高该值）：" -f $skipped.Count, $maxEpochs)
+        foreach ($item in ($skipped | Sort-Object -Property Name)) {
+            Write-Host ("  - {0}" -f $item.Name)
+        }
     }
     Write-Host ""
     $choice = (Read-Host "请输入要恢复训练的 checkpoint 编号（直接回车取消）").Trim()

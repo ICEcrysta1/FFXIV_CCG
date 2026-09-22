@@ -106,6 +106,8 @@ def main() -> None:
     max_files = args.max_files if args.max_files is not None else config.max_files
     if max_files is not None and max_files < 1:
         raise ValueError("--max-files must be >= 1")
+    # 把最终生效的上限写回 RunConfig，checkpoint 里的 run_config 才能记录真实训练语料规模。
+    config = replace(config, max_files=max_files)
     logging.info(
         "raw JSON 数量上限: %s（来源: %s）",
         "全部有效文件" if max_files is None else max_files,

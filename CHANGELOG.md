@@ -6,8 +6,8 @@
 
 ### Added
 
-- 根目录 `ffxiv_ccg.ps1` 菜单新增第 2 项「恢复训练」（`-Action resume`）：脚本不自行解析配置，而是通过项目解析器读取 `.env` 的 `FFXIV_JOB_TAG` 与 `FFXIV_MODEL_VARIANT`，定位 `config/models/<job_tag>/<variant>/config.yaml` 的 `output_dir` 并列出全部 `.pt`，中间 checkpoint 按名称升序在前，`best.pt`、`final.pt` 依次排后，同时显示当前 `training.max_files` 数据上限；输入编号后执行 `python -m training.train --resume <文件>`，直接回车取消，非数字或超范围编号直接报错。
-- 训练新增 `training.max_files`：在模型 YAML 中限制参与训练与验证的 raw JSON 文件数，只接受正整数或 `null`（浮点、字符串等非整数取值直接报错，不做静默截断），`null` 表示使用 raw 目录下全部有效文件；选择时按副本子目录比例分配，再按 `train_split` 划分训练集与验证集。一键脚本无需额外参数即可控制数据规模，命令行 `--max-files` 仍然优先，启动日志会打印实际取值与来源；当前黑魔 `artzip` 配置固定为 `1280`。
+- 根目录 `ffxiv_ccg.ps1` 菜单新增第 2 项「恢复训练」（`-Action resume`）：脚本不自行解析配置，而是通过项目解析器读取 `.env` 的 `FFXIV_JOB_TAG` 与 `FFXIV_MODEL_VARIANT`，定位 `config/models/<job_tag>/<variant>/config.yaml` 的 `output_dir` 并列出可续训的 `.pt`，中间 checkpoint 按名称升序在前、`best.pt` 排后，同时显示当前 `training.max_files` 数据上限；`final.pt` 与 epoch 已达 `training.max_epochs` 的中间产物无法续训，会被跳过并单独列出；输入编号后执行 `python -m training.train --resume <文件>`，直接回车取消，非数字或超范围编号直接报错。
+- 训练新增 `training.max_files`：在模型 YAML 中限制参与训练与验证的 raw JSON 文件数，只接受正整数或 `null`（浮点、字符串等非整数取值直接报错，不做静默截断），`null` 表示使用 raw 目录下全部有效文件；选择时按副本子目录比例分配，再按 `train_split` 划分训练集与验证集。一键脚本无需额外参数即可控制数据规模，命令行 `--max-files` 仍然优先并把最终生效值写回 `RunConfig`，使 checkpoint 的 `run_config` 记录真实训练语料规模，启动日志会打印实际取值与来源；当前黑魔 `artzip` 配置固定为 `1280`。
 - 训练新增 `training.activation_checkpoint_attention_block`（默认 `false`）：置 `true` 时整块 attention（norm、Q/K/V 投影、三段 SDPA、merge、out_proj）作为一次 checkpoint 重算，反向多算一遍投影换取显存。RTX 3050 4GB batch 20 实测：`false` 1218 ms / 2930 MiB，`true` 1288 ms / 2006 MiB（省约 900 MiB）；开启确定性算法后两种粒度的前向输出与全部 253 个参数梯度逐位一致。
 - 新增 `common/policy/model/activation.py`：把 `model.transformer_activation` 的取值表、门控判定、隐层宽度折算与门控合成收敛为唯一实现，该配置现在同时驱动主干 FFN、候选打分头与 pair 融合；GELU/ReLU 走单条隐藏层，SwiGLU 走 `down(SiLU(gate(x)) * up(x))` 三投影并按矩阵参数量近似相等的口径折算隐层宽度，切换取值后需要重新训练。
 

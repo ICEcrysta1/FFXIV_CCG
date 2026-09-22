@@ -191,6 +191,7 @@ def test_train_main_forwards_cli_overrides(monkeypatch, caplog, tmp_path):
     assert calls["config"].raw_data_dir == raw_data_dir
     assert calls["prepare_config"].raw_data_dir == raw_data_dir
     assert calls["prepare_max_files"] == 7
+    assert calls["config"].max_files == 7
     assert calls["training_kwargs"] == {
         "raw_paths": prepared_paths,
         "output_dir": output_dir,
@@ -289,6 +290,7 @@ def test_train_main_uses_config_max_files_when_cli_is_absent(monkeypatch, tmp_pa
     calls: dict[str, object] = {}
 
     def fake_run_training(config, **kwargs):
+        calls["config"] = config
         calls["training_kwargs"] = kwargs
         return {
             "data_spec": SimpleNamespace(
@@ -325,6 +327,7 @@ def test_train_main_uses_config_max_files_when_cli_is_absent(monkeypatch, tmp_pa
     train_cli.main()
 
     assert calls["prepare_max_files"] == 5
+    assert calls["config"].max_files == 5
     assert calls["training_kwargs"]["raw_paths"] == [Path("prepared.json")]
 
 
