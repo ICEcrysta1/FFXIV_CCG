@@ -13,7 +13,7 @@
 
 ## 📄 FFXIV CCG 文档
 
-[FFXIV CCG](https://github.com/ICEcrysta1/FFXIV_CCG) 是一个适用于FFXIV的生成式战斗 AI 模型系列（Context Combat Generator），支持 FFLogs 数据下载、行为克隆预训练、GRPO 后训练、ONNX 导出、模型分析与自回归回放，可通过 ps1 命令行脚本一键使用。FFXIV CCG 基于Transformer架构，使其具备高效的上下文理解能力，对于适用于实时推理的情况下建议设置较小的层数和维度，例如 8x768 或者 12x512 。
+[FFXIV CCG](https://github.com/ICEcrysta1/FFXIV_CCG)（Context Combat Generator）是一个面向《最终幻想 XIV》战斗场景的生成式决策模型系列，覆盖 FFLogs 战斗日志采集、行为克隆预训练、GRPO 后训练、ONNX 部署导出、模型表征分析与自回归回放，并提供 PowerShell 命令行入口统一调用。模型以 Transformer 为骨干，依靠注意力机制对战斗上下文进行长程建模；在实时推理约束下，建议采用较小规模的层数与维度配置（例如 8×768、12×512），以在推理时延与表征能力之间取得平衡。
 
 ---
 
