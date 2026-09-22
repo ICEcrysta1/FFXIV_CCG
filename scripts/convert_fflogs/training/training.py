@@ -18,8 +18,8 @@ from common.contracts import SCENE_EPSILON
 
 from scripts.common.scene_state import SceneFactScheduler, rewrite_scene_player_state
 
-from .constants import _round_time
-from .scene_context import build_scene_context_view, normalize_scene_context, resolve_anchor
+from ..config.constants import _round_time
+from ..scene.scene_context import build_scene_context_view, normalize_scene_context, resolve_anchor
 
 OGCD_WAIT_ACTION_KEY = "ogcd_wait"
 

@@ -9,7 +9,7 @@ from common.project_config import load_root_dotenv, resolve_project_job_tag
 from common.yaml_config import load_yaml_mapping
 
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
 CONVERT_CONFIG_ROOT = _PROJECT_ROOT / "config" / "convert_fflogs"
 CONVERT_DEFAULT_CONFIG_PATH = CONVERT_CONFIG_ROOT / "default.yaml"
 CONVERT_JOB_CONFIG_DIR = CONVERT_CONFIG_ROOT / "jobs"

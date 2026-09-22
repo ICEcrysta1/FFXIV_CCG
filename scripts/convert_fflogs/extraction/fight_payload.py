@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-from .constants import DOWNTIME_BOUNDARY_MARGIN
-from .downtime import detect_downtime_windows
-from .extraction import detect_forced_movement_windows
-from .scene_context import (
+from ..config.constants import DOWNTIME_BOUNDARY_MARGIN, _round_time
+from ..scene.scene_context import (
     build_forced_movement_context,
     build_raid_buff_window_context,
     build_target_count_window_context,
@@ -14,7 +12,8 @@ from .scene_context import (
     compute_downtime_total,
     resolve_anchor,
 )
-from .utils import _round_time
+from .downtime import detect_downtime_windows
+from .extraction import detect_forced_movement_windows
 
 
 def build_output_fight_id(report_payload: dict[str, object], report_code: str) -> str:

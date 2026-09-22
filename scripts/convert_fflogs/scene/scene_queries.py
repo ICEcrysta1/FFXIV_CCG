@@ -16,7 +16,7 @@ from common.scene_window import (
     feature_index_map,
 )
 
-from .constants import SCENE_EPSILON, _round_time
+from ..config.constants import SCENE_EPSILON, _round_time
 from .scene_builders import normalize_scene_context
 
 

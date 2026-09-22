@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .source_helpers import SKILL_ID_FIELD, build_skill_feature_matrix, to_optional_int
+from ..source.source_helpers import SKILL_ID_FIELD, build_skill_feature_matrix, to_optional_int
 from .history_bank import history_reference
 
 if TYPE_CHECKING:

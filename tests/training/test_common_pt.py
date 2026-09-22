@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 
 from common.config import load_precision_config
-from scripts.convert_fflogs.sample_builder import TrainingSampleBuilder
-from scripts.convert_fflogs.source_reader import TrainingSourceReader
+from scripts.convert_fflogs.source.source_reader import TrainingSourceReader
+from scripts.convert_fflogs.training.sample_builder import TrainingSampleBuilder
 from scripts.convert_fflogs.utils import build_skill_book, load_job_project_config
 from common.policy.config import ModelConfig
 from common.policy.data import CompiledCacheReader, DataSpec, Normalizer

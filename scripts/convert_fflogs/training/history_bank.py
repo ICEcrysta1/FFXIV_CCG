@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .source_helpers import (
+from ..source.source_helpers import (
     SKILL_ID_FIELD,
     build_skill_feature_matrix,
     extract_history_after_value,

@@ -6,6 +6,8 @@
 
 ### Changed
 
+- 按功能组整理 `scripts/convert_fflogs` 目录：缓存编译、配置常量、日志提取与战斗载荷装帧、scene window、raw source、训练样本分别归入 `cache/`、`config/`、`extraction/`、`scene/`、`source/`、`training/` 子包，包根只保留 `__init__.py`、`cli.py`、`pipeline.py` 与共享 helper `utils.py`；`scripts.convert_fflogs.cache`、`scripts.convert_fflogs.config` 继续作为子包门面导出原有入口，全部内部导入、测试引用与 `docs/项目各文件说明.md` 目录树同步更新。
+- 重构 `scripts/convert_fflogs` 后与重构前 `main` 对照重跑 M5s 全量转换：100 个 raw JSON 成功 97 个、失败 3 个（`not_enough_mp` 与两个 `requires_polyglot`），失败文件、失败原因与 step/request_time 逐项一致；97 份 compiled shard 字节级相同，manifest 除路径派生的 `history_bank_id` 外逐字段一致。
 - 按功能组整理 `scripts/onnx_export` 目录：将导出执行模块平铺到 `export/`，并将配置、部署契约、运行时、发布、policy 与产物 I/O 分别归入独立子目录；删除旧的巨型 `exporter.py` 入口，迁移内部导入和测试，CLI 使用方式保持不变。
 - 拆分 ONNX 导出器的环境门禁、checkpoint/部署契约加载、ONNX 盖章、运行时验证、产物文档和 manifest 装配，保持原有导出行为与验收顺序不变，并整理 Ruff 检查。
 - 训练程序化入口在模型初始化前统一拒绝缺失或空白的 `model_variant`，避免日志输出 `None` 与保存端校验时机不一致，并补充入口负例测试。

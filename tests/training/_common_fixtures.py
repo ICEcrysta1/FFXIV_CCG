@@ -7,10 +7,10 @@ from pathlib import Path
 from common.models import ActionKind
 from scripts.common.cs_backend import SidecarBackend
 from scripts.convert_fflogs import build_training_samples
-from scripts.convert_fflogs.cache_writer import write_compiled_cache_stream
-from scripts.convert_fflogs.history_bank import build_history_bank
-from scripts.convert_fflogs.sample_builder import TrainingSampleBuilder
-from scripts.convert_fflogs.source_reader import TrainingSourceReader
+from scripts.convert_fflogs.cache.cache_writer import write_compiled_cache_stream
+from scripts.convert_fflogs.source.source_reader import TrainingSourceReader
+from scripts.convert_fflogs.training.history_bank import build_history_bank
+from scripts.convert_fflogs.training.sample_builder import TrainingSampleBuilder
 from scripts.convert_fflogs.utils import build_skill_book, load_job_project_config
 from common.policy.data import Normalizer, NormalizerConfig, SkillVocab
 from training import TrainingDataset

@@ -7,9 +7,9 @@ from concurrent.futures import Future
 
 import pytest
 
-from scripts.convert_fflogs import cache_compile as cache_compile_module
 from scripts.convert_fflogs import build_training_samples
 from scripts.convert_fflogs.cache import precompile_raw_training_caches
+from scripts.convert_fflogs.cache import cache_compile as cache_compile_module
 from tests.helpers import build_test_scene_context, targetable_window_token
 from common.policy.data import Normalizer
 from training import TrainingDataset
@@ -45,7 +45,7 @@ def test_raw_cache_compiler_only_writes_compiled_cache(cs_backend, cs_skill_book
     raw_before = raw_path.read_bytes()
 
     monkeypatch.setattr(
-        "scripts.convert_fflogs.cache_compile.convert_raw_file",
+        "scripts.convert_fflogs.cache.cache_compile.convert_raw_file",
         lambda *_args, **_kwargs: (training_payload, {}),
     )
     cache_dir = tmp_path / ".cache"

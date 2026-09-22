@@ -7,9 +7,9 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .constants import DEFAULT_DOWNTIME_GAP_SECONDS
-from .pipeline import convert_report_to_training_payload
-from .utils import build_backend, build_skill_book, load_job_project_config
+from ..config.constants import DEFAULT_DOWNTIME_GAP_SECONDS
+from ..pipeline import convert_report_to_training_payload
+from ..utils import build_backend, build_skill_book, load_job_project_config
 
 
 def convert_raw_file(

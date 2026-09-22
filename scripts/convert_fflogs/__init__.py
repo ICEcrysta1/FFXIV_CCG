@@ -11,7 +11,7 @@ from .config import (
     load_convert_fflogs_job_config,
     resolve_convert_fflogs_job_tag,
 )
-from .constants import (
+from .config.constants import (
     DEFAULT_DOWNTIME_GAP_SECONDS,
     FORCED_MOVEMENT_CONTEXT_KEY,
     FORCED_MOVEMENT_FEATURE_KEYS,
@@ -35,17 +35,17 @@ from .cache import (
     prepare_training_caches,
     precompile_raw_training_caches,
 )
-from .downtime import detect_downtime_windows
-from .extraction import (
+from .extraction.downtime import detect_downtime_windows
+from .extraction.extraction import (
     annotate_action_movement,
     detect_forced_movement_windows,
     detect_gcd_from_logs,
     extract_supported_actions,
 )
-from .fight_payload import build_fight_payload, build_output_fight_id
+from .extraction.fight_payload import build_fight_payload, build_output_fight_id
 from .pipeline import convert_report_payload, convert_report_to_training_payload
-from .raw_source import convert_raw_file
-from .scene_context import (
+from .source.raw_source import convert_raw_file
+from .scene.scene_context import (
     build_forced_movement_context,
     build_raid_buff_window_context,
     build_scene_context,
@@ -56,7 +56,7 @@ from .scene_context import (
     normalize_scene_context,
     resolve_anchor,
 )
-from .training import build_training_samples, resolve_initial_timestamp
+from .training.training import build_training_samples, resolve_initial_timestamp
 from .utils import build_backend, build_skill_book, load_job_project_config, merge_timestamps_to_windows
 
 

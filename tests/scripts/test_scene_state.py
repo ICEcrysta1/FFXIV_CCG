@@ -11,7 +11,7 @@ from scripts.common.scene_state import (
     SceneFactScheduler,
     resolve_target_count_at,
 )
-from scripts.convert_fflogs.scene_context import (
+from scripts.convert_fflogs.scene.scene_context import (
     build_raid_buff_window_token,
     build_target_count_window_token,
     build_targetable_window_token,

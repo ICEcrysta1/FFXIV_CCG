@@ -105,7 +105,7 @@ def test_build_training_samples_raises_on_explicit_label_leak(cs_backend, cs_ski
 
 def test_find_candidate_index_raises_when_action_missing():
     """候选缺失时必须抛错，禁止静默返回 0 错标训练标签。"""
-    from scripts.convert_fflogs.training import _find_candidate_index
+    from scripts.convert_fflogs.training.training import _find_candidate_index
 
     with pytest.raises(ValueError, match="not present in candidate_skill_context"):
         _find_candidate_index([{"skill_key": "fire_iii"}], "ogcd_wait")

@@ -1,4 +1,4 @@
-"""compiled cache 的兼容门面，按职责转发路径、编译和加载入口。"""
+"""compiled cache 门面：按职责转发路径选择、编译和加载入口。"""
 
 from __future__ import annotations
 
