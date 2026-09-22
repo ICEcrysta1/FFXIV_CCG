@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import torch
 
+from .attention_masks import build_cached_segment_masks
 from .split_encoder import (
     run_cached_candidate_layer,
     run_prefix_layer,
@@ -95,6 +96,15 @@ def encode_with_kv_cache(
     cls_hidden = cls_tokens
     candidate_sources = [candidate_tokens] if attention_residual is not None else None
     cls_sources = [cls_tokens] if attention_residual is not None else None
+    # 候选 / CLS 两段 mask 只取决于本步的有效性布局，与层无关：一次算好复用，
+    # 避免每层重复构造并触发 device 到 host 的同步。
+    segment_masks = build_cached_segment_masks(
+        cache.prefix_valid,
+        candidate_valid,
+        cls_valid,
+        candidate_count=candidate_count,
+        cls_count=cls_tokens.shape[1],
+    )
     for layer_index, layer in enumerate(encoder.layers):
         candidate_hidden, cls_hidden = run_cached_candidate_layer(
             layer,
@@ -113,6 +123,7 @@ def encode_with_kv_cache(
             candidate_sources=candidate_sources,
             cls_sources=cls_sources,
             query_index=2 * layer_index,
+            segment_masks=segment_masks,
         )
 
     if encoder.norm is not None:

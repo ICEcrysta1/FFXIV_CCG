@@ -5,7 +5,11 @@ from __future__ import annotations
 import torch
 from torch.utils.checkpoint import checkpoint
 
-from .attention_masks import assemble_attention, build_allowed_mask
+from .attention_masks import (
+    SegmentAttentionMask,
+    assemble_attention,
+    build_segment_mask,
+)
 from .attention_utils import (
     kv_head_count,
     merge_heads,
@@ -29,8 +33,16 @@ def _run_split_attention(
     rotary_position_encoding,
     collect_attention: bool = False,
     force_explicit_mask: bool = False,
+    segment_masks: tuple[
+        SegmentAttentionMask, SegmentAttentionMask, SegmentAttentionMask
+    ]
+    | None = None,
 ):
     """只运行 self-attention，供标准残差和 Full AttnRes 共同使用。"""
+    if segment_masks is None:
+        prefix_mask = candidate_mask = cls_mask = None
+    else:
+        prefix_mask, candidate_mask, cls_mask = segment_masks
     attention_input = layer.norm1(hidden) if layer.norm_first else hidden
     query, key, value = project_qkv(layer.self_attn, attention_input)
     query_heads, key_heads = rotate_qk(
@@ -53,6 +65,7 @@ def _run_split_attention(
         causal=True,
         collect_attention=collect_attention,
         force_explicit_mask=force_explicit_mask,
+        segment_mask=prefix_mask,
     )
     candidate_attended, candidate_attention = _attend_heads(
         layer,
@@ -63,6 +76,7 @@ def _run_split_attention(
         causal=False,
         collect_attention=collect_attention,
         force_explicit_mask=force_explicit_mask,
+        segment_mask=candidate_mask,
     )
     cls_attended, cls_attention = _attend_heads(
         layer,
@@ -73,6 +87,7 @@ def _run_split_attention(
         causal=False,
         collect_attention=collect_attention,
         force_explicit_mask=force_explicit_mask,
+        segment_mask=cls_mask,
     )
 
     if not collect_attention:
@@ -97,11 +112,12 @@ def run_head_attention(
     key_heads: torch.Tensor,
     value_heads: torch.Tensor,
     *,
-    key_valid: torch.Tensor,
+    key_valid: torch.Tensor | None = None,
     causal: bool,
     causal_offset: int = 0,
     collect_attention: bool,
     force_explicit_mask: bool = False,
+    segment_mask: SegmentAttentionMask | None = None,
 ):
     """执行单段 attention 并投影，供 prefix/KV-cache 路径复用。"""
     attended, weights = _attend_heads(
@@ -114,6 +130,7 @@ def run_head_attention(
         causal_offset=causal_offset,
         collect_attention=collect_attention,
         force_explicit_mask=force_explicit_mask,
+        segment_mask=segment_mask,
     )
     return layer.self_attn.out_proj(merge_heads(attended)), weights
 
@@ -124,11 +141,12 @@ def _attend_heads(
     key_heads: torch.Tensor,
     value_heads: torch.Tensor,
     *,
-    key_valid: torch.Tensor,
+    key_valid: torch.Tensor | None = None,
     causal: bool,
     causal_offset: int = 0,
     collect_attention: bool,
     force_explicit_mask: bool = False,
+    segment_mask: SegmentAttentionMask | None = None,
 ):
     """执行分头 attention；输出投影由整段或 KV-cache 调用方统一执行。"""
     if key_heads.shape[1] != value_heads.shape[1]:
@@ -143,14 +161,18 @@ def _attend_heads(
         )
     query_count = query_heads.shape[2]
     key_count = key_heads.shape[2]
-    allowed = build_allowed_mask(
-        key_valid,
-        query_count=query_count,
-        key_count=key_count,
-        causal=causal,
-        causal_offset=causal_offset,
-        force_explicit_mask=force_explicit_mask,
-    )
+    if segment_mask is None:
+        if key_valid is None:
+            raise ValueError("attention requires either key_valid or a precomputed mask")
+        segment_mask = build_segment_mask(
+            key_valid,
+            query_count=query_count,
+            key_count=key_count,
+            causal=causal,
+            causal_offset=causal_offset,
+            force_explicit_mask=force_explicit_mask,
+        )
+    allowed = segment_mask.allowed
     if collect_attention:
         if allowed is None and causal:
             query_positions = torch.arange(
@@ -164,12 +186,8 @@ def _attend_heads(
             allowed = key_positions <= query_positions
         attended, weights = manual_attention(query_heads, key_heads, value_heads, allowed)
     else:
-        fully_blocked = None
-        if allowed is not None:
-            fully_blocked = ~allowed.any(dim=-1)
-            safe_allowed = allowed | fully_blocked.unsqueeze(-1)
-        else:
-            safe_allowed = None
+        fully_blocked = segment_mask.fully_blocked
+        safe_allowed = segment_mask.attn_mask
 
         def sdpa(query_value, key_value, value_value):
             with layer._debug_stage("attention"):
@@ -181,7 +199,7 @@ def _attend_heads(
                     dropout_p=(
                         float(layer.self_attn.dropout) if layer.training else 0.0
                     ),
-                    is_causal=causal and safe_allowed is None,
+                    is_causal=segment_mask.is_causal,
                 )
 
         if (

@@ -7,11 +7,7 @@ from contextlib import contextmanager
 import torch
 from torch.utils.checkpoint import checkpoint
 
-from .attention_masks import (
-    assemble_attention,
-    build_allowed_mask,
-    build_split_attention_mask,
-)
+from .attention_masks import build_split_segment_masks
 from .attention_utils import (
     finish_layer,
     kv_head_count,
@@ -65,6 +61,17 @@ def run_split_encoder(
     prefix_valid = encoded["prefix_valid"]
     candidate_valid = encoded["candidate_valid"]
     cls_valid = encoded["cls_valid"]
+    # mask 只取决于 batch 的有效性布局，与层无关；这里一次算好给所有层复用，
+    # 避免每层重复构造并触发 device 到 host 的同步。
+    segment_masks = build_split_segment_masks(
+        prefix_valid,
+        candidate_valid,
+        cls_valid,
+        prefix_length=prefix_length,
+        candidate_count=candidate_count,
+        cls_count=cls_hidden.shape[1],
+        force_explicit_mask=force_explicit_mask,
+    )
 
     attention_residual = getattr(encoder, "attention_residual", None)
     layer_hidden: list[torch.Tensor] = []
@@ -83,6 +90,7 @@ def run_split_encoder(
                 rotary_position_encoding=rotary_position_encoding,
                 collect_attention=collect_attention,
                 force_explicit_mask=force_explicit_mask,
+                segment_masks=segment_masks,
             )
             if collect_attention:
                 layer_hidden.append(
@@ -110,6 +118,7 @@ def run_split_encoder(
                     rotary_position_encoding=rotary_position_encoding,
                     collect_attention=False,
                     force_explicit_mask=force_explicit_mask,
+                    segment_masks=segment_masks,
                 )
                 return outputs[:3]
 
@@ -149,6 +158,7 @@ def run_split_encoder(
             rotary_position_encoding=rotary_position_encoding,
             collect_attention=collect_attention,
             force_explicit_mask=force_explicit_mask,
+            segment_masks=segment_masks,
         )
 
     if encoder.norm is not None:
@@ -205,6 +215,7 @@ def _run_full_attention_residual_path(
     rotary_position_encoding,
     collect_attention: bool,
     force_explicit_mask: bool,
+    segment_masks,
 ):
     """执行 Full AttnRes 主路径，供普通和 checkpoint 路径共用。"""
     attention_residual = encoder.attention_residual
@@ -227,6 +238,7 @@ def _run_full_attention_residual_path(
             rotary_position_encoding=rotary_position_encoding,
             collect_attention=collect_attention,
             force_explicit_mask=force_explicit_mask,
+            segment_masks=segment_masks,
         )
         if collect_attention:
             layer_hidden.append(hidden)
@@ -256,6 +268,7 @@ def run_split_layer(
     rotary_position_encoding,
     collect_attention: bool = False,
     force_explicit_mask: bool = False,
+    segment_masks=None,
 ):
     """执行一层共享权重的 prefix、candidate 和 CLS 路径。"""
     lengths = (prefix_hidden.shape[1], candidate_hidden.shape[1], cls_hidden.shape[1])
@@ -272,6 +285,7 @@ def run_split_layer(
         rotary_position_encoding=rotary_position_encoding,
         collect_attention=collect_attention,
         force_explicit_mask=force_explicit_mask,
+        segment_masks=segment_masks,
     )
 
     # 残差、LayerNorm 和 FFN 均逐 token 独立，整段执行可共用一次投影。
@@ -295,6 +309,7 @@ def run_attention_residual_layer(
     rotary_position_encoding,
     collect_attention: bool = False,
     force_explicit_mask: bool = False,
+    segment_masks=None,
 ):
     """执行一个 Full AttnRes block，并追加 attention/FFN 两个深度源。"""
     if not layer.norm_first:
@@ -313,6 +328,7 @@ def run_attention_residual_layer(
         rotary_position_encoding=rotary_position_encoding,
         collect_attention=collect_attention,
         force_explicit_mask=force_explicit_mask,
+        segment_masks=segment_masks,
     )
 
     sources.append(layer.dropout1(attended))
@@ -339,6 +355,7 @@ def run_cached_candidate_layer(
     candidate_sources: list[torch.Tensor] | None = None,
     cls_sources: list[torch.Tensor] | None = None,
     query_index: int = 0,
+    segment_masks=None,
 ):
     """使用已缓存 prefix K/V 计算当前候选和 CLS。"""
     if attention_residual is not None:
@@ -377,26 +394,37 @@ def run_cached_candidate_layer(
     candidate_value_heads = split_heads(candidate_value, kv_head_count(layer.self_attn))
     cls_value_heads = split_heads(cls_value, kv_head_count(layer.self_attn))
 
+    if segment_masks is None:
+        candidate_mask = cls_mask = None
+    else:
+        candidate_mask, cls_mask = segment_masks
     candidate_attended, _ = run_head_attention(
         layer,
         candidate_query_heads,
         torch.cat((prefix_key, candidate_key_heads), dim=2),
         torch.cat((prefix_value, candidate_value_heads), dim=2),
-        key_valid=torch.cat(
-            (prefix_valid, candidate_valid),
-            dim=1,
+        key_valid=(
+            None
+            if candidate_mask is not None
+            else torch.cat((prefix_valid, candidate_valid), dim=1)
         ),
         causal=False,
         collect_attention=False,
+        segment_mask=candidate_mask,
     )
     cls_attended, _ = run_head_attention(
         layer,
         cls_query_heads,
         torch.cat((prefix_key, candidate_key_heads, cls_key_heads), dim=2),
         torch.cat((prefix_value, candidate_value_heads, cls_value_heads), dim=2),
-        key_valid=torch.cat((prefix_valid, candidate_valid, cls_valid), dim=1),
+        key_valid=(
+            None
+            if cls_mask is not None
+            else torch.cat((prefix_valid, candidate_valid, cls_valid), dim=1)
+        ),
         causal=False,
         collect_attention=False,
+        segment_mask=cls_mask,
     )
     if attention_residual is not None:
         candidate_sources.append(layer.dropout1(candidate_attended))
