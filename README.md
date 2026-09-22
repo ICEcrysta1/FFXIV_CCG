@@ -298,25 +298,33 @@ ONNX 导出是 checkpoint 的独立后处理，不进入训练循环。正式部
 |---|---|---|
 | `action` | `all`、`env`、`empty-parity`、`scene-parity`、`verify`、`run` | 分别执行完整流程、环境检查、空 scene parity、真实 scene parity、发布状态校验或 ONNX 回放。 |
 
-根目录提供 [onnx_pipeline.ps1](./onnx_pipeline.ps1) 作为 PT → ONNX → parity → 发布校验的一键入口。脚本本身不保存模型路径、opset、精度、Provider、容量或门禁步数，只负责调用 Python；所有协作环境差异统一写在根目录 `.env`：
+根目录提供 [ffxiv_ccg.ps1](./ffxiv_ccg.ps1) 作为项目常用工具的统一入口。脚本本身不保存模型路径、opset、精度、Provider、容量、回放解码或门禁步数，只负责用项目 `.venv` 调用 Python；所有协作环境差异统一写在 `config/` 与根目录 `.env`：
+
+| 菜单 | `-Action` | 实际命令 | 说明 |
+|---|---|---|---|
+| 1 | `train` | `python -m training.train` | BC 预训练；数据目录、超参和设备来自模型 YAML 与 `.env`。 |
+| 2 | `grpo` | `python -m grpo` | GRPO 后训练；起始 checkpoint 和采样参数来自模型 YAML 与 `.env`。 |
+| 3 | `export` | `python -m scripts.onnx_export.workflow all` | 导出 BF16 ONNX，并完成环境检查、两项 parity 门禁和发布校验。 |
+| 4 | `analysis` | `python -m scripts.model_analysis` | 生成 hidden 分布、每层 PCA、skill/pair embedding 和 attention 分析图，不含损失地形图。 |
+| 5 | `replay` | `python -m scripts.autoregressive_replay` | 使用 checkpoint 或已验证 ONNX 部署包自回归回放。 |
+| 6 | `fflogs` | `python scripts/fflogs_scraper.py ...` | 交互输入报告 URL 或报告码后下载原始 JSON。 |
 
 ```powershell
-# 交互菜单：输入 1 执行完整流程，或输入 2～7 单独执行某一步
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\onnx_pipeline.ps1
+# 交互菜单：输入 1～6 执行对应工具，0 退出
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\ffxiv_ccg.ps1
 
-# 无交互执行完整流程
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\onnx_pipeline.ps1 -Action all
-
-# 也可以只执行某一步
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\onnx_pipeline.ps1 -Action env
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\onnx_pipeline.ps1 -Action export
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\onnx_pipeline.ps1 -Action empty-parity
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\onnx_pipeline.ps1 -Action scene-parity
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\onnx_pipeline.ps1 -Action verify
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\onnx_pipeline.ps1 -Action run
+# 无交互执行指定工具
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\ffxiv_ccg.ps1 -Action train
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\ffxiv_ccg.ps1 -Action grpo
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\ffxiv_ccg.ps1 -Action export
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\ffxiv_ccg.ps1 -Action analysis
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\ffxiv_ccg.ps1 -Action replay
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\ffxiv_ccg.ps1 -Action fflogs
 ```
 
-`all` 会依次检查 CUDA/BF16/ORT 环境、导出完整 BF16 ONNX、执行空 scene 与真实 scene parity，最后核验模型哈希和发布状态。两项 parity 即使第一项失败也会继续跑完并保留审计报告；失败时部署包保持 `parity_failed`，Python 返回专用退出码 `2`，PowerShell 输出简洁中文结论而不打印预期门禁失败的 traceback。是否替换已有包只由 `.env` 的 `ONNX_EXPORT_OVERWRITE` 控制。
+模型分析菜单只生成基础分析图；需要逐层损失地形图时仍可单独执行 `python -m scripts.model_analysis --loss-landscape`。
+
+`-Action export` 会依次检查 CUDA/BF16/ORT 环境、导出完整 BF16 ONNX、执行空 scene 与真实 scene parity，最后核验模型哈希和发布状态。两项 parity 即使第一项失败也会继续跑完并保留审计报告；失败时部署包保持 `parity_failed`，Python 返回专用退出码 `2`，PowerShell 输出简洁中文结论而不打印预期门禁失败的 traceback。是否替换已有包只由 `.env` 的 `ONNX_EXPORT_OVERWRITE` 控制。
 
 ```bash
 # 先安装主依赖；这里固定 torch 2.12.0+cu132，ONNX extras 不重复声明 torch
@@ -378,7 +386,7 @@ BF16 ORT 使用 DLPack 与 I/O Binding 直接接收 CUDA `torch.bfloat16` Tensor
 
 当前正式 BF16 导出矩阵固定为 `torch==2.12.0+cu132`、`onnx==1.22.0`、`onnxscript==0.7.1`、Python `onnxruntime-gpu==1.27.0` 与 .NET `Microsoft.ML.OnnxRuntime.Gpu==1.27.0`，并严格使用 `CUDAExecutionProvider`；workflow 会在导出前逐项校验版本。ORT 1.27 的官方 GPU 包使用 CUDA 13.0 / cuDNN 9，并通过 CUDA 次版本兼容运行在 CUDA 13.x 驱动上。升级矩阵后，旧 ORT 1.26/cu126 部署包及其 parity/release 证明不再代表当前正式环境，必须重新导出并重新执行空 scene 128 GCD 与真实 scene 100 执行动作门禁后，才能声明新的发布状态。
 
-Parity 报告会记录 checkpoint、`model.onnx`、manifest 和部署 contract 的 SHA-256。只有 `onnx_pipeline.ps1` / `scripts.onnx_export.workflow` 的显式正式门禁入口能把结果登记到部署包；普通 `--parity-onnx-package` 只生成外部调试报告，即使步数与正式门禁相同也不会改变发布状态。正式证据还绑定门禁版本、manifest 精度和该精度固定容差。每次模型调用同时保存双方 raw logits 差异、按分数排序的 Top-1/Top-3、Top-3 集合是否一致及宿主最终动作。空 scene 128 GCD 与真实 scene 100 执行动作两项都通过后，`release_report.json` 晋升为 `release_validated`；它是当前发布状态的唯一来源和原子提交点。`export_report.json` 只作为导出验证快照，v3 门禁登记不再改写它，也不能用它判断当前发布状态。Parity 证据按内容哈希使用不可变文件名，重跑或 v1 迁移替换下来的证据会登记到 `superseded_parity_reports`，不会覆盖已有通过证据；可捕获的提交失败会删除本次未提交证据。普通 ONNX 回放只校验并返回当前生效证据，不暴露未经复核的 superseded 条目；正式登记与 workflow `verify` 才额外流式校验并返回全部历史，避免长期重跑后增加每次 ORT session 的启动成本。普通 ONNX 回放或 .NET 加载不需要额外传递发布参数；模型或 manifest 改变后，旧发布证明会因 SHA 不匹配而自动失效。
+Parity 报告会记录 checkpoint、`model.onnx`、manifest 和部署 contract 的 SHA-256。只有 `ffxiv_ccg.ps1` (`-Action export`) / `scripts.onnx_export.workflow` 的显式正式门禁入口能把结果登记到部署包；普通 `--parity-onnx-package` 只生成外部调试报告，即使步数与正式门禁相同也不会改变发布状态。正式证据还绑定门禁版本、manifest 精度和该精度固定容差。每次模型调用同时保存双方 raw logits 差异、按分数排序的 Top-1/Top-3、Top-3 集合是否一致及宿主最终动作。空 scene 128 GCD 与真实 scene 100 执行动作两项都通过后，`release_report.json` 晋升为 `release_validated`；它是当前发布状态的唯一来源和原子提交点。`export_report.json` 只作为导出验证快照，v3 门禁登记不再改写它，也不能用它判断当前发布状态。Parity 证据按内容哈希使用不可变文件名，重跑或 v1 迁移替换下来的证据会登记到 `superseded_parity_reports`，不会覆盖已有通过证据；可捕获的提交失败会删除本次未提交证据。普通 ONNX 回放只校验并返回当前生效证据，不暴露未经复核的 superseded 条目；正式登记与 workflow `verify` 才额外流式校验并返回全部历史，避免长期重跑后增加每次 ORT session 的启动成本。普通 ONNX 回放或 .NET 加载不需要额外传递发布参数；模型或 manifest 改变后，旧发布证明会因 SHA 不匹配而自动失效。
 
 首版黑魔通过一次当前 1,912 场 raw 语料扫描得到 scene 实测最大值 160（P99=116），记录为 deployment profile 证据；模型配置声明 `scene_capacity: 200`（不小于实测最大值），导出时校验。日常导出不扫描 raw 或 compiled cache。history 容量直接读取 checkpoint 的 `model_config.history_capacity`，当前正式配置为 `384`，具体值仍以 checkpoint 的 `model_config` 为准。契约固定 `batch=1`、候选数和全部字段维度由 checkpoint 决定，scene/history 都在右侧补位；物理 token 总长自动计算为 `scene_capacity + history_capacity + candidate_count + CLS`，不再配置 `max_sequence_length`；补位位置的 mask 为 `False`，各语义段的 position id 分别从 0 起算，超出容量直接报错，不会静默截断。CLI 使用 `torch.onnx.export(..., dynamo=True)` 并显式设置 opset，生成 `model.onnx`、完整签名 manifest、容量证据、确定性 golden 输入/输出和两类导出报告。发布前会执行 ONNX checker、shape inference、ORT session、PT/ONNX 参数体量审计和空/满/临界 padding/parity 矩阵；参数体量比例保留在报告中用于审计，不把易受导出器常量折叠影响的固定比例作为单独失败条件。全部验证通过后才原子替换目标目录。
 

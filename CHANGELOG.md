@@ -11,6 +11,7 @@
 
 ### Changed
 
+- 根目录 `onnx_pipeline.ps1` 改造为通用工具入口 `ffxiv_ccg.ps1`：中文编号菜单只保留训练（BC 预训练）、GRPO 后训练、ONNX 导出、模型分析图生成、模型自回归回放和 FFLogs 数据下载六项，并支持 `-Action` 无交互调用；ONNX 导出沿用 `scripts.onnx_export.workflow all` 的完整 parity 门禁与发布校验，模型分析不再生成逐层损失地形图，FFLogs 下载在菜单内交互输入报告 URL 或报告码，其余业务参数统一读取 `config/` 与根目录 `.env`；`README.md` 与 `docs/项目各文件说明.md` 同步更新入口说明。
 - split attention 的可见性 mask 改为每次前向只构造一次并跨层复用：prefix / candidate / CLS 三段的允许矩阵、全屏蔽行安全列与 `is_causal` 判定在进入层循环前算好，KV-cache 解码路径同样一次算好候选与 CLS 两段；`force_explicit_mask` 仍保持完全不读 device 取值的静态控制流，ONNX 导出路径不受影响。实测3050下训练 step 1246→1218 ms、峰值显存 2976→2930 MiB、单步 device 到 host 同步 38→2，KV 解码步 43.98→40.50 ms、同步 29→5，`logits` / `hidden` / 12 层 attention 与重构前逐位一致。
 - 候选打分头由固定 ReLU 的 `scorer.network` 两层 MLP 改为按配置解析的 `gate_proj`/`up_proj`/`down_proj` 布局；加载旧打分头 checkpoint 时直接提示按当前激活配置重新训练，ONNX 真实 checkpoint 回归测试同步按该条件跳过。
 - 按功能组整理 `scripts/convert_fflogs` 目录：缓存编译、配置常量、日志提取与战斗载荷装帧、scene window、raw source、训练样本分别归入 `cache/`、`config/`、`extraction/`、`scene/`、`source/`、`training/` 子包，包根只保留 `__init__.py`、`cli.py`、`pipeline.py` 与共享 helper `utils.py`；`scripts.convert_fflogs.cache`、`scripts.convert_fflogs.config` 继续作为子包门面导出原有入口，全部内部导入、测试引用与 `docs/项目各文件说明.md` 目录树同步更新。
