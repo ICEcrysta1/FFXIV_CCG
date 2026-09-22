@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import importlib
-import random
 import subprocess
 import sys
 from copy import deepcopy
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -422,146 +421,6 @@ def test_grpo_training_closes_replay_session_on_outer_failure(monkeypatch, tmp_p
     assert FakeSession.instance.close_calls == 1
 
 
-def test_grpo_resume_restores_state_starts_next_iteration_and_preserves_history(
-    monkeypatch,
-    tmp_path,
-):
-    checkpoint_path = tmp_path / "artzip_bc_grpo" / "best.pt"
-    checkpoint_path.parent.mkdir()
-    scene_path = tmp_path / "scene.json"
-    scene_path.write_text("{}", encoding="utf-8", newline="\n")
-    config = GrpoRunConfig(
-        raw_data_dir=tmp_path / "raw",
-        output_dir=tmp_path / "artzip_bc",
-        job_tag="black_mage",
-    )
-    saved_grpo = GrpoConfig(group_size=2, max_iterations=1)
-    current_grpo = replace(saved_grpo, max_iterations=2)
-
-    class FakeModel(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.weight = torch.nn.Parameter(torch.ones(1))
-            self.config = config.model
-
-    source_model = FakeModel()
-    source_optimizer = torch.optim.AdamW(source_model.parameters(), lr=0.01)
-    source_scheduler = torch.optim.lr_scheduler.LambdaLR(source_optimizer, lambda _: 1.0)
-    source_optimizer.zero_grad(set_to_none=True)
-    source_model.weight.sum().backward()
-    source_optimizer.step()
-    source_scheduler.step()
-    saved_python_state = random.getstate()
-    saved_torch_state = torch.get_rng_state()
-    resume_payload = {
-        "epoch": 1,
-        "grpo_iteration": 1,
-        "grpo_checkpoint": True,
-        "model_state_dict": source_model.state_dict(),
-        "optimizer_state_dict": source_optimizer.state_dict(),
-        "scheduler_state_dict": source_scheduler.state_dict(),
-        "grpo_config": asdict(saved_grpo),
-        "metrics": {"iteration": 1.0, "greedy_ppg_after": 5.0},
-        "rng_state": {
-            "python": saved_python_state,
-            "torch": saved_torch_state,
-            "cuda": None,
-        },
-    }
-    torch.save(resume_payload, checkpoint_path)
-
-    expected_python = random.Random()
-    expected_python.setstate(saved_python_state)
-    expected_python_value = expected_python.random()
-    expected_torch = torch.Generator()
-    expected_torch.set_state(saved_torch_state)
-    expected_torch_value = torch.rand(1, generator=expected_torch).item()
-
-    class FakeBackend:
-        def __init__(self):
-            self.model = FakeModel()
-            self.model.load_state_dict(source_model.state_dict())
-            self.data_spec = SimpleNamespace(
-                job_tag="black_mage",
-                num_candidates=1,
-                candidate_action_keys=("fire",),
-            )
-            self.input_contract = object()
-            self.repetition = SimpleNamespace()
-            self.checkpoint = resume_payload
-
-    backend = FakeBackend()
-
-    class FakeSession:
-        def __init__(self, _config, *, backend, cache_store):
-            del _config, cache_store
-            self.backend = backend
-
-        def close(self):
-            pass
-
-    observed: dict[str, object] = {}
-
-    def fake_update(model, optimizer, scheduler, *args, **kwargs):
-        del model, args, kwargs
-        observed["python_random"] = random.random()
-        observed["torch_random"] = torch.rand(1).item()
-        observed["optimizer"] = deepcopy(optimizer.state_dict())
-        observed["scheduler"] = deepcopy(scheduler.state_dict())
-        return {"loss": 0.0, "kl": 0.0, "entropy": 0.0}
-
-    saved_checkpoints: list[tuple[str, int]] = []
-    monkeypatch.setattr(
-        "grpo.trainer.PyTorchPolicyBackend",
-        lambda *_args, **_kwargs: backend,
-    )
-    monkeypatch.setattr("grpo.trainer.AutoregressiveReplaySession", FakeSession)
-    monkeypatch.setattr(
-        "grpo.trainer.resolve_policy_cache_dir",
-        lambda _job_tag: tmp_path / "cache",
-    )
-    monkeypatch.setattr(
-        "grpo.trainer.resolve_policy_grpo_dir",
-        lambda _job_tag: tmp_path / "rollouts",
-    )
-    monkeypatch.setattr(
-        "grpo.trainer._run_scene_rollout",
-        lambda *_args, **_kwargs: (
-            SimpleNamespace(ppg=1.0),
-            (_decision(history_length=0, scene_length=0, action_index=0),),
-        ),
-    )
-    monkeypatch.setattr("grpo.trainer._update_policy", fake_update)
-    monkeypatch.setattr(
-        "grpo.trainer._save_grpo_checkpoint",
-        lambda path, **kwargs: saved_checkpoints.append(
-            (path.name, kwargs["iteration"])
-        ),
-    )
-
-    result = run_grpo_training(
-        config,
-        grpo=current_grpo,
-        checkpoint_path=checkpoint_path,
-        raw_paths=(scene_path,),
-        device_name="cpu",
-        resume=True,
-    )
-
-    assert observed["python_random"] == pytest.approx(expected_python_value)
-    assert observed["torch_random"] == pytest.approx(expected_torch_value)
-    assert observed["optimizer"]["state"]
-    assert observed["scheduler"] == source_scheduler.state_dict()
-    assert saved_checkpoints == [
-        ("iteration_002.pt", 2),
-        ("latest.pt", 2),
-        ("final.pt", 2),
-    ]
-    assert result["best_greedy_ppg"] == pytest.approx(5.0)
-    assert result["output_dir"].name == "artzip_bc_grpo_resume_001"
-    assert (result["output_dir"] / "best.pt").is_file()
-
-
 @dataclass
 class _StubConfig:
     raw_data_dir: Path
@@ -627,27 +486,21 @@ def test_grpo_cli_forwards_max_files_and_overrides(monkeypatch, capsys, tmp_path
     assert calls["kwargs"]["grpo"].max_iterations == 2
     assert calls["kwargs"]["checkpoint_path"] == tmp_path / "best.pt"
     assert calls["kwargs"]["device_name"] == "cpu"
-    assert calls["kwargs"]["resume"] is False
     assert "final.pt" in capsys.readouterr().out
 
-    resume_path = tmp_path / "grpo" / "latest.pt"
+def test_grpo_cli_rejects_resume_option(monkeypatch):
+    cli = importlib.import_module("grpo.grpo")
     monkeypatch.setattr(
         sys,
         "argv",
         [
             "grpo.py",
-            "--config",
-            str(config_path),
             "--resume",
-            str(resume_path),
-            "--device",
-            "cpu",
         ],
     )
-    cli.main()
-
-    assert calls["kwargs"]["checkpoint_path"] == resume_path
-    assert calls["kwargs"]["resume"] is True
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+    assert exc_info.value.code == 2
 
 
 def test_grpo_directory_follows_env_cache_root_and_job(monkeypatch, tmp_path):

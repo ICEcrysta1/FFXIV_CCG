@@ -4,7 +4,7 @@ Set-StrictMode -Version Latest
 
 $script:ToolMenuEntries = @(
     [PSCustomObject]@{ Number = "1"; Action = "train"; Label = "训练（BC 预训练）" }
-    [PSCustomObject]@{ Number = "2"; Action = "resume"; Label = "恢复训练（选择 BC/GRPO checkpoint）" }
+    [PSCustomObject]@{ Number = "2"; Action = "resume"; Label = "恢复训练（选择 BC checkpoint）" }
     [PSCustomObject]@{ Number = "3"; Action = "grpo"; Label = "GRPO 后训练" }
     [PSCustomObject]@{ Number = "4"; Action = "export"; Label = "ONNX 导出（导出 + PT/ORT parity 门禁 + 发布校验）" }
     [PSCustomObject]@{ Number = "5"; Action = "analysis"; Label = "模型分析图生成（不含损失地形图）" }

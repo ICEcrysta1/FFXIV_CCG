@@ -249,12 +249,12 @@ function Select-ToolCheckpoint {
     if ($resumable.Count -eq 0 -and $rejected.Count -eq 0 -and $grpo.Count -eq 0) {
         throw "BC/GRPO checkpoint 目录中没有 .pt 文件：$directory"
     }
-    if ($ResumableOnly -and $resumable.Count -eq 0 -and $grpo.Count -eq 0) {
-        throw "没有可恢复的 BC/GRPO checkpoint：BC 目录内 $($rejected.Count) 个 .pt 的 epoch 都已达到 training.max_epochs=$($Target.max_epochs)，且没有 GRPO checkpoint。"
+    if ($ResumableOnly -and $resumable.Count -eq 0) {
+        throw "没有可恢复的 BC checkpoint：BC 目录内 $($rejected.Count) 个 .pt 的 epoch 都已达到 training.max_epochs=$($Target.max_epochs)。"
     }
 
-    # BC 续训只允许当前 max_epochs 尚未完成的文件；GRPO checkpoint 按迭代结果直接可选。
-    $candidates = if ($ResumableOnly) { @($resumable) + @($grpo) } else { @($resumable) + @($rejected) + @($grpo) }
+    # 恢复训练只允许 BC；GRPO checkpoint 只能作为新的 GRPO 权重起点。
+    $candidates = if ($ResumableOnly) { @($resumable) } else { @($resumable) + @($rejected) + @($grpo) }
     if ($ResumableOnly -and $rejected.Count -gt 0) {
         Write-Host ""
         Write-Host ("已跳过 {0} 个不可续训的 checkpoint（epoch 已达 training.max_epochs={1}，需先提高该值）：" -f $rejected.Count, $Target.max_epochs)
@@ -299,10 +299,7 @@ function Invoke-Tool {
         }
         "resume" {
             if ([string]$selectedCheckpoint.source -eq "grpo") {
-                Write-Host ""
-                Write-Host ("恢复 GRPO 后训练（恢复优化器、调度器、RNG 与 iteration）：{0}" -f $selectedCheckpoint.path)
-                & $ProjectPython -m grpo --resume $selectedCheckpoint.path
-                $exitCode = $LASTEXITCODE
+                throw "恢复训练目前仅支持 BC checkpoint；GRPO 连续训练暂不支持。"
             }
             else {
                 $forceSelectedDataMismatch = $ForceDataMismatch

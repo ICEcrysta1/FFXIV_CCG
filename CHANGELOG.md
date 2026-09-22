@@ -6,7 +6,7 @@
 
 ### Added
 
-- 新增 `scripts/ffxiv_ccg_menu.psm1` 公共 PowerShell 菜单模块：统一工具编号、action 名称和 checkpoint 选择；菜单 2～6 共用同一个 checkpoint 清单，2 只显示可续训项，3～6 可选择目录中的全部 `.pt`，每项显示 checkpoint 载荷中的真实 epoch。
+- 新增 `scripts/ffxiv_ccg_menu.psm1` 公共 PowerShell 菜单模块：统一工具编号、action 名称和 checkpoint 选择；菜单 2～6 共用同一个 checkpoint 清单，2 只显示可续训的 BC checkpoint，3～6 可选择目录中的全部 `.pt`，每项显示 checkpoint 载荷中的真实 epoch。
 - 根目录 `ffxiv_ccg.ps1` 菜单新增第 2 项「恢复训练」（`-Action resume`）：脚本不自行解析配置，而是通过项目解析器读取 `.env` 的 `FFXIV_JOB_TAG` 与 `FFXIV_MODEL_VARIANT`，定位 `config/models/<job_tag>/<variant>/config.yaml` 的 `output_dir` 并列出可续训的 `.pt`。可续训与否读取每个 checkpoint 载荷里的真实 `epoch`，复用续训校验同一条边界 `epoch >= max_epochs`，不按文件名判断：清单显示真实 epoch、中间 checkpoint 按名称升序在前、`best.pt` 排后，同时显示当前 `training.max_files` 数据上限，达到上限的项（例如默认配置下的 `final.pt`，或恰好在 `max_epochs` 生成的 `best.pt`）会被跳过并单独列出，提高 `max_epochs` 后即可续训；输入编号后执行 `python -m training.train --resume <文件>`，直接回车取消，非数字或超范围编号直接报错。
 - 训练新增 `training.max_files`：在模型 YAML 中限制参与训练与验证的 raw JSON 文件数，只接受正整数或 `null`（浮点、字符串等非整数取值直接报错，不做静默截断），`null` 表示使用 raw 目录下全部有效文件；选择时按副本子目录比例分配，再按 `train_split` 划分训练集与验证集。一键脚本无需额外参数即可控制数据规模，命令行 `--max-files` 仍然优先并把最终生效值写回 `RunConfig`，使 checkpoint 的 `run_config` 记录真实训练语料规模，启动日志会打印实际取值与来源；当前黑魔 `artzip` 配置固定为 `1280`。
 - 训练新增 `training.activation_checkpoint_attention_block`（默认 `false`）：置 `true` 时整块 attention（norm、Q/K/V 投影、三段 SDPA、merge、out_proj）作为一次 checkpoint 重算，反向多算一遍投影换取显存。RTX 3050 4GB batch 20 实测：`false` 1218 ms / 2930 MiB，`true` 1288 ms / 2006 MiB（省约 900 MiB）；开启确定性算法后两种粒度的前向输出与全部 253 个参数梯度逐位一致。
@@ -14,15 +14,14 @@
 
 ### Changed
 
-- 完善 GRPO checkpoint 恢复：新增 `python -m grpo --resume <checkpoint>`，恢复 optimizer、scheduler、RNG 与已完成的 iteration，并从下一轮继续；菜单 2 的 GRPO 选择改走完整续训，菜单 3 的 `--checkpoint` 继续保留权重热启动语义。
-- 防止 GRPO 恢复覆盖原实验历史：从 `best.pt`、`iteration_*.pt` 或 `final.pt` 分支恢复时自动创建独立续训目录，保留旧 best 基线；`latest.pt` 才在原目录追加，并让统一菜单扫描和区分多个 GRPO 输出目录。
+- 移除 GRPO 连续恢复训练支持：恢复训练菜单仅接受 BC checkpoint；GRPO checkpoint 只作为新的模型权重起点，不恢复旧运行的 optimizer、scheduler、RNG 或 iteration。
 
 - 修复 `ffxiv_ccg.ps1 -Action grpo/export/analysis/replay` 仍进入 checkpoint 交互菜单的问题：非菜单调用现在支持 `-Checkpoint <路径>`，省略时使用配置解析出的默认 checkpoint；`resume` 在非交互模式下也不会读取 `Read-Host`，数据上限不一致时需显式使用 `-ForceResumeDataMismatch`。
 - 修复强制接受 `training.max_files` 不一致后仍沿用旧验证集 best 基线的问题：强制续训会清空旧 `best_key` 与 `best_val_metrics`，让当前数据集重新建立 `best.pt`。
 - 修复续训时 checkpoint 与当前配置的 `training.max_files` 不一致却静默更换训练集和验证集的问题：默认在 PS1 菜单中警告并以 `N`/直接回车取消，输入 `Y` 后才强制继续；命令行提供 `--force-resume-data-mismatch`，程序化训练入口同步支持显式强制参数。恢复候选读取 checkpoint 保存的数据上限并继续以 YAML/命令行当前值为训练数据权威来源。
 - 优化恢复菜单列出 checkpoint 的元数据读取：使用 `mmap=True` 与 `map_location="meta"`，仅读取 epoch 和数据上限，不为显示候选项顺序读取模型权重与 Adam 状态。
 - 统一菜单 2～6 的 checkpoint 选择结果：GRPO、ONNX 完整导出 workflow、模型分析和自回归回放都会把用户选择的 checkpoint 显式传给 Python 入口；ONNX workflow 新增 `--checkpoint`，使导出、parity 与发布校验保持同一模型来源。
-- 扩展统一 checkpoint 菜单以扫描 BC 输出目录同级的 `<run>_grpo`：BC checkpoint 使用数字编号，GRPO checkpoint 使用 `a1`、`a2` 等编号；菜单 2 按 checkpoint 来源分流，BC 继续 BC 预训练，GRPO 以所选模型进入 GRPO 后训练，菜单 3～6 也可直接选择 GRPO 产物。
+- 扩展统一 checkpoint 菜单以扫描 BC 输出目录同级的 `<run>_grpo`：BC checkpoint 使用数字编号，GRPO checkpoint 使用 `a1`、`a2` 等编号；菜单 2 仅列出 BC 续训项，菜单 3～6 可直接选择 GRPO 产物。
 - 修复旧 checkpoint 缺少 `run_config.max_files` 时被误判为不限量的问题：缺失字段现在保留为“未知”哨兵，续训默认按数据上限不匹配处理并要求警告确认或 `--force-resume-data-mismatch`，只有明确记录的 `null` 才表示不限量。
 - 清理 checkpoint 默认配置：菜单 2～6 直接传递所选 checkpoint，`.env` 不再需要维护 `TRAINING_MODEL_CHECKPOINT`、`AUTOREGRESSIVE_REPLAY_CHECKPOINT` 或 `AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE`；未显式选择时回退到模型输出目录的 `best.pt`，ONNX 部署包按 checkpoint 自动映射。
 

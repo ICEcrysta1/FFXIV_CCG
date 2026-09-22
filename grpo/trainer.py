@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import random
-import shutil
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
@@ -616,129 +615,8 @@ def _restore_grpo_rollback_state(
         scheduler.load_state_dict(scheduler_state)
 
 
-def _normalized_grpo_iteration(checkpoint: Mapping[str, object]) -> int:
-    """读取并校验 GRPO checkpoint 已完成的 iteration。"""
-    iteration = checkpoint.get("grpo_iteration", checkpoint.get("epoch"))
-    if isinstance(iteration, bool):
-        raise ValueError("GRPO resume checkpoint iteration must be an integer")
-    try:
-        normalized_iteration = int(iteration)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            "GRPO resume checkpoint iteration must be an integer"
-        ) from exc
-    if normalized_iteration < 1:
-        raise ValueError("GRPO resume checkpoint iteration must be >= 1")
-    return normalized_iteration
-
-
-def _validate_grpo_resume_checkpoint(
-    checkpoint: Mapping[str, object],
-    *,
-    grpo: GrpoConfig,
-) -> int:
-    """校验完整 GRPO 续训所需的状态和不可变配置。"""
-    if checkpoint.get("grpo_checkpoint") is not True:
-        raise ValueError(
-            "GRPO resume requires a GRPO checkpoint; use --checkpoint for a weight hot-start"
-        )
-    iteration = _normalized_grpo_iteration(checkpoint)
-    if iteration >= grpo.max_iterations:
-        raise ValueError(
-            "GRPO resume checkpoint already reaches the configured max_iterations: "
-            f"{iteration} >= {grpo.max_iterations}"
-        )
-
-    checkpoint_grpo = checkpoint.get("grpo_config")
-    if not isinstance(checkpoint_grpo, Mapping):
-        raise ValueError("GRPO resume checkpoint missing grpo_config")
-    for key, current_value in asdict(grpo).items():
-        if key == "max_iterations":
-            continue
-        checkpoint_value = checkpoint_grpo.get(key)
-        if checkpoint_value != current_value:
-            raise ValueError(
-                "GRPO resume config mismatch for "
-                f"{key}: checkpoint={checkpoint_value!r} != current={current_value!r}"
-            )
-
-    if not isinstance(checkpoint.get("optimizer_state_dict"), Mapping):
-        raise ValueError("GRPO resume checkpoint missing optimizer_state_dict")
-    if not isinstance(checkpoint.get("scheduler_state_dict"), Mapping):
-        raise ValueError("GRPO resume checkpoint missing scheduler_state_dict")
-    rng_state = checkpoint.get("rng_state")
-    if not isinstance(rng_state, Mapping):
-        raise ValueError("GRPO resume checkpoint missing rng_state")
-    if not isinstance(rng_state.get("python"), tuple):
-        raise ValueError("GRPO resume checkpoint missing Python RNG state")
-    if not isinstance(rng_state.get("torch"), torch.Tensor):
-        raise ValueError("GRPO resume checkpoint missing torch RNG state")
-    return iteration
-
-
-def _restore_grpo_rng_state(checkpoint: Mapping[str, object]) -> None:
-    """恢复 GRPO rollout 和训练更新共同使用的 RNG。"""
-    state = checkpoint.get("rng_state")
-    if not isinstance(state, Mapping):
-        raise ValueError("GRPO resume checkpoint missing rng_state")
-    try:
-        random.setstate(state["python"])
-        torch.set_rng_state(state["torch"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError("invalid GRPO resume RNG state") from exc
-
-    cuda_state = state.get("cuda")
-    if (
-        cuda_state is not None
-        and torch.cuda.is_available()
-        and torch.cuda.device_count() > 0
-    ):
-        if not isinstance(cuda_state, (list, tuple)):
-            raise ValueError("GRPO resume CUDA RNG state must be a list")
-        device_count = torch.cuda.device_count()
-        if len(cuda_state) != device_count:
-            raise ValueError(
-                "GRPO resume CUDA RNG state device count mismatch: "
-                f"checkpoint={len(cuda_state)}, current={device_count}"
-            )
-        torch.cuda.set_rng_state_all(cuda_state)
-
-
-def _grpo_best_state(
-    output_path: Path,
-    *,
-    resume_checkpoint: Mapping[str, object] | None,
-    resume_path: Path,
-) -> tuple[float, dict[str, float]]:
-    """恢复已有 best 基线，避免续训时把旧实验的 best 重置掉。"""
-    candidate: Mapping[str, object] | None = resume_checkpoint
-    best_path = output_path / "best.pt"
-    if best_path.is_file() and best_path.resolve() != resume_path.resolve():
-        loaded = safe_torch_load(best_path, mmap=True, map_location="meta")
-        if isinstance(loaded, Mapping):
-            candidate = loaded
-    elif resume_checkpoint is not None and not best_path.exists():
-        source_best_path = resume_path.parent / "best.pt"
-        source_path = source_best_path if source_best_path.is_file() else resume_path
-        if source_path.is_file() and source_path.resolve() != best_path.resolve():
-            loaded = safe_torch_load(source_path, mmap=True, map_location="meta")
-            if isinstance(loaded, Mapping):
-                candidate = loaded
-            shutil.copy2(source_path, best_path)
-    if candidate is None:
-        return float("-inf"), {}
-    metrics = candidate.get("metrics")
-    if not isinstance(metrics, Mapping):
-        return float("-inf"), {}
-    normalized_metrics = {str(key): float(value) for key, value in metrics.items()}
-    best_value = normalized_metrics.get("greedy_ppg_after")
-    if best_value is None:
-        return float("-inf"), normalized_metrics
-    return float(best_value), normalized_metrics
-
-
 def _unique_grpo_output_path(base_path: Path, suffix: str) -> Path:
-    """为从旧 GRPO 分支续训或热启动选择不覆盖历史的输出目录。"""
+    """为从已有 GRPO checkpoint 热启动选择不覆盖历史的输出目录。"""
     base_path = Path(base_path).resolve()
     candidate = base_path.parent / f"{base_path.name}_{suffix}"
     index = 1
@@ -757,9 +635,8 @@ def run_grpo_training(
     output_dir: Path | None = None,
     device_name: str = "cuda",
     precision: str | None = None,
-    resume: bool = False,
 ) -> dict[str, object]:
-    """从 BC checkpoint 进入独立 GRPO 后训练。"""
+    """从 checkpoint 进入独立 GRPO 后训练。"""
     if not raw_paths:
         raise FileNotFoundError("GRPO requires at least one real training scene")
     checkpoint_path = Path(checkpoint_path).resolve()
@@ -793,24 +670,8 @@ def run_grpo_training(
             "use the same training YAML used to produce the checkpoint"
         )
 
-    resume_checkpoint = backend.checkpoint if resume else None
-    resume_iteration = (
-        _validate_grpo_resume_checkpoint(resume_checkpoint, grpo=grpo)
-        if resume_checkpoint is not None
-        else 0
-    )
     if output_dir is not None:
         output_path = Path(output_dir).resolve()
-    elif resume:
-        # latest.pt 表示当前运行的尾部状态，可以原地追加；从 best/iteration/final
-        # 分支恢复时另开目录，避免覆盖原实验的后续轮次和 best/final 指针。
-        if checkpoint_path.name.lower() == "latest.pt":
-            output_path = checkpoint_path.parent
-        else:
-            output_path = _unique_grpo_output_path(
-                checkpoint_path.parent,
-                f"resume_{resume_iteration:03d}",
-            )
     elif isinstance(backend.checkpoint, Mapping) and backend.checkpoint.get(
         "grpo_checkpoint"
     ):
@@ -872,22 +733,13 @@ def run_grpo_training(
             ),
         )
 
-        if resume_checkpoint is not None:
-            optimizer.load_state_dict(resume_checkpoint["optimizer_state_dict"])
-            scheduler.load_state_dict(resume_checkpoint["scheduler_state_dict"])
-            _restore_grpo_rng_state(resume_checkpoint)
-
         output_path.mkdir(parents=True, exist_ok=True)
-        best_greedy_ppg, best_metrics = _grpo_best_state(
-            output_path,
-            resume_checkpoint=resume_checkpoint,
-            resume_path=checkpoint_path,
-        )
+        best_greedy_ppg = float("-inf")
+        best_metrics: dict[str, float] = {}
         iteration_metrics: list[dict[str, float]] = []
         rollout_root = resolve_policy_grpo_dir(data_spec.job_tag)
 
-        start_iteration = resume_iteration + 1 if resume_checkpoint is not None else 1
-        for iteration in range(start_iteration, grpo.max_iterations + 1):
+        for iteration in range(1, grpo.max_iterations + 1):
             selected_scenes = [
                 scenes[
                     ((iteration - 1) * grpo.prompt_batch_size + offset) % len(scenes)
@@ -972,9 +824,7 @@ def run_grpo_training(
             # 直接复用 backend 已加载的 CPU checkpoint。后续轮次直接读取上一轮 latest.pt，
             # 不再 deepcopy 一份完整模型到 GPU。
             rollback_checkpoint = (
-                checkpoint_path
-                if resume_checkpoint is not None and iteration == start_iteration
-                else output_path / "latest.pt" if iteration > 1 else None
+                output_path / "latest.pt" if iteration > 1 else None
             )
             initial_optimizer_state = (
                 deepcopy(optimizer.state_dict()) if rollback_checkpoint is None else None
@@ -1125,7 +975,7 @@ def run_grpo_training(
             model=model,
             optimizer=optimizer,
             scheduler=scheduler,
-            iteration=int(final_metrics["iteration"]),
+            iteration=grpo.max_iterations,
             config=config,
             grpo=grpo,
             data_spec=data_spec,

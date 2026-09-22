@@ -64,13 +64,6 @@ def main() -> None:
         default=None,
         help="初始 BC/GRPO checkpoint；缺省使用模型配置 output_dir 中的 best.pt",
     )
-    parser.add_argument(
-        "--resume",
-        dest="resume_checkpoint",
-        type=Path,
-        default=None,
-        help="从 GRPO checkpoint 完整续训，恢复 optimizer/scheduler/RNG/iteration",
-    )
     parser.add_argument("--raw-data-dir", type=Path, default=None)
     parser.add_argument(
         "--max-files",
@@ -110,9 +103,6 @@ def main() -> None:
     parser.add_argument("--advantage-scale-floor-ratio", type=float, default=None)
     parser.add_argument("--advantage-clip", type=float, default=None)
     args = parser.parse_args()
-    if args.checkpoint is not None and args.resume_checkpoint is not None:
-        parser.error("--checkpoint 与 --resume 不能同时使用")
-
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
     if args.max_files is not None and args.max_files < 1:
@@ -179,10 +169,9 @@ def main() -> None:
         ),
     )
 
-    selected_checkpoint = args.resume_checkpoint or args.checkpoint
     checkpoint_path = (
-        resolve_project_path(selected_checkpoint, project_root=PROJECT_ROOT)
-        if selected_checkpoint is not None
+        resolve_project_path(args.checkpoint, project_root=PROJECT_ROOT)
+        if args.checkpoint is not None
         else resolve_policy_checkpoint_path(config_path)
     )
     raw_paths = _prepare_grpo_scenes(config, args.max_files)
@@ -197,7 +186,6 @@ def main() -> None:
         output_dir=output_dir,
         device_name=resolve_policy_device(args.device),
         precision=args.precision,
-        resume=args.resume_checkpoint is not None,
     )
     print(result["final_checkpoint"])
 
