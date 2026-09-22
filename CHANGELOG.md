@@ -4,8 +4,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- 训练新增 `training.activation_checkpoint_attention_block`（默认 `false`）：置 `true` 时整块 attention（norm、Q/K/V 投影、三段 SDPA、merge、out_proj）作为一次 checkpoint 重算，反向多算一遍投影换取显存。RTX 3050 4GB batch 20 实测：`false` 1218 ms / 2930 MiB，`true` 1288 ms / 2006 MiB（省约 900 MiB）；开启确定性算法后两种粒度的前向输出与全部 253 个参数梯度逐位一致。
+- 新增 `common/policy/model/activation.py`：把 `model.transformer_activation` 的取值表、门控判定、隐层宽度折算与门控合成收敛为唯一实现，该配置现在同时驱动主干 FFN、候选打分头与 pair 融合；GELU/ReLU 走单条隐藏层，SwiGLU 走 `down(SiLU(gate(x)) * up(x))` 三投影并按矩阵参数量近似相等的口径折算隐层宽度，切换取值后需要重新训练。
+
 ### Changed
 
+- split attention 的可见性 mask 改为每次前向只构造一次并跨层复用：prefix / candidate / CLS 三段的允许矩阵、全屏蔽行安全列与 `is_causal` 判定在进入层循环前算好，KV-cache 解码路径同样一次算好候选与 CLS 两段；`force_explicit_mask` 仍保持完全不读 device 取值的静态控制流，ONNX 导出路径不受影响。实测3050下训练 step 1246→1218 ms、峰值显存 2976→2930 MiB、单步 device 到 host 同步 38→2，KV 解码步 43.98→40.50 ms、同步 29→5，`logits` / `hidden` / 12 层 attention 与重构前逐位一致。
+- 候选打分头由固定 ReLU 的 `scorer.network` 两层 MLP 改为按配置解析的 `gate_proj`/`up_proj`/`down_proj` 布局；加载旧打分头 checkpoint 时直接提示按当前激活配置重新训练，ONNX 真实 checkpoint 回归测试同步按该条件跳过。
 - 按功能组整理 `scripts/convert_fflogs` 目录：缓存编译、配置常量、日志提取与战斗载荷装帧、scene window、raw source、训练样本分别归入 `cache/`、`config/`、`extraction/`、`scene/`、`source/`、`training/` 子包，包根只保留 `__init__.py`、`cli.py`、`pipeline.py` 与共享 helper `utils.py`；`scripts.convert_fflogs.cache`、`scripts.convert_fflogs.config` 继续作为子包门面导出原有入口，全部内部导入、测试引用与 `docs/项目各文件说明.md` 目录树同步更新。
 - 重构 `scripts/convert_fflogs` 后与重构前 `main` 对照重跑 M5s 全量转换：100 个 raw JSON 成功 97 个、失败 3 个（`not_enough_mp` 与两个 `requires_polyglot`），失败文件、失败原因与 step/request_time 逐项一致；97 份 compiled shard 字节级相同，manifest 除路径派生的 `history_bank_id` 外逐字段一致。
 - 按功能组整理 `scripts/onnx_export` 目录：将导出执行模块平铺到 `export/`，并将配置、部署契约、运行时、发布、policy 与产物 I/O 分别归入独立子目录；删除旧的巨型 `exporter.py` 入口，迁移内部导入和测试，CLI 使用方式保持不变。

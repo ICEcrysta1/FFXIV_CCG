@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from contextlib import nullcontext
 from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
+from .activation import (
+    activation_hidden,
+    gated_hidden_dim,
+    resolve_pointwise_activation,
+    uses_gate,
+)
 from .grouped_attention import GroupedQueryAttention
 
 
@@ -23,7 +27,7 @@ class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):
         nhead: int,
         dim_feedforward: int = 2048,
         dropout: float = 0.1,
-        activation: str | Callable[[torch.Tensor], torch.Tensor] = "relu",
+        activation: str = "relu",
         layer_norm_eps: float = 1e-5,
         batch_first: bool = False,
         norm_first: bool = False,
@@ -35,16 +39,23 @@ class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):
     ):
         if dim_feedforward < 1:
             raise ValueError("dim_feedforward must be positive")
-        use_swiglu = activation == "swiglu"
+        use_swiglu = uses_gate(activation)
         # 三个投影取代两个投影；保持同一 ff_dim 配置下矩阵参数量近似相等。
-        hidden_dim = max(1, 2 * dim_feedforward // 3) if use_swiglu else dim_feedforward
+        hidden_dim = gated_hidden_dim(
+            activation,
+            in_features=d_model,
+            out_features=d_model,
+            hidden_dim=dim_feedforward,
+        )
         super().__init__(
             d_model=d_model,
             nhead=nhead,
             dim_feedforward=hidden_dim,
             dropout=dropout,
             # SiLU 也使父类关闭仅支持 ReLU/GELU 的融合快速路径，避免跳过门控。
-            activation=F.silu if use_swiglu else activation,
+            activation=(
+                resolve_pointwise_activation(activation) if use_swiglu else activation
+            ),
             layer_norm_eps=layer_norm_eps,
             batch_first=batch_first,
             norm_first=norm_first,
@@ -79,6 +90,7 @@ class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):
         )
         self.activation_checkpoint_ffn = False
         self.activation_checkpoint_attention = False
+        self.activation_checkpoint_attention_block = False
         self._skip_activation_checkpoint = False
         self._runtime_debug = None
         self._runtime_debug_layer_index: int | None = None
@@ -90,6 +102,10 @@ class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):
     def set_activation_checkpoint_attention(self, enabled: bool) -> None:
         """控制训练时是否重算 Attention 中间激活。"""
         self.activation_checkpoint_attention = bool(enabled)
+
+    def set_activation_checkpoint_attention_block(self, enabled: bool) -> None:
+        """控制 Attention 重算粒度：整块（含投影）还是只重算 SDPA。"""
+        self.activation_checkpoint_attention_block = bool(enabled)
 
     def set_runtime_debug(self, recorder=None, *, layer_index: int | None = None) -> None:
         """接入可选的层级运行时调试记录器。"""
@@ -118,7 +134,11 @@ class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):
         """共用 FFN 入口；SwiGLU 为 down(SiLU(gate(x)) * up(x))。"""
         with self._debug_stage("ffn"):
             if self.gate_proj is not None:
-                hidden = F.silu(self.gate_proj(x)) * self.linear1(x)
+                hidden = activation_hidden(
+                    self.activation,
+                    self.linear1(x),
+                    gate=self.gate_proj(x),
+                )
                 # 中间 dropout 放在乘积之后；残差分支 dropout 仍只执行一次。
                 return self.dropout2(self.linear2(self.dropout(hidden)))
             return super()._ff_block(x)

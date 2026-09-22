@@ -32,6 +32,14 @@ def _load_current_checkpoint() -> dict[str, object]:
             "real checkpoint enables removed scorer_use_raw_projection; "
             "retrain it with Transformer-only candidate scoring"
         )
+    state_dict = checkpoint.get("model_state_dict")
+    if isinstance(state_dict, dict) and any(
+        str(key).startswith("scorer.network.") for key in state_dict
+    ):
+        pytest.skip(
+            "real checkpoint uses the removed candidate scorer layout; "
+            "retrain it with the activation-configured candidate scorer"
+        )
     input_contract = checkpoint.get("input_contract")
     try:
         input_contract_version = int(

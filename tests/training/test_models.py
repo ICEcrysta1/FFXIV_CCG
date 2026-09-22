@@ -595,6 +595,22 @@ def test_job_model_config_loads_attention_activation_checkpoint_switch(tmp_path)
     config = load_run_config(config_path)
 
     assert config.activation_checkpoint_attention is True
+    assert config.activation_checkpoint_attention_block is False
+
+
+def test_job_model_config_loads_attention_checkpoint_block_switch(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "raw_data_dir: data/human/job/black_mage/raw/FRU\n"
+        "training:\n"
+        "  activation_checkpoint_attention: true\n"
+        "  activation_checkpoint_attention_block: true\n",
+        encoding="utf-8",
+    )
+
+    config = load_run_config(config_path)
+
+    assert config.activation_checkpoint_attention_block is True
 
 
 def test_job_model_config_loads_runtime_debug_switch(tmp_path):

@@ -32,6 +32,11 @@ training:
   # 训练时释放 Attention 中间激活，并在反向传播时重算；验证和推理不启用。
   activation_checkpoint_attention: true
 
+  # Attention 重算粒度：false 只重算 SDPA；true 整块 attention（含 Q/K/V 投影与
+  # out_proj）一起重算。RTX 3050 4GB 实测：false = 1218 ms / 2930 MiB，
+  # true = 1288 ms / 2006 MiB（省约 900 MiB，反向多算一遍投影）。显存吃紧时再开。
+  activation_checkpoint_attention_block: false
+
   # ----------------------------
   # DataLoader 与 CPU/GPU 传输
   # ----------------------------
@@ -73,21 +78,25 @@ training:
   candidate_shuffle:
     enabled: false
     probability: 1.0
+
   # 可选的技能价值辅助损失；不会修改推理 logits 或绕过状态机合法性。
   value_preference:
     enabled: true
     loss_weight: 0.05
     margin_scale: 0.25
+
   # 训练期间的验证集 PPG 与空场景自回归 PPG 评估。
   ppg:
     enabled: true
     gcd_count: 128
     normalization: 1000.0
+
   # 连续重复动作的 soft penalty；只降低候选 logit，不改变状态机合法性。
   repetition:
     mode: whitelist
     skills: [fire_iv, xenoglossy, foul, flare]
     penalty: 1.0
+
   # 可选运行时显存调试；开启后写入 output_dir/runtime_memory.jsonl。
   runtime_debug:
     enabled: false

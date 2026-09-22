@@ -41,7 +41,8 @@ model:
   # Transformer 每层采用 Pre-LN；LayerNorm 位于注意力/FFN 子层之前。
   transformer_norm_first: true
 
-  # Transformer FFN 激活：gelu / relu / swiglu；切换后需要重新训练。
+  # 全模型激活：gelu / relu / swiglu；主干 FFN、候选打分头与 pair 融合统一使用，
+  # 切换后需要重新训练。
   transformer_activation: swiglu
 
   # 沿深度对 embedding、attention/FFN 输出做 Full AttnRes；启用后需重新训练。

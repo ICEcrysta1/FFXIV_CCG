@@ -7,6 +7,12 @@ import torch.nn as nn
 
 from ..config import ModelConfig
 from ..data.spec import DataSpec
+from .activation import (
+    activation_hidden,
+    gated_hidden_dim,
+    resolve_pointwise_activation,
+    uses_gate,
+)
 
 
 ROLE_SCENE = 0
@@ -35,12 +41,24 @@ class CandidateInputEncoder(nn.Module):
         self.skill_feat_proj = nn.Linear(data_spec.skill_feature_dim, pair_dim)
         self.state_proj = nn.Linear(data_spec.state_dim, pair_dim)
         self.state_null_proj = nn.Linear(data_spec.state_dim, pair_dim, bias=False)
-        self.pair_fusion = nn.Sequential(
-            nn.Linear(pair_dim * 2, pair_dim * 2),
-            nn.GELU(),
-            nn.LayerNorm(pair_dim * 2),
-            nn.Linear(pair_dim * 2, pair_dim),
+        # pair 融合与主干 FFN 共用 model.transformer_activation：SwiGLU 走门控
+        # 三投影，GELU/ReLU 走原来的单条隐藏层。
+        pair_fusion_input = pair_dim * 2
+        self.pair_fusion_gated = uses_gate(config.transformer_activation)
+        self.pair_fusion_activation = resolve_pointwise_activation(
+            config.transformer_activation
         )
+        pair_fusion_hidden = gated_hidden_dim(
+            config.transformer_activation,
+            in_features=pair_fusion_input,
+            out_features=pair_dim,
+            hidden_dim=pair_fusion_input,
+        )
+        if self.pair_fusion_gated:
+            self.pair_fusion_gate = nn.Linear(pair_fusion_input, pair_fusion_hidden)
+        self.pair_fusion_up = nn.Linear(pair_fusion_input, pair_fusion_hidden)
+        self.pair_fusion_norm = nn.LayerNorm(pair_fusion_hidden)
+        self.pair_fusion_down = nn.Linear(pair_fusion_hidden, pair_dim)
         self.scene_proj = nn.ModuleList(
             nn.Linear(data_spec.scene_dim, pair_dim)
             for _ in range(data_spec.num_scene_types)
@@ -192,7 +210,16 @@ class CandidateInputEncoder(nn.Module):
     ) -> torch.Tensor:
         skill_embed = self.skill_embed(skill_ids) + self.skill_feat_proj(skill_features)
         state_embed = self._embed_state(state_vectors, state_null_mask)
-        return self.pair_fusion(torch.cat((skill_embed, state_embed), dim=-1))
+        return self._fuse_pair(torch.cat((skill_embed, state_embed), dim=-1))
+
+    def _fuse_pair(self, paired: torch.Tensor) -> torch.Tensor:
+        """按配置激活融合 skill/state pair，再归一化并投回 pair 维度。"""
+        hidden = activation_hidden(
+            self.pair_fusion_activation,
+            self.pair_fusion_up(paired),
+            gate=self.pair_fusion_gate(paired) if self.pair_fusion_gated else None,
+        )
+        return self.pair_fusion_down(self.pair_fusion_norm(hidden))
 
     def _embed_state(self, values: torch.Tensor, null_mask: torch.Tensor | None) -> torch.Tensor:
         if null_mask is None:
