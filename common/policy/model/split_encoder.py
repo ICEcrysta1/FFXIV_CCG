@@ -130,8 +130,8 @@ def run_split_encoder(
                 cls_valid,
                 use_reentrant=False,
                 context_fn=lambda: (
-                    _skip_layer_activation_checkpoints(encoder),
-                    _skip_layer_activation_checkpoints(encoder),
+                    _skip_layer_activation_checkpoints(encoder.layers),
+                    _skip_layer_activation_checkpoints(encoder.layers),
                 ),
             )
             if encoder.norm is not None:
@@ -189,9 +189,9 @@ def _should_checkpoint_full_attention_residual(encoder, collect_attention: bool)
 
 
 @contextmanager
-def _skip_layer_activation_checkpoints(encoder):
-    """整段 Full AttnRes checkpoint 时临时跳过层内 checkpoint。"""
-    layers = tuple(encoder.layers)
+def _skip_layer_activation_checkpoints(layers):
+    """整段或整块 checkpoint 时临时跳过层内子 checkpoint。"""
+    layers = tuple(layers)
     previous = tuple(layer._skip_activation_checkpoint for layer in layers)
     for layer in layers:
         layer._skip_activation_checkpoint = True
@@ -273,20 +273,52 @@ def run_split_layer(
     """执行一层共享权重的 prefix、candidate 和 CLS 路径。"""
     lengths = (prefix_hidden.shape[1], candidate_hidden.shape[1], cls_hidden.shape[1])
     hidden = torch.cat((prefix_hidden, candidate_hidden, cls_hidden), dim=1)
-    attended, attention = _run_split_attention(
-        layer,
-        hidden,
-        prefix_length=lengths[0],
-        candidate_count=lengths[1],
-        prefix_valid=prefix_valid,
-        candidate_valid=candidate_valid,
-        cls_valid=cls_valid,
-        position_ids=position_ids,
-        rotary_position_encoding=rotary_position_encoding,
-        collect_attention=collect_attention,
-        force_explicit_mask=force_explicit_mask,
-        segment_masks=segment_masks,
-    )
+    if (
+        layer.activation_checkpoint_attention
+        and layer.activation_checkpoint_attention_block
+        and not layer._skip_activation_checkpoint
+        and layer.training
+        and torch.is_grad_enabled()
+        and not collect_attention
+    ):
+        # 整块 attention（norm + Q/K/V 投影 + 三段 SDPA + merge + out_proj）作为一次
+        # checkpoint：反向只重算这一块，块内 SDPA 不再单独 checkpoint，省下投影与
+        # attention 输出的全部中间激活。
+        def attention_block(block_input: torch.Tensor) -> torch.Tensor:
+            with _skip_layer_activation_checkpoints((layer,)):
+                blocked, _ = _run_split_attention(
+                    layer,
+                    block_input,
+                    prefix_length=lengths[0],
+                    candidate_count=lengths[1],
+                    prefix_valid=prefix_valid,
+                    candidate_valid=candidate_valid,
+                    cls_valid=cls_valid,
+                    position_ids=position_ids,
+                    rotary_position_encoding=rotary_position_encoding,
+                    collect_attention=False,
+                    force_explicit_mask=force_explicit_mask,
+                    segment_masks=segment_masks,
+                )
+            return blocked
+
+        attended = checkpoint(attention_block, hidden, use_reentrant=False)
+        attention = None
+    else:
+        attended, attention = _run_split_attention(
+            layer,
+            hidden,
+            prefix_length=lengths[0],
+            candidate_count=lengths[1],
+            prefix_valid=prefix_valid,
+            candidate_valid=candidate_valid,
+            cls_valid=cls_valid,
+            position_ids=position_ids,
+            rotary_position_encoding=rotary_position_encoding,
+            collect_attention=collect_attention,
+            force_explicit_mask=force_explicit_mask,
+            segment_masks=segment_masks,
+        )
 
     # 残差、LayerNorm 和 FFN 均逐 token 独立，整段执行可共用一次投影。
     hidden = finish_layer(layer, hidden, attended)

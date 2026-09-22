@@ -32,6 +32,11 @@ training:
   # 训练时释放 Attention 中间激活，并在反向传播时重算；验证和推理不启用。
   activation_checkpoint_attention: true
 
+  # Attention 重算粒度：false 只重算 SDPA；true 整块 attention（含 Q/K/V 投影与
+  # out_proj）一起重算。RTX 3050 4GB 实测：false = 1218 ms / 2930 MiB，
+  # true = 1288 ms / 2006 MiB（省约 900 MiB，反向多算一遍投影）。显存吃紧时再开。
+  activation_checkpoint_attention_block: false
+
   # ----------------------------
   # DataLoader 与 CPU/GPU 传输
   # ----------------------------

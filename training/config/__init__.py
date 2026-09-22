@@ -71,6 +71,7 @@ class RunConfig:
     precision: str = "float32"
     activation_checkpoint_ffn: bool = False
     activation_checkpoint_attention: bool = False
+    activation_checkpoint_attention_block: bool = False
     runtime_debug: RuntimeDebugConfig = RuntimeDebugConfig()
     num_workers: int = 0
     prefetch_factor: int = 2
@@ -229,6 +230,9 @@ def load_run_config(path: Path) -> RunConfig:
         ),
         activation_checkpoint_attention=bool(
             training_raw.get("activation_checkpoint_attention", False)
+        ),
+        activation_checkpoint_attention_block=bool(
+            training_raw.get("activation_checkpoint_attention_block", False)
         ),
         runtime_debug=runtime_debug,
         num_workers=num_workers,

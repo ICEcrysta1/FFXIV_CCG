@@ -114,10 +114,20 @@ class CandidateTransformerModel(nn.Module):
         for layer in self.encoder.layers:
             layer.set_activation_checkpoint_ffn(enabled)
 
-    def enable_activation_checkpoint_attention(self, enabled: bool = True) -> None:
-        """开启或关闭训练时的 Attention activation checkpoint。"""
+    def enable_activation_checkpoint_attention(
+        self,
+        enabled: bool = True,
+        *,
+        block: bool = False,
+    ) -> None:
+        """开启或关闭训练时的 Attention activation checkpoint。
+
+        ``block=True`` 时整块 attention（norm、Q/K/V 投影、SDPA、merge、out_proj）
+        一起重算：反向多算一遍投影，但省下投影与 attention 输出的全部中间激活。
+        """
         for layer in self.encoder.layers:
             layer.set_activation_checkpoint_attention(enabled)
+            layer.set_activation_checkpoint_attention_block(block and enabled)
 
     def set_runtime_debug(self, recorder=None) -> None:
         """接入可选的训练运行时调试记录器。"""

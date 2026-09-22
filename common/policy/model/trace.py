@@ -90,6 +90,7 @@ class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):
         )
         self.activation_checkpoint_ffn = False
         self.activation_checkpoint_attention = False
+        self.activation_checkpoint_attention_block = False
         self._skip_activation_checkpoint = False
         self._runtime_debug = None
         self._runtime_debug_layer_index: int | None = None
@@ -101,6 +102,10 @@ class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):
     def set_activation_checkpoint_attention(self, enabled: bool) -> None:
         """控制训练时是否重算 Attention 中间激活。"""
         self.activation_checkpoint_attention = bool(enabled)
+
+    def set_activation_checkpoint_attention_block(self, enabled: bool) -> None:
+        """控制 Attention 重算粒度：整块（含投影）还是只重算 SDPA。"""
+        self.activation_checkpoint_attention_block = bool(enabled)
 
     def set_runtime_debug(self, recorder=None, *, layer_index: int | None = None) -> None:
         """接入可选的层级运行时调试记录器。"""

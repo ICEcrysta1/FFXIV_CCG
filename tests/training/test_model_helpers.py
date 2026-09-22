@@ -660,6 +660,64 @@ def test_split_finish_layer_applies_ffn_dropout_once(norm_first, activation):
     assert torch.allclose(actual, expected)
 
 
+def test_attention_block_checkpoint_matches_sdpa_checkpoint():
+    """整块 attention checkpoint 与只重算 SDPA 的前向输出、梯度必须一致。"""
+    from common.policy.model.split_encoder import run_split_encoder
+
+    layer_kwargs = {
+        "d_model": 8,
+        "nhead": 4,
+        "num_kv_heads": 1,
+        "dim_feedforward": 16,
+        "dropout": 0.1,
+        "activation": "gelu",
+        "batch_first": True,
+        "norm_first": True,
+    }
+
+    def build_encoder(block: bool):
+        torch.manual_seed(7)
+        layer = TraceableTransformerEncoderLayer(**layer_kwargs)
+        layer.set_activation_checkpoint_attention(True)
+        layer.set_activation_checkpoint_attention_block(block)
+        return _attach_rope(
+            nn.TransformerEncoder(layer, 1, norm=nn.LayerNorm(8)).train()
+        )
+
+    base_tokens = torch.randn(2, 5, 8)
+    encoded_template = {
+        "prefix_length": 2,
+        "candidate_count": 2,
+        "prefix_valid": torch.ones((2, 2), dtype=torch.bool),
+        "candidate_valid": torch.ones((2, 2), dtype=torch.bool),
+        "cls_valid": torch.ones((2, 1), dtype=torch.bool),
+    }
+
+    def run(encoder):
+        # 固定 attention dropout 的 RNG 起点，两种重算粒度必须走出同一套掩码。
+        torch.manual_seed(29)
+        tokens = base_tokens.detach().clone().requires_grad_(True)
+        encoded = {**encoded_template, "tokens": tokens}
+        prefix, candidate, cls, _, _ = run_split_encoder(encoder, encoded)
+        loss = torch.cat((prefix, candidate, cls), dim=1).square().mean()
+        loss.backward()
+        gradients = {
+            name: parameter.grad.detach().clone()
+            for name, parameter in encoder.named_parameters()
+            if parameter.grad is not None
+        }
+        return loss.detach(), tokens.grad.detach().clone(), gradients
+
+    sdpa_loss, sdpa_input_grad, sdpa_grads = run(build_encoder(block=False))
+    block_loss, block_input_grad, block_grads = run(build_encoder(block=True))
+
+    torch.testing.assert_close(block_loss, sdpa_loss, atol=0, rtol=0)
+    torch.testing.assert_close(block_input_grad, sdpa_input_grad, atol=0, rtol=0)
+    assert set(block_grads) == set(sdpa_grads)
+    for name, tensor in block_grads.items():
+        torch.testing.assert_close(tensor, sdpa_grads[name], atol=0, rtol=0)
+
+
 @pytest.mark.parametrize("num_kv_heads", (1, 2, 4))
 def test_attention_activation_checkpoint_preserves_forward_and_gradients(num_kv_heads):
     from unittest.mock import patch

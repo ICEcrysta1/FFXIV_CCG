@@ -156,7 +156,9 @@ def run_training(
     if config.activation_checkpoint_ffn:
         model.enable_activation_checkpoint_ffn()
     if config.activation_checkpoint_attention:
-        model.enable_activation_checkpoint_attention()
+        model.enable_activation_checkpoint_attention(
+            block=config.activation_checkpoint_attention_block
+        )
     runtime_debug = RuntimeDebugRecorder(
         device=device,
         config=config.runtime_debug,
