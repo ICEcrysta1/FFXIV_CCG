@@ -20,6 +20,7 @@ from .checkpoint import (
     _best_metric_key,
     _checkpoint_metrics,
     _epoch_checkpoint_name,
+    _has_resume_data_mismatch,
     _load_resume_checkpoint,
     _restore_best_state,
     _restore_rng_state,
@@ -127,7 +128,9 @@ def run_training(
         normalizer=normalizer,
     )
     resume_epoch = 0
+    resume_data_mismatch = False
     if resume_checkpoint is not None:
+        resume_data_mismatch = _has_resume_data_mismatch(resume_checkpoint, config)
         resume_epoch = _validate_resume_checkpoint(
             resume_checkpoint,
             data_spec=data_spec,
@@ -213,11 +216,17 @@ def run_training(
             completed_steps=resume_epoch * len(train_loader),
         )
         start_epoch = resume_epoch + 1
-        best_key, best_val_metrics = _restore_best_state(
-            resume_checkpoint,
-            Path(resume_path),
-            ppg_enabled=config.ppg.enabled,
-        )
+        if resume_data_mismatch:
+            logger.info(
+                "当前以强制数据上限不匹配模式续训，清空旧 checkpoint 的 best 基线，"
+                "改用当前训练/验证数据重新评估。"
+            )
+        else:
+            best_key, best_val_metrics = _restore_best_state(
+                resume_checkpoint,
+                Path(resume_path),
+                ppg_enabled=config.ppg.enabled,
+            )
         last_val_metrics = _checkpoint_metrics(resume_checkpoint)
         _restore_rng_state(resume_checkpoint)
         logger.info(

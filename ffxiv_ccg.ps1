@@ -5,7 +5,8 @@
 #
 # 无交互调用：
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\ffxiv_ccg.ps1 -Action train
-#   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\ffxiv_ccg.ps1 -Action resume -ForceResumeDataMismatch
+#   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\ffxiv_ccg.ps1 -Action replay -Checkpoint artifacts/checkpoints/.../best.pt
+#   未提供 -Checkpoint 时，grpo/export/analysis/replay 使用配置默认 checkpoint。
 #
 # 脚本本身不保存任何业务参数：模型路径、精度、opset、Provider、回放解码和门禁配置
 # 全部来自 config/ 下的 YAML 与根目录 .env。
@@ -13,6 +14,7 @@
 [CmdletBinding()]
 param(
     [string]$Action = "menu",
+    [string]$Checkpoint,
     [switch]$ForceResumeDataMismatch
 )
 
@@ -86,6 +88,28 @@ print(
 )
 '@
 
+$CheckpointDefaultProbe = @'
+from common.policy.config import resolve_policy_checkpoint_path, resolve_policy_model_config_path
+
+config_path = resolve_policy_model_config_path()
+print(resolve_policy_checkpoint_path(config_path))
+'@
+
+$CheckpointMetadataProbe = @'
+import json
+import sys
+from collections.abc import Mapping
+from pathlib import Path
+
+from common.torch_serialization import safe_torch_load
+
+path = Path(sys.argv[1]).resolve()
+payload = safe_torch_load(path, mmap=True, map_location="meta")
+if not isinstance(payload, Mapping):
+    raise ValueError(f"checkpoint must be a mapping: {path}")
+print(json.dumps({"source": "grpo" if payload.get("grpo_checkpoint") else "bc"}))
+'@
+
 function Invoke-FFLogsDownload {
     Write-Host ""
     Write-Host "可粘贴 FFLogs 报告 URL（含 ?fight=..&source=.. 时效果最完整），或只填报告码。"
@@ -113,6 +137,61 @@ function Get-CheckpointTarget {
     }
     catch {
         throw "无法解析模型配置输出：$raw"
+    }
+}
+
+function Get-ConfiguredCheckpointPath {
+    $raw = $CheckpointDefaultProbe | & $ProjectPython -
+    if ($LASTEXITCODE -ne 0) {
+        throw "读取默认 checkpoint 配置失败，请检查根目录 .env 与模型 YAML。"
+    }
+    $path = ($raw | Out-String).Trim()
+    if ([string]::IsNullOrWhiteSpace($path)) {
+        throw "模型配置没有解析出默认 checkpoint。"
+    }
+    return $path
+}
+
+function Get-CheckpointMetadata {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    $raw = $CheckpointMetadataProbe | & $ProjectPython - $Path
+    if ($LASTEXITCODE -ne 0) {
+        throw "无法读取 checkpoint 元数据：$Path"
+    }
+    try {
+        return ($raw | Out-String | ConvertFrom-Json)
+    }
+    catch {
+        throw "无法解析 checkpoint 元数据：$raw"
+    }
+}
+
+function Get-NonInteractiveCheckpoint {
+    param(
+        [string]$RequestedPath
+    )
+
+    $path = if ([string]::IsNullOrWhiteSpace($RequestedPath)) {
+        Get-ConfiguredCheckpointPath
+    }
+    elseif ([IO.Path]::IsPathRooted($RequestedPath)) {
+        [IO.Path]::GetFullPath($RequestedPath)
+    }
+    else {
+        [IO.Path]::GetFullPath((Join-Path $ProjectRoot $RequestedPath))
+    }
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        throw "checkpoint 不存在：$path"
+    }
+    $metadata = Get-CheckpointMetadata -Path $path
+    return [PSCustomObject]@{
+        path = $path
+        name = [IO.Path]::GetFileName($path)
+        source = [string]$metadata.source
     }
 }
 
@@ -174,15 +253,22 @@ function Invoke-Tool {
     param(
         [Parameter(Mandatory)]
         [string]$ResolvedAction,
+        [string]$CheckpointPath,
+        [switch]$InteractiveCheckpointSelection,
         [switch]$ForceDataMismatch
     )
 
     $selectedCheckpoint = $null
     $checkpointTarget = $null
     if ($ResolvedAction -in @("resume", "grpo", "export", "analysis", "replay")) {
-        $checkpointTarget = Get-CheckpointTarget
-        Show-CheckpointTargetSummary -Target $checkpointTarget
-        $selectedCheckpoint = Select-ToolCheckpoint -Target $checkpointTarget -ResumableOnly:($ResolvedAction -eq "resume")
+        if ($InteractiveCheckpointSelection) {
+            $checkpointTarget = Get-CheckpointTarget
+            Show-CheckpointTargetSummary -Target $checkpointTarget
+            $selectedCheckpoint = Select-ToolCheckpoint -Target $checkpointTarget -ResumableOnly:($ResolvedAction -eq "resume")
+        }
+        else {
+            $selectedCheckpoint = Get-NonInteractiveCheckpoint -RequestedPath $CheckpointPath
+        }
         if ($null -eq $selectedCheckpoint) {
             Write-Host "已取消操作。"
             return 0
@@ -204,16 +290,18 @@ function Invoke-Tool {
             }
             else {
                 $forceSelectedDataMismatch = $ForceDataMismatch
-                if ($selectedCheckpoint.max_files -ne $checkpointTarget.max_files -and -not $ForceDataMismatch) {
-                    $checkpointMaxFiles = if ([string]$selectedCheckpoint.max_files -eq "unknown") { "未知（旧 checkpoint 未记录）" } elseif ($null -eq $selectedCheckpoint.max_files) { "全部有效文件" } else { [string]$selectedCheckpoint.max_files }
-                    $currentMaxFiles = if ($null -eq $checkpointTarget.max_files) { "全部有效文件" } else { [string]$checkpointTarget.max_files }
-                    Write-Warning ("checkpoint {0} 保存时的 training.max_files={1}，当前 YAML/CLI 为 {2}。两者会改变训练/验证数据集。" -f $selectedCheckpoint.name, $checkpointMaxFiles, $currentMaxFiles)
-                    $confirmation = (Read-Host "仍要强制继续吗？输入 Y 确认，直接回车或输入 N 取消").Trim()
-                    if ($confirmation -notmatch "^y$") {
-                        Write-Host "已取消恢复训练。"
-                        return 0
+                if ($InteractiveCheckpointSelection) {
+                    if ($selectedCheckpoint.max_files -ne $checkpointTarget.max_files -and -not $ForceDataMismatch) {
+                        $checkpointMaxFiles = if ([string]$selectedCheckpoint.max_files -eq "unknown") { "未知（旧 checkpoint 未记录）" } elseif ($null -eq $selectedCheckpoint.max_files) { "全部有效文件" } else { [string]$selectedCheckpoint.max_files }
+                        $currentMaxFiles = if ($null -eq $checkpointTarget.max_files) { "全部有效文件" } else { [string]$checkpointTarget.max_files }
+                        Write-Warning ("checkpoint {0} 保存时的 training.max_files={1}，当前 YAML/CLI 为 {2}。两者会改变训练/验证数据集。" -f $selectedCheckpoint.name, $checkpointMaxFiles, $currentMaxFiles)
+                        $confirmation = (Read-Host "仍要强制继续吗？输入 Y 确认，直接回车或输入 N 取消").Trim()
+                        if ($confirmation -notmatch "^y$") {
+                            Write-Host "已取消恢复训练。"
+                            return 0
+                        }
+                        $forceSelectedDataMismatch = $true
                     }
-                    $forceSelectedDataMismatch = $true
                 }
                 Write-Host ""
                 Write-Host ("恢复 BC 预训练：{0}" -f $selectedCheckpoint.path)
@@ -263,7 +351,9 @@ if (-not (Test-Path -LiteralPath $ProjectPython -PathType Leaf)) {
 
 Push-Location $ProjectRoot
 try {
-    $resolvedAction = if ($Action.Trim().ToLowerInvariant() -eq "menu") {
+    $requestedAction = $Action.Trim().ToLowerInvariant()
+    $interactiveMenu = $requestedAction -eq "menu"
+    $resolvedAction = if ($interactiveMenu) {
         Show-FfxivCcgMenu
     }
     else {
@@ -273,7 +363,7 @@ try {
         Write-Host "已退出。"
         exit 0
     }
-    Invoke-Tool -ResolvedAction $resolvedAction -ForceDataMismatch:$ForceResumeDataMismatch
+    Invoke-Tool -ResolvedAction $resolvedAction -CheckpointPath $Checkpoint -InteractiveCheckpointSelection:$interactiveMenu -ForceDataMismatch:$ForceResumeDataMismatch
 }
 catch {
     Write-Host ""

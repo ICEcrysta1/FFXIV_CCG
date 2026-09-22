@@ -14,6 +14,8 @@
 
 ### Changed
 
+- 修复 `ffxiv_ccg.ps1 -Action grpo/export/analysis/replay` 仍进入 checkpoint 交互菜单的问题：非菜单调用现在支持 `-Checkpoint <路径>`，省略时使用配置解析出的默认 checkpoint；`resume` 在非交互模式下也不会读取 `Read-Host`，数据上限不一致时需显式使用 `-ForceResumeDataMismatch`。
+- 修复强制接受 `training.max_files` 不一致后仍沿用旧验证集 best 基线的问题：强制续训会清空旧 `best_key` 与 `best_val_metrics`，让当前数据集重新建立 `best.pt`。
 - 修复续训时 checkpoint 与当前配置的 `training.max_files` 不一致却静默更换训练集和验证集的问题：默认在 PS1 菜单中警告并以 `N`/直接回车取消，输入 `Y` 后才强制继续；命令行提供 `--force-resume-data-mismatch`，程序化训练入口同步支持显式强制参数。恢复候选读取 checkpoint 保存的数据上限并继续以 YAML/命令行当前值为训练数据权威来源。
 - 优化恢复菜单列出 checkpoint 的元数据读取：使用 `mmap=True` 与 `map_location="meta"`，仅读取 epoch 和数据上限，不为显示候选项顺序读取模型权重与 Adam 状态。
 - 统一菜单 2～6 的 checkpoint 选择结果：GRPO、ONNX 完整导出 workflow、模型分析和自回归回放都会把用户选择的 checkpoint 显式传给 Python 入口；ONNX workflow 新增 `--checkpoint`，使导出、parity 与发布校验保持同一模型来源。

@@ -124,6 +124,11 @@ def _checkpoint_max_files(checkpoint: Mapping[str, object]) -> int | None | Unkn
     return max_files
 
 
+def _has_resume_data_mismatch(checkpoint: Mapping[str, object], config: RunConfig) -> bool:
+    """判断 checkpoint 记录的数据上限是否不同于当前训练配置。"""
+    return _checkpoint_max_files(checkpoint) != config.max_files
+
+
 def read_checkpoint_epoch(path: Path) -> int:
     """只读取 checkpoint 载荷里的 epoch，不加载权重数据。"""
     payload = _read_checkpoint_metadata(path)

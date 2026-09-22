@@ -1565,30 +1565,31 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
         normalizer=normalizer,
     )
     resume_checkpoint = tmp_path / "epoch_001_val_ppg_600.00.pt"
-    torch.save(
-        {
-            "epoch": 1,
-            "model_state_dict": resume_model.state_dict(),
-            "optimizer_state_dict": resume_optimizer.state_dict(),
-            "model_config": asdict(config.model),
-            "data_spec": asdict(DataSpec.from_dataset(dataset)),
-            "model_variant": "artzip",
-            "input_contract": resume_input_contract.to_dict(),
-            "training_precision": config.precision,
-            "run_config": {"max_files": None},
-            "metrics": {
-                "loss": 1.0,
-                "cross_entropy_loss": 1.0,
-                "value_preference_loss": 0.0,
-                "top1_accuracy": 0.8,
-                "top3_accuracy": 0.9,
-                "val_ppg": 700.0,
-                "val_ppg_normalized": 0.7,
-                "none_ppg": 600.0,
-                "none_ppg_normalized": 0.6,
-                "top1_val_ppg_average": 0.75,
-            },
+    resume_payload = {
+        "epoch": 1,
+        "model_state_dict": resume_model.state_dict(),
+        "optimizer_state_dict": resume_optimizer.state_dict(),
+        "model_config": asdict(config.model),
+        "data_spec": asdict(DataSpec.from_dataset(dataset)),
+        "model_variant": "artzip",
+        "input_contract": resume_input_contract.to_dict(),
+        "training_precision": config.precision,
+        "run_config": {"max_files": None},
+        "metrics": {
+            "loss": 1.0,
+            "cross_entropy_loss": 1.0,
+            "value_preference_loss": 0.0,
+            "top1_accuracy": 0.8,
+            "top3_accuracy": 0.9,
+            "val_ppg": 700.0,
+            "val_ppg_normalized": 0.7,
+            "none_ppg": 600.0,
+            "none_ppg_normalized": 0.6,
+            "top1_val_ppg_average": 0.75,
         },
+    }
+    torch.save(
+        resume_payload,
         resume_checkpoint,
     )
     calls["checkpoints"] = []
@@ -1609,6 +1610,42 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
     assert resumed["last_val_metrics"]["top1_accuracy"] == pytest.approx(0.6)
     assert [entry[0].name for entry in calls["checkpoints"]] == [
         "epoch_002_val_ppg_900.00.pt",
+        "final.pt",
+    ]
+
+    forced_checkpoint = tmp_path / "epoch_001_val_ppg_500.00.pt"
+    forced_payload = {
+        **resume_payload,
+        "run_config": {"max_files": 1280},
+        "best_key": (999.0, 999.0, 999.0, 0.0),
+        "best_val_metrics": {
+            **resume_payload["metrics"],
+            "top1_accuracy": 0.99,
+            "top3_accuracy": 0.99,
+            "val_ppg": 9999.0,
+            "val_ppg_normalized": 9.999,
+            "top1_val_ppg_average": 5.494,
+        },
+    }
+    torch.save(forced_payload, forced_checkpoint)
+    calls["checkpoints"] = []
+    forced = training_module.run_training(
+        config,
+        raw_paths=[Path("sample.json")],
+        output_dir=tmp_path / "override-output",
+        max_epochs=2,
+        batch_size=4,
+        learning_rate=0.01,
+        device_name="cpu",
+        validation_metrics_callback=fake_ppg,
+        resume_path=forced_checkpoint,
+        force_resume_data_mismatch=True,
+    )
+
+    assert forced["best_val_ppg"] == pytest.approx(900.0)
+    assert [entry[0].name for entry in calls["checkpoints"]] == [
+        "epoch_002_val_ppg_900.00.pt",
+        "best.pt",
         "final.pt",
     ]
 
