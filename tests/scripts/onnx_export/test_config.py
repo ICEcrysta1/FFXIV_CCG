@@ -164,6 +164,25 @@ def test_full_workflow_returns_gate_exit_without_raising(monkeypatch, capsys):
     assert "scene mismatch" in output
 
 
+def test_workflow_cli_forwards_explicit_checkpoint(monkeypatch, tmp_path):
+    checkpoint = tmp_path / "epoch_001.pt"
+    received = {}
+
+    def run_all(**kwargs):
+        received.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(workflow, "_run_all", run_all)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["workflow", "all", "--checkpoint", str(checkpoint)],
+    )
+
+    assert workflow.main() == 0
+    assert received == {"checkpoint": checkpoint}
+
+
 def test_full_workflow_reports_export_failure_without_traceback(monkeypatch, capsys):
     monkeypatch.setattr(workflow, "check_environment", lambda: None)
     monkeypatch.setattr(

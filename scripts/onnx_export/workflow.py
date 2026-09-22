@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 
 from scripts.autoregressive_replay.config import load_replay_config
 from scripts.autoregressive_replay.outputs import write_markdown
@@ -29,40 +30,52 @@ WORKFLOW_ACTIONS = (
 )
 
 
+def _load_export_config(checkpoint: Path | None):
+    if checkpoint is None:
+        return load_export_config()
+    return load_export_config(checkpoint=checkpoint)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="执行 ONNX 导出后的发布工作流")
     parser.add_argument("action", choices=WORKFLOW_ACTIONS)
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=None,
+        help="显式选择导出与 parity 使用的 checkpoint；默认读取 .env/YAML",
+    )
     args = parser.parse_args()
     if args.action == "all":
-        return _run_all()
+        return _run_all(checkpoint=args.checkpoint)
     if args.action == "env":
-        check_environment()
+        check_environment(checkpoint=args.checkpoint)
     elif args.action == "empty-parity":
-        run_parity("empty")
+        run_parity("empty", checkpoint=args.checkpoint)
     elif args.action == "scene-parity":
-        run_parity("scene")
+        run_parity("scene", checkpoint=args.checkpoint)
     elif args.action == "verify":
-        print_release_status()
+        print_release_status(checkpoint=args.checkpoint)
     elif args.action == "run":
-        run_onnx_replay()
+        run_onnx_replay(checkpoint=args.checkpoint)
     return 0
 
 
-def run_export() -> None:
+def run_export(*, checkpoint: Path | None = None) -> None:
     """按 `.env` 导出图；与无参数 `python -m scripts.onnx_export` 等价。"""
-    config = load_export_config()
+    config = _load_export_config(checkpoint)
     output = export_from_config(config)
     print(f"ONNX 图验证完成，仍需执行 rollout parity：{output}")
 
 
-def check_environment() -> None:
+def check_environment(*, checkpoint: Path | None = None) -> None:
     """按导出精度检查当前 PyTorch/ONNX Runtime 环境。"""
     import onnx
     import onnxruntime as ort
     import onnxscript
     import torch
 
-    config = load_export_config()
+    config = _load_export_config(checkpoint)
     providers = ort.get_available_providers()
     print(f"torch={torch.__version__}")
     print(f"torch_cuda={torch.version.cuda}")
@@ -91,9 +104,9 @@ def check_environment() -> None:
         raise RuntimeError("当前 CUDA 设备不支持原生 BF16")
 
 
-def run_parity(scenario: str) -> None:
+def run_parity(scenario: str, *, checkpoint: Path | None = None) -> None:
     """从 `.env` 装配并执行指定的正式 parity 门禁。"""
-    export_config = load_export_config()
+    export_config = _load_export_config(checkpoint)
     parity_config = load_parity_config()
     if scenario == "empty":
         scene_mode = "empty"
@@ -157,9 +170,9 @@ def run_parity(scenario: str) -> None:
     print(report_path)
 
 
-def print_release_status() -> None:
+def print_release_status(*, checkpoint: Path | None = None) -> None:
     """校验当前包并显示发布状态；失败 parity 状态仍允许被审计。"""
-    config = load_export_config()
+    config = _load_export_config(checkpoint)
     report = verify_release(
         config.output_dir,
         require_validated=False,
@@ -178,9 +191,9 @@ def print_release_status() -> None:
     )
 
 
-def run_onnx_replay() -> None:
+def run_onnx_replay(*, checkpoint: Path | None = None) -> None:
     """使用共享 `.env` 参数执行普通 ONNX Runtime 回放。"""
-    export_config = load_export_config()
+    export_config = _load_export_config(checkpoint)
     replay_config = load_replay_config(
         backend="onnxruntime",
         onnx_package=export_config.output_dir,
@@ -193,25 +206,37 @@ def run_onnx_replay() -> None:
     print(output)
 
 
-def _run_all() -> int:
+def _run_all(*, checkpoint: Path | None = None) -> int:
     try:
-        check_environment()
+        if checkpoint is None:
+            check_environment()
+        else:
+            check_environment(checkpoint=checkpoint)
     except Exception as exc:
         print(f"ONNX 环境检查失败，已停止发布流程：{exc}")
         return 1
     try:
-        run_export()
+        if checkpoint is None:
+            run_export()
+        else:
+            run_export(checkpoint=checkpoint)
     except Exception as exc:
         print(f"ONNX 导出失败，已停止发布流程：{exc}")
         return 1
     failures: list[str] = []
     for scenario in ("empty", "scene"):
         try:
-            run_parity(scenario)
+            if checkpoint is None:
+                run_parity(scenario)
+            else:
+                run_parity(scenario, checkpoint=checkpoint)
         except Exception as exc:
             failures.append(f"{scenario}: {exc}")
             print(f"{scenario} parity 未通过，已继续下一项：{exc}")
-    print_release_status()
+    if checkpoint is None:
+        print_release_status()
+    else:
+        print_release_status(checkpoint=checkpoint)
     if failures:
         print()
         print("ONNX 图已经导出并保留，但发布门禁未通过。")
