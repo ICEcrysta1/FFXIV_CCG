@@ -4,8 +4,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- 新增 `common/policy/model/activation.py`：把 `model.transformer_activation` 的取值表、门控判定、隐层宽度折算与门控合成收敛为唯一实现，该配置现在同时驱动主干 FFN、候选打分头与 pair 融合；GELU/ReLU 走单条隐藏层，SwiGLU 走 `down(SiLU(gate(x)) * up(x))` 三投影并按矩阵参数量近似相等的口径折算隐层宽度，切换取值后需要重新训练。
+
 ### Changed
 
+- 候选打分头由固定 ReLU 的 `scorer.network` 两层 MLP 改为按配置解析的 `gate_proj`/`up_proj`/`down_proj` 布局；加载旧打分头 checkpoint 时直接提示按当前激活配置重新训练，ONNX 真实 checkpoint 回归测试同步按该条件跳过。
 - 按功能组整理 `scripts/convert_fflogs` 目录：缓存编译、配置常量、日志提取与战斗载荷装帧、scene window、raw source、训练样本分别归入 `cache/`、`config/`、`extraction/`、`scene/`、`source/`、`training/` 子包，包根只保留 `__init__.py`、`cli.py`、`pipeline.py` 与共享 helper `utils.py`；`scripts.convert_fflogs.cache`、`scripts.convert_fflogs.config` 继续作为子包门面导出原有入口，全部内部导入、测试引用与 `docs/项目各文件说明.md` 目录树同步更新。
 - 重构 `scripts/convert_fflogs` 后与重构前 `main` 对照重跑 M5s 全量转换：100 个 raw JSON 成功 97 个、失败 3 个（`not_enough_mp` 与两个 `requires_polyglot`），失败文件、失败原因与 step/request_time 逐项一致；97 份 compiled shard 字节级相同，manifest 除路径派生的 `history_bank_id` 外逐字段一致。
 - 按功能组整理 `scripts/onnx_export` 目录：将导出执行模块平铺到 `export/`，并将配置、部署契约、运行时、发布、policy 与产物 I/O 分别归入独立子目录；删除旧的巨型 `exporter.py` 入口，迁移内部导入和测试，CLI 使用方式保持不变。

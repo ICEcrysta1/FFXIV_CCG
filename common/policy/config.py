@@ -24,6 +24,9 @@ POLICY_MODEL_CHECKPOINT_ENV = "TRAINING_MODEL_CHECKPOINT"
 POLICY_DEVICE_ENV = "TRAINING_DEVICE"
 POLICY_CACHE_ROOT_ENV = "TRAINING_CACHE_ROOT"
 
+# 全模型共用的激活选项：主干 FFN、候选打分头与 pair 融合都按该取值解析。
+TRANSFORMER_ACTIVATIONS = ("gelu", "relu", "swiglu")
+
 
 _DATA_DERIVED_KEYS = {
     "num_candidates",
@@ -77,7 +80,7 @@ class ModelConfig:
     def __post_init__(self) -> None:
         if self.ff_dim < 1:
             raise ValueError("model.ff_dim must be positive")
-        if self.transformer_activation not in {"gelu", "relu", "swiglu"}:
+        if self.transformer_activation not in TRANSFORMER_ACTIVATIONS:
             raise ValueError("model.transformer_activation must be gelu, relu or swiglu")
         if self.history_capacity < 0:
             raise ValueError("model.history_capacity must be >= 0")

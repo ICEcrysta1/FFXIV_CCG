@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from contextlib import nullcontext
 from dataclasses import asdict
 
@@ -76,6 +77,7 @@ class CandidateTransformerModel(nn.Module):
         self.scorer = CandidateScorer(
             d_model=config.d_model,
             dropout=config.dropout,
+            activation=config.transformer_activation,
         )
         self._init_weights()
         self._kv_cache_enabled = False
@@ -238,6 +240,14 @@ class CandidateTransformerModel(nn.Module):
             raise ValueError(
                 "checkpoint enables removed scorer_use_raw_projection; "
                 "retrain it with Transformer-only candidate scoring"
+            )
+        state_dict = checkpoint.get("model_state_dict")
+        if isinstance(state_dict, Mapping) and any(
+            str(key).startswith("scorer.network.") for key in state_dict
+        ):
+            raise ValueError(
+                "checkpoint uses the removed candidate scorer layout; "
+                "retrain it with the activation-configured candidate scorer"
             )
         if payload.get("scorer_use_candidate_hidden") is False:
             raise ValueError(
