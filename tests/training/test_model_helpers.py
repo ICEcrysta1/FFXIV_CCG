@@ -1855,6 +1855,46 @@ def test_run_training_rejects_resume_at_configured_epoch_limit(tmp_path, monkeyp
         )
 
 
+def test_collect_checkpoint_candidates_uses_payload_epoch(tmp_path):
+    """续训候选项按 checkpoint 载荷里的真实 epoch 判定，而不是文件名或命名约定。"""
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    # best.pt 恰好在当前 max_epochs 生成时不可续训。
+    torch.save({"epoch": 12}, output_dir / "best.pt")
+    # final.pt 的 epoch 是 8，把 max_epochs 提高到 12 后即可合法续训。
+    torch.save({"epoch": 8}, output_dir / "final.pt")
+    # 文件名看起来是第 5 轮，载荷却是 20 轮，应按载荷判定。
+    torch.save({"epoch": 20}, output_dir / "epoch_005_val_ppg_500.00.pt")
+    # 正常中间 checkpoint 仍然可续训。
+    torch.save({"epoch": 3}, output_dir / "epoch_003_val_ppg_480.00.pt")
+
+    resumable, rejected = training_module.collect_checkpoint_candidates(
+        output_dir,
+        max_epochs=12,
+    )
+
+    assert {item.path.name: item.epoch for item in resumable} == {
+        "epoch_003_val_ppg_480.00.pt": 3,
+        "final.pt": 8,
+    }
+    assert {item.path.name: item.epoch for item in rejected} == {
+        "best.pt": 12,
+        "epoch_005_val_ppg_500.00.pt": 20,
+    }
+
+
+def test_collect_checkpoint_candidates_rejects_invalid_inputs(tmp_path):
+    """非法 checkpoint 载荷与非法轮数上限都要直接报错。"""
+    broken = tmp_path / "broken.pt"
+    torch.save({"epoch": 0}, broken)
+
+    with pytest.raises(ValueError, match="epoch must be >= 1"):
+        training_module.read_checkpoint_epoch(broken)
+
+    with pytest.raises(ValueError, match="max_epochs must be >= 1"):
+        training_module.collect_checkpoint_candidates(tmp_path, max_epochs=0)
+
+
 def test_restore_best_state_uses_checkpoint_metadata_and_best_fallback(tmp_path):
     context = _resume_validation_context(tmp_path)
     best_metrics = {

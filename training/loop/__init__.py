@@ -16,16 +16,20 @@ def registered_job_tags() -> tuple[str, ...]:
     return resolve_registered_job_tags(PROJECT_ROOT)
 from ..config import RunConfig
 from .checkpoint import (
+    CheckpointCandidate,
     _best_metric_key,
     _checkpoint_metrics,
     _epoch_checkpoint_name,
     _load_resume_checkpoint,
+    _normalized_checkpoint_epoch,
     _restore_best_state,
     _restore_rng_state,
     _restore_scheduler_state,
     _save_checkpoint,
     _top1_val_ppg_average,
     _validate_resume_checkpoint,
+    collect_checkpoint_candidates,
+    read_checkpoint_epoch,
 )
 from .dataloaders import (
     _build_batch_sampler,
@@ -77,4 +81,11 @@ def run_training(
     )
 
 
-__all__ = ["build_dataloaders", "run_training", "train_epoch", "validate"]
+__all__ = [
+    "build_dataloaders",
+    "collect_checkpoint_candidates",
+    "read_checkpoint_epoch",
+    "run_training",
+    "train_epoch",
+    "validate",
+]

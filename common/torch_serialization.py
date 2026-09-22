@@ -16,6 +16,7 @@ def safe_torch_load(
     path: str | Path,
     *,
     mmap: bool = False,
+    map_location: str | Path = "cpu",
     safe_globals: Iterable[Any] = (),
 ) -> Any:
     """以 `weights_only=True` 读取仅包含张量和显式允许类型的文件。
@@ -23,12 +24,13 @@ def safe_torch_load(
     `torch.load` 的默认 pickle 路径可以在反序列化阶段执行任意代码，因此
     checkpoint 和 compiled cache 都必须经过这里读取。路径类型被允许是为了
     兼容旧 checkpoint 中展开后的 `RunConfig`；调用方只应额外传入没有自定义
-    反序列化行为的项目数据类型。
+    反序列化行为的项目数据类型。`map_location` 默认为 CPU；只检查非张量元数据
+    （例如 checkpoint 的 `epoch`）时传 `"meta"`，可避免读取全部权重。
     """
     torch = import_torch()
     allowed_globals = (*_SAFE_PATH_GLOBALS, *tuple(safe_globals))
     load_kwargs: dict[str, object] = {
-        "map_location": "cpu",
+        "map_location": map_location,
         "weights_only": True,
     }
     if mmap:

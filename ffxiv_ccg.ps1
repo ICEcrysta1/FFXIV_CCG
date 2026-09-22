@@ -39,9 +39,14 @@ from common.policy.config import (
     resolve_policy_model_variant,
 )
 from training.config import load_run_config
+from training.loop.checkpoint import collect_checkpoint_candidates
 
 config_path = resolve_policy_model_config_path()
 run_config = load_run_config(config_path)
+resumable, rejected = collect_checkpoint_candidates(
+    run_config.output_dir,
+    max_epochs=run_config.max_epochs,
+)
 print(
     json.dumps(
         {
@@ -51,6 +56,14 @@ print(
             "output_dir": str(run_config.output_dir),
             "max_files": run_config.max_files,
             "max_epochs": run_config.max_epochs,
+            "resumable": [
+                {"path": str(item.path), "name": item.path.name, "epoch": item.epoch}
+                for item in resumable
+            ],
+            "rejected": [
+                {"path": str(item.path), "name": item.path.name, "epoch": item.epoch}
+                for item in rejected
+            ],
         }
     )
 )
@@ -128,44 +141,29 @@ function Invoke-ResumeTraining {
     if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
         throw "找不到 checkpoint 目录：$directory（请先执行一次训练）"
     }
-    $checkpoints = @(Get-ChildItem -LiteralPath $directory -Filter "*.pt" -File)
-    if ($checkpoints.Count -eq 0) {
+    # 可续训与否由 Python 读取 checkpoint 载荷里的真实 epoch 判定，不按文件名猜测。
+    $resumable = @($target.resumable)
+    $rejected = @($target.rejected)
+    if ($resumable.Count -eq 0 -and $rejected.Count -eq 0) {
         throw "checkpoint 目录中没有 .pt 文件：$directory"
     }
-    # final.pt 的 epoch 固定等于当前 max_epochs，epoch 达到上限的中间 checkpoint 也会被
-    # 训练的续训校验拒绝，先过滤掉，避免准备完 cache 才失败。
-    $maxEpochs = [int]$target.max_epochs
-    $resumable = @()
-    $skipped = @()
-    foreach ($item in $checkpoints) {
-        $epochMatch = [regex]::Match($item.Name, "^epoch_(\d+)")
-        if ($item.Name -eq "final.pt") {
-            $skipped += $item
-        }
-        elseif ($epochMatch.Success -and [int]$epochMatch.Groups[1].Value -ge $maxEpochs) {
-            $skipped += $item
-        }
-        else {
-            $resumable += $item
-        }
-    }
     if ($resumable.Count -eq 0) {
-        throw "没有可续训的 checkpoint：目录内 $($checkpoints.Count) 个 .pt 都已达到 training.max_epochs=$maxEpochs，请先提高该值。"
+        throw "没有可续训的 checkpoint：目录内 $($rejected.Count) 个 .pt 的 epoch 都已达到 training.max_epochs=$($target.max_epochs)，请先提高该值。"
     }
     # 中间 checkpoint 按名称升序在前，best.pt 排后。
     $ordered = @()
-    $ordered += @($resumable | Where-Object { $_.Name -ne "best.pt" } | Sort-Object -Property Name)
-    $ordered += @($resumable | Where-Object { $_.Name -eq "best.pt" })
+    $ordered += @($resumable | Where-Object { $_.name -ne "best.pt" } | Sort-Object -Property name)
+    $ordered += @($resumable | Where-Object { $_.name -eq "best.pt" })
 
     Write-Host ""
     for ($index = 0; $index -lt $ordered.Count; $index++) {
-        Write-Host ("  {0,2}. {1}" -f ($index + 1), $ordered[$index].Name)
+        Write-Host ("  {0,2}. {1}（epoch {2}）" -f ($index + 1), $ordered[$index].name, $ordered[$index].epoch)
     }
-    if ($skipped.Count -gt 0) {
+    if ($rejected.Count -gt 0) {
         Write-Host ""
-        Write-Host ("已跳过 {0} 个不可续训的 checkpoint（epoch 已达 training.max_epochs={1}，需先提高该值）：" -f $skipped.Count, $maxEpochs)
-        foreach ($item in ($skipped | Sort-Object -Property Name)) {
-            Write-Host ("  - {0}" -f $item.Name)
+        Write-Host ("已跳过 {0} 个不可续训的 checkpoint（epoch 已达 training.max_epochs={1}，需先提高该值）：" -f $rejected.Count, $target.max_epochs)
+        foreach ($item in ($rejected | Sort-Object -Property epoch, name)) {
+            Write-Host ("  - {0}（epoch {1}）" -f $item.name, $item.epoch)
         }
     }
     Write-Host ""
@@ -181,7 +179,7 @@ function Invoke-ResumeTraining {
     if ($selected -lt 1 -or $selected -gt $ordered.Count) {
         throw "编号超出范围：$choice（可选 1 ~ $($ordered.Count)）"
     }
-    $checkpoint = $ordered[$selected - 1].FullName
+    $checkpoint = $ordered[$selected - 1].path
     Write-Host ""
     Write-Host ("恢复训练：{0}" -f $checkpoint)
     & $ProjectPython -m training.train --resume $checkpoint

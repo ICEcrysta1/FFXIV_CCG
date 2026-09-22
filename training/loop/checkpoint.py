@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 import random
 from pathlib import Path
 
@@ -59,6 +59,55 @@ def _load_resume_checkpoint(path: Path) -> dict[str, object]:
     return dict(payload)
 
 
+def _normalized_checkpoint_epoch(checkpoint: Mapping[str, object]) -> int:
+    """校验并返回载荷中的 epoch；续训校验与列目录共用这一条规则。"""
+    epoch = checkpoint.get("epoch")
+    if isinstance(epoch, bool):
+        raise ValueError("resume checkpoint epoch must be an integer")
+    try:
+        normalized_epoch = int(epoch)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("resume checkpoint epoch must be an integer") from exc
+    if normalized_epoch < 1:
+        raise ValueError("resume checkpoint epoch must be >= 1")
+    return normalized_epoch
+
+
+@dataclass(frozen=True)
+class CheckpointCandidate:
+    """恢复训练候选项：checkpoint 文件与载荷中的真实 epoch。"""
+
+    path: Path
+    epoch: int
+
+
+def read_checkpoint_epoch(path: Path) -> int:
+    """只读取 checkpoint 载荷里的 epoch，不加载权重数据。"""
+    path = Path(path)
+    payload = safe_torch_load(path, map_location="meta")
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"checkpoint must be a mapping: {path}")
+    return _normalized_checkpoint_epoch(payload)
+
+
+def collect_checkpoint_candidates(
+    output_dir: Path,
+    *,
+    max_epochs: int,
+) -> tuple[tuple[CheckpointCandidate, ...], tuple[CheckpointCandidate, ...]]:
+    """按 checkpoint 载荷中的真实 epoch，把目录内的 `.pt` 分成可续训与被拒绝两组。"""
+    if max_epochs < 1:
+        raise ValueError("max_epochs must be >= 1")
+    resumable: list[CheckpointCandidate] = []
+    rejected: list[CheckpointCandidate] = []
+    for path in sorted(Path(output_dir).glob("*.pt")):
+        candidate = CheckpointCandidate(path=path, epoch=read_checkpoint_epoch(path))
+        # training_loop 拒绝 resume_epoch >= max_epochs，这里保持同一条边界。
+        target = rejected if candidate.epoch >= max_epochs else resumable
+        target.append(candidate)
+    return tuple(resumable), tuple(rejected)
+
+
 def _validate_resume_checkpoint(
     checkpoint: Mapping[str, object],
     *,
@@ -106,16 +155,7 @@ def _validate_resume_checkpoint(
     if not isinstance(checkpoint.get("optimizer_state_dict"), Mapping):
         raise ValueError("resume checkpoint missing optimizer_state_dict")
 
-    epoch = checkpoint.get("epoch")
-    if isinstance(epoch, bool):
-        raise ValueError("resume checkpoint epoch must be an integer")
-    try:
-        normalized_epoch = int(epoch)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("resume checkpoint epoch must be an integer") from exc
-    if normalized_epoch < 1:
-        raise ValueError("resume checkpoint epoch must be >= 1")
-    return normalized_epoch
+    return _normalized_checkpoint_epoch(checkpoint)
 
 
 def _restore_scheduler_state(scheduler, checkpoint: Mapping[str, object], *, completed_steps: int) -> None:
