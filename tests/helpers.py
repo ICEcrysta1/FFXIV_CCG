@@ -9,7 +9,7 @@ from common.scene_context_schema import (
     TARGETABLE_WINDOW_CONTEXT_KEY,
     build_empty_scene_context,
 )
-from scripts.convert_fflogs.scene_context import (
+from scripts.convert_fflogs.scene.scene_context import (
     build_forced_movement_window_token as forced_movement_window_token,
     build_raid_buff_window_token as raid_buff_window_token,
     build_targetable_window_token as targetable_window_token,

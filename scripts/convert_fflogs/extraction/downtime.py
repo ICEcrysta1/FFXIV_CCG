@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .constants import DOWNTIME_BOUNDARY_MARGIN
+from ..config.constants import DOWNTIME_BOUNDARY_MARGIN
 
 
 def detect_downtime_windows(

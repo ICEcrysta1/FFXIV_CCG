@@ -20,7 +20,7 @@ from common.scene_context_schema import (
     build_window_context,
 )
 
-from .constants import (
+from ..config.constants import (
     MULTI_TARGET_MARKER_GRACE_SECONDS,
     MULTI_TARGET_OBSERVATION_TIMEOUT_SECONDS,
     _round_time,

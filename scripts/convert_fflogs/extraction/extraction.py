@@ -8,9 +8,9 @@ from collections import Counter
 
 from common.contracts import SCENE_EPSILON, SLIDECAST_WINDOW_SECONDS
 
-from .config import GcdDetectionConfig
-from .constants import MOVE_DIST_THRESHOLD, MOVEMENT_MERGE_GAP, POTION_BUFF_ID, POTION_SKILL_ID, _round_time
-from .utils import merge_timestamps_to_windows
+from ..config import GcdDetectionConfig
+from ..config.constants import MOVE_DIST_THRESHOLD, MOVEMENT_MERGE_GAP, POTION_BUFF_ID, POTION_SKILL_ID, _round_time
+from ..utils import merge_timestamps_to_windows
 
 # 开怪预读的 begincast 会被战斗窗口裁掉：实测首个 cast 落在开怪后 0~800ms。
 # 落在该窗口内且缺少 begincast 的硬读条按技能表读条时长回拨请求时刻；

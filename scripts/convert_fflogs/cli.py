@@ -19,7 +19,7 @@ from training.config import load_run_config
 
 from .cache import precompile_raw_training_caches
 from .config import load_convert_fflogs_config, load_convert_fflogs_dotenv, resolve_convert_fflogs_job_tag
-from .constants import DEFAULT_DOWNTIME_GAP_SECONDS
+from .config.constants import DEFAULT_DOWNTIME_GAP_SECONDS
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]

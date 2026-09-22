@@ -17,8 +17,8 @@ import common.project_config as project_config_module
 from common.torch_runtime import autocast_context, model_dtype, move_batch
 from common.torch_serialization import safe_torch_load
 from scripts.convert_fflogs import cache as cache_module
-from scripts.convert_fflogs import cache_compile as cache_compile_module
-from scripts.convert_fflogs import cache_paths as cache_paths_module
+from scripts.convert_fflogs.cache import cache_compile as cache_compile_module
+from scripts.convert_fflogs.cache import cache_paths as cache_paths_module
 from common.policy.config import ModelConfig
 from common.policy import config as policy_config_module
 from common.policy.data import DataSpec, ModelInputContract, Normalizer
