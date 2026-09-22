@@ -93,6 +93,11 @@ def main() -> None:
     )
     parser.add_argument("--device", default=None, help="覆盖根目录 .env 中的训练设备：cuda 或 cpu")
     parser.add_argument("--resume", type=Path, default=None, help="从指定 checkpoint 继续训练")
+    parser.add_argument(
+        "--force-resume-data-mismatch",
+        action="store_true",
+        help="确认后允许 checkpoint.run_config.max_files 与当前配置不一致时继续续训",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -108,6 +113,8 @@ def main() -> None:
         raise ValueError("--max-files must be >= 1")
     # 把最终生效的上限写回 RunConfig，checkpoint 里的 run_config 才能记录真实训练语料规模。
     config = replace(config, max_files=max_files)
+    if args.force_resume_data_mismatch and args.resume is None:
+        raise ValueError("--force-resume-data-mismatch requires --resume")
     logging.info(
         "raw JSON 数量上限: %s（来源: %s）",
         "全部有效文件" if max_files is None else max_files,
@@ -123,6 +130,8 @@ def main() -> None:
         "device_name": resolve_policy_device(args.device),
         "resume_path": args.resume,
     }
+    if args.force_resume_data_mismatch:
+        training_kwargs["force_resume_data_mismatch"] = True
     if getattr(config, "ppg", None) is not None and config.ppg.enabled:
         training_kwargs["validation_metrics_callback"] = _evaluate_training_metrics
     result = run_training(config, **training_kwargs)

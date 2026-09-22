@@ -58,6 +58,7 @@ def run_training(
     device_name: str = "cuda",
     validation_metrics_callback=None,
     resume_path: Path | None = None,
+    force_resume_data_mismatch: bool = False,
 ) -> dict[str, object]:
     """组合预训练数据、训练循环和 checkpoint 组件。"""
     return _run_training(
@@ -70,6 +71,7 @@ def run_training(
         device_name=device_name,
         validation_metrics_callback=validation_metrics_callback,
         resume_path=resume_path,
+        force_resume_data_mismatch=force_resume_data_mismatch,
         _build_dataloaders=build_dataloaders,
         _train_epoch=train_epoch,
         _validate=validate,

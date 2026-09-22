@@ -61,6 +61,7 @@ def run_training(
     device_name: str = "cuda",
     validation_metrics_callback=None,
     resume_path: Path | None = None,
+    force_resume_data_mismatch: bool = False,
     _build_dataloaders=None,
     _train_epoch=None,
     _validate=None,
@@ -133,6 +134,7 @@ def run_training(
             dataset=train_dataset,
             config=config,
             input_contract=input_contract,
+            force_resume_data_mismatch=force_resume_data_mismatch,
         )
         if resume_epoch >= config.max_epochs:
             raise ValueError(

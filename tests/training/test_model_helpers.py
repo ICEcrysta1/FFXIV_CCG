@@ -14,19 +14,17 @@ from torch import nn
 import yaml
 
 import common.project_config as project_config_module
-from common.torch_runtime import autocast_context, model_dtype, move_batch
-from common.torch_serialization import safe_torch_load
-from scripts.convert_fflogs import cache as cache_module
-from scripts.convert_fflogs.cache import cache_compile as cache_compile_module
-from scripts.convert_fflogs.cache import cache_paths as cache_paths_module
-from common.policy.config import ModelConfig
+import training.config as config_module
+import training.loop as training_module
+import training.loop.checkpoint as checkpoint_module
+import training.loop.dataloaders as dataloaders_module
 from common.policy import config as policy_config_module
+from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, ModelInputContract, Normalizer
 from common.policy.data.schema import SceneWindowSchema, TrainingSchema
 from common.policy.model import RepetitionConfig, build_split_attention_mask
-from training.config import RunConfig, ValuePreferenceConfig
-from common.policy.model.input_encoder import CandidateInputEncoder
 from common.policy.model.attention_residual import FullAttentionResidual
+from common.policy.model.input_encoder import CandidateInputEncoder
 from common.policy.model.position_encoding import RotaryPositionEncoding
 from common.policy.model.repetition import (
     apply_repetition_penalty,
@@ -34,9 +32,12 @@ from common.policy.model.repetition import (
     repetition_config_from_checkpoint,
 )
 from common.policy.model.trace import TraceableTransformerEncoderLayer, trace_encoder
-import training.config as config_module
-import training.loop.dataloaders as dataloaders_module
-import training.loop as training_module
+from common.torch_runtime import autocast_context, model_dtype, move_batch
+from common.torch_serialization import safe_torch_load
+from scripts.convert_fflogs import cache as cache_module
+from scripts.convert_fflogs.cache import cache_compile as cache_compile_module
+from scripts.convert_fflogs.cache import cache_paths as cache_paths_module
+from training.config import RunConfig, ValuePreferenceConfig
 
 
 def _attach_rope(encoder):
@@ -1687,6 +1688,7 @@ def _resume_validation_context(tmp_path: Path, *, max_epochs: int = 3):
         "model_variant": "artzip",
         "input_contract": input_contract.to_dict(),
         "training_precision": config.precision,
+        "run_config": asdict(config),
         "metrics": {
             "loss": 1.0,
             "cross_entropy_loss": 1.0,
@@ -1775,6 +1777,69 @@ def test_validate_resume_checkpoint_rejects_model_variant_mismatch(
             config=context.config,
             input_contract=context.input_contract,
         )
+
+
+@pytest.mark.parametrize("checkpoint_max_files", [1280, None])
+def test_validate_resume_checkpoint_rejects_max_files_mismatch(
+    tmp_path,
+    checkpoint_max_files,
+):
+    context = _resume_validation_context(tmp_path)
+    checkpoint = dict(context.checkpoint)
+    checkpoint["run_config"] = {
+        **checkpoint["run_config"],
+        "max_files": checkpoint_max_files,
+    }
+    config = replace(context.config, max_files=1280 if checkpoint_max_files is None else None)
+
+    with pytest.raises(ValueError, match="resume checkpoint max_files mismatch"):
+        training_module._validate_resume_checkpoint(
+            checkpoint,
+            data_spec=context.data_spec,
+            dataset=context.dataset,
+            config=config,
+            input_contract=context.input_contract,
+        )
+
+
+def test_validate_resume_checkpoint_accepts_legacy_unlimited_max_files(tmp_path):
+    context = _resume_validation_context(tmp_path)
+    checkpoint = dict(context.checkpoint)
+    checkpoint.pop("run_config")
+
+    training_module._validate_resume_checkpoint(
+        checkpoint,
+        data_spec=context.data_spec,
+        dataset=context.dataset,
+        config=context.config,
+        input_contract=context.input_contract,
+    )
+
+
+def test_validate_resume_checkpoint_allows_max_files_mismatch_when_forced(
+    tmp_path,
+    caplog,
+):
+    context = _resume_validation_context(tmp_path)
+    checkpoint = dict(context.checkpoint)
+    checkpoint["run_config"] = {
+        **checkpoint["run_config"],
+        "max_files": 1280,
+    }
+    with caplog.at_level(logging.WARNING):
+        training_module._validate_resume_checkpoint(
+            checkpoint,
+            data_spec=context.data_spec,
+            dataset=context.dataset,
+            config=context.config,
+            input_contract=context.input_contract,
+            force_resume_data_mismatch=True,
+        )
+
+    assert any(
+        "resume checkpoint max_files mismatch" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_validate_resume_checkpoint_migrates_legacy_false_raw_projection(tmp_path):
@@ -1881,6 +1946,41 @@ def test_collect_checkpoint_candidates_uses_payload_epoch(tmp_path):
         "best.pt": 12,
         "epoch_005_val_ppg_500.00.pt": 20,
     }
+    assert all(item.max_files is None for item in (*resumable, *rejected))
+
+
+def test_collect_checkpoint_candidates_exposes_saved_max_files(tmp_path):
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    torch.save(
+        {"epoch": 2, "run_config": {"max_files": 1280}},
+        output_dir / "epoch_002.pt",
+    )
+
+    resumable, rejected = training_module.collect_checkpoint_candidates(
+        output_dir,
+        max_epochs=3,
+    )
+
+    assert len(rejected) == 0
+    assert resumable[0].max_files == 1280
+
+
+def test_read_checkpoint_epoch_uses_mmap_without_loading_storages(tmp_path, monkeypatch):
+    calls = {}
+
+    def fake_safe_torch_load(path, **kwargs):
+        calls["path"] = path
+        calls.update(kwargs)
+        return {"epoch": 4}
+
+    monkeypatch.setattr(checkpoint_module, "safe_torch_load", fake_safe_torch_load)
+
+    checkpoint_path = tmp_path / "epoch_004.pt"
+    assert training_module.read_checkpoint_epoch(checkpoint_path) == 4
+    assert calls["path"] == checkpoint_path
+    assert calls["mmap"] is True
+    assert calls["map_location"] == "meta"
 
 
 def test_collect_checkpoint_candidates_rejects_invalid_inputs(tmp_path):

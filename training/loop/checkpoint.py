@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+import logging
+import random
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
-import random
 from pathlib import Path
 
 import torch
 
+from common.policy.data import DataSpec, ModelInputContract
+from common.policy.model import CandidateTransformerModel
 from common.torch_serialization import safe_torch_load
-from common.policy.data import ModelInputContract, DataSpec
 
 from ..config import RunConfig
-from common.policy.model import CandidateTransformerModel
+
+logger = logging.getLogger(__name__)
 
 
 def _top1_val_ppg_average(top1_accuracy: float, normalized_val_ppg: float) -> float:
@@ -75,18 +78,43 @@ def _normalized_checkpoint_epoch(checkpoint: Mapping[str, object]) -> int:
 
 @dataclass(frozen=True)
 class CheckpointCandidate:
-    """恢复训练候选项：checkpoint 文件与载荷中的真实 epoch。"""
+    """恢复训练候选项：文件、真实 epoch 与保存时的数据上限。"""
 
     path: Path
     epoch: int
+    max_files: int | None
+
+
+def _read_checkpoint_metadata(path: Path) -> Mapping[str, object]:
+    """只读取 checkpoint 元数据，不加载权重 storage。"""
+    path = Path(path)
+    # meta 设备只避免把 tensor 放到 CPU；mmap 才能避免为列目录读取完整 storage。
+    payload = safe_torch_load(path, mmap=True, map_location="meta")
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"checkpoint must be a mapping: {path}")
+    return payload
+
+
+def _checkpoint_max_files(checkpoint: Mapping[str, object]) -> int | None:
+    """读取 checkpoint 保存的数据上限；旧格式缺省时按不限量兼容。"""
+    checkpoint_run_config = checkpoint.get("run_config")
+    if checkpoint_run_config is None:
+        return None
+    if not isinstance(checkpoint_run_config, Mapping):
+        raise ValueError("resume checkpoint run_config must be a mapping")
+    max_files = checkpoint_run_config.get("max_files")
+    if max_files is not None and (
+        isinstance(max_files, bool) or not isinstance(max_files, int) or max_files < 1
+    ):
+        raise ValueError(
+            "resume checkpoint run_config.max_files must be a positive integer or null"
+        )
+    return max_files
 
 
 def read_checkpoint_epoch(path: Path) -> int:
     """只读取 checkpoint 载荷里的 epoch，不加载权重数据。"""
-    path = Path(path)
-    payload = safe_torch_load(path, map_location="meta")
-    if not isinstance(payload, Mapping):
-        raise ValueError(f"checkpoint must be a mapping: {path}")
+    payload = _read_checkpoint_metadata(path)
     return _normalized_checkpoint_epoch(payload)
 
 
@@ -101,7 +129,12 @@ def collect_checkpoint_candidates(
     resumable: list[CheckpointCandidate] = []
     rejected: list[CheckpointCandidate] = []
     for path in sorted(Path(output_dir).glob("*.pt")):
-        candidate = CheckpointCandidate(path=path, epoch=read_checkpoint_epoch(path))
+        payload = _read_checkpoint_metadata(path)
+        candidate = CheckpointCandidate(
+            path=path,
+            epoch=_normalized_checkpoint_epoch(payload),
+            max_files=_checkpoint_max_files(payload),
+        )
         # training_loop 拒绝 resume_epoch >= max_epochs，这里保持同一条边界。
         target = rejected if candidate.epoch >= max_epochs else resumable
         target.append(candidate)
@@ -115,6 +148,7 @@ def _validate_resume_checkpoint(
     dataset,
     config: RunConfig,
     input_contract: ModelInputContract,
+    force_resume_data_mismatch: bool = False,
 ) -> int:
     """确保续训 checkpoint 与当前数据、模型和归一化契约完全一致。"""
     checkpoint_data_spec = checkpoint.get("data_spec")
@@ -146,6 +180,21 @@ def _validate_resume_checkpoint(
                 "resume checkpoint model variant mismatch: "
                 f"{checkpoint_model_variant!r} != {config.model_variant!r}"
             )
+
+    # max_files 加入 checkpoint 前的载荷等价于不限量；当前配置若仍为
+    # null 可以兼容恢复，但切换到新的有限上限必须拒绝。
+    checkpoint_max_files = _checkpoint_max_files(checkpoint)
+    if checkpoint_max_files != config.max_files:
+        mismatch_message = (
+            "resume checkpoint max_files mismatch: "
+            f"checkpoint={checkpoint_max_files!r} != current={config.max_files!r}"
+        )
+        if not force_resume_data_mismatch:
+            raise ValueError(mismatch_message)
+        logger.warning(
+            "%s; force_resume_data_mismatch=True，继续使用当前 YAML/CLI 数据上限。",
+            mismatch_message,
+        )
 
     checkpoint_precision = checkpoint.get("training_precision")
     if checkpoint_precision is not None and str(checkpoint_precision) != config.precision:

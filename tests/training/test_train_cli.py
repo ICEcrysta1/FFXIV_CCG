@@ -177,6 +177,7 @@ def test_train_main_forwards_cli_overrides(monkeypatch, caplog, tmp_path):
             "cuda",
             "--resume",
             str(tmp_path / "epoch_009.pt"),
+            "--force-resume-data-mismatch",
         ],
     )
 
@@ -200,6 +201,7 @@ def test_train_main_forwards_cli_overrides(monkeypatch, caplog, tmp_path):
         "learning_rate": 0.0005,
         "device_name": "cuda:0",
         "resume_path": tmp_path / "epoch_009.pt",
+        "force_resume_data_mismatch": True,
     }
     assert any(
         "训练完成: job=black_mage model_variant=artzip" in record.getMessage()

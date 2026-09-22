@@ -5,6 +5,7 @@
 #
 # 无交互调用：
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\ffxiv_ccg.ps1 -Action train
+#   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\ffxiv_ccg.ps1 -Action resume -ForceResumeDataMismatch
 #
 # 脚本本身不保存任何业务参数：模型路径、精度、opset、Provider、回放解码和门禁配置
 # 全部来自 config/ 下的 YAML 与根目录 .env。
@@ -21,7 +22,8 @@ param(
         "replay",
         "fflogs"
     )]
-    [string]$Action = "menu"
+    [string]$Action = "menu",
+    [switch]$ForceResumeDataMismatch
 )
 
 Set-StrictMode -Version Latest
@@ -57,11 +59,21 @@ print(
             "max_files": run_config.max_files,
             "max_epochs": run_config.max_epochs,
             "resumable": [
-                {"path": str(item.path), "name": item.path.name, "epoch": item.epoch}
+                {
+                    "path": str(item.path),
+                    "name": item.path.name,
+                    "epoch": item.epoch,
+                    "max_files": item.max_files,
+                }
                 for item in resumable
             ],
             "rejected": [
-                {"path": str(item.path), "name": item.path.name, "epoch": item.epoch}
+                {
+                    "path": str(item.path),
+                    "name": item.path.name,
+                    "epoch": item.epoch,
+                    "max_files": item.max_files,
+                }
                 for item in rejected
             ],
         }
@@ -129,6 +141,10 @@ function Get-ResumeTarget {
 }
 
 function Invoke-ResumeTraining {
+    param(
+        [switch]$ForceDataMismatch
+    )
+
     $target = Get-ResumeTarget
     $directory = [string]$target.output_dir
     Write-Host ""
@@ -179,17 +195,36 @@ function Invoke-ResumeTraining {
     if ($selected -lt 1 -or $selected -gt $ordered.Count) {
         throw "编号超出范围：$choice（可选 1 ~ $($ordered.Count)）"
     }
-    $checkpoint = $ordered[$selected - 1].path
+    $selectedItem = $ordered[$selected - 1]
+    $checkpoint = $selectedItem.path
+    $forceSelectedDataMismatch = $ForceDataMismatch
+    if ($selectedItem.max_files -ne $target.max_files -and -not $ForceDataMismatch) {
+        $checkpointMaxFiles = if ($null -eq $selectedItem.max_files) { "全部有效文件（旧 checkpoint）" } else { [string]$selectedItem.max_files }
+        $currentMaxFiles = if ($null -eq $target.max_files) { "全部有效文件" } else { [string]$target.max_files }
+        Write-Warning ("checkpoint {0} 保存时的 training.max_files={1}，当前 YAML/CLI 为 {2}。两者会改变训练/验证数据集。" -f $selectedItem.name, $checkpointMaxFiles, $currentMaxFiles)
+        $confirmation = (Read-Host "仍要强制继续吗？输入 Y 确认，直接回车或输入 N 取消").Trim()
+        if ($confirmation -notmatch "^y$") {
+            Write-Host "已取消恢复训练。"
+            return 0
+        }
+        $forceSelectedDataMismatch = $true
+    }
     Write-Host ""
     Write-Host ("恢复训练：{0}" -f $checkpoint)
-    & $ProjectPython -m training.train --resume $checkpoint
+    $trainingArguments = @("-m", "training.train", "--resume", $checkpoint)
+    if ($forceSelectedDataMismatch) {
+        $trainingArguments += "--force-resume-data-mismatch"
+        Write-Host "已启用强制续训：允许 checkpoint 与当前 training.max_files 不一致。" -ForegroundColor Yellow
+    }
+    & $ProjectPython @trainingArguments
     return $LASTEXITCODE
 }
 
 function Invoke-Tool {
     param(
         [Parameter(Mandatory)]
-        [string]$ResolvedAction
+        [string]$ResolvedAction,
+        [switch]$ForceDataMismatch
     )
 
     $exitCode = 0
@@ -199,7 +234,7 @@ function Invoke-Tool {
             $exitCode = $LASTEXITCODE
         }
         "resume" {
-            $exitCode = Invoke-ResumeTraining
+            $exitCode = Invoke-ResumeTraining -ForceDataMismatch:$ForceDataMismatch
         }
         "grpo" {
             & $ProjectPython -m grpo
@@ -243,7 +278,7 @@ try {
         Write-Host "已退出。"
         exit 0
     }
-    Invoke-Tool -ResolvedAction $resolvedAction
+    Invoke-Tool -ResolvedAction $resolvedAction -ForceDataMismatch:$ForceResumeDataMismatch
 }
 catch {
     Write-Host ""
