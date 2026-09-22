@@ -37,7 +37,7 @@ from common.policy.config import (
     resolve_policy_model_variant,
 )
 from training.config import load_run_config
-from training.loop.checkpoint import collect_checkpoint_candidates
+from training.loop.checkpoint import UNKNOWN_MAX_FILES, collect_checkpoint_candidates
 
 config_path = resolve_policy_model_config_path()
 run_config = load_run_config(config_path)
@@ -59,7 +59,7 @@ print(
                     "path": str(item.path),
                     "name": item.path.name,
                     "epoch": item.epoch,
-                    "max_files": item.max_files,
+                    "max_files": "unknown" if item.max_files is UNKNOWN_MAX_FILES else item.max_files,
                 }
                 for item in resumable
             ],
@@ -68,7 +68,7 @@ print(
                     "path": str(item.path),
                     "name": item.path.name,
                     "epoch": item.epoch,
-                    "max_files": item.max_files,
+                    "max_files": "unknown" if item.max_files is UNKNOWN_MAX_FILES else item.max_files,
                 }
                 for item in rejected
             ],
@@ -182,7 +182,7 @@ function Invoke-Tool {
         "resume" {
             $forceSelectedDataMismatch = $ForceDataMismatch
             if ($selectedCheckpoint.max_files -ne $checkpointTarget.max_files -and -not $ForceDataMismatch) {
-                $checkpointMaxFiles = if ($null -eq $selectedCheckpoint.max_files) { "全部有效文件（旧 checkpoint）" } else { [string]$selectedCheckpoint.max_files }
+                $checkpointMaxFiles = if ([string]$selectedCheckpoint.max_files -eq "unknown") { "未知（旧 checkpoint 未记录）" } elseif ($null -eq $selectedCheckpoint.max_files) { "全部有效文件" } else { [string]$selectedCheckpoint.max_files }
                 $currentMaxFiles = if ($null -eq $checkpointTarget.max_files) { "全部有效文件" } else { [string]$checkpointTarget.max_files }
                 Write-Warning ("checkpoint {0} 保存时的 training.max_files={1}，当前 YAML/CLI 为 {2}。两者会改变训练/验证数据集。" -f $selectedCheckpoint.name, $checkpointMaxFiles, $currentMaxFiles)
                 $confirmation = (Read-Host "仍要强制继续吗？输入 Y 确认，直接回车或输入 N 取消").Trim()

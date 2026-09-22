@@ -76,13 +76,23 @@ def _normalized_checkpoint_epoch(checkpoint: Mapping[str, object]) -> int:
     return normalized_epoch
 
 
+class UnknownMaxFiles:
+    """表示旧 checkpoint 没有记录 training.max_files，不能推断其数据规模。"""
+
+    def __repr__(self) -> str:
+        return "UNKNOWN_MAX_FILES"
+
+
+UNKNOWN_MAX_FILES = UnknownMaxFiles()
+
+
 @dataclass(frozen=True)
 class CheckpointCandidate:
     """恢复训练候选项：文件、真实 epoch 与保存时的数据上限。"""
 
     path: Path
     epoch: int
-    max_files: int | None
+    max_files: int | None | UnknownMaxFiles
 
 
 def _read_checkpoint_metadata(path: Path) -> Mapping[str, object]:
@@ -95,14 +105,16 @@ def _read_checkpoint_metadata(path: Path) -> Mapping[str, object]:
     return payload
 
 
-def _checkpoint_max_files(checkpoint: Mapping[str, object]) -> int | None:
-    """读取 checkpoint 保存的数据上限；旧格式缺省时按不限量兼容。"""
-    checkpoint_run_config = checkpoint.get("run_config")
-    if checkpoint_run_config is None:
-        return None
+def _checkpoint_max_files(checkpoint: Mapping[str, object]) -> int | None | UnknownMaxFiles:
+    """读取 checkpoint 保存的数据上限；旧格式缺省时返回未知哨兵。"""
+    if "run_config" not in checkpoint:
+        return UNKNOWN_MAX_FILES
+    checkpoint_run_config = checkpoint["run_config"]
     if not isinstance(checkpoint_run_config, Mapping):
         raise ValueError("resume checkpoint run_config must be a mapping")
-    max_files = checkpoint_run_config.get("max_files")
+    if "max_files" not in checkpoint_run_config:
+        return UNKNOWN_MAX_FILES
+    max_files = checkpoint_run_config["max_files"]
     if max_files is not None and (
         isinstance(max_files, bool) or not isinstance(max_files, int) or max_files < 1
     ):
@@ -181,8 +193,8 @@ def _validate_resume_checkpoint(
                 f"{checkpoint_model_variant!r} != {config.model_variant!r}"
             )
 
-    # max_files 加入 checkpoint 前的载荷等价于不限量；当前配置若仍为
-    # null 可以兼容恢复，但切换到新的有限上限必须拒绝。
+    # 只有 checkpoint 明确记录 null 才表示不限量；缺失字段的旧 checkpoint
+    # 无法推断历史数据规模，必须按不匹配处理。
     checkpoint_max_files = _checkpoint_max_files(checkpoint)
     if checkpoint_max_files != config.max_files:
         mismatch_message = (

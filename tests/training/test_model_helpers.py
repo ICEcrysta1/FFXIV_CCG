@@ -1802,10 +1802,25 @@ def test_validate_resume_checkpoint_rejects_max_files_mismatch(
         )
 
 
-def test_validate_resume_checkpoint_accepts_legacy_unlimited_max_files(tmp_path):
+def test_validate_resume_checkpoint_rejects_unknown_legacy_max_files(tmp_path):
     context = _resume_validation_context(tmp_path)
     checkpoint = dict(context.checkpoint)
     checkpoint.pop("run_config")
+
+    with pytest.raises(ValueError, match="resume checkpoint max_files mismatch"):
+        training_module._validate_resume_checkpoint(
+            checkpoint,
+            data_spec=context.data_spec,
+            dataset=context.dataset,
+            config=context.config,
+            input_contract=context.input_contract,
+        )
+
+
+def test_validate_resume_checkpoint_accepts_explicit_unlimited_max_files(tmp_path):
+    context = _resume_validation_context(tmp_path)
+    checkpoint = dict(context.checkpoint)
+    checkpoint["run_config"] = {"max_files": None}
 
     training_module._validate_resume_checkpoint(
         checkpoint,
@@ -1826,6 +1841,30 @@ def test_validate_resume_checkpoint_allows_max_files_mismatch_when_forced(
         **checkpoint["run_config"],
         "max_files": 1280,
     }
+    with caplog.at_level(logging.WARNING):
+        training_module._validate_resume_checkpoint(
+            checkpoint,
+            data_spec=context.data_spec,
+            dataset=context.dataset,
+            config=context.config,
+            input_contract=context.input_contract,
+            force_resume_data_mismatch=True,
+        )
+
+    assert any(
+        "resume checkpoint max_files mismatch" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_validate_resume_checkpoint_allows_unknown_legacy_max_files_when_forced(
+    tmp_path,
+    caplog,
+):
+    context = _resume_validation_context(tmp_path)
+    checkpoint = dict(context.checkpoint)
+    checkpoint.pop("run_config")
+
     with caplog.at_level(logging.WARNING):
         training_module._validate_resume_checkpoint(
             checkpoint,
@@ -1946,7 +1985,10 @@ def test_collect_checkpoint_candidates_uses_payload_epoch(tmp_path):
         "best.pt": 12,
         "epoch_005_val_ppg_500.00.pt": 20,
     }
-    assert all(item.max_files is None for item in (*resumable, *rejected))
+    assert all(
+        item.max_files is checkpoint_module.UNKNOWN_MAX_FILES
+        for item in (*resumable, *rejected)
+    )
 
 
 def test_collect_checkpoint_candidates_exposes_saved_max_files(tmp_path):
@@ -1964,6 +2006,27 @@ def test_collect_checkpoint_candidates_exposes_saved_max_files(tmp_path):
 
     assert len(rejected) == 0
     assert resumable[0].max_files == 1280
+
+
+def test_collect_checkpoint_candidates_distinguishes_unknown_and_explicit_unlimited(
+    tmp_path,
+):
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    torch.save({"epoch": 1}, output_dir / "legacy.pt")
+    torch.save(
+        {"epoch": 2, "run_config": {"max_files": None}},
+        output_dir / "unlimited.pt",
+    )
+
+    resumable, rejected = training_module.collect_checkpoint_candidates(
+        output_dir,
+        max_epochs=3,
+    )
+
+    assert len(rejected) == 0
+    assert resumable[0].max_files is checkpoint_module.UNKNOWN_MAX_FILES
+    assert resumable[1].max_files is None
 
 
 def test_read_checkpoint_epoch_uses_mmap_without_loading_storages(tmp_path, monkeypatch):
