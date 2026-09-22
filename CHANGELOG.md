@@ -17,6 +17,7 @@
 - 修复续训时 checkpoint 与当前配置的 `training.max_files` 不一致却静默更换训练集和验证集的问题：默认在 PS1 菜单中警告并以 `N`/直接回车取消，输入 `Y` 后才强制继续；命令行提供 `--force-resume-data-mismatch`，程序化训练入口同步支持显式强制参数。恢复候选读取 checkpoint 保存的数据上限并继续以 YAML/命令行当前值为训练数据权威来源。
 - 优化恢复菜单列出 checkpoint 的元数据读取：使用 `mmap=True` 与 `map_location="meta"`，仅读取 epoch 和数据上限，不为显示候选项顺序读取模型权重与 Adam 状态。
 - 统一菜单 2～6 的 checkpoint 选择结果：GRPO、ONNX 完整导出 workflow、模型分析和自回归回放都会把用户选择的 checkpoint 显式传给 Python 入口；ONNX workflow 新增 `--checkpoint`，使导出、parity 与发布校验保持同一模型来源。
+- 扩展统一 checkpoint 菜单以扫描 BC 输出目录同级的 `<run>_grpo`：BC checkpoint 使用数字编号，GRPO checkpoint 使用 `a1`、`a2` 等编号；菜单 2 按 checkpoint 来源分流，BC 继续 BC 预训练，GRPO 以所选模型进入 GRPO 后训练，菜单 3～6 也可直接选择 GRPO 产物。
 - 修复旧 checkpoint 缺少 `run_config.max_files` 时被误判为不限量的问题：缺失字段现在保留为“未知”哨兵，续训默认按数据上限不匹配处理并要求警告确认或 `--force-resume-data-mismatch`，只有明确记录的 `null` 才表示不限量。
 - 清理 checkpoint 默认配置：菜单 2～6 直接传递所选 checkpoint，`.env` 不再需要维护 `TRAINING_MODEL_CHECKPOINT`、`AUTOREGRESSIVE_REPLAY_CHECKPOINT` 或 `AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE`；未显式选择时回退到模型输出目录的 `best.pt`，ONNX 部署包按 checkpoint 自动映射。
 

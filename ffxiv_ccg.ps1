@@ -41,10 +41,33 @@ from training.loop.checkpoint import UNKNOWN_MAX_FILES, collect_checkpoint_candi
 
 config_path = resolve_policy_model_config_path()
 run_config = load_run_config(config_path)
-resumable, rejected = collect_checkpoint_candidates(
+bc_resumable, bc_rejected = collect_checkpoint_candidates(
     run_config.output_dir,
     max_epochs=run_config.max_epochs,
 )
+grpo_output_dir = run_config.output_dir.parent / f"{run_config.output_dir.name}_grpo"
+if grpo_output_dir.is_dir():
+    grpo_resumable, grpo_rejected = collect_checkpoint_candidates(
+        grpo_output_dir,
+        max_epochs=run_config.max_epochs,
+    )
+    grpo_candidates = (*grpo_resumable, *grpo_rejected)
+else:
+    grpo_candidates = ()
+
+def serialize_candidates(items, source):
+    return [
+        {
+            "path": str(item.path),
+            "name": item.path.name,
+            "epoch": item.epoch,
+            "source": source,
+            "output_dir": str(item.path.parent),
+            "max_files": "unknown" if item.max_files is UNKNOWN_MAX_FILES else item.max_files,
+        }
+        for item in items
+    ]
+
 print(
     json.dumps(
         {
@@ -52,26 +75,12 @@ print(
             "model_variant": resolve_policy_model_variant(config_path),
             "config_path": str(config_path),
             "output_dir": str(run_config.output_dir),
+            "grpo_output_dir": str(grpo_output_dir) if grpo_output_dir.is_dir() else None,
             "max_files": run_config.max_files,
             "max_epochs": run_config.max_epochs,
-            "resumable": [
-                {
-                    "path": str(item.path),
-                    "name": item.path.name,
-                    "epoch": item.epoch,
-                    "max_files": "unknown" if item.max_files is UNKNOWN_MAX_FILES else item.max_files,
-                }
-                for item in resumable
-            ],
-            "rejected": [
-                {
-                    "path": str(item.path),
-                    "name": item.path.name,
-                    "epoch": item.epoch,
-                    "max_files": "unknown" if item.max_files is UNKNOWN_MAX_FILES else item.max_files,
-                }
-                for item in rejected
-            ],
+            "resumable": serialize_candidates(bc_resumable, "bc"),
+            "rejected": serialize_candidates(bc_rejected, "bc"),
+            "grpo": serialize_candidates(grpo_candidates, "grpo"),
         }
     )
 )
@@ -116,7 +125,10 @@ function Show-CheckpointTargetSummary {
     Write-Host ""
     Write-Host ("当前 .env 配置：FFXIV_JOB_TAG={0}，FFXIV_MODEL_VARIANT={1}" -f $Target.job_tag, $Target.model_variant)
     Write-Host ("模型配置：{0}" -f $Target.config_path)
-    Write-Host ("checkpoint 目录：{0}" -f $Target.output_dir)
+    Write-Host ("BC checkpoint 目录：{0}" -f $Target.output_dir)
+    if ($null -ne $Target.grpo_output_dir) {
+        Write-Host ("GRPO checkpoint 目录：{0}" -f $Target.grpo_output_dir)
+    }
     $maxFiles = if ($null -eq $Target.max_files) { "全部有效文件" } else { [string]$Target.max_files }
     Write-Host ("训练数据上限：{0}（来自模型 YAML 的 training.max_files）" -f $maxFiles)
 }
@@ -128,22 +140,26 @@ function Select-ToolCheckpoint {
         [switch]$ResumableOnly
     )
 
-    $directory = [string]$Target.output_dir
-
-    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
-        throw "找不到 checkpoint 目录：$directory（请先执行一次训练）"
+    $directories = @(
+        @($Target.output_dir, $Target.grpo_output_dir) |
+            Where-Object { $null -ne $_ -and (Test-Path -LiteralPath ([string]$_) -PathType Container) }
+    )
+    if ($directories.Count -eq 0) {
+        throw "找不到 BC/GRPO checkpoint 目录：$($Target.output_dir)（请先执行一次训练）"
     }
+    $directory = [string]$Target.output_dir
     $resumable = @($Target.resumable)
     $rejected = @($Target.rejected)
-    if ($resumable.Count -eq 0 -and $rejected.Count -eq 0) {
-        throw "checkpoint 目录中没有 .pt 文件：$directory"
+    $grpo = @($Target.grpo)
+    if ($resumable.Count -eq 0 -and $rejected.Count -eq 0 -and $grpo.Count -eq 0) {
+        throw "BC/GRPO checkpoint 目录中没有 .pt 文件：$directory"
     }
-    if ($ResumableOnly -and $resumable.Count -eq 0) {
-        throw "没有可续训的 checkpoint：目录内 $($rejected.Count) 个 .pt 的 epoch 都已达到 training.max_epochs=$($Target.max_epochs)，请先提高该值。"
+    if ($ResumableOnly -and $resumable.Count -eq 0 -and $grpo.Count -eq 0) {
+        throw "没有可恢复的 BC/GRPO checkpoint：BC 目录内 $($rejected.Count) 个 .pt 的 epoch 都已达到 training.max_epochs=$($Target.max_epochs)，且没有 GRPO checkpoint。"
     }
 
-    # 续训只允许当前 max_epochs 尚未完成的文件；其余动作需要能选择目录中的全部 checkpoint。
-    $candidates = if ($ResumableOnly) { $resumable } else { @($resumable) + @($rejected) }
+    # BC 续训只允许当前 max_epochs 尚未完成的文件；GRPO checkpoint 按迭代结果直接可选。
+    $candidates = if ($ResumableOnly) { @($resumable) + @($grpo) } else { @($resumable) + @($rejected) + @($grpo) }
     if ($ResumableOnly -and $rejected.Count -gt 0) {
         Write-Host ""
         Write-Host ("已跳过 {0} 个不可续训的 checkpoint（epoch 已达 training.max_epochs={1}，需先提高该值）：" -f $rejected.Count, $Target.max_epochs)
@@ -180,27 +196,35 @@ function Invoke-Tool {
             $exitCode = $LASTEXITCODE
         }
         "resume" {
-            $forceSelectedDataMismatch = $ForceDataMismatch
-            if ($selectedCheckpoint.max_files -ne $checkpointTarget.max_files -and -not $ForceDataMismatch) {
-                $checkpointMaxFiles = if ([string]$selectedCheckpoint.max_files -eq "unknown") { "未知（旧 checkpoint 未记录）" } elseif ($null -eq $selectedCheckpoint.max_files) { "全部有效文件" } else { [string]$selectedCheckpoint.max_files }
-                $currentMaxFiles = if ($null -eq $checkpointTarget.max_files) { "全部有效文件" } else { [string]$checkpointTarget.max_files }
-                Write-Warning ("checkpoint {0} 保存时的 training.max_files={1}，当前 YAML/CLI 为 {2}。两者会改变训练/验证数据集。" -f $selectedCheckpoint.name, $checkpointMaxFiles, $currentMaxFiles)
-                $confirmation = (Read-Host "仍要强制继续吗？输入 Y 确认，直接回车或输入 N 取消").Trim()
-                if ($confirmation -notmatch "^y$") {
-                    Write-Host "已取消恢复训练。"
-                    return 0
+            if ([string]$selectedCheckpoint.source -eq "grpo") {
+                Write-Host ""
+                Write-Host ("恢复 GRPO 后训练：{0}" -f $selectedCheckpoint.path)
+                & $ProjectPython -m grpo --checkpoint $selectedCheckpoint.path
+                $exitCode = $LASTEXITCODE
+            }
+            else {
+                $forceSelectedDataMismatch = $ForceDataMismatch
+                if ($selectedCheckpoint.max_files -ne $checkpointTarget.max_files -and -not $ForceDataMismatch) {
+                    $checkpointMaxFiles = if ([string]$selectedCheckpoint.max_files -eq "unknown") { "未知（旧 checkpoint 未记录）" } elseif ($null -eq $selectedCheckpoint.max_files) { "全部有效文件" } else { [string]$selectedCheckpoint.max_files }
+                    $currentMaxFiles = if ($null -eq $checkpointTarget.max_files) { "全部有效文件" } else { [string]$checkpointTarget.max_files }
+                    Write-Warning ("checkpoint {0} 保存时的 training.max_files={1}，当前 YAML/CLI 为 {2}。两者会改变训练/验证数据集。" -f $selectedCheckpoint.name, $checkpointMaxFiles, $currentMaxFiles)
+                    $confirmation = (Read-Host "仍要强制继续吗？输入 Y 确认，直接回车或输入 N 取消").Trim()
+                    if ($confirmation -notmatch "^y$") {
+                        Write-Host "已取消恢复训练。"
+                        return 0
+                    }
+                    $forceSelectedDataMismatch = $true
                 }
-                $forceSelectedDataMismatch = $true
+                Write-Host ""
+                Write-Host ("恢复 BC 预训练：{0}" -f $selectedCheckpoint.path)
+                $trainingArguments = @("-m", "training.train", "--resume", $selectedCheckpoint.path)
+                if ($forceSelectedDataMismatch) {
+                    $trainingArguments += "--force-resume-data-mismatch"
+                    Write-Host "已启用强制续训：允许 checkpoint 与当前 training.max_files 不一致。" -ForegroundColor Yellow
+                }
+                & $ProjectPython @trainingArguments
+                $exitCode = $LASTEXITCODE
             }
-            Write-Host ""
-            Write-Host ("恢复训练：{0}" -f $selectedCheckpoint.path)
-            $trainingArguments = @("-m", "training.train", "--resume", $selectedCheckpoint.path)
-            if ($forceSelectedDataMismatch) {
-                $trainingArguments += "--force-resume-data-mismatch"
-                Write-Host "已启用强制续训：允许 checkpoint 与当前 training.max_files 不一致。" -ForegroundColor Yellow
-            }
-            & $ProjectPython @trainingArguments
-            $exitCode = $LASTEXITCODE
         }
         "grpo" {
             & $ProjectPython -m grpo --checkpoint $selectedCheckpoint.path

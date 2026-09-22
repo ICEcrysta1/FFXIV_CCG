@@ -4,7 +4,7 @@ Set-StrictMode -Version Latest
 
 $script:ToolMenuEntries = @(
     [PSCustomObject]@{ Number = "1"; Action = "train"; Label = "训练（BC 预训练）" }
-    [PSCustomObject]@{ Number = "2"; Action = "resume"; Label = "恢复训练（选择已有 checkpoint）" }
+    [PSCustomObject]@{ Number = "2"; Action = "resume"; Label = "恢复训练（选择 BC/GRPO checkpoint）" }
     [PSCustomObject]@{ Number = "3"; Action = "grpo"; Label = "GRPO 后训练" }
     [PSCustomObject]@{ Number = "4"; Action = "export"; Label = "ONNX 导出（导出 + PT/ORT parity 门禁 + 发布校验）" }
     [PSCustomObject]@{ Number = "5"; Action = "analysis"; Label = "模型分析图生成（不含损失地形图）" }
@@ -61,33 +61,54 @@ function Select-FfxivCcgCheckpoint {
     param(
         [Parameter(Mandatory)]
         [object[]]$Candidates,
-        [string]$Prompt = "请输入 checkpoint 编号（直接回车取消）"
+        [string]$Prompt = "请输入 checkpoint 编号（如 1 或 a1，直接回车取消）"
     )
 
-    $ordered = @($Candidates | Where-Object { $_.name -ne "best.pt" } | Sort-Object -Property name)
-    $ordered += @($Candidates | Where-Object { $_.name -eq "best.pt" } | Sort-Object -Property name)
-    if ($ordered.Count -eq 0) {
+    $bcCandidates = @($Candidates | Where-Object { $_.source -ne "grpo" })
+    $grpoCandidates = @($Candidates | Where-Object { $_.source -eq "grpo" })
+    if ($bcCandidates.Count -eq 0 -and $grpoCandidates.Count -eq 0) {
         throw "checkpoint 目录中没有可选择的 .pt 文件"
+    }
+
+    $orderedBc = @($bcCandidates | Where-Object { $_.name -ne "best.pt" } | Sort-Object -Property name)
+    $orderedBc += @($bcCandidates | Where-Object { $_.name -eq "best.pt" } | Sort-Object -Property name)
+    $orderedGrpo = @($grpoCandidates | Where-Object { $_.name -ne "best.pt" } | Sort-Object -Property name)
+    $orderedGrpo += @($grpoCandidates | Where-Object { $_.name -eq "best.pt" } | Sort-Object -Property name)
+
+    $entries = @()
+    for ($index = 0; $index -lt $orderedBc.Count; $index++) {
+        $entries += [PSCustomObject]@{
+            Key = [string]($index + 1)
+            Candidate = $orderedBc[$index]
+            SourceLabel = "BC"
+            ProgressLabel = "epoch"
+        }
+    }
+    for ($index = 0; $index -lt $orderedGrpo.Count; $index++) {
+        $entries += [PSCustomObject]@{
+            Key = "a$($index + 1)"
+            Candidate = $orderedGrpo[$index]
+            SourceLabel = "GRPO"
+            ProgressLabel = "iteration"
+        }
     }
 
     Write-Host ""
     Write-Host "可用 checkpoint："
-    for ($index = 0; $index -lt $ordered.Count; $index++) {
-        Write-Host ("  {0,2}. {1}（epoch {2}）" -f ($index + 1), $ordered[$index].name, $ordered[$index].epoch)
+    foreach ($entry in $entries) {
+        Write-Host ("  {0,3}. {1}（{2}，{3} {4}）" -f $entry.Key, $entry.Candidate.name, $entry.SourceLabel, $entry.ProgressLabel, $entry.Candidate.epoch)
     }
     Write-Host ""
     $choice = (Read-Host $Prompt).Trim()
     if ([string]::IsNullOrWhiteSpace($choice)) {
         return $null
     }
-    if ($choice -notmatch "^\d+$") {
-        throw "无效的 checkpoint 编号：$choice"
+    $normalizedChoice = $choice.ToLowerInvariant()
+    $selectedEntry = $entries | Where-Object { $_.Key -eq $normalizedChoice } | Select-Object -First 1
+    if ($null -eq $selectedEntry) {
+        throw "无效的 checkpoint 编号：$choice（BC 使用 1、2、3；GRPO 使用 a1、a2、a3）"
     }
-    $selected = [int]$choice
-    if ($selected -lt 1 -or $selected -gt $ordered.Count) {
-        throw "checkpoint 编号超出范围：$choice（可选 1 ~ $($ordered.Count)）"
-    }
-    return $ordered[$selected - 1]
+    return $selectedEntry.Candidate
 }
 
 Export-ModuleMember -Function Get-FfxivCcgMenuEntries, Resolve-FfxivCcgAction, Show-FfxivCcgMenu, Select-FfxivCcgCheckpoint

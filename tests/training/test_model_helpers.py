@@ -1569,12 +1569,13 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
         {
             "epoch": 1,
             "model_state_dict": resume_model.state_dict(),
-                "optimizer_state_dict": resume_optimizer.state_dict(),
-                "model_config": asdict(config.model),
-                "data_spec": asdict(DataSpec.from_dataset(dataset)),
-                "model_variant": "artzip",
-                "input_contract": resume_input_contract.to_dict(),
+            "optimizer_state_dict": resume_optimizer.state_dict(),
+            "model_config": asdict(config.model),
+            "data_spec": asdict(DataSpec.from_dataset(dataset)),
+            "model_variant": "artzip",
+            "input_contract": resume_input_contract.to_dict(),
             "training_precision": config.precision,
+            "run_config": {"max_files": None},
             "metrics": {
                 "loss": 1.0,
                 "cross_entropy_loss": 1.0,
