@@ -2,20 +2,21 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from common.policy.config import ModelConfig as _ModelConfig
 from common.policy.config import load_policy_config
+from common.policy.model.repetition import RepetitionConfig as _RepetitionConfig
+from common.policy.model.repetition import (
+    parse_repetition_config as _parse_repetition_config,
+)
 from common.project_config import (
     resolve_project_path,
 )
-from common.policy.model.repetition import (
-    RepetitionConfig as _RepetitionConfig,
-    parse_repetition_config as _parse_repetition_config,
-)
-from ..runtime.runtime_debug import RuntimeDebugConfig
+from common.training.tensorboard import TensorBoardConfig
 
+from ..runtime.runtime_debug import RuntimeDebugConfig
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -85,6 +86,7 @@ class RunConfig:
     repetition: _RepetitionConfig = _RepetitionConfig()
     value_preference: ValuePreferenceConfig = ValuePreferenceConfig()
     ppg: PpgConfig = PpgConfig()
+    tensorboard: TensorBoardConfig = field(default_factory=TensorBoardConfig)
     config_path: Path | None = None
 
     model: _ModelConfig = _ModelConfig()
@@ -214,6 +216,10 @@ def load_run_config(path: Path) -> RunConfig:
     if not runtime_debug.output_filename:
         raise ValueError("training.runtime_debug.output_filename must not be empty")
 
+    tensorboard = TensorBoardConfig.from_mapping(
+        training_raw.get("tensorboard", {}) or {}
+    )
+
     return RunConfig(
         raw_data_dir=resolve_project_path(
             raw.get("raw_data_dir", ""),
@@ -262,6 +268,7 @@ def load_run_config(path: Path) -> RunConfig:
         repetition=_parse_repetition_config(training_raw.get("repetition", {})),
         value_preference=value_preference,
         ppg=ppg,
+        tensorboard=tensorboard,
         config_path=path,
         model=model,
     )

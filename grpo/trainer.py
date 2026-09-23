@@ -25,6 +25,11 @@ from common.policy.replay import AutoregressiveReplayConfig
 from common.torch_runtime import autocast_context, move_batch
 from common.torch_serialization import safe_torch_load
 from common.training.metrics import MetricAccumulator
+from common.training.tensorboard import (
+    close_tensorboard_writer,
+    create_tensorboard_writer,
+    write_scalar_metrics,
+)
 from scripts.autoregressive_replay.backends import PyTorchPolicyBackend
 from scripts.autoregressive_replay.replay import (
     AutoregressiveReplay,
@@ -414,6 +419,9 @@ def _update_policy(
     repetition,
     device: torch.device,
     precision: str,
+    tensorboard_writer=None,
+    tensorboard_log_every_steps: int = 50,
+    global_step_offset: int = 0,
 ) -> dict[str, float]:
     """对当前 rollout buffer 执行 GRPO 的 inner updates。"""
     if isinstance(decisions, GrpoRolloutStore):
@@ -481,6 +489,20 @@ def _update_policy(
             scheduler.step()
         totals.update(metrics)
         update_count += 1
+        global_step = global_step_offset + update_count
+        if tensorboard_writer is not None and (
+            global_step % tensorboard_log_every_steps == 0
+        ):
+            write_scalar_metrics(
+                tensorboard_writer,
+                {
+                    **metrics,
+                    "loss": loss,
+                    "learning_rate": optimizer.param_groups[0]["lr"],
+                },
+                prefix="grpo/update",
+                global_step=global_step,
+            )
 
     for _ in range(grpo.inner_updates):
         if isinstance(decisions, GrpoRolloutStore):
@@ -636,6 +658,7 @@ def run_grpo_training(
     checkpoint_path: Path,
     raw_paths: Sequence[Path],
     output_dir: Path | None = None,
+    tensorboard_output_dir: Path | None = None,
     device_name: str = "cuda",
     precision: str | None = None,
 ) -> dict[str, object]:
@@ -724,7 +747,20 @@ def run_grpo_training(
         backend=backend,
         cache_store=replay_cache_store,
     )
+    tensorboard_writer = None
     try:
+        tensorboard_writer = create_tensorboard_writer(
+            grpo.tensorboard,
+            (
+                tensorboard_output_dir
+                if tensorboard_output_dir is not None
+                else config.output_dir
+            ),
+            run_name="grpo",
+            model_variant=config.model_variant,
+        )
+        if tensorboard_writer is not None:
+            logger.info("TensorBoard events: %s", tensorboard_writer.log_dir)
         optimizer = torch.optim.AdamW(
             model.parameters(),
             lr=grpo.learning_rate,
@@ -743,6 +779,7 @@ def run_grpo_training(
         best_greedy_ppg = float("-inf")
         best_metrics: dict[str, float] = {}
         iteration_metrics: list[dict[str, float]] = []
+        total_optimizer_updates = 0
         rollout_root = resolve_policy_grpo_dir(data_spec.job_tag)
 
         for iteration in range(1, grpo.max_iterations + 1):
@@ -848,7 +885,17 @@ def run_grpo_training(
                 repetition=backend.repetition,
                 device=device,
                 precision=resolved_precision,
+                **(
+                    {
+                        "tensorboard_writer": tensorboard_writer,
+                        "tensorboard_log_every_steps": grpo.tensorboard.log_every_steps,
+                        "global_step_offset": total_optimizer_updates,
+                    }
+                    if tensorboard_writer is not None
+                    else {}
+                ),
             )
+            total_optimizer_updates += int(update_metrics["optimizer_updates"])
 
             model.eval()
             post_update_greedy = []
@@ -917,6 +964,13 @@ def run_grpo_training(
                 "learning_rate": float(optimizer.param_groups[0]["lr"]),
                 **update_metrics,
             }
+            if tensorboard_writer is not None:
+                write_scalar_metrics(
+                    tensorboard_writer,
+                    metrics,
+                    prefix="grpo/iteration",
+                    global_step=total_optimizer_updates,
+                )
             iteration_metrics.append(metrics)
             logger.info(
                 "GRPO iteration %d | greedy %.2f -> %.2f | sample delta %.4f | "
@@ -1000,4 +1054,7 @@ def run_grpo_training(
         }
 
     finally:
-        replay_session.close()
+        try:
+            close_tensorboard_writer(tensorboard_writer)
+        finally:
+            replay_session.close()

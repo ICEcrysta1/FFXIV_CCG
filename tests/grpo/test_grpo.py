@@ -297,6 +297,8 @@ def _run_grpo_with_backend(
     config: GrpoRunConfig,
     checkpoint_path: Path,
     checkpoint_payload,
+    run_output_dir: Path | None = None,
+    capture_output: dict[str, object] | None = None,
 ):
     """在只跑到 setup 阶段的环境里执行 run_grpo_training，返回输出目录。"""
     scene_path = tmp_path / "scene.json"
@@ -334,6 +336,12 @@ def _run_grpo_with_backend(
     monkeypatch.setattr("grpo.trainer.PyTorchPolicyBackend", lambda *_a, **_k: FakeBackend())
     monkeypatch.setattr("grpo.trainer.AutoregressiveReplaySession", FakeSession)
     monkeypatch.setattr(
+        "grpo.trainer.create_tensorboard_writer",
+        lambda _tensorboard_config, output_dir, **_kwargs: (
+            captured.update(tensorboard_output_dir=Path(output_dir)) or None
+        ),
+    )
+    monkeypatch.setattr(
         "grpo.trainer.resolve_policy_cache_dir",
         lambda _job_tag: tmp_path / "cache",
     )
@@ -359,9 +367,36 @@ def _run_grpo_with_backend(
             grpo=GrpoConfig(group_size=2, max_iterations=1),
             checkpoint_path=checkpoint_path,
             raw_paths=(scene_path,),
+            output_dir=run_output_dir,
             device_name="cpu",
         )
+    if capture_output is not None:
+        capture_output.update(captured)
     return captured["replay_config"].output_path.parent
+
+
+def test_grpo_tensorboard_root_uses_model_output_when_run_output_is_overridden(
+    monkeypatch,
+    tmp_path,
+):
+    config = GrpoRunConfig(
+        raw_data_dir=tmp_path / "raw",
+        output_dir=tmp_path / "artifacts" / "checkpoints" / "black_mage" / "artzip_bc",
+        job_tag="black_mage",
+    )
+    capture: dict[str, object] = {}
+
+    _run_grpo_with_backend(
+        monkeypatch,
+        tmp_path,
+        config=config,
+        checkpoint_path=tmp_path / "checkpoint.pt",
+        checkpoint_payload={},
+        run_output_dir=tmp_path / "custom-output" / "grpo-run",
+        capture_output=capture,
+    )
+
+    assert capture["tensorboard_output_dir"] == config.output_dir
 
 
 def test_grpo_hotstart_output_dir_derives_from_config_not_checkpoint_location(
@@ -607,6 +642,7 @@ class _StubConfig:
 def test_grpo_cli_forwards_max_files_and_overrides(monkeypatch, capsys, tmp_path):
     cli = importlib.import_module("grpo.grpo")
     config_path = tmp_path / "config.yaml"
+    output_dir = tmp_path / "custom-output" / "grpo-run"
     input_config = _StubConfig(
         raw_data_dir=tmp_path / "raw-default",
         output_dir=tmp_path / "bc",
@@ -648,6 +684,8 @@ def test_grpo_cli_forwards_max_files_and_overrides(monkeypatch, capsys, tmp_path
             "5",
             "--iterations",
             "2",
+            "--output-dir",
+            str(output_dir),
             "--device",
             "cpu",
         ],
@@ -658,10 +696,13 @@ def test_grpo_cli_forwards_max_files_and_overrides(monkeypatch, capsys, tmp_path
     assert calls["max_files"] == 7
     # 最终生效的上限必须写回配置，checkpoint 才能记录真实场景规模。
     assert calls["config"].max_files == 7
+    assert calls["config"].output_dir == output_dir
     assert calls["scene_config"].job_tag == "black_mage"
     assert calls["kwargs"]["grpo"].group_size == 5
     assert calls["kwargs"]["grpo"].max_iterations == 2
     assert calls["kwargs"]["checkpoint_path"] == tmp_path / "best.pt"
+    assert calls["kwargs"]["output_dir"] == output_dir
+    assert calls["kwargs"]["tensorboard_output_dir"] == input_config.output_dir
     assert calls["kwargs"]["device_name"] == "cpu"
     assert "final.pt" in capsys.readouterr().out
 
@@ -844,3 +885,40 @@ def test_grpo_update_streams_disk_rollouts_without_full_decision_buffer(monkeypa
     )
 
     assert metrics["optimizer_updates"] == 4.0
+
+
+def test_grpo_update_logs_optimizer_metrics_to_tensorboard(monkeypatch):
+    policy = torch.nn.Linear(1, 1)
+    optimizer = torch.optim.SGD(policy.parameters(), lr=0.0)
+    decision = _decision(history_length=1, scene_length=1, action_index=0)
+
+    def loss_fn(model, _batch, **_kwargs):
+        loss = model.weight.sum() * 0.0 + 1.0
+        metric_names = ("loss", "policy_loss", "kl", "entropy", "clip_fraction", "mean_ratio")
+        return loss, {name: loss.detach() * 0.0 + 0.5 for name in metric_names}
+
+    class ScalarRecorder:
+        def __init__(self):
+            self.values = []
+
+        def add_scalar(self, tag, value, step):
+            self.values.append((tag, value, step))
+
+    writer = ScalarRecorder()
+    monkeypatch.setattr("grpo.trainer.compute_grpo_loss", loss_fn)
+    _update_policy(
+        policy,
+        optimizer,
+        None,
+        [decision],
+        torch.ones(1),
+        grpo=GrpoConfig(minibatch_size=1, inner_updates=1),
+        repetition=repetition_module.RepetitionConfig("blacklist", ("fire_iii",), 1.0),
+        device=torch.device("cpu"),
+        precision="float32",
+        tensorboard_writer=writer,
+        tensorboard_log_every_steps=1,
+        global_step_offset=5,
+    )
+
+    assert any(tag == "grpo/update/loss" and step == 6 for tag, _value, step in writer.values)

@@ -2,22 +2,23 @@
 
 from __future__ import annotations
 
+import logging
 from contextlib import nullcontext
 from dataclasses import asdict, replace
-import logging
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import torch
-from torch import nn
 import yaml
+from torch import nn
 
 import common.project_config as project_config_module
 import training.config as config_module
 import training.loop as training_module
 import training.loop.checkpoint as checkpoint_module
 import training.loop.dataloaders as dataloaders_module
+import training.loop.training_loop as training_loop_impl
 from common.policy import config as policy_config_module
 from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, ModelInputContract, Normalizer
@@ -34,6 +35,7 @@ from common.policy.model.repetition import (
 from common.policy.model.trace import TraceableTransformerEncoderLayer, trace_encoder
 from common.torch_runtime import autocast_context, model_dtype, move_batch
 from common.torch_serialization import safe_torch_load
+from common.training.tensorboard import TensorBoardConfig
 from scripts.convert_fflogs import cache as cache_module
 from scripts.convert_fflogs.cache import cache_compile as cache_compile_module
 from scripts.convert_fflogs.cache import cache_paths as cache_paths_module
@@ -1065,12 +1067,23 @@ def test_training_helpers_and_epoch_metrics(tmp_path, monkeypatch):
     optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _step: 1.0)
     train_batch = {"label_index": torch.tensor([0, 0])}
+    class ScalarRecorder:
+        def __init__(self):
+            self.values = []
+
+        def add_scalar(self, tag, value, step):
+            self.values.append((tag, value, step))
+
+    tensorboard_writer = ScalarRecorder()
     train_metrics = training_module.train_epoch(
         model,
         [train_batch],
         optimizer,
         scheduler,
         torch.device("cpu"),
+        tensorboard_writer=tensorboard_writer,
+        tensorboard_log_every_steps=1,
+        global_step_offset=6,
     )
     validation_metrics = training_module.validate(
         model,
@@ -1079,6 +1092,10 @@ def test_training_helpers_and_epoch_metrics(tmp_path, monkeypatch):
     )
     assert train_metrics["top1_accuracy"] == pytest.approx(1.0)
     assert validation_metrics["top3_accuracy"] == pytest.approx(1.0)
+    assert any(
+        tag == "train/step/loss" and step == 7
+        for tag, _value, step in tensorboard_writer.values
+    )
 
     checkpoint = tmp_path / "checkpoint.pt"
     spec = DataSpec(
@@ -1453,6 +1470,22 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
     )
     calls: dict[str, object] = {"validation_count": 0, "checkpoints": []}
 
+    class ScalarRecorder:
+        log_dir = str(tmp_path / "tensorboard" / "fake-run")
+
+        def __init__(self):
+            self.values = []
+            self.closed = False
+
+        def add_scalar(self, tag, value, step):
+            self.values.append((tag, value, step))
+
+        def close(self):
+            self.closed = True
+
+    tensorboard_writer = ScalarRecorder()
+    tensorboard_output_dirs: list[Path] = []
+
     class FakeVocab:
         @classmethod
         def build_from_job_tag(cls, job_tag):
@@ -1529,6 +1562,13 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
     monkeypatch.setattr(training_module, "train_epoch", fake_train_epoch)
     monkeypatch.setattr(training_module, "validate", fake_validate)
     monkeypatch.setattr(training_module, "_save_checkpoint", fake_save_checkpoint)
+    monkeypatch.setattr(
+        training_loop_impl,
+        "create_tensorboard_writer",
+        lambda _config, output_dir, **_kwargs: (
+            tensorboard_output_dirs.append(Path(output_dir)) or tensorboard_writer
+        ),
+    )
 
     config = RunConfig(
         raw_data_dir=tmp_path / "configured-data",
@@ -1536,6 +1576,7 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
         job_tag="black_mage",
         model_variant="artzip",
         max_epochs=2,
+        tensorboard=TensorBoardConfig(enabled=True, log_every_steps=1),
         model=ModelConfig(d_model=8, pair_embedding_dim=4, n_layers=1, n_heads=2, ff_dim=16),
     )
     result = training_module.run_training(
@@ -1555,6 +1596,12 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
     assert result["last_val_metrics"]["top1_accuracy"] == pytest.approx(0.6)
     assert result["last_val_metrics"]["val_ppg"] == pytest.approx(900.0)
     assert result["output_dir"] == tmp_path / "override-output"
+    assert tensorboard_output_dirs == [config.output_dir]
+    assert tensorboard_writer.closed
+    assert any(
+        tag == "validation/val_ppg" and step == 1
+        for tag, _value, step in tensorboard_writer.values
+    )
     assert calls["vocab_job_tag"] == "black_mage"
     assert any(
         "模型: job=black_mage model_variant=artzip" in record.getMessage()
@@ -1667,6 +1714,114 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
         "best.pt",
         "final.pt",
     ]
+
+
+def test_run_training_closes_tensorboard_writer_when_validation_callback_raises(
+    tmp_path,
+    monkeypatch,
+):
+    schema = TrainingSchema(
+        serialization_format="test",
+        sample_schema_version=1,
+        context_schema_version=1,
+        scene_context_mode="absolute",
+        scene_windows=(),
+        state_group_feature_keys={"player_state": ("a", "b", "c")},
+        candidate_skill_fields=("potency",),
+        skill_history_fields=(),
+    )
+    normalizer = Normalizer()
+    normalizer.configure_job_resources("black_mage")
+    dataset = SimpleNamespace(
+        job_tag="black_mage",
+        num_candidates=2,
+        state_dim=3,
+        scene_dim=1,
+        num_scene_types=1,
+        candidate_action_keys=("a", "b"),
+        skill_feature_names=("potency",),
+        schema=schema,
+        normalizer=normalizer,
+    )
+
+    class FakeWriter:
+        log_dir = str(tmp_path / "artifacts" / "tensorboard" / "failed-run")
+
+        def __init__(self):
+            self.closed = False
+
+        def add_scalar(self, *_args):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    class FakeVocab:
+        @classmethod
+        def build_from_job_tag(cls, _job_tag):
+            return cls()
+
+        def size(self):
+            return 2
+
+    class FakeModel(_TinyModel):
+        def __init__(self, *_args, **_kwargs):
+            super().__init__()
+
+    writer = FakeWriter()
+    monkeypatch.setattr(
+        training_loop_impl,
+        "create_tensorboard_writer",
+        lambda *_args, **_kwargs: writer,
+    )
+
+    def fail_validation_callback(**_kwargs):
+        raise RuntimeError("validation callback failed")
+
+    config = RunConfig(
+        raw_data_dir=tmp_path / "raw",
+        output_dir=tmp_path / "output",
+        job_tag="black_mage",
+        model_variant="artzip",
+        max_epochs=1,
+        tensorboard=TensorBoardConfig(enabled=True),
+        model=ModelConfig(
+            d_model=8,
+            pair_embedding_dim=4,
+            n_layers=1,
+            n_heads=2,
+            ff_dim=16,
+        ),
+    )
+    metrics = {
+        "loss": 1.0,
+        "cross_entropy_loss": 1.0,
+        "value_preference_loss": 0.0,
+        "top1_accuracy": 0.7,
+        "top3_accuracy": 0.9,
+    }
+
+    with pytest.raises(RuntimeError, match="validation callback failed"):
+        training_module.run_training(
+            config,
+            raw_paths=[tmp_path / "scene.json"],
+            device_name="cpu",
+            validation_metrics_callback=fail_validation_callback,
+            _build_dataloaders=lambda *_args, **_kwargs: (
+                [0],
+                [0],
+                dataset,
+                dataset,
+            ),
+            _train_epoch=lambda *_args, **_kwargs: metrics,
+            _validate=lambda *_args, **_kwargs: metrics,
+            _resolve_cache_dir=lambda _job: tmp_path / "cache",
+            _registered_job_tags=lambda: ("black_mage",),
+            _skill_vocab=FakeVocab,
+            _model_class=FakeModel,
+        )
+
+    assert writer.closed
 
 
 def test_best_metric_key_uses_requested_tie_break_order():

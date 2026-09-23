@@ -2,20 +2,30 @@
 
 from __future__ import annotations
 
-from contextlib import nullcontext
-from dataclasses import replace
 import logging
 import math
-from pathlib import Path
 import random
+from contextlib import nullcontext
+from dataclasses import replace
+from pathlib import Path
 
 import torch
 
-from common.torch_runtime import autocast_context, model_dtype, move_batch
 from common.policy.config import PROJECT_ROOT, resolve_policy_cache_dir
+from common.policy.data import DataSpec, ModelInputContract, SkillVocab
+from common.policy.model import CandidateTransformerModel
+from common.policy.model.repetition import RepetitionConfig, prepare_repetition_penalty
 from common.project_config import resolve_registered_job_tags
-from common.policy.data import ModelInputContract, SkillVocab, DataSpec
+from common.torch_runtime import autocast_context, model_dtype, move_batch
+from common.training.metrics import MetricAccumulator
+from common.training.tensorboard import (
+    close_tensorboard_writer,
+    create_tensorboard_writer,
+    write_scalar_metrics,
+)
 
+from ..config import RunConfig, ValuePreferenceConfig
+from ..runtime.runtime_debug import RuntimeDebugRecorder
 from .checkpoint import (
     _best_metric_key,
     _checkpoint_metrics,
@@ -29,14 +39,8 @@ from .checkpoint import (
     _top1_val_ppg_average,
     _validate_resume_checkpoint,
 )
-from ..config import RunConfig, ValuePreferenceConfig
 from .dataloaders import build_dataloaders
-from common.training.metrics import MetricAccumulator
-from common.policy.model import CandidateTransformerModel
-from common.policy.model.repetition import RepetitionConfig, prepare_repetition_penalty
-from ..runtime.runtime_debug import RuntimeDebugRecorder
 from .value_preference import compute_value_preference_loss
-
 
 logger = logging.getLogger(__name__)
 _EPOCH_METRICS = (
@@ -82,6 +86,7 @@ def run_training(
     skill_vocab_cls = _skill_vocab or SkillVocab
     model_cls = _model_class or CandidateTransformerModel
 
+    tensorboard_output_dir = config.output_dir
     if output_dir is not None:
         config = replace(config, output_dir=Path(output_dir))
     if max_epochs is not None:
@@ -203,128 +208,147 @@ def run_training(
     )
 
     config.output_dir.mkdir(parents=True, exist_ok=True)
-    best_key: tuple[float, float, float, float] | None = None
-    best_val_metrics: dict[str, float] = {}
-    last_val_metrics: dict[str, float] = {}
-    start_epoch = 1
-    if resume_checkpoint is not None:
-        model.load_state_dict(resume_checkpoint["model_state_dict"])
-        optimizer.load_state_dict(resume_checkpoint["optimizer_state_dict"])
-        _restore_scheduler_state(
-            scheduler,
-            resume_checkpoint,
-            completed_steps=resume_epoch * len(train_loader),
-        )
-        start_epoch = resume_epoch + 1
-        if resume_data_mismatch:
-            logger.info(
-                "当前以强制数据上限不匹配模式续训，清空旧 checkpoint 的 best 基线，"
-                "改用当前训练/验证数据重新评估。"
-            )
-        else:
-            best_key, best_val_metrics = _restore_best_state(
+    tensorboard_writer = create_tensorboard_writer(
+        config.tensorboard,
+        tensorboard_output_dir,
+        run_name="bc",
+        model_variant=config.model_variant,
+    )
+    try:
+        if tensorboard_writer is not None:
+            logger.info("TensorBoard events: %s", tensorboard_writer.log_dir)
+        best_key: tuple[float, float, float, float] | None = None
+        best_val_metrics: dict[str, float] = {}
+        last_val_metrics: dict[str, float] = {}
+        start_epoch = 1
+        if resume_checkpoint is not None:
+            model.load_state_dict(resume_checkpoint["model_state_dict"])
+            optimizer.load_state_dict(resume_checkpoint["optimizer_state_dict"])
+            _restore_scheduler_state(
+                scheduler,
                 resume_checkpoint,
-                Path(resume_path),
-                ppg_enabled=config.ppg.enabled,
+                completed_steps=resume_epoch * len(train_loader),
             )
-        last_val_metrics = _checkpoint_metrics(resume_checkpoint)
-        _restore_rng_state(resume_checkpoint)
-        logger.info(
-            "从 checkpoint=%s 的第 %d 轮继续训练，下一轮为 %d",
-            resume_path,
-            resume_epoch,
-            start_epoch,
-        )
-
-    for epoch in range(start_epoch, config.max_epochs + 1):
-        train_metrics = train_epoch_fn(
-            model,
-            train_loader,
-            optimizer,
-            scheduler,
-            device,
-            config.precision,
-            value_preference=config.value_preference,
-            runtime_debug=debug_recorder,
-            epoch=epoch,
-        )
-        val_metrics = validate_fn(
-            model,
-            val_loader,
-            device,
-            config.precision,
-            value_preference=config.value_preference,
-        )
-        if config.ppg.enabled:
-            extra_metrics = validation_metrics_callback(
-                model=model,
-                dataset=val_dataset,
-                data_spec=data_spec,
-                vocab=vocab,
-                config=config,
-                device=device,
-            )
-            if not isinstance(extra_metrics, dict):
-                raise TypeError("validation_metrics_callback must return a dict")
-            val_metrics.update(
-                {str(key): float(value) for key, value in extra_metrics.items()}
-            )
-            required_ppg_metrics = (
-                "val_ppg",
-                "val_ppg_normalized",
-                "none_ppg",
-                "none_ppg_normalized",
-            )
-            if any(key not in val_metrics for key in required_ppg_metrics):
-                raise ValueError(
-                    "validation_metrics_callback must return independent val_ppg and none_ppg metrics"
+            start_epoch = resume_epoch + 1
+            if resume_data_mismatch:
+                logger.info(
+                    "当前以强制数据上限不匹配模式续训，清空旧 checkpoint 的 best 基线，"
+                    "改用当前训练/验证数据重新评估。"
                 )
-            val_metrics["top1_val_ppg_average"] = _top1_val_ppg_average(
-                val_metrics["top1_accuracy"],
-                val_metrics["val_ppg_normalized"],
+            else:
+                best_key, best_val_metrics = _restore_best_state(
+                    resume_checkpoint,
+                    Path(resume_path),
+                    ppg_enabled=config.ppg.enabled,
+                )
+            last_val_metrics = _checkpoint_metrics(resume_checkpoint)
+            _restore_rng_state(resume_checkpoint)
+            logger.info(
+                "从 checkpoint=%s 的第 %d 轮继续训练，下一轮为 %d",
+                resume_path,
+                resume_epoch,
+                start_epoch,
             )
-        last_val_metrics = val_metrics
-        logger.info(
-            "Epoch %3d | train loss=%.4f ce=%.4f value_aux=%.4f top1=%.4f top3=%.4f | "
-            "val loss=%.4f ce=%.4f value_aux=%.4f top1=%.4f top3=%.4f val_ppg=%.2f none_ppg=%.2f",
-            epoch,
-            train_metrics["loss"],
-            train_metrics["cross_entropy_loss"],
-            train_metrics["value_preference_loss"],
-            train_metrics["top1_accuracy"],
-            train_metrics["top3_accuracy"],
-            val_metrics["loss"],
-            val_metrics["cross_entropy_loss"],
-            val_metrics["value_preference_loss"],
-            val_metrics["top1_accuracy"],
-            val_metrics["top3_accuracy"],
-            val_metrics.get("val_ppg", float("nan")),
-            val_metrics.get("none_ppg", float("nan")),
-        )
 
-        current_key = _best_metric_key(val_metrics, ppg_enabled=config.ppg.enabled)
-        is_best = best_key is None or current_key > best_key
-        if is_best:
-            best_key = current_key
-            best_val_metrics = dict(val_metrics)
+        for epoch in range(start_epoch, config.max_epochs + 1):
+            train_epoch_kwargs = {
+                "value_preference": config.value_preference,
+                "runtime_debug": debug_recorder,
+                "epoch": epoch,
+            }
+            if tensorboard_writer is not None:
+                train_epoch_kwargs.update(
+                    tensorboard_writer=tensorboard_writer,
+                    tensorboard_log_every_steps=config.tensorboard.log_every_steps,
+                    global_step_offset=(epoch - 1) * len(train_loader),
+                )
+            train_metrics = train_epoch_fn(
+                model,
+                train_loader,
+                optimizer,
+                scheduler,
+                device,
+                config.precision,
+                **train_epoch_kwargs,
+            )
+            val_metrics = validate_fn(
+                model,
+                val_loader,
+                device,
+                config.precision,
+                value_preference=config.value_preference,
+            )
+            if config.ppg.enabled:
+                extra_metrics = validation_metrics_callback(
+                    model=model,
+                    dataset=val_dataset,
+                    data_spec=data_spec,
+                    vocab=vocab,
+                    config=config,
+                    device=device,
+                )
+                if not isinstance(extra_metrics, dict):
+                    raise TypeError("validation_metrics_callback must return a dict")
+                val_metrics.update(
+                    {str(key): float(value) for key, value in extra_metrics.items()}
+                )
+                required_ppg_metrics = (
+                    "val_ppg",
+                    "val_ppg_normalized",
+                    "none_ppg",
+                    "none_ppg_normalized",
+                )
+                if any(key not in val_metrics for key in required_ppg_metrics):
+                    raise ValueError(
+                        "validation_metrics_callback must return independent val_ppg and none_ppg metrics"
+                    )
+                val_metrics["top1_val_ppg_average"] = _top1_val_ppg_average(
+                    val_metrics["top1_accuracy"],
+                    val_metrics["val_ppg_normalized"],
+                )
+            if tensorboard_writer is not None:
+                epoch_step = epoch * len(train_loader)
+                write_scalar_metrics(
+                    tensorboard_writer,
+                    train_metrics,
+                    prefix="train/epoch",
+                    global_step=epoch_step,
+                )
+                write_scalar_metrics(
+                    tensorboard_writer,
+                    val_metrics,
+                    prefix="validation",
+                    global_step=epoch_step,
+                )
+                tensorboard_writer.add_scalar("epoch/index", epoch, epoch_step)
+            last_val_metrics = val_metrics
+            logger.info(
+                "Epoch %3d | train loss=%.4f ce=%.4f value_aux=%.4f top1=%.4f top3=%.4f | "
+                "val loss=%.4f ce=%.4f value_aux=%.4f top1=%.4f top3=%.4f val_ppg=%.2f none_ppg=%.2f",
+                epoch,
+                train_metrics["loss"],
+                train_metrics["cross_entropy_loss"],
+                train_metrics["value_preference_loss"],
+                train_metrics["top1_accuracy"],
+                train_metrics["top3_accuracy"],
+                val_metrics["loss"],
+                val_metrics["cross_entropy_loss"],
+                val_metrics["value_preference_loss"],
+                val_metrics["top1_accuracy"],
+                val_metrics["top3_accuracy"],
+                val_metrics.get("val_ppg", float("nan")),
+                val_metrics.get("none_ppg", float("nan")),
+            )
 
-        epoch_checkpoint_name = _epoch_checkpoint_name(epoch, val_metrics)
-        save_checkpoint_fn(
-            config.output_dir / epoch_checkpoint_name,
-            model,
-            optimizer,
-            epoch,
-            config,
-            data_spec,
-            val_metrics,
-            input_contract=input_contract,
-            scheduler=scheduler,
-            best_key=best_key,
-            best_val_metrics=best_val_metrics,
-        )
-        if is_best:
+            current_key = _best_metric_key(val_metrics, ppg_enabled=config.ppg.enabled)
+            is_best = best_key is None or current_key > best_key
+            if is_best:
+                best_key = current_key
+                best_val_metrics = dict(val_metrics)
+
+            epoch_checkpoint_name = _epoch_checkpoint_name(epoch, val_metrics)
             save_checkpoint_fn(
-                config.output_dir / "best.pt",
+                config.output_dir / epoch_checkpoint_name,
                 model,
                 optimizer,
                 epoch,
@@ -336,28 +360,44 @@ def run_training(
                 best_key=best_key,
                 best_val_metrics=best_val_metrics,
             )
+            if is_best:
+                save_checkpoint_fn(
+                    config.output_dir / "best.pt",
+                    model,
+                    optimizer,
+                    epoch,
+                    config,
+                    data_spec,
+                    val_metrics,
+                    input_contract=input_contract,
+                    scheduler=scheduler,
+                    best_key=best_key,
+                    best_val_metrics=best_val_metrics,
+                )
 
-    save_checkpoint_fn(
-        config.output_dir / "final.pt",
-        model,
-        optimizer,
-        config.max_epochs,
-        config,
-        data_spec,
-        last_val_metrics,
-        input_contract=input_contract,
-        scheduler=scheduler,
-        best_key=best_key,
-        best_val_metrics=best_val_metrics,
-    )
-    return {
-        "data_spec": data_spec,
-        "best_val_score": None if best_key is None else best_key[0],
-        "best_val_top1_accuracy": best_val_metrics.get("top1_accuracy", 0.0),
-        "best_val_ppg": best_val_metrics.get("val_ppg", 0.0),
-        "last_val_metrics": last_val_metrics,
-        "output_dir": config.output_dir,
-    }
+        save_checkpoint_fn(
+            config.output_dir / "final.pt",
+            model,
+            optimizer,
+            config.max_epochs,
+            config,
+            data_spec,
+            last_val_metrics,
+            input_contract=input_contract,
+            scheduler=scheduler,
+            best_key=best_key,
+            best_val_metrics=best_val_metrics,
+        )
+        return {
+            "data_spec": data_spec,
+            "best_val_score": None if best_key is None else best_key[0],
+            "best_val_top1_accuracy": best_val_metrics.get("top1_accuracy", 0.0),
+            "best_val_ppg": best_val_metrics.get("val_ppg", 0.0),
+            "last_val_metrics": last_val_metrics,
+            "output_dir": config.output_dir,
+        }
+    finally:
+        close_tensorboard_writer(tensorboard_writer)
 
 
 def train_epoch(
@@ -371,6 +411,9 @@ def train_epoch(
     value_preference: ValuePreferenceConfig | None = None,
     runtime_debug: RuntimeDebugRecorder | None = None,
     epoch: int = 0,
+    tensorboard_writer=None,
+    tensorboard_log_every_steps: int = 50,
+    global_step_offset: int = 0,
 ) -> dict[str, float]:
     model.train()
     totals = MetricAccumulator(_EPOCH_METRICS, device=device)
@@ -414,6 +457,22 @@ def train_epoch(
             },
             weight=count,
         )
+        if tensorboard_writer is not None and (
+            step % tensorboard_log_every_steps == 0 or step == len(loader)
+        ):
+            write_scalar_metrics(
+                tensorboard_writer,
+                {
+                    "loss": total_loss,
+                    "cross_entropy_loss": output["loss"],
+                    "value_preference_loss": value_loss,
+                    "top1_accuracy": output["top1_accuracy"],
+                    "top3_accuracy": output["top3_accuracy"],
+                    "learning_rate": optimizer.param_groups[0]["lr"],
+                },
+                prefix="train/step",
+                global_step=global_step_offset + step,
+            )
     return totals.mean()
 
 

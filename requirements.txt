@@ -7,6 +7,7 @@ pyyaml>=6.0
 # 避免 pip 安装 CPU-only 版本。
 --extra-index-url https://download.pytorch.org/whl/cu132
 torch==2.12.0+cu132
+tensorboard>=2.14
 
 # === 模型分析 (scripts/model_analysis) ===
 numpy>=1.24

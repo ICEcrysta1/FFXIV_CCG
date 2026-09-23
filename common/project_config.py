@@ -10,6 +10,8 @@ from dotenv import load_dotenv
 
 PROJECT_JOB_TAG_ENV = "FFXIV_JOB_TAG"
 PROJECT_MODEL_VARIANT_ENV = "FFXIV_MODEL_VARIANT"
+TENSORBOARD_PORT_ENV = "TENSORBOARD_PORT"
+DEFAULT_TENSORBOARD_PORT = 6006
 
 
 def resolve_project_path(value: object, *, project_root: Path) -> Path:
@@ -28,6 +30,38 @@ def load_root_dotenv(project_root: Path, *, override: bool = False) -> Path | No
 
     load_dotenv(env_path, override=override)
     return env_path
+
+
+def resolve_tensorboard_port(
+    *,
+    project_root: Path,
+    explicit: int | str | None = None,
+) -> int:
+    """解析 TensorBoard Web 端口；进程环境优先，其次项目 `.env`，默认 6006。"""
+    value = explicit
+    if value is None:
+        load_root_dotenv(project_root)
+        value = os.environ.get(TENSORBOARD_PORT_ENV)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return DEFAULT_TENSORBOARD_PORT
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise ValueError(
+            f"{TENSORBOARD_PORT_ENV} must be an integer from 1 to 65535, "
+            f"got {value!r}"
+        )
+
+    try:
+        port = int(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"{TENSORBOARD_PORT_ENV} must be an integer from 1 to 65535, "
+            f"got {value!r}"
+        ) from exc
+    if not 1 <= port <= 65535:
+        raise ValueError(
+            f"{TENSORBOARD_PORT_ENV} must be between 1 and 65535, got {port}"
+        )
+    return port
 
 
 def resolve_project_job_tag(
