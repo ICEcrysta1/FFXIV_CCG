@@ -7,12 +7,17 @@ import subprocess
 import sys
 from pathlib import Path
 
-from common.policy.config import PROJECT_ROOT, resolve_policy_model_config_path
+from common.policy.config import (
+    PROJECT_ROOT,
+    resolve_policy_model_config_path,
+    resolve_policy_model_variant,
+)
 from common.project_config import (
     load_root_dotenv,
     resolve_project_path,
     resolve_tensorboard_port,
 )
+from common.training.tensorboard import resolve_tensorboard_root
 from training.config import load_run_config
 
 
@@ -31,7 +36,7 @@ def main() -> int:
         "--logdir",
         type=Path,
         default=None,
-        help="覆盖默认事件目录；默认读取所选模型 output_dir/tensorboard",
+        help="覆盖默认事件目录；默认读取所选模型的 <model_variant>_tensorboard",
     )
     args = parser.parse_args()
 
@@ -39,10 +44,11 @@ def main() -> int:
     port = resolve_tensorboard_port(project_root=PROJECT_ROOT)
     config_path = resolve_policy_model_config_path(args.config)
     config = load_run_config(config_path)
+    model_variant = resolve_policy_model_variant(config_path)
     log_dir = (
         resolve_project_path(args.logdir, project_root=PROJECT_ROOT)
         if args.logdir is not None
-        else config.output_dir / "tensorboard"
+        else resolve_tensorboard_root(config.output_dir, model_variant)
     )
     log_dir.mkdir(parents=True, exist_ok=True)
 

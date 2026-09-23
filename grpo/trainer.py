@@ -750,8 +750,9 @@ def run_grpo_training(
     try:
         tensorboard_writer = create_tensorboard_writer(
             grpo.tensorboard,
-            output_path,
+            config.output_dir,
             run_name="grpo",
+            model_variant=config.model_variant,
         )
         if tensorboard_writer is not None:
             logger.info("TensorBoard events: %s", tensorboard_writer.log_dir)

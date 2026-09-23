@@ -211,6 +211,7 @@ def run_training(
         config.tensorboard,
         config.output_dir,
         run_name="bc",
+        model_variant=config.model_variant,
     )
     if tensorboard_writer is not None:
         logger.info("TensorBoard events: %s", tensorboard_writer.log_dir)

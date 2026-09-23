@@ -74,10 +74,13 @@ def create_tensorboard_writer(
     output_dir: Path,
     *,
     run_name: str,
+    model_variant: str | None = None,
 ):
     """为一次训练创建独立事件目录；禁用时不导入 TensorBoard。"""
     if not config.enabled:
         return None
+
+    root = resolve_tensorboard_root(output_dir, model_variant)
 
     try:
         summary_writer = _resolve_summary_writer()
@@ -87,7 +90,6 @@ def create_tensorboard_writer(
             "install it with `.venv/Scripts/python -m pip install -r requirements.txt`."
         ) from exc
 
-    root = Path(output_dir) / "tensorboard"
     root.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S-%f")
     base_name = f"{run_name}-{timestamp}"
@@ -105,6 +107,27 @@ def create_tensorboard_writer(
     _ACTIVE_WRITER_CLOSE_CALLBACKS[id(writer)] = close_at_exit
     atexit.register(close_at_exit)
     return writer
+
+
+def resolve_tensorboard_root(
+    output_dir: Path,
+    model_variant: str | None,
+) -> Path:
+    """从模型输出目录和变体名解析 BC/GRPO 共用的事件根目录。"""
+    if not isinstance(model_variant, str) or not model_variant.strip():
+        raise ValueError("TensorBoard requires a configured model_variant")
+    variant = model_variant.strip()
+    variant_path = Path(variant)
+    if (
+        variant in {".", ".."}
+        or variant_path.is_absolute()
+        or len(variant_path.parts) != 1
+    ):
+        raise ValueError(
+            "TensorBoard model_variant must be a single directory name, "
+            f"got {variant!r}"
+        )
+    return Path(output_dir).resolve().parent / f"{variant}_tensorboard"
 
 
 def write_scalar_metrics(
@@ -143,5 +166,6 @@ __all__ = [
     "TensorBoardConfig",
     "close_tensorboard_writer",
     "create_tensorboard_writer",
+    "resolve_tensorboard_root",
     "write_scalar_metrics",
 ]
