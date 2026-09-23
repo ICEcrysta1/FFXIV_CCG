@@ -155,6 +155,36 @@ def test_replay_config_routes_onnx_job_from_manifest(monkeypatch, tmp_path):
     assert config.ort_provider == "CUDAExecutionProvider"
 
 
+def test_replay_config_derives_onnx_package_from_explicit_checkpoint(monkeypatch, tmp_path):
+    """显式选择 checkpoint 时 ORT 回放必须按该 checkpoint 推导部署包。"""
+    from scripts.onnx_export.config import config as export_config_module
+
+    monkeypatch.setattr(replay_config_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(export_config_module, "PROJECT_ROOT", tmp_path)
+    checkpoint_dir = tmp_path / "artifacts" / "checkpoints" / "black_mage" / "artzip_hotstart"
+    checkpoint_dir.mkdir(parents=True)
+    checkpoint = checkpoint_dir / "epoch_003.pt"
+    checkpoint.write_bytes(b"checkpoint")
+    package = tmp_path / "artifacts" / "exports" / "black_mage" / "artzip_hotstart"
+    package.mkdir(parents=True)
+    (package / "manifest.json").write_text(
+        '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":384}},'
+        '"model":{"model_variant":"artzip"}}',
+        encoding="utf-8",
+    )
+    default_package = tmp_path / "artifacts" / "exports" / "black_mage" / "artzip_bc"
+    scene = tmp_path / "scene.json"
+    scene.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_BACKEND", "onnxruntime")
+    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_SCENE_JSON", str(scene))
+    monkeypatch.setenv("FFXIV_JOB_TAG", "black_mage")
+
+    config = load_replay_config(checkpoint=checkpoint)
+
+    assert config.onnx_package_path == package.resolve()
+    assert config.onnx_package_path != default_package.resolve()
+
+
 def test_replay_config_rejects_onnx_job_mismatch(monkeypatch, tmp_path):
     package = tmp_path / "deployment"
     package.mkdir()

@@ -97,7 +97,7 @@ def load_replay_config(
             f"job {model_job_tag!r}"
         )
     if backend_name == "onnxruntime":
-        onnx_package_path = _resolve_onnx_package(onnx_package)
+        onnx_package_path = _resolve_onnx_package(onnx_package, checkpoint=checkpoint)
         onnx_metadata = _load_onnx_metadata(onnx_package_path)
         job_tag = str(onnx_metadata["job_tag"])
         onnx_model_variant = str(onnx_metadata["model_variant"])
@@ -281,15 +281,19 @@ def _backend_name(value: object) -> str:
     return result
 
 
-def _resolve_onnx_package(explicit: Path | None) -> Path:
-    # 只接受 CLI 显式传入的部署包；旧 .env 的 AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE
-    # 已不再读取，未显式指定时按 checkpoint 推导，避免回放读错模型的部署包。
+def _resolve_onnx_package(explicit: Path | None, *, checkpoint: Path | None = None) -> Path:
+    """解析 ORT 部署包：显式 `--onnx-package` 优先，否则按本次选择的 checkpoint 推导。
+
+    旧 .env 的 `AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE` 已不再读取。推导时必须使用
+    本次选择的 checkpoint（菜单/`--checkpoint`），否则会退回配置默认 checkpoint，
+    出现"菜单选中模型 A、实际回放默认模型 B 的部署包"。
+    """
     if explicit is not None:
         path = resolve_onnx_package_path(explicit=explicit)
     else:
         checkpoint_path = _resolve_checkpoint(
             resolve_policy_model_config_path(),
-            None,
+            checkpoint,
         )
         path = resolve_onnx_package_path(
             explicit=None,

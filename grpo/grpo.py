@@ -117,6 +117,9 @@ def main() -> None:
         "全部有效文件" if max_files is None else max_files,
         "--max-files" if args.max_files is not None else "training.max_files",
     )
+    # 与 BC 入口一致：把最终生效的上限写回配置，checkpoint 的 run_config 才能记录
+    # 本次真实使用的场景规模，而不是 YAML 里的原值。
+    config = replace(config, max_files=max_files)
     output_dir = (
         resolve_project_path(args.output_dir, project_root=PROJECT_ROOT)
         if args.output_dir is not None

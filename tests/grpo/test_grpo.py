@@ -656,6 +656,8 @@ def test_grpo_cli_forwards_max_files_and_overrides(monkeypatch, capsys, tmp_path
     cli.main()
 
     assert calls["max_files"] == 7
+    # 最终生效的上限必须写回配置，checkpoint 才能记录真实场景规模。
+    assert calls["config"].max_files == 7
     assert calls["scene_config"].job_tag == "black_mage"
     assert calls["kwargs"]["grpo"].group_size == 5
     assert calls["kwargs"]["grpo"].max_iterations == 2
@@ -696,7 +698,8 @@ def test_grpo_cli_reuses_training_max_files_when_cli_is_absent(
     monkeypatch.setattr(
         cli,
         "run_grpo_training",
-        lambda config, **kwargs: {"final_checkpoint": tmp_path / "grpo" / "final.pt"},
+        lambda config, **kwargs: calls.update(config=config)
+        or {"final_checkpoint": tmp_path / "grpo" / "final.pt"},
     )
     monkeypatch.setattr(
         sys,
@@ -707,6 +710,7 @@ def test_grpo_cli_reuses_training_max_files_when_cli_is_absent(
     cli.main()
 
     assert calls["max_files"] == 1280
+    assert calls["config"].max_files == 1280
     assert "final.pt" in capsys.readouterr().out
 
 
