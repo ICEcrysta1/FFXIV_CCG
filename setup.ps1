@@ -72,9 +72,20 @@ function Invoke-RequiredCommand {
     )
 
     Write-Host "`n>>> $Description" -ForegroundColor Cyan
-    & $FilePath @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "命令执行失败（退出码 $LASTEXITCODE）：$Description"
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell 5.1 会把原生 stderr 转成 PowerShell 错误记录；
+        # 执行期间使用 Continue，命令成败只按原生进程退出码判断。
+        $ErrorActionPreference = "Continue"
+        & $FilePath @Arguments
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+
+    if ($exitCode -ne 0) {
+        throw "命令执行失败（退出码 $exitCode）：$Description"
     }
 }
 
