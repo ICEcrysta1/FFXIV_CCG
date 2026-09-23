@@ -9,7 +9,7 @@ import math
 import torch
 
 from common.torch_runtime import autocast_context
-from scripts.common.cs_backend import SidecarBackend
+from scripts.common.inprocess_backend import InProcessBackend
 from common.policy.data import Normalizer
 
 from .context import LiveBatchBuilder, SceneTemplateProvider
@@ -67,7 +67,7 @@ def evaluate_none_ppg(
     normalizer = Normalizer()
     normalizer.configure_job_resources(data_spec.job_tag)
     normalizer.register_schema(dataset.schema)
-    with SidecarBackend(
+    with InProcessBackend(
         job_tag=data_spec.job_tag,
         max_history=config.model.history_capacity,
     ) as backend:
@@ -125,7 +125,7 @@ def evaluate_validation_ppg(
     normalizer.register_schema(dataset.schema)
     source_results: list[PpgResult] = []
     model.eval()
-    with SidecarBackend(
+    with InProcessBackend(
         job_tag=data_spec.job_tag,
         max_history=config.model.history_capacity,
     ) as backend:
@@ -254,7 +254,7 @@ def _infer_initial_base_gcd(
 @torch.no_grad()
 def _run_rollout(
     model,
-    backend: SidecarBackend,
+    backend: InProcessBackend,
     batcher,
     *,
     gcd_count: int,
@@ -347,7 +347,7 @@ def _run_rollout(
 @torch.no_grad()
 def _run_rollout_until_time(
     model,
-    backend: SidecarBackend,
+    backend: InProcessBackend,
     batcher,
     *,
     scene_provider,
@@ -467,7 +467,7 @@ def _run_rollout_until_time(
 
 
 def _advance_after_action(
-    backend: SidecarBackend,
+    backend: InProcessBackend,
     state,
     submission,
     *,
@@ -489,7 +489,7 @@ def _advance_after_action(
 
 
 def _advance_event_time(
-    backend: SidecarBackend,
+    backend: InProcessBackend,
     state,
     seconds: float,
     *,

@@ -46,7 +46,7 @@ def is_gcd_decision(gcd_remaining: float) -> bool:
 
 
 class DecisionScheduler:
-    """把动作占用和 scene 边界推进统一委托给 Sidecar 的绝对时间协议。"""
+    """把动作占用和 scene 边界推进统一委托给状态机的绝对时间接口。"""
 
     def __init__(self, backend, observer: Callable[[float], object], scene_provider=None):
         self._backend = backend

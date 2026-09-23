@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from .config.constants import _round_time
-from scripts.common.cs_backend import SidecarBackend
+from scripts.common.inprocess_backend import InProcessBackend
 
 # 确保项目根目录在 sys.path 中，以解析 common 配置/模型导入
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -28,9 +28,9 @@ def build_skill_book(project_config):
     return SkillBook.from_project_config(project_config)
 
 
-def build_backend(job_tag: str, *, max_history: int | None = None) -> SidecarBackend:
-    """启动 C# 状态机后端（SidecarHost 长驻进程）。"""
-    return SidecarBackend(job_tag, max_history=max_history)
+def build_backend(job_tag: str, *, max_history: int | None = None) -> InProcessBackend:
+    """构造进程内 C# 状态机后端，不启动 SidecarHost 子进程。"""
+    return InProcessBackend(job_tag, max_history=max_history)
 
 
 def merge_timestamps_to_windows(

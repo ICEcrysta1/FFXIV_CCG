@@ -6,6 +6,7 @@
 
 ### Added
 
+- 新增 Python.NET 进程内状态机后端：训练样本转换、自回归回放和主入口直接调用 C# `FightEngine`，省去启动 `SidecarHost` 子进程及 Python/C# 间逐请求的 JSON Lines IPC；保留 `SidecarHost` JSON Lines 兼容入口。
 - 新增 BC 与 GRPO TensorBoard 标量记录及本地 Web 启动入口：BC 按训练步和轮记录指标，GRPO 按优化步和迭代记录指标；两者按模型 YAML 的 `output_dir` 和 `.env` 选择的模型变体写入同一 `<output_dir 父目录>/<model_variant>_tensorboard`，启动器默认扫描该目录；Web 端口从项目 `.env` 的 `TENSORBOARD_PORT` 读取（默认 `6006`，仅监听本机）；当前黑魔 `artzip` 配置已启用。
 - 新增根目录 `setup.ps1` 一键准备脚本：优先使用 Windows `python` 检查 Python 3.12+，创建或复用项目 `.venv`，安装 CUDA 版 PyTorch 与 ONNX Runtime GPU 依赖，验证 CUDA provider，并在完成后提示按 `.env.example` 准备 `.env`；已有环境可重复执行且不会覆盖 `.env`。
 - 新增 `scripts/ffxiv_ccg_menu.psm1` 公共 PowerShell 菜单模块：统一工具编号、action 名称和 checkpoint 选择；菜单 2～6 共用同一个 checkpoint 清单，2 只显示可续训的 BC checkpoint，3～6 可选择目录中的全部 `.pt`，每项显示 checkpoint 载荷中的真实 epoch。

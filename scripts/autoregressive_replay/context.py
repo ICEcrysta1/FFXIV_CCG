@@ -213,7 +213,7 @@ class SceneTemplateProvider:
         )
 
     def targetable_windows(self) -> list[dict[str, object]]:
-        """返回 Sidecar 时间推进所需的绝对时间可选中窗口。"""
+        """返回状态机时间推进所需的绝对时间可选中窗口。"""
         return [
             {
                 "start": float(start),

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from common.models import ActionKind
-from scripts.common.cs_backend import SidecarBackend
+from scripts.common.inprocess_backend import InProcessBackend
 from scripts.convert_fflogs import build_training_samples
 from scripts.convert_fflogs.cache.cache_writer import write_compiled_cache_stream
 from scripts.convert_fflogs.source.source_reader import TrainingSourceReader
@@ -22,15 +22,15 @@ _TEST_TRAINING_PAYLOADS: dict[Path, dict[str, object]] = {}
 
 
 def _build_training_samples(fight_payload: dict[str, object]) -> dict[str, object]:
-    """经 C# 状态机后端构建训练样本（转换链路已切后端）。
+    """经进程内 C# 状态机后端构建训练样本。
 
-    SidecarHost 未构建时跳过依赖它的测试（与 tests/scripts/conftest.py
+    状态机运行文件未构建时跳过依赖它的测试（与 tests/scripts/conftest.py
     的 cs_backend fixture 同一守卫，避免训练测试组无 dotnet 环境全红）。
     """
-    from tests.scripts.conftest import _require_sidecar_host
+    from tests.scripts.conftest import _require_inprocess_backend
 
-    _require_sidecar_host()
-    with SidecarBackend(job_tag="black_mage") as backend:
+    _require_inprocess_backend()
+    with InProcessBackend(job_tag="black_mage") as backend:
         return build_training_samples(
             backend,
             build_skill_book(load_job_project_config("black_mage")),
@@ -79,11 +79,11 @@ def make_demo_pt(
     fight_id: str,
 ) -> Path:
     fight_duration = max(len(actions) * 3.5, 10.0)
-    from tests.scripts.conftest import _require_sidecar_host
+    from tests.scripts.conftest import _require_inprocess_backend
 
-    _require_sidecar_host()
+    _require_inprocess_backend()
     skill_book = build_skill_book(load_job_project_config("black_mage"))
-    with SidecarBackend(job_tag="black_mage", fight_remaining=fight_duration) as backend:
+    with InProcessBackend(job_tag="black_mage", fight_remaining=fight_duration) as backend:
         fight_payload = make_demo_payload(backend, skill_book, actions, fight_id=fight_id)
         # 动作生成会推进后端 history；构建训练样本前重新初始化到空历史
         backend.init(fight_remaining=fight_duration)
@@ -246,7 +246,7 @@ def build_demo_actions(
     *,
     fight_duration: float,
 ) -> list[dict[str, object]]:
-    """用绝对时间 Sidecar 协议生成合法的测试动作序列。"""
+    """通过绝对时间状态机接口生成合法的测试动作序列。"""
     request_time = 0.0
     previous_time_offset: float | None = None
     payload: list[dict[str, object]] = []

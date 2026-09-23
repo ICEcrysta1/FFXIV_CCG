@@ -1,4 +1,4 @@
-"""基于 C# 状态机后端（SidecarHost）的模型自回归回放。"""
+"""通过进程内 C# 状态机后端执行模型自回归回放。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import torch
 
 from common.config import load_project_config
 from common.skills import SkillBook
-from scripts.common.cs_backend import SidecarBackend
+from scripts.common.inprocess_backend import InProcessBackend
 from scripts.convert_fflogs.cache import (
     load_raw_compiled_cache,
     precompile_raw_training_caches,
@@ -79,7 +79,7 @@ def _load_scene_duration_seconds(scene_json_path: Path) -> float | None:
     return max(durations) if durations else None
 
 
-def observe_replay_state(backend: SidecarBackend, timestamp: float):
+def observe_replay_state(backend: InProcessBackend, timestamp: float):
     """读取绝对时间秒制快照并提供回放所需的属性视图。"""
     observation = backend.observe_at(float(timestamp), format="seconds")
     payload = dict(observation.context)
@@ -97,7 +97,7 @@ def observe_replay_state(backend: SidecarBackend, timestamp: float):
     return SimpleNamespace(**payload)
 
 
-def read_replay_cumulative_potency(backend: SidecarBackend, timestamp: float) -> tuple[float, float]:
+def read_replay_cumulative_potency(backend: InProcessBackend, timestamp: float) -> tuple[float, float]:
     """从最终 vector 观测读取状态机实际累计威力。"""
     canonical = backend.observe_at(
         float(timestamp),
@@ -286,7 +286,7 @@ class ReplayCacheStore:
 class AutoregressiveReplaySession:
     """可复用的 replay 运行时资源。
 
-    session 顺序服务多条轨迹：SidecarHost、compiled cache reader/shard LRU
+    session 顺序服务多条轨迹：C# 状态机、compiled cache reader/shard LRU
     和静态职业资源只初始化一次；每条轨迹由 :meth:`reset` 恢复到空战斗状态。
     session 不是线程安全对象，调用方必须串行运行轨迹。
     """
@@ -321,7 +321,7 @@ class AutoregressiveReplaySession:
         self.mp_tick_interval_seconds = (
             float(mp_recovery.tick_interval_seconds) if mp_recovery is not None else None
         )
-        self.sidecar = SidecarBackend(
+        self.state_machine = InProcessBackend(
             job_tag=self.data_spec.job_tag,
             actual_base_gcd=config.base_gcd,
             max_history=config.max_history,
@@ -344,7 +344,7 @@ class AutoregressiveReplaySession:
         *,
         initial_timestamp: float = 0.0,
     ) -> float:
-        """清空 Sidecar 与模型运行时缓存，开始一条独立轨迹。"""
+        """重置状态机与模型运行时缓存，开始一条独立轨迹。"""
         if self._closed:
             raise RuntimeError("replay session is already closed")
         if config.job_tag and config.job_tag != self.data_spec.job_tag:
@@ -371,15 +371,15 @@ class AutoregressiveReplaySession:
         }
         if fight_remaining is not None:
             init_kwargs["fight_remaining"] = fight_remaining
-        self.sidecar.init(**init_kwargs)
+        self.state_machine.init(**init_kwargs)
         return float(initial_timestamp)
 
     def close(self) -> None:
-        """关闭长驻 SidecarHost；重复调用安全。"""
+        """释放状态机后端会话；重复调用安全。"""
         if self._closed:
             return
         self._closed = True
-        self.sidecar.close()
+        self.state_machine.close()
 
     def __enter__(self) -> "AutoregressiveReplaySession":
         return self
@@ -439,17 +439,17 @@ class AutoregressiveReplay:
                 raise ValueError("scene compiled cache skill feature layout mismatch")
             self.skill_book = self._session.skill_book
             self._mp_tick_interval_seconds = self._session.mp_tick_interval_seconds
-            self._sidecar = self._session.sidecar
+            self._state_machine = self._session.state_machine
             scene_provider = SceneTemplateProvider(
                 reader,
                 normalizer=self._session.normalizer,
                 initial_sample_index=config.scene_sample_index,
                 enabled=config.scene_mode == "cache",
-                backend=self._sidecar,
+                backend=self._state_machine,
             )
             self.scene_provider = scene_provider
             self.batcher = LiveBatchBuilder(
-                backend=self._sidecar,
+                backend=self._state_machine,
                 vocab=self.vocab,
                 normalizer=self._session.normalizer,
                 schema=reader.schema,
@@ -482,7 +482,7 @@ class AutoregressiveReplay:
         return state
 
     def _observe_state(self, timestamp: float):
-        return observe_replay_state(self._sidecar, timestamp)
+        return observe_replay_state(self._state_machine, timestamp)
 
     def _reset_for_trajectory(self, *, initial_timestamp: float = 0.0):
         """恢复独立轨迹的状态机与模型运行时缓存。"""
@@ -524,7 +524,7 @@ class AutoregressiveReplay:
         if float(seconds) < -EVENT_TIME_EPSILON:
             raise ValueError(f"event advance seconds must be >= 0, got {seconds}")
         return DecisionScheduler(
-            self._sidecar,
+            self._state_machine,
             self._observe_state,
             self.scene_provider,
         ).advance_by(
@@ -545,7 +545,7 @@ class AutoregressiveReplay:
         """按提交结果推进到动作占用结束；实际推进由共用调度器负责。"""
         skill = self.skill_book.get(action_key)
         return DecisionScheduler(
-            self._sidecar,
+            self._state_machine,
             self._observe_state,
             self.scene_provider,
         ).advance_submitted_action(
@@ -650,7 +650,7 @@ class AutoregressiveReplay:
             if initial_time is None:
                 initial_time = initial_timestamp
             state = self._sync_scene_state(state)
-            forced_result = self._sidecar.submit_action(
+            forced_result = self._state_machine.submit_action(
                 float(initial_time),
                 self.config.initial_action,
             )
@@ -705,7 +705,7 @@ class AutoregressiveReplay:
                 )
             state = self._sync_scene_state(state)
             next_observation = float(state.time) + gcd_request_delay(state)
-            decision_canonical = self._sidecar.observe_at(
+            decision_canonical = self._state_machine.observe_at(
                 float(state.time),
                 format="vector",
                 next_observation_timestamp=next_observation,
@@ -717,7 +717,7 @@ class AutoregressiveReplay:
                 )
             except NoLegalCandidateError:
                 advanced = DecisionScheduler(
-                    self._sidecar, self._observe_state, self.scene_provider,
+                    self._state_machine, self._observe_state, self.scene_provider,
                 ).advance_to_next_decision(state, end_time=end_time)
                 if advanced is None:
                     if end_time is not None and float(state.time) >= end_time - EVENT_TIME_EPSILON:
@@ -730,7 +730,7 @@ class AutoregressiveReplay:
                 if wait_seconds <= EVENT_TIME_EPSILON:
                     raise RuntimeError("selected ogcd_wait while GCD is already ready")
                 next_observation = float(state.time) + gcd_request_delay(state)
-                self._sidecar.record_policy_action(
+                self._state_machine.record_policy_action(
                     float(state.time),
                     OGCD_WAIT_ACTION_KEY,
                     next_observation,
@@ -750,7 +750,7 @@ class AutoregressiveReplay:
                 rows.append(row)
                 continue
             selected_skill = self.skill_book.get(row.action_key)
-            result = self._sidecar.submit_action(float(state.time), row.action_key)
+            result = self._state_machine.submit_action(float(state.time), row.action_key)
             if not result.accepted:
                 raise RuntimeError(f"selected action rejected: {row.action_key} ({result.reason})")
             state = self._observe_state(float(state.time))
@@ -869,7 +869,7 @@ class AutoregressiveReplay:
             cumulative_dot_potency = float(final_state.cumulative_dot_potency)
         else:
             cumulative_potency, cumulative_dot_potency = read_replay_cumulative_potency(
-                self._sidecar,
+                self._state_machine,
                 float(final_state.time),
             )
         ppg = (
