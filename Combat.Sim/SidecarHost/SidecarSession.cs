@@ -76,6 +76,7 @@ public sealed class SidecarSession
         {
             ["timestamp"] = _simulator.Time,
             ["sidecar_contract_version"] = SchemaConfigLoader.Instance.SidecarContractVersion,
+            ["fight_engine_assembly_contract_version"] = SchemaConfigLoader.AssemblySidecarContractVersion,
         };
     }
 

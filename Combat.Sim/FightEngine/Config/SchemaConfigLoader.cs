@@ -3,6 +3,9 @@
 // Additional permission: FightEngine GPLv3 Linking Exception, Version 1.0.
 // See LICENSE and LICENSE-FightEngine-Linking-Exception in the repository root.
 
+using System.Globalization;
+using System.Reflection;
+
 using Combat.Sim.Common;
 
 namespace Combat.Sim.Config;
@@ -41,12 +44,32 @@ public sealed class SchemaConfig
 /// </summary>
 public static class SchemaConfigLoader
 {
+    private const string SidecarContractMetadataKey = "Combat.Sim.SidecarContractVersion";
+
     // 进程内单例的装载锁：并行 Load 时保护 _instance/_projectRoot 两字段的一致性；
     // _instance 声明为 volatile，读端（Instance/RequireStateVectorFields）无锁也能读到
     // 完整加载完成的实例，不会在跨 root 重载窗口撕裂读
     private static readonly object Gate = new();
     private static volatile SchemaConfig? _instance;
     private static string? _projectRoot;
+
+    /// <summary>从当前 FightEngine 程序集读取构建时嵌入的契约版本。</summary>
+    public static int AssemblySidecarContractVersion
+    {
+        get
+        {
+            var value = typeof(SchemaConfigLoader).Assembly
+                .GetCustomAttributes<AssemblyMetadataAttribute>()
+                .SingleOrDefault(metadata => metadata.Key == SidecarContractMetadataKey)
+                ?.Value;
+            if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var version))
+            {
+                throw new InvalidOperationException(
+                    $"FightEngine 程序集缺少有效的 {SidecarContractMetadataKey} 构建元数据");
+            }
+            return version;
+        }
+    }
 
     /// <summary>按项目根加载共享 schema（进程内单例，同根重复调用幂等）。</summary>
     public static SchemaConfig Load(string projectRoot)
@@ -60,7 +83,15 @@ public static class SchemaConfigLoader
 
             var configPath = Path.Combine(projectRoot, "config", "schema.yaml");
             var payload = YamlConfig.LoadYamlMapping(configPath);
-            _instance = Build(payload, configPath);
+            var schema = Build(payload, configPath);
+            var assemblyContractVersion = AssemblySidecarContractVersion;
+            if (schema.SidecarContractVersion != assemblyContractVersion)
+            {
+                throw new InvalidOperationException(
+                    $"{configPath}: schema sidecar_contract_version={schema.SidecarContractVersion} " +
+                    $"与 FightEngine 程序集内嵌版本={assemblyContractVersion} 不一致；请重新构建 SidecarHost。");
+            }
+            _instance = schema;
             _projectRoot = projectRoot;
             return _instance;
         }

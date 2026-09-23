@@ -11,4 +11,22 @@
     <PackageReference Include="YamlDotNet" Version="18.1.0" />
   </ItemGroup>
 
+  <Target Name="EmbedSidecarContractVersion" BeforeTargets="CoreCompile">
+    <ReadLinesFromFile File="$(MSBuildProjectDirectory)/../../config/schema.yaml">
+      <Output TaskParameter="Lines" ItemName="_SchemaLines" />
+    </ReadLinesFromFile>
+    <PropertyGroup>
+      <_SchemaText>@(_SchemaLines, ' ')</_SchemaText>
+      <_SidecarContractVersion>$([System.Text.RegularExpressions.Regex]::Match('$(_SchemaText)', 'sidecar_contract_version\s*:\s*(\d+)').Groups[1].Value)</_SidecarContractVersion>
+    </PropertyGroup>
+    <Error Condition="'$(_SidecarContractVersion)' == ''" Text="Cannot embed sidecar_contract_version from config/schema.yaml." />
+    <WriteLinesToFile
+      File="$(IntermediateOutputPath)SidecarContractAssemblyMetadata.cs"
+      Lines="[assembly: System.Reflection.AssemblyMetadataAttribute(&quot;Combat.Sim.SidecarContractVersion&quot;, &quot;$(_SidecarContractVersion)&quot;)]"
+      Overwrite="true" />
+    <ItemGroup>
+      <Compile Include="$(IntermediateOutputPath)SidecarContractAssemblyMetadata.cs" />
+    </ItemGroup>
+  </Target>
+
 </Project>

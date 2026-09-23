@@ -152,6 +152,24 @@ class InProcessBackend:
             self._initial_timestamp = float(initial_timestamp)
 
         job_simulator, policy_session, _, schema_loader, _ = self._types()
+        try:
+            assembly_version = int(schema_loader.AssemblySidecarContractVersion)
+        except Exception as exc:
+            self._simulator = None
+            self._policy = None
+            raise RuntimeError(
+                "实际加载的 FightEngine DLL 缺少可验证的程序集契约版本；"
+                "请使用当前工作树重新构建 SidecarHost。"
+            ) from exc
+        if assembly_version != SIDECAR_CONTRACT_VERSION:
+            self._simulator = None
+            self._policy = None
+            raise RuntimeError(
+                "实际加载的 FightEngine DLL 契约版本与当前 Python schema 不匹配："
+                f"expected={SIDECAR_CONTRACT_VERSION}, dll={assembly_version}。"
+                "请使用当前工作树重新构建 SidecarHost。"
+            )
+
         simulator = job_simulator.Create(
             str(_PROJECT_ROOT),
             self.job_tag,
@@ -160,15 +178,6 @@ class InProcessBackend:
             self._initial_timestamp,
             fight_remaining,
         )
-        schema_version = int(schema_loader.Instance.SidecarContractVersion)
-        if schema_version != SIDECAR_CONTRACT_VERSION:
-            self._simulator = None
-            self._policy = None
-            raise RuntimeError(
-                "FightEngine 与当前 Python 状态机契约不匹配："
-                f"expected={SIDECAR_CONTRACT_VERSION}, actual={schema_version}。"
-                "请确认 DLL 与 config/schema.yaml 来自同一工作树。"
-            )
         policy = policy_session.Create(str(_PROJECT_ROOT), simulator)
         self._simulator = simulator
         self._policy = policy

@@ -55,7 +55,7 @@ def test_sidecar_backend_close_kills_stuck_child(fake_sidecar_env):
     """close 时子进程 5s 内不退出则 kill 兜底，并 wait 回收。"""
     fake_proc = fake_sidecar_env
     fake_proc.stdout.readline.side_effect = [
-        f'{{"seq": 1, "ok": true, "timestamp": 0.0, "sidecar_contract_version": {SIDECAR_CONTRACT_VERSION}}}',  # init 成功
+        f'{{"seq": 1, "ok": true, "timestamp": 0.0, "sidecar_contract_version": {SIDECAR_CONTRACT_VERSION}, "fight_engine_assembly_contract_version": {SIDECAR_CONTRACT_VERSION}}}',  # init 成功
         "",                          # close 命令时进程已崩溃
     ]
     fake_proc.wait.side_effect = [subprocess.TimeoutExpired("SidecarHost", 5), 0]
@@ -124,7 +124,7 @@ def test_sidecar_backend_close_is_idempotent_after_dead_child(fake_sidecar_env):
     """子进程已退出后 close 不抛错（正常转换 finally 路径）。"""
     fake_proc = fake_sidecar_env
     fake_proc.stdout.readline.side_effect = [
-        f'{{"seq": 1, "ok": true, "timestamp": 0.0, "sidecar_contract_version": {SIDECAR_CONTRACT_VERSION}}}',  # init 成功
+        f'{{"seq": 1, "ok": true, "timestamp": 0.0, "sidecar_contract_version": {SIDECAR_CONTRACT_VERSION}, "fight_engine_assembly_contract_version": {SIDECAR_CONTRACT_VERSION}}}',  # init 成功
         "", "",                      # 两次 close 时进程已崩溃
     ]
 
@@ -134,13 +134,13 @@ def test_sidecar_backend_close_is_idempotent_after_dead_child(fake_sidecar_env):
 
 
 def test_sidecar_backend_rejects_stale_runtime_contract(fake_sidecar_env):
-    """旧 DLL 即使能启动，也必须在 init 阶段因输出契约过期而拒绝。"""
+    """旧 SidecarHost 只回报 YAML 契约版本时，不能据此认定 DLL 是新版。"""
     fake_proc = fake_sidecar_env
     fake_proc.stdout.readline.return_value = (
-        f'{{"seq": 1, "ok": true, "sidecar_contract_version": {SIDECAR_CONTRACT_VERSION - 1}}}'
+        f'{{"seq": 1, "ok": true, "sidecar_contract_version": {SIDECAR_CONTRACT_VERSION}}}'
     )
 
-    with pytest.raises(RuntimeError, match="契约不匹配"):
+    with pytest.raises(RuntimeError, match="无法证明实际加载的 FightEngine DLL"):
         SidecarBackend("black_mage")
 
     assert fake_proc.wait.call_count >= 1
@@ -150,8 +150,8 @@ def test_sidecar_backend_reinit_preserves_max_history(fake_sidecar_env):
     """转换提取与训练阶段重复 init 时必须继续发送历史上限。"""
     fake_proc = fake_sidecar_env
     fake_proc.stdout.readline.side_effect = [
-        f'{{"seq": 1, "ok": true, "timestamp": 0.0, "sidecar_contract_version": {SIDECAR_CONTRACT_VERSION}}}',
-        f'{{"seq": 2, "ok": true, "timestamp": 0.0, "sidecar_contract_version": {SIDECAR_CONTRACT_VERSION}}}',
+        f'{{"seq": 1, "ok": true, "timestamp": 0.0, "sidecar_contract_version": {SIDECAR_CONTRACT_VERSION}, "fight_engine_assembly_contract_version": {SIDECAR_CONTRACT_VERSION}}}',
+        f'{{"seq": 2, "ok": true, "timestamp": 0.0, "sidecar_contract_version": {SIDECAR_CONTRACT_VERSION}, "fight_engine_assembly_contract_version": {SIDECAR_CONTRACT_VERSION}}}',
         "",  # close：模拟子进程已退出
     ]
 

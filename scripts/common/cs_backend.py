@@ -190,6 +190,14 @@ class SidecarBackend:
         if self._max_history is not None:
             payload["max_history"] = self._max_history
         response = self._call("init", **payload)
+        assembly_version = response.get("fight_engine_assembly_contract_version")
+        if assembly_version != SIDECAR_CONTRACT_VERSION:
+            raise RuntimeError(
+                "SidecarHost 无法证明实际加载的 FightEngine DLL 契约版本或版本不匹配："
+                f"expected={SIDECAR_CONTRACT_VERSION}, dll={assembly_version!r}。"
+                "请使用当前工作树重新构建 Combat.Sim/SidecarHost/SidecarHost.csproj。"
+            )
+
         actual_version = response.get("sidecar_contract_version")
         if actual_version != SIDECAR_CONTRACT_VERSION:
             raise RuntimeError(

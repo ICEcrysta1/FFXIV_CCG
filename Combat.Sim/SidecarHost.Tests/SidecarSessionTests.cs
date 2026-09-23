@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Combat.Sim.Common;
+using Combat.Sim.Config;
 using Combat.Sim.SidecarHost;
 
 namespace SidecarHost.Tests;
@@ -64,6 +65,9 @@ public sealed class SidecarSessionTests
         using var init = Parse(session.Handle(
             "{\"op\":\"init\",\"seq\":1,\"job_tag\":\"black_mage\",\"initial_timestamp\":-5.0}"));
         Assert.Equal(-5.0, init.RootElement.GetProperty("timestamp").GetDouble());
+        Assert.Equal(
+            SchemaConfigLoader.AssemblySidecarContractVersion,
+            init.RootElement.GetProperty("fight_engine_assembly_contract_version").GetInt32());
 
         using var observation = Parse(session.Handle(
             "{\"op\":\"observe_at\",\"seq\":2,\"timestamp\":-3.0," +

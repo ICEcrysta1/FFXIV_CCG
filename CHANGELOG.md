@@ -47,6 +47,10 @@
 - 保存 checkpoint 前强制要求 `model_variant` 非空；补充 ONNX manifest 变体不匹配、resume 变体不匹配和直接保存契约测试，旧 manifest 缺少变体时提示重新导出。
 - 修复 ONNX manifest 缺少 `contract`、`job_tag` 或其他路由字段时被错误归因成缺少 `model_variant` 的诊断问题，并补充实际缺失字段回归测试。
 
+### Fixed
+
+- 修复状态机后端通过 Python 与 C# 同读 `config/schema.yaml` 比较契约版本、导致旧 `FightEngine.dll` 仍可能通过校验的问题：构建时将版本嵌入程序集，配置加载时校验 schema 与程序集元数据；进程内后端和 Sidecar init 握手分别检查实际程序集版本，拒绝旧 DLL 或无法证明 DLL 版本的旧宿主。
+
 ## [0.1.0] - 2026-09-21
 
 ### Added
