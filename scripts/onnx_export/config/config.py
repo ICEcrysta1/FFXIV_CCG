@@ -24,7 +24,6 @@ from ..runtime.precision import PRECISION_BF16, SUPPORTED_PRECISIONS
 
 # 导出与回放共用同一模型来源、部署包、ORT Provider 和实战 scene。
 AUTOREGRESSIVE_REPLAY_CHECKPOINT_ENV = "AUTOREGRESSIVE_REPLAY_CHECKPOINT"
-AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE_ENV = "AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE"
 AUTOREGRESSIVE_REPLAY_ORT_PROVIDER_ENV = "AUTOREGRESSIVE_REPLAY_ORT_PROVIDER"
 AUTOREGRESSIVE_REPLAY_SCENE_JSON_ENV = "AUTOREGRESSIVE_REPLAY_SCENE_JSON"
 
@@ -155,15 +154,23 @@ def load_parity_config() -> OnnxParityConfig:
 def resolve_onnx_package_path(
     *,
     explicit: Path | str | None,
-    checkpoint_path: Path,
+    checkpoint_path: Path | None = None,
 ) -> Path:
-    """解析共用部署包路径；未配置时按 checkpoint 目录结构自动推导。"""
-    raw = explicit or _optional_text(
-        os.environ.get(AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE_ENV)
-    )
-    if raw:
+    """解析共用部署包路径：只用显式入参，否则按 checkpoint 目录结构推导。
+
+    旧版 `.env` 的 `AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE` 已不再读取：显式选择
+    checkpoint 后部署包必须跟随该 checkpoint，避免选错模型时写错或覆盖旧部署包。
+    """
+    if explicit:
+        raw = _optional_text(explicit)
+        if not raw:
+            raise ValueError("ONNX deployment package path must not be blank")
         path = resolve_project_path(raw, project_root=PROJECT_ROOT)
         return path.parent if path.suffix.lower() == ".onnx" else path
+    if checkpoint_path is None:
+        raise ValueError(
+            "ONNX deployment package path requires an explicit path or a checkpoint"
+        )
     return derive_onnx_output_dir(checkpoint_path, project_root=PROJECT_ROOT)
 
 
@@ -176,12 +183,13 @@ def derive_onnx_output_dir(checkpoint_path: Path, *, project_root: Path) -> Path
     except ValueError as exc:
         raise ValueError(
             f"cannot derive ONNX output from checkpoint outside {checkpoint_root}; "
-            f"set {AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE_ENV} explicitly"
+            "place the checkpoint under artifacts/checkpoints/<job>/<run>/ "
+            "or pass an explicit output directory"
         ) from exc
     if len(relative_parent.parts) < 2:
         raise ValueError(
             "checkpoint path must follow artifacts/checkpoints/<job>/<run>/<file>.pt "
-            f"or set {AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE_ENV} explicitly"
+            "or pass an explicit output directory"
         )
     return (Path(project_root) / "artifacts" / "exports" / relative_parent).resolve()
 

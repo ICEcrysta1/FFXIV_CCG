@@ -23,7 +23,6 @@ def test_replay_config_loads_dotenv_before_resolving_backend(monkeypatch, tmp_pa
 
     for name in (
         "AUTOREGRESSIVE_REPLAY_BACKEND",
-        "AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE",
         "AUTOREGRESSIVE_REPLAY_SCENE_JSON",
         "AUTOREGRESSIVE_REPLAY_SCENE_MODE",
     ):
@@ -31,14 +30,13 @@ def test_replay_config_loads_dotenv_before_resolving_backend(monkeypatch, tmp_pa
 
     def load_test_dotenv(_root):
         monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_BACKEND", "onnxruntime")
-        monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE", str(package))
         monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_SCENE_JSON", str(scene))
         monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_SCENE_MODE", "empty")
         monkeypatch.setenv("FFXIV_JOB_TAG", "black_mage")
 
     monkeypatch.setattr(replay_config_module, "load_root_dotenv", load_test_dotenv)
 
-    config = load_replay_config()
+    config = load_replay_config(onnx_package=package)
 
     assert config.backend == "onnxruntime"
     assert config.scene_mode == "empty"
@@ -137,14 +135,13 @@ def test_replay_config_routes_onnx_job_from_manifest(monkeypatch, tmp_path):
     scene = tmp_path / "scene.json"
     scene.write_text("{}", encoding="utf-8")
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_BACKEND", "onnxruntime")
-    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE", str(package))
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_SCENE_JSON", str(scene))
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_SCENE_MODE", "empty")
     monkeypatch.setenv("FFXIV_JOB_TAG", "black_mage")
     monkeypatch.setenv("FFXIV_JOB_TAG", "black_mage")
     monkeypatch.delenv("AUTOREGRESSIVE_REPLAY_ORT_PROVIDER", raising=False)
 
-    config = load_replay_config()
+    config = load_replay_config(onnx_package=package)
 
     assert config.backend == "onnxruntime"
     assert config.onnx_package_path == package.resolve()
@@ -166,11 +163,10 @@ def test_replay_config_rejects_onnx_job_mismatch(monkeypatch, tmp_path):
         encoding="utf-8",
     )
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_BACKEND", "onnxruntime")
-    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE", str(package))
     monkeypatch.setenv("FFXIV_JOB_TAG", "black_mage")
 
     with pytest.raises(ValueError, match="ONNX job_tag"):
-        load_replay_config()
+        load_replay_config(onnx_package=package)
 
 
 def test_replay_config_rejects_onnx_model_variant_mismatch(monkeypatch, tmp_path):
@@ -181,11 +177,10 @@ def test_replay_config_rejects_onnx_model_variant_mismatch(monkeypatch, tmp_path
         encoding="utf-8",
     )
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_BACKEND", "onnxruntime")
-    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE", str(package))
     monkeypatch.setenv("FFXIV_JOB_TAG", "black_mage")
 
     with pytest.raises(ValueError, match="ONNX model_variant"):
-        load_replay_config()
+        load_replay_config(onnx_package=package)
 
 
 def test_replay_config_reports_missing_onnx_model_variant_for_reexport(
@@ -199,14 +194,13 @@ def test_replay_config_reports_missing_onnx_model_variant_for_reexport(
         encoding="utf-8",
     )
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_BACKEND", "onnxruntime")
-    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE", str(package))
     monkeypatch.setenv("FFXIV_JOB_TAG", "black_mage")
 
     with pytest.raises(
         ValueError,
         match="missing model_variant; re-export the package",
     ):
-        load_replay_config()
+        load_replay_config(onnx_package=package)
 
 
 def test_replay_config_reports_the_actual_missing_onnx_routing_field(
@@ -220,14 +214,13 @@ def test_replay_config_reports_the_actual_missing_onnx_routing_field(
         encoding="utf-8",
     )
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_BACKEND", "onnxruntime")
-    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE", str(package))
     monkeypatch.setenv("FFXIV_JOB_TAG", "black_mage")
 
     with pytest.raises(
         ValueError,
         match="missing replay routing field 'job_tag'",
     ):
-        load_replay_config()
+        load_replay_config(onnx_package=package)
 
 
 @pytest.mark.parametrize(
@@ -261,14 +254,13 @@ def test_replay_config_reports_each_missing_onnx_routing_field(
     package.mkdir()
     (package / "manifest.json").write_text(manifest, encoding="utf-8")
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_BACKEND", "onnxruntime")
-    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE", str(package))
     monkeypatch.setenv("FFXIV_JOB_TAG", "black_mage")
 
     with pytest.raises(
         ValueError,
         match=rf"missing replay routing field '{missing_field}'",
     ):
-        load_replay_config()
+        load_replay_config(onnx_package=package)
 
 
 def test_replay_top_p_parser_defaults_to_no_filter(monkeypatch):

@@ -13,6 +13,7 @@ from scripts.onnx_export.config.config import (
     load_export_config,
     load_parity_config,
 )
+from scripts.onnx_export.config import config as export_config_module
 from scripts.onnx_export import __main__ as export_main
 from scripts.onnx_export import workflow
 from scripts.onnx_export.release.policy import minimum_empty_action_budget
@@ -43,16 +44,18 @@ def test_checkpoint_path_derives_matching_export_directory(tmp_path):
 
 
 def test_checkpoint_outside_artifacts_requires_explicit_package(tmp_path):
-    with pytest.raises(ValueError, match="AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE"):
+    with pytest.raises(ValueError, match="or pass an explicit output directory"):
         derive_onnx_output_dir(tmp_path / "best.pt", project_root=tmp_path)
 
 
 def test_export_config_reads_shared_and_export_env(monkeypatch, tmp_path):
-    checkpoint = tmp_path / "best.pt"
-    output = tmp_path / "deployment"
+    monkeypatch.setattr(export_config_module, "PROJECT_ROOT", tmp_path)
+    checkpoint_dir = tmp_path / "artifacts" / "checkpoints" / "black_mage" / "artzip_bc"
+    checkpoint_dir.mkdir(parents=True)
+    checkpoint = checkpoint_dir / "best.pt"
+    checkpoint.write_bytes(b"checkpoint")
     profile = tmp_path / "profile.json"
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_CHECKPOINT", str(checkpoint))
-    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE", str(output))
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_ORT_PROVIDER", "CPUExecutionProvider")
     monkeypatch.setenv("ONNX_EXPORT_DEPLOYMENT_PROFILE", str(profile))
     monkeypatch.setenv("ONNX_EXPORT_OPSET", "19")
@@ -63,7 +66,8 @@ def test_export_config_reads_shared_and_export_env(monkeypatch, tmp_path):
     config = load_export_config()
 
     assert config.checkpoint_path == checkpoint.resolve()
-    assert config.output_dir == output.resolve()
+    # 部署包目录已改为按 checkpoint 推导；旧 .env 的 ONNX_PACKAGE 不再参与。
+    assert config.output_dir == derive_onnx_output_dir(checkpoint, project_root=tmp_path)
     assert config.deployment_profile_path == profile.resolve()
     assert config.opset == 19
     assert config.precision == "float32"
@@ -71,6 +75,25 @@ def test_export_config_reads_shared_and_export_env(monkeypatch, tmp_path):
     assert config.validation_devices == ("cpu", "cuda")
     assert config.overwrite is True
     assert not hasattr(config, "history_capacity")
+
+
+def test_export_config_ignores_legacy_onnx_package_env(monkeypatch, tmp_path):
+    """AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE 已不再读取，不能让旧值劫持部署包目录。"""
+    monkeypatch.setattr(export_config_module, "PROJECT_ROOT", tmp_path)
+    checkpoint_root = tmp_path / "artifacts" / "checkpoints" / "black_mage" / "artzip_bc"
+    checkpoint_root.mkdir(parents=True)
+    checkpoint = checkpoint_root / "best.pt"
+    checkpoint.write_bytes(b"checkpoint")
+    legacy_package = tmp_path / "artifacts" / "exports" / "black_mage" / "legacy_run"
+    legacy_package.mkdir(parents=True)
+    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE", str(legacy_package))
+
+    config = export_config_module.load_export_config(checkpoint=checkpoint)
+
+    assert config.output_dir == (
+        tmp_path / "artifacts" / "exports" / "black_mage" / "artzip_bc"
+    ).resolve()
+    assert config.output_dir != legacy_package.resolve()
 
 
 def test_parity_config_reads_dedicated_env(monkeypatch, tmp_path):

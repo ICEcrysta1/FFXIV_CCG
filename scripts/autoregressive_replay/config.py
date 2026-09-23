@@ -26,7 +26,6 @@ from common.policy.replay import AutoregressiveReplayConfig
 from common.torch_serialization import safe_torch_load
 from scripts.onnx_export.config.config import (
     AUTOREGRESSIVE_REPLAY_CHECKPOINT_ENV,
-    AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE_ENV,
     AUTOREGRESSIVE_REPLAY_ORT_PROVIDER_ENV,
     AUTOREGRESSIVE_REPLAY_SCENE_JSON_ENV,
     resolve_onnx_package_path,
@@ -283,9 +282,10 @@ def _backend_name(value: object) -> str:
 
 
 def _resolve_onnx_package(explicit: Path | None) -> Path:
-    raw = explicit or os.environ.get(AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE_ENV)
-    if raw:
-        path = resolve_project_path(raw, project_root=PROJECT_ROOT)
+    # 只接受 CLI 显式传入的部署包；旧 .env 的 AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE
+    # 已不再读取，未显式指定时按 checkpoint 推导，避免回放读错模型的部署包。
+    if explicit is not None:
+        path = resolve_onnx_package_path(explicit=explicit)
     else:
         checkpoint_path = _resolve_checkpoint(
             resolve_policy_model_config_path(),

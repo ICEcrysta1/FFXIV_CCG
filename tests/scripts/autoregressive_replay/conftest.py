@@ -14,7 +14,6 @@ from scripts.autoregressive_replay import config as replay_config_module
 def _isolate_replay_dotenv(monkeypatch):
     """单元测试不读取开发机根目录 `.env`，需要的变量由用例显式提供。"""
     monkeypatch.delenv("AUTOREGRESSIVE_REPLAY_BACKEND", raising=False)
-    monkeypatch.delenv("AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE", raising=False)
     monkeypatch.setattr(replay_config_module, "load_root_dotenv", lambda _root: None)
 
 
