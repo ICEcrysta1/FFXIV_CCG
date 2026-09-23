@@ -282,6 +282,25 @@ def test_policy_config_resolvers_select_job_and_variant_from_env_and_cover_path_
     assert relative_checkpoint.name == "model.pt"
 
 
+def test_resolve_policy_checkpoint_path_env_override_and_default(monkeypatch, tmp_path):
+    """默认回退 `best.pt`；显式 env 覆盖仍生效，且显式参数优先于 env。"""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump({"output_dir": "artifacts/checkpoints/run"}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv(policy_config_module.POLICY_MODEL_CHECKPOINT_ENV, raising=False)
+    assert policy_config_module.resolve_policy_checkpoint_path(config_path).name == "best.pt"
+
+    monkeypatch.setenv(policy_config_module.POLICY_MODEL_CHECKPOINT_ENV, "final.pt")
+    assert policy_config_module.resolve_policy_checkpoint_path(config_path).name == "final.pt"
+    assert policy_config_module.resolve_policy_checkpoint_path(
+        config_path,
+        "explicit.pt",
+    ).name == "explicit.pt"
+
+
 @pytest.mark.parametrize("resolver_name", ["resolve_project_job_tag", "resolve_project_model_variant"])
 def test_project_resolvers_reject_explicit_blank_instead_of_falling_back(
     monkeypatch,
@@ -1495,7 +1514,10 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
         scheduler=None,
         best_key=None,
         best_val_metrics=None,
+        data_file_count=None,
+        data_files_digest=None,
     ):
+        calls["data_file_metadata"] = (data_file_count, data_files_digest)
         assert input_contract.job_tag == "black_mage"
         assert scheduler is not None
         assert best_key is not None
@@ -1575,6 +1597,8 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
         "input_contract": resume_input_contract.to_dict(),
         "training_precision": config.precision,
         "run_config": {"max_files": None},
+        "data_file_count": 1,
+        "data_files_digest": training_module.data_files_digest([Path("sample.json")]),
         "metrics": {
             "loss": 1.0,
             "cross_entropy_loss": 1.0,
@@ -1727,6 +1751,11 @@ def _resume_validation_context(tmp_path: Path, *, max_epochs: int = 3):
         "input_contract": input_contract.to_dict(),
         "training_precision": config.precision,
         "run_config": asdict(config),
+        # 新 checkpoint 固定记录实际文件数与集合指纹，续训据此证明语料一致。
+        "data_file_count": 1,
+        "data_files_digest": training_module.data_files_digest(
+            [tmp_path / "raw" / "fight-001.json"]
+        ),
         "metrics": {
             "loss": 1.0,
             "cross_entropy_loss": 1.0,
@@ -1869,6 +1898,138 @@ def test_validate_resume_checkpoint_accepts_explicit_unlimited_max_files(tmp_pat
     )
 
 
+def test_data_files_digest_is_order_independent_and_content_sensitive(tmp_path):
+    """文件集合指纹按选中集合排序，只对选中的文件集合变化敏感。"""
+    first = [
+        tmp_path / "M5s" / "fight-001.json",
+        tmp_path / "M5s" / "fight-002.json",
+    ]
+    reordered = list(reversed(first))
+    changed = [first[0], tmp_path / "M5s" / "fight-003.json"]
+
+    digest = training_module.data_files_digest(first)
+    assert training_module.data_files_digest(reordered) == digest
+    assert training_module.data_files_digest(changed) != digest
+
+
+def test_data_files_digest_distinguishes_same_name_in_different_directories(tmp_path):
+    """相对 raw 根目录取路径，不同副本目录下的同名文件不能互相掩盖。"""
+    m5s = tmp_path / "M5s" / "fight-001.json"
+    m6s = tmp_path / "M6s" / "fight-001.json"
+    m5s.parent.mkdir(parents=True)
+    m6s.parent.mkdir(parents=True)
+    m5s.write_text("{}", encoding="utf-8", newline="\n")
+    m6s.write_text("{}", encoding="utf-8", newline="\n")
+
+    assert training_module.data_files_digest(
+        [m5s],
+        raw_root=tmp_path,
+    ) != training_module.data_files_digest([m6s], raw_root=tmp_path)
+    # 不在 raw 根目录下时退化为文件名，仍不会抛错。
+    assert training_module.data_files_digest([m5s], raw_root=tmp_path / "elsewhere")
+
+
+def test_data_files_digest_tracks_same_name_file_replacement(tmp_path):
+    """同名文件被替换后 cache 会重建，指纹必须随字节数变化。"""
+    target = tmp_path / "M5s" / "fight-001.json"
+    target.parent.mkdir(parents=True)
+    target.write_text("{}", encoding="utf-8", newline="\n")
+    before = training_module.data_files_digest([target], raw_root=tmp_path)
+
+    target.write_text('{"longer": "payload"}', encoding="utf-8", newline="\n")
+    after = training_module.data_files_digest([target], raw_root=tmp_path)
+
+    assert before != after
+
+
+def test_validate_resume_checkpoint_rejects_same_limit_different_file_set(tmp_path):
+    """上限相同但选中文件集合不同时必须报错，证明不了“同一个数据集”。"""
+    context = _resume_validation_context(tmp_path)
+    checkpoint = dict(context.checkpoint)
+    checkpoint["run_config"] = {**checkpoint["run_config"], "max_files": 1280}
+    checkpoint["data_files_digest"] = "checkpoint-digest"
+    checkpoint["data_file_count"] = 1000
+    config = replace(context.config, max_files=1280)
+
+    with pytest.raises(ValueError, match="training data files mismatch"):
+        training_module._validate_resume_checkpoint(
+            checkpoint,
+            data_spec=context.data_spec,
+            dataset=context.dataset,
+            config=config,
+            input_contract=context.input_contract,
+            current_data_files_digest="current-digest",
+        )
+
+
+def test_validate_resume_checkpoint_allows_same_limit_different_file_set_when_forced(
+    tmp_path,
+    caplog,
+):
+    context = _resume_validation_context(tmp_path)
+    checkpoint = dict(context.checkpoint)
+    checkpoint["run_config"] = {**checkpoint["run_config"], "max_files": 1280}
+    checkpoint["data_files_digest"] = "checkpoint-digest"
+    config = replace(context.config, max_files=1280)
+
+    with caplog.at_level(logging.WARNING):
+        training_module._validate_resume_checkpoint(
+            checkpoint,
+            data_spec=context.data_spec,
+            dataset=context.dataset,
+            config=config,
+            input_contract=context.input_contract,
+            current_data_files_digest="current-digest",
+            force_resume_data_mismatch=True,
+        )
+
+    assert any(
+        "training data files mismatch" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_validate_resume_checkpoint_rejects_missing_legacy_file_digest(tmp_path):
+    """旧 checkpoint 没有文件集合指纹时无法证明语料一致，按不匹配处理。"""
+    context = _resume_validation_context(tmp_path)
+    checkpoint = dict(context.checkpoint)
+
+    with pytest.raises(ValueError, match="training data files mismatch"):
+        training_module._validate_resume_checkpoint(
+            checkpoint,
+            data_spec=context.data_spec,
+            dataset=context.dataset,
+            config=context.config,
+            input_contract=context.input_contract,
+            current_data_files_digest="current-digest",
+        )
+
+
+def test_save_checkpoint_records_data_file_fingerprint(tmp_path):
+    """保存 checkpoint 时写入实际参与文件数与集合指纹，供续训比对。"""
+    model = _TinyModel()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.01)
+    context = _resume_validation_context(tmp_path)
+
+    path = tmp_path / "epoch_001.pt"
+    training_module._save_checkpoint(
+        path,
+        model,
+        optimizer,
+        1,
+        context.config,
+        context.data_spec,
+        {"top1_accuracy": 0.5},
+        input_contract=context.input_contract,
+        data_file_count=1000,
+        data_files_digest="digest-1000",
+    )
+
+    payload = safe_torch_load(path)
+    assert payload["data_file_count"] == 1000
+    assert payload["data_files_digest"] == "digest-1000"
+
+
 def test_validate_resume_checkpoint_allows_max_files_mismatch_when_forced(
     tmp_path,
     caplog,
@@ -1991,7 +2152,7 @@ def test_run_training_rejects_resume_at_configured_epoch_limit(tmp_path, monkeyp
     with pytest.raises(ValueError, match="already reached epoch 1"):
         training_module.run_training(
             context.config,
-            raw_paths=[tmp_path / "prepared.json"],
+            raw_paths=[tmp_path / "raw" / "fight-001.json"],
             device_name="cpu",
             resume_path=checkpoint_path,
         )
@@ -2010,11 +2171,12 @@ def test_collect_checkpoint_candidates_uses_payload_epoch(tmp_path):
     # 正常中间 checkpoint 仍然可续训。
     torch.save({"epoch": 3}, output_dir / "epoch_003_val_ppg_480.00.pt")
 
-    resumable, rejected = training_module.collect_checkpoint_candidates(
+    resumable, rejected, skipped = training_module.collect_checkpoint_candidates(
         output_dir,
         max_epochs=12,
     )
 
+    assert skipped == ()
     assert {item.path.name: item.epoch for item in resumable} == {
         "epoch_003_val_ppg_480.00.pt": 3,
         "final.pt": 8,
@@ -2037,11 +2199,12 @@ def test_collect_checkpoint_candidates_exposes_saved_max_files(tmp_path):
         output_dir / "epoch_002.pt",
     )
 
-    resumable, rejected = training_module.collect_checkpoint_candidates(
+    resumable, rejected, skipped = training_module.collect_checkpoint_candidates(
         output_dir,
         max_epochs=3,
     )
 
+    assert skipped == ()
     assert len(rejected) == 0
     assert resumable[0].max_files == 1280
 
@@ -2057,11 +2220,12 @@ def test_collect_checkpoint_candidates_distinguishes_unknown_and_explicit_unlimi
         output_dir / "unlimited.pt",
     )
 
-    resumable, rejected = training_module.collect_checkpoint_candidates(
+    resumable, rejected, skipped = training_module.collect_checkpoint_candidates(
         output_dir,
         max_epochs=3,
     )
 
+    assert skipped == ()
     assert len(rejected) == 0
     assert resumable[0].max_files is checkpoint_module.UNKNOWN_MAX_FILES
     assert resumable[1].max_files is None
@@ -2085,15 +2249,51 @@ def test_read_checkpoint_epoch_uses_mmap_without_loading_storages(tmp_path, monk
 
 
 def test_collect_checkpoint_candidates_rejects_invalid_inputs(tmp_path):
-    """非法 checkpoint 载荷与非法轮数上限都要直接报错。"""
+    """非法 checkpoint 载荷不中断扫描，非法轮数上限要直接报错。"""
     broken = tmp_path / "broken.pt"
     torch.save({"epoch": 0}, broken)
 
     with pytest.raises(ValueError, match="epoch must be >= 1"):
         training_module.read_checkpoint_epoch(broken)
 
+    resumable, rejected, skipped = training_module.collect_checkpoint_candidates(
+        tmp_path,
+        max_epochs=2,
+    )
+
+    # 单个不可读 `.pt` 只登记为跳过，菜单仍可继续列出其余候选项。
+    assert resumable == ()
+    assert rejected == ()
+    assert [item.path.name for item in skipped] == ["broken.pt"]
+    assert "epoch must be >= 1" in skipped[0].error
+
     with pytest.raises(ValueError, match="max_epochs must be >= 1"):
         training_module.collect_checkpoint_candidates(tmp_path, max_epochs=0)
+
+
+def test_collect_checkpoint_candidates_exposes_saved_data_file_metadata(tmp_path):
+    """列目录要同时暴露实际参与文件数与集合指纹，便于菜单提示语料来源。"""
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    torch.save(
+        {
+            "epoch": 2,
+            "run_config": {"max_files": 1280},
+            "data_file_count": 1000,
+            "data_files_digest": "abc123",
+        },
+        output_dir / "epoch_002.pt",
+    )
+
+    resumable, rejected, skipped = training_module.collect_checkpoint_candidates(
+        output_dir,
+        max_epochs=3,
+    )
+
+    assert skipped == ()
+    assert rejected == ()
+    assert resumable[0].data_file_count == 1000
+    assert resumable[0].data_files_digest == "abc123"
 
 
 def test_restore_best_state_uses_checkpoint_metadata_and_best_fallback(tmp_path):

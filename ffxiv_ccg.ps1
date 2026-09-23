@@ -39,11 +39,24 @@ from common.policy.config import (
     resolve_policy_model_variant,
 )
 from training.config import load_run_config
-from training.loop.checkpoint import UNKNOWN_MAX_FILES, collect_checkpoint_candidates
+from training.loop.checkpoint import (
+    UNKNOWN_MAX_FILES,
+    collect_checkpoint_candidates,
+    data_files_digest,
+)
+from scripts.convert_fflogs.cache import select_training_raw_paths
 
 config_path = resolve_policy_model_config_path()
 run_config = load_run_config(config_path)
-bc_resumable, bc_rejected = collect_checkpoint_candidates(
+# 菜单 2 的续训一致性提示：按当前上限预估本次会选中的文件集合，仅用于比对指纹，
+# 不编译 cache；真正训练仍以 Python 入口的最终 raw_paths 与 checkpoint 校验为准。
+current_data_files_digest = None
+if run_config.raw_data_dir.is_dir():
+    current_data_files_digest = data_files_digest(
+        select_training_raw_paths(run_config.raw_data_dir, run_config.max_files),
+        raw_root=run_config.raw_data_dir,
+    )
+bc_resumable, bc_rejected, bc_skipped = collect_checkpoint_candidates(
     run_config.output_dir,
     max_epochs=run_config.max_epochs,
 )
@@ -60,12 +73,14 @@ grpo_output_dirs = tuple(
     )
 )
 grpo_candidates = []
+grpo_skipped = []
 for directory in grpo_output_dirs:
-    grpo_resumable, grpo_rejected = collect_checkpoint_candidates(
+    grpo_resumable, grpo_rejected, directory_skipped = collect_checkpoint_candidates(
         directory,
         max_epochs=run_config.max_epochs,
     )
     grpo_candidates.extend((*grpo_resumable, *grpo_rejected))
+    grpo_skipped.extend(directory_skipped)
 
 def serialize_candidates(items, source):
     return [
@@ -76,6 +91,18 @@ def serialize_candidates(items, source):
             "source": source,
             "output_dir": str(item.path.parent),
             "max_files": "unknown" if item.max_files is UNKNOWN_MAX_FILES else item.max_files,
+            "data_file_count": item.data_file_count,
+            "data_files_digest": item.data_files_digest,
+        }
+        for item in items
+    ]
+
+def serialize_skipped(items):
+    return [
+        {
+            "path": str(item.path),
+            "name": item.path.name,
+            "error": item.error,
         }
         for item in items
     ]
@@ -93,9 +120,11 @@ print(
                 else None
             ),
             "max_files": run_config.max_files,
+            "current_data_files_digest": current_data_files_digest,
             "max_epochs": run_config.max_epochs,
             "resumable": serialize_candidates(bc_resumable, "bc"),
             "rejected": serialize_candidates(bc_rejected, "bc"),
+            "skipped": serialize_skipped((*bc_skipped, *grpo_skipped)),
             "grpo": serialize_candidates(grpo_candidates, "grpo"),
         }
     )
@@ -141,25 +170,56 @@ function Invoke-FFLogsDownload {
     return $LASTEXITCODE
 }
 
+function Invoke-PythonProbe {
+    # 统一执行探针并把 Python stderr 一并返回，避免把 checkpoint 读取失败误报成配置解析失败。
+    param(
+        [Parameter(Mandatory)]
+        [string]$Script,
+        [string[]]$Arguments = @()
+    )
+
+    $stderrPath = [IO.Path]::GetTempFileName()
+    try {
+        $stdout = $Script | & $ProjectPython - $Arguments 2>$stderrPath
+        $exitCode = $LASTEXITCODE
+        $stderr = if (Test-Path -LiteralPath $stderrPath -PathType Leaf) {
+            (Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue)
+        }
+        else {
+            $null
+        }
+        return [PSCustomObject]@{
+            ExitCode = $exitCode
+            Stdout   = ($stdout | Out-String)
+            Stderr   = ($stderr | Out-String).Trim()
+        }
+    }
+    finally {
+        Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Get-CheckpointTarget {
-    $raw = $CheckpointProbe | & $ProjectPython -
-    if ($LASTEXITCODE -ne 0) {
-        throw "读取模型配置失败，请检查根目录 .env 的 FFXIV_JOB_TAG 与 FFXIV_MODEL_VARIANT。"
+    $result = Invoke-PythonProbe -Script $CheckpointProbe
+    if ($result.ExitCode -ne 0) {
+        $detail = if ([string]::IsNullOrWhiteSpace($result.Stderr)) { "无 Python 错误输出。" } else { $result.Stderr }
+        throw "读取模型配置/checkpoint 清单失败：`n$detail`n请检查根目录 .env 的 FFXIV_JOB_TAG 与 FFXIV_MODEL_VARIANT，以及 checkpoint 目录是否可读。"
     }
     try {
-        return ($raw | Out-String | ConvertFrom-Json)
+        return ($result.Stdout | ConvertFrom-Json)
     }
     catch {
-        throw "无法解析模型配置输出：$raw"
+        throw "无法解析模型配置输出：$($result.Stdout)"
     }
 }
 
 function Get-ConfiguredCheckpointPath {
-    $raw = $CheckpointDefaultProbe | & $ProjectPython -
-    if ($LASTEXITCODE -ne 0) {
-        throw "读取默认 checkpoint 配置失败，请检查根目录 .env 与模型 YAML。"
+    $result = Invoke-PythonProbe -Script $CheckpointDefaultProbe
+    if ($result.ExitCode -ne 0) {
+        $detail = if ([string]::IsNullOrWhiteSpace($result.Stderr)) { "无 Python 错误输出。" } else { $result.Stderr }
+        throw "读取默认 checkpoint 配置失败：`n$detail`n请检查根目录 .env 与模型 YAML。"
     }
-    $path = ($raw | Out-String).Trim()
+    $path = $result.Stdout.Trim()
     if ([string]::IsNullOrWhiteSpace($path)) {
         throw "模型配置没有解析出默认 checkpoint。"
     }
@@ -172,15 +232,16 @@ function Get-CheckpointMetadata {
         [string]$Path
     )
 
-    $raw = $CheckpointMetadataProbe | & $ProjectPython - $Path
-    if ($LASTEXITCODE -ne 0) {
-        throw "无法读取 checkpoint 元数据：$Path"
+    $result = Invoke-PythonProbe -Script $CheckpointMetadataProbe -Arguments @($Path)
+    if ($result.ExitCode -ne 0) {
+        $detail = if ([string]::IsNullOrWhiteSpace($result.Stderr)) { "无 Python 错误输出。" } else { $result.Stderr }
+        throw "无法读取 checkpoint 元数据：$Path`n$detail"
     }
     try {
-        return ($raw | Out-String | ConvertFrom-Json)
+        return ($result.Stdout | ConvertFrom-Json)
     }
     catch {
-        throw "无法解析 checkpoint 元数据：$raw"
+        throw "无法解析 checkpoint 元数据：$($result.Stdout)"
     }
 }
 
@@ -225,7 +286,15 @@ function Show-CheckpointTargetSummary {
         }
     }
     $maxFiles = if ($null -eq $Target.max_files) { "全部有效文件" } else { [string]$Target.max_files }
-    Write-Host ("训练数据上限：{0}（来自模型 YAML 的 training.max_files）" -f $maxFiles)
+    Write-Host ("训练数据上限：{0}（来自模型 YAML 的 training.max_files，BC 预训练与 GRPO 后训练共用）" -f $maxFiles)
+    $skipped = @($Target.skipped)
+    if ($skipped.Count -gt 0) {
+        Write-Host ""
+        Write-Host ("发现 {0} 个无法读取的 .pt，已从候选项中跳过：" -f $skipped.Count) -ForegroundColor Yellow
+        foreach ($item in $skipped) {
+            Write-Host ("  - {0}：{1}" -f $item.name, $item.error) -ForegroundColor Yellow
+        }
+    }
 }
 
 function Select-ToolCheckpoint {
@@ -246,7 +315,12 @@ function Select-ToolCheckpoint {
     $resumable = @($Target.resumable)
     $rejected = @($Target.rejected)
     $grpo = @($Target.grpo)
+    $skipped = @($Target.skipped)
     if ($resumable.Count -eq 0 -and $rejected.Count -eq 0 -and $grpo.Count -eq 0) {
+        if ($skipped.Count -gt 0) {
+            throw ("BC/GRPO checkpoint 目录里的 .pt 文件全部无法读取：$directory；" +
+                "请先确认这些文件是否因训练中断而损坏，然后删除或重新生成。")
+        }
         throw "BC/GRPO checkpoint 目录中没有 .pt 文件：$directory"
     }
     if ($ResumableOnly -and $resumable.Count -eq 0) {
@@ -304,10 +378,20 @@ function Invoke-Tool {
             else {
                 $forceSelectedDataMismatch = $ForceDataMismatch
                 if ($InteractiveCheckpointSelection) {
-                    if ($selectedCheckpoint.max_files -ne $checkpointTarget.max_files -and -not $ForceDataMismatch) {
+                    $maxFilesMismatch = $selectedCheckpoint.max_files -ne $checkpointTarget.max_files
+                    $checkpointDigest = [string]$selectedCheckpoint.data_files_digest
+                    $currentDigest = [string]$checkpointTarget.current_data_files_digest
+                    $checkpointDigestMissing = [string]::IsNullOrWhiteSpace($checkpointDigest)
+                    $dataFilesMismatch = $false
+                    if (-not $checkpointDigestMissing -and -not [string]::IsNullOrWhiteSpace($currentDigest)) {
+                        $dataFilesMismatch = $checkpointDigest -ne $currentDigest
+                    }
+                    if (($maxFilesMismatch -or $checkpointDigestMissing -or $dataFilesMismatch) -and -not $ForceDataMismatch) {
                         $checkpointMaxFiles = if ([string]$selectedCheckpoint.max_files -eq "unknown") { "未知（旧 checkpoint 未记录）" } elseif ($null -eq $selectedCheckpoint.max_files) { "全部有效文件" } else { [string]$selectedCheckpoint.max_files }
                         $currentMaxFiles = if ($null -eq $checkpointTarget.max_files) { "全部有效文件" } else { [string]$checkpointTarget.max_files }
-                        Write-Warning ("checkpoint {0} 保存时的 training.max_files={1}，当前 YAML/CLI 为 {2}。两者会改变训练/验证数据集。" -f $selectedCheckpoint.name, $checkpointMaxFiles, $currentMaxFiles)
+                        $checkpointFileCount = if ($null -eq $selectedCheckpoint.data_file_count) { "未知（旧 checkpoint 未记录）" } else { [string]$selectedCheckpoint.data_file_count }
+                        $reasonLabel = if ($maxFilesMismatch -and $dataFilesMismatch) { "数据上限与预选文件集合都不同" } elseif ($maxFilesMismatch) { "数据上限不同" } elseif ($dataFilesMismatch) { "上限相同，但按当前配置预估会选中不同的文件集合" } else { "旧 checkpoint 没有文件集合指纹，无法预先判断语料是否一致" }
+                        Write-Warning ("checkpoint {0} 保存时的 training.max_files={1}（实际文件数 {2}），当前 YAML/CLI 上限为 {3}；{4}。这里只是按首轮选中的文件预估；最终是否算不同数据集由训练入口按实际编译结果判定，继续会改变训练/验证数据集。" -f $selectedCheckpoint.name, $checkpointMaxFiles, $checkpointFileCount, $currentMaxFiles, $reasonLabel)
                         $confirmation = (Read-Host "仍要强制继续吗？输入 Y 确认，直接回车或输入 N 取消").Trim()
                         if ($confirmation -notmatch "^y$") {
                             Write-Host "已取消恢复训练。"

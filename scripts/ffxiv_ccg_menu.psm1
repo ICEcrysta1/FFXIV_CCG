@@ -97,7 +97,13 @@ function Select-FfxivCcgCheckpoint {
     Write-Host "可用 checkpoint："
     foreach ($entry in $entries) {
         $directoryLabel = [IO.Path]::GetFileName([string]$entry.Candidate.output_dir)
-        Write-Host ("  {0,3}. {1}（{2}，{3} {4}，目录 {5}）" -f $entry.Key, $entry.Candidate.name, $entry.SourceLabel, $entry.ProgressLabel, $entry.Candidate.epoch, $directoryLabel)
+        if ($null -eq $entry.Candidate.data_file_count) {
+            $fileCountLabel = ""
+        }
+        else {
+            $fileCountLabel = "，{0} 个 raw 文件" -f $entry.Candidate.data_file_count
+        }
+        Write-Host ("  {0,3}. {1}（{2}，{3} {4}{5}，目录 {6}）" -f $entry.Key, $entry.Candidate.name, $entry.SourceLabel, $entry.ProgressLabel, $entry.Candidate.epoch, $fileCountLabel, $directoryLabel)
     }
     Write-Host ""
     $choice = (Read-Host $Prompt).Trim()

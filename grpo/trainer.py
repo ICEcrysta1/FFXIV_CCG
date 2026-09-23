@@ -618,12 +618,15 @@ def _restore_grpo_rollback_state(
 def _unique_grpo_output_path(base_path: Path, suffix: str) -> Path:
     """为从已有 GRPO checkpoint 热启动选择不覆盖历史的输出目录。"""
     base_path = Path(base_path).resolve()
-    candidate = base_path.parent / f"{base_path.name}_{suffix}"
+    candidate = base_path.parent / f"{base_path.name}{suffix}"
+    if not candidate.exists():
+        return candidate
     index = 1
-    while candidate.exists():
+    while True:
+        candidate = base_path.parent / f"{base_path.name}{suffix}_{index:03d}"
+        if not candidate.exists():
+            return candidate
         index += 1
-        candidate = base_path.parent / f"{base_path.name}_{suffix}_{index:03d}"
-    return candidate
 
 
 def run_grpo_training(
@@ -675,8 +678,11 @@ def run_grpo_training(
     elif isinstance(backend.checkpoint, Mapping) and backend.checkpoint.get(
         "grpo_checkpoint"
     ):
-        # --checkpoint 对 GRPO 仍然是权重热启动，但不能默认覆盖来源实验。
-        output_path = _unique_grpo_output_path(checkpoint_path.parent, "hotstart")
+        # --checkpoint 对 GRPO 只做权重热启动，且不能默认覆盖来源实验；输出目录
+        # 始终从模型 YAML 的 output_dir 派生，避免 checkpoint 在项目外时把新 run
+        # 写到项目外，也避免重复热启动时叠加多段 `_hotstart` 后缀。
+        base_output = config.output_dir.parent / f"{config.output_dir.name}_grpo"
+        output_path = _unique_grpo_output_path(base_output, "_hotstart")
     else:
         output_path = config.output_dir.parent / f"{config.output_dir.name}_grpo"
     output_path = output_path.resolve()

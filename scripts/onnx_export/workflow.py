@@ -207,36 +207,25 @@ def run_onnx_replay(*, checkpoint: Path | None = None) -> None:
 
 
 def _run_all(*, checkpoint: Path | None = None) -> int:
+    """顺序执行完整发布流程；各步骤统一接收可选的显式 checkpoint。"""
     try:
-        if checkpoint is None:
-            check_environment()
-        else:
-            check_environment(checkpoint=checkpoint)
+        check_environment(checkpoint=checkpoint)
     except Exception as exc:
         print(f"ONNX 环境检查失败，已停止发布流程：{exc}")
         return 1
     try:
-        if checkpoint is None:
-            run_export()
-        else:
-            run_export(checkpoint=checkpoint)
+        run_export(checkpoint=checkpoint)
     except Exception as exc:
         print(f"ONNX 导出失败，已停止发布流程：{exc}")
         return 1
     failures: list[str] = []
     for scenario in ("empty", "scene"):
         try:
-            if checkpoint is None:
-                run_parity(scenario)
-            else:
-                run_parity(scenario, checkpoint=checkpoint)
+            run_parity(scenario, checkpoint=checkpoint)
         except Exception as exc:
             failures.append(f"{scenario}: {exc}")
             print(f"{scenario} parity 未通过，已继续下一项：{exc}")
-    if checkpoint is None:
-        print_release_status()
-    else:
-        print_release_status(checkpoint=checkpoint)
+    print_release_status(checkpoint=checkpoint)
     if failures:
         print()
         print("ONNX 图已经导出并保留，但发布门禁未通过。")

@@ -148,11 +148,11 @@ def test_export_cli_accepts_no_arguments_and_uses_env_config(monkeypatch, tmp_pa
 
 
 def test_full_workflow_returns_gate_exit_without_raising(monkeypatch, capsys):
-    monkeypatch.setattr(workflow, "check_environment", lambda: None)
-    monkeypatch.setattr(workflow, "run_export", lambda: None)
-    monkeypatch.setattr(workflow, "print_release_status", lambda: None)
+    monkeypatch.setattr(workflow, "check_environment", lambda **_kwargs: None)
+    monkeypatch.setattr(workflow, "run_export", lambda **_kwargs: None)
+    monkeypatch.setattr(workflow, "print_release_status", lambda **_kwargs: None)
 
-    def fail_parity(scenario):
+    def fail_parity(scenario, **_kwargs):
         raise AssertionError(f"{scenario} mismatch")
 
     monkeypatch.setattr(workflow, "run_parity", fail_parity)
@@ -184,16 +184,18 @@ def test_workflow_cli_forwards_explicit_checkpoint(monkeypatch, tmp_path):
 
 
 def test_full_workflow_reports_export_failure_without_traceback(monkeypatch, capsys):
-    monkeypatch.setattr(workflow, "check_environment", lambda: None)
+    monkeypatch.setattr(workflow, "check_environment", lambda **_kwargs: None)
     monkeypatch.setattr(
         workflow,
         "run_export",
-        lambda: (_ for _ in ()).throw(FileExistsError("deployment exists")),
+        lambda **_kwargs: (_ for _ in ()).throw(FileExistsError("deployment exists")),
     )
     monkeypatch.setattr(
         workflow,
         "run_parity",
-        lambda _scenario: pytest.fail("parity must not run after export failure"),
+        lambda _scenario, **_kwargs: pytest.fail(
+            "parity must not run after export failure"
+        ),
     )
 
     assert workflow._run_all() == 1
@@ -209,12 +211,12 @@ def test_full_workflow_reports_environment_failure_without_traceback(
     monkeypatch.setattr(
         workflow,
         "check_environment",
-        lambda: (_ for _ in ()).throw(RuntimeError("onnxscript mismatch")),
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("onnxscript mismatch")),
     )
     monkeypatch.setattr(
         workflow,
         "run_export",
-        lambda: pytest.fail("export must not run after environment failure"),
+        lambda **_kwargs: pytest.fail("export must not run after environment failure"),
     )
 
     assert workflow._run_all() == 1
