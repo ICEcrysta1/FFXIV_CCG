@@ -142,6 +142,8 @@ class GrpoRunConfig:
     raw_data_dir: Path
     output_dir: Path
     job_tag: str | None
+    # 复用模型 YAML 的 training.max_files：BC 与 GRPO 共享同一个数据上限字段。
+    max_files: int | None = None
     model_variant: str | None = None
     seed: int = 42
     precision: str = "float32"
@@ -181,6 +183,20 @@ def load_grpo_run_config(path: Path) -> GrpoRunConfig:
     workers = int(training_raw.get("compiled_cache_workers", 1))
     if shard_size < 1 or max_shards < 1 or workers < 1:
         raise ValueError("GRPO compiled cache settings must be positive")
+    max_files_raw = training_raw.get("max_files")
+    if max_files_raw is None:
+        max_files = None
+    elif isinstance(max_files_raw, bool) or not isinstance(max_files_raw, int):
+        raise ValueError(
+            "training.max_files must be a positive integer or null, "
+            f"got {max_files_raw!r}"
+        )
+    elif max_files_raw < 1:
+        raise ValueError(
+            f"training.max_files must be >= 1 or null, got {max_files_raw!r}"
+        )
+    else:
+        max_files = max_files_raw
     return GrpoRunConfig(
         raw_data_dir=resolve_project_path(
             raw.get("raw_data_dir", ""),
@@ -191,6 +207,7 @@ def load_grpo_run_config(path: Path) -> GrpoRunConfig:
             project_root=PROJECT_ROOT,
         ),
         job_tag=None if raw.get("job_tag") is None else str(raw["job_tag"]),
+        max_files=max_files,
         seed=int(training_raw.get("seed", 42)),
         precision=normalized_precision,
         compiled_cache_shard_size=shard_size,

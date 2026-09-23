@@ -26,6 +26,9 @@ from .checkpoint import (
     _save_checkpoint,
     _top1_val_ppg_average,
     _validate_resume_checkpoint,
+    collect_checkpoint_candidates,
+    data_files_digest,
+    read_checkpoint_epoch,
 )
 from .dataloaders import (
     _build_batch_sampler,
@@ -54,6 +57,7 @@ def run_training(
     device_name: str = "cuda",
     validation_metrics_callback=None,
     resume_path: Path | None = None,
+    force_resume_data_mismatch: bool = False,
 ) -> dict[str, object]:
     """组合预训练数据、训练循环和 checkpoint 组件。"""
     return _run_training(
@@ -66,6 +70,7 @@ def run_training(
         device_name=device_name,
         validation_metrics_callback=validation_metrics_callback,
         resume_path=resume_path,
+        force_resume_data_mismatch=force_resume_data_mismatch,
         _build_dataloaders=build_dataloaders,
         _train_epoch=train_epoch,
         _validate=validate,
@@ -77,4 +82,12 @@ def run_training(
     )
 
 
-__all__ = ["build_dataloaders", "run_training", "train_epoch", "validate"]
+__all__ = [
+    "build_dataloaders",
+    "collect_checkpoint_candidates",
+    "data_files_digest",
+    "read_checkpoint_epoch",
+    "run_training",
+    "train_epoch",
+    "validate",
+]

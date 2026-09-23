@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+import random
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
-import logging
 from pathlib import Path
-import random
 
 import torch
 
-from common.torch_serialization import safe_torch_load
-from common.torch_runtime import autocast_context, move_batch
 from common.policy.config import (
     resolve_policy_cache_dir,
     resolve_policy_grpo_dir,
@@ -24,18 +22,20 @@ from common.policy.model.repetition import (
     prepare_repetition_penalty,
 )
 from common.policy.replay import AutoregressiveReplayConfig
+from common.torch_runtime import autocast_context, move_batch
+from common.torch_serialization import safe_torch_load
 from common.training.metrics import MetricAccumulator
 from scripts.autoregressive_replay.backends import PyTorchPolicyBackend
 from scripts.autoregressive_replay.replay import (
-    NoLegalCandidateError,
     AutoregressiveReplay,
     AutoregressiveReplaySession,
+    NoLegalCandidateError,
     ReplayCacheStore,
     _apply_top_p,
 )
+
 from .config import GrpoConfig, GrpoRunConfig
 from .storage import GrpoDecision, GrpoRolloutStore
-
 
 logger = logging.getLogger(__name__)
 ADVANTAGE_EPSILON = 1e-4
@@ -615,6 +615,20 @@ def _restore_grpo_rollback_state(
         scheduler.load_state_dict(scheduler_state)
 
 
+def _unique_grpo_output_path(base_path: Path, suffix: str) -> Path:
+    """为从已有 GRPO checkpoint 热启动选择不覆盖历史的输出目录。"""
+    base_path = Path(base_path).resolve()
+    candidate = base_path.parent / f"{base_path.name}{suffix}"
+    if not candidate.exists():
+        return candidate
+    index = 1
+    while True:
+        candidate = base_path.parent / f"{base_path.name}{suffix}_{index:03d}"
+        if not candidate.exists():
+            return candidate
+        index += 1
+
+
 def run_grpo_training(
     config: GrpoRunConfig,
     *,
@@ -625,7 +639,7 @@ def run_grpo_training(
     device_name: str = "cuda",
     precision: str | None = None,
 ) -> dict[str, object]:
-    """从 BC checkpoint 进入独立 GRPO 后训练。"""
+    """从 checkpoint 进入独立 GRPO 后训练。"""
     if not raw_paths:
         raise FileNotFoundError("GRPO requires at least one real training scene")
     checkpoint_path = Path(checkpoint_path).resolve()
@@ -635,12 +649,6 @@ def run_grpo_training(
         raise RuntimeError("CUDA is required by GRPO, but torch.cuda.is_available() is false")
     device = torch.device(device_name)
     resolved_precision = str(precision or config.precision).strip().lower()
-    output_path = (
-        Path(output_dir)
-        if output_dir is not None
-        else config.output_dir.parent / f"{config.output_dir.name}_grpo"
-    ).resolve()
-
     # backend 与 replay session 只创建一次：模型、SidecarHost 和 compiled cache
     # 均跨场景/轨迹复用，单条轨迹开始时由 session.reset() 恢复初始状态。
     backend = PyTorchPolicyBackend(
@@ -664,6 +672,20 @@ def run_grpo_training(
             "GRPO config model does not match checkpoint model; "
             "use the same training YAML used to produce the checkpoint"
         )
+
+    if output_dir is not None:
+        output_path = Path(output_dir).resolve()
+    elif isinstance(backend.checkpoint, Mapping) and backend.checkpoint.get(
+        "grpo_checkpoint"
+    ):
+        # --checkpoint 对 GRPO 只做权重热启动，且不能默认覆盖来源实验；输出目录
+        # 始终从模型 YAML 的 output_dir 派生，避免 checkpoint 在项目外时把新 run
+        # 写到项目外，也避免重复热启动时叠加多段 `_hotstart` 后缀。
+        base_output = config.output_dir.parent / f"{config.output_dir.name}_grpo"
+        output_path = _unique_grpo_output_path(base_output, "_hotstart")
+    else:
+        output_path = config.output_dir.parent / f"{config.output_dir.name}_grpo"
+    output_path = output_path.resolve()
 
     scenes = [Path(path).resolve() for path in raw_paths]
     if any(not path.is_file() for path in scenes):

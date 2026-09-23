@@ -2,32 +2,32 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from copy import deepcopy
 import importlib
-from pathlib import Path
 import subprocess
 import sys
+from copy import deepcopy
+from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import torch
 
+from common.policy.config import resolve_policy_grpo_dir
+from common.policy.model import repetition as repetition_module
 from grpo.config import GrpoConfig, GrpoRunConfig, load_grpo_config
+from grpo.storage import GrpoRolloutStore
 from grpo.trainer import (
     GrpoDecision,
+    _detach_batch_to_cpu,
     _restore_grpo_rollback_state,
     _save_grpo_checkpoint,
-    _detach_batch_to_cpu,
     _update_policy,
     collate_grpo_decisions,
     compute_baseline_relative_advantages,
     compute_grpo_loss,
     run_grpo_training,
 )
-from grpo.storage import GrpoRolloutStore
-from common.policy.model import repetition as repetition_module
-from common.policy.config import resolve_policy_grpo_dir
 
 
 def test_grpo_import_does_not_require_pretraining_package():
@@ -287,6 +287,180 @@ def test_grpo_config_rejects_nonpositive_time_horizon():
         GrpoConfig(max_duration_seconds=0.0)
 
 
+# ---------- GRPO 热启动输出目录 ----------
+
+
+def _run_grpo_with_backend(
+    monkeypatch,
+    tmp_path,
+    *,
+    config: GrpoRunConfig,
+    checkpoint_path: Path,
+    checkpoint_payload,
+):
+    """在只跑到 setup 阶段的环境里执行 run_grpo_training，返回输出目录。"""
+    scene_path = tmp_path / "scene.json"
+    scene_path.write_text("{}", encoding="utf-8", newline="\n")
+    captured: dict[str, object] = {}
+    Path(checkpoint_path).parent.mkdir(parents=True, exist_ok=True)
+    torch.save(checkpoint_payload, checkpoint_path)
+
+    class FakeModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.ones(1))
+            self.config = config.model
+
+    class FakeBackend:
+        def __init__(self):
+            self.model = FakeModel()
+            self.data_spec = SimpleNamespace(
+                job_tag="black_mage",
+                num_candidates=1,
+                candidate_action_keys=("fire",),
+            )
+            self.input_contract = object()
+            self.repetition = SimpleNamespace()
+            self.checkpoint = checkpoint_payload
+
+    class FakeSession:
+        def __init__(self, _replay_config, *, backend, cache_store):
+            del backend, cache_store
+            captured["replay_config"] = _replay_config
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("grpo.trainer.PyTorchPolicyBackend", lambda *_a, **_k: FakeBackend())
+    monkeypatch.setattr("grpo.trainer.AutoregressiveReplaySession", FakeSession)
+    monkeypatch.setattr(
+        "grpo.trainer.resolve_policy_cache_dir",
+        lambda _job_tag: tmp_path / "cache",
+    )
+    monkeypatch.setattr(
+        "grpo.trainer.resolve_policy_grpo_dir",
+        lambda _job_tag: tmp_path / "grpo",
+    )
+    monkeypatch.setattr(
+        "grpo.trainer._run_scene_rollout",
+        lambda *_a, **_k: (
+            SimpleNamespace(ppg=1.0),
+            (_decision(history_length=0, scene_length=0, action_index=0),),
+        ),
+    )
+    monkeypatch.setattr(
+        "grpo.trainer.compute_baseline_relative_advantages",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("stop after setup")),
+    )
+
+    with pytest.raises(RuntimeError, match="stop after setup"):
+        run_grpo_training(
+            config,
+            grpo=GrpoConfig(group_size=2, max_iterations=1),
+            checkpoint_path=checkpoint_path,
+            raw_paths=(scene_path,),
+            device_name="cpu",
+        )
+    return captured["replay_config"].output_path.parent
+
+
+def test_grpo_hotstart_output_dir_derives_from_config_not_checkpoint_location(
+    monkeypatch,
+    tmp_path,
+):
+    """GRPO checkpoint 热启动按模型 YAML 的 output_dir 派生新 run 目录。"""
+    config = GrpoRunConfig(
+        raw_data_dir=tmp_path / "raw",
+        output_dir=tmp_path / "artifacts" / "checkpoints" / "bc_run",
+        job_tag="black_mage",
+    )
+    # 来源 checkpoint 故意放在项目配置目录之外，验证不会把新 run 写到那里。
+    external_dir = tmp_path / "external-run"
+    external_dir.mkdir()
+    checkpoint_path = external_dir / "iteration_010.pt"
+    checkpoints: list[Path] = []
+
+    def fake_save(path, **_kwargs):
+        checkpoints.append(Path(path))
+
+    monkeypatch.setattr("grpo.trainer._save_grpo_checkpoint", fake_save)
+
+    output_dir = _run_grpo_with_backend(
+        monkeypatch,
+        tmp_path,
+        config=config,
+        checkpoint_path=checkpoint_path,
+        checkpoint_payload={"grpo_checkpoint": True},
+    )
+
+    expected = tmp_path / "artifacts" / "checkpoints" / "bc_run_grpo_hotstart"
+    assert output_dir == expected
+    assert all(path.parent == expected for path in checkpoints)
+
+
+def test_grpo_hotstart_output_dir_never_nests_repeated_hotstart_suffixes(
+    monkeypatch,
+    tmp_path,
+):
+    """重复热启动只在同一基础目录上追加从 `_001` 起的编号，不出现 `_hotstart_hotstart`。"""
+    config = GrpoRunConfig(
+        raw_data_dir=tmp_path / "raw",
+        output_dir=tmp_path / "artifacts" / "checkpoints" / "bc_run",
+        job_tag="black_mage",
+    )
+    base = tmp_path / "artifacts" / "checkpoints"
+    (base / "bc_run_grpo_hotstart").mkdir(parents=True)
+    (base / "bc_run_grpo_hotstart_001").mkdir(parents=True)
+    checkpoint_path = base / "bc_run_grpo" / "iteration_010.pt"
+    checkpoint_path.parent.mkdir(parents=True)
+    monkeypatch.setattr("grpo.trainer._save_grpo_checkpoint", lambda *_a, **_k: None)
+
+    output_dir = _run_grpo_with_backend(
+        monkeypatch,
+        tmp_path,
+        config=config,
+        checkpoint_path=checkpoint_path,
+        checkpoint_payload={"grpo_checkpoint": True},
+    )
+
+    assert output_dir == base / "bc_run_grpo_hotstart_002"
+
+
+def test_load_grpo_run_config_reads_shared_training_max_files(tmp_path):
+    """GRPO 与 BC 共用模型 YAML 的 training.max_files，校验规则也一致。"""
+    import yaml
+
+    from grpo.config import load_grpo_run_config
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "raw_data_dir": "raw",
+                "output_dir": "artifacts/checkpoints/run",
+                "training": {"max_files": 1280},
+            },
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+    assert load_grpo_run_config(config_path).max_files == 1280
+
+    config_path.write_text(
+        yaml.safe_dump({"training": {"max_files": 0}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="max_files must be >= 1 or null"):
+        load_grpo_run_config(config_path)
+
+    config_path.write_text(
+        yaml.safe_dump({"training": {"max_files": "1280"}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="max_files must be a positive integer or null"):
+        load_grpo_run_config(config_path)
+
+
 def test_grpo_defaults_use_sixteen_samples_and_scene_time_horizon():
     config = GrpoConfig()
     assert config.group_size == 16
@@ -426,6 +600,7 @@ class _StubConfig:
     raw_data_dir: Path
     output_dir: Path
     job_tag: str | None
+    max_files: int | None = None
     model_variant: str | None = None
 
 
@@ -481,12 +656,99 @@ def test_grpo_cli_forwards_max_files_and_overrides(monkeypatch, capsys, tmp_path
     cli.main()
 
     assert calls["max_files"] == 7
+    # 最终生效的上限必须写回配置，checkpoint 才能记录真实场景规模。
+    assert calls["config"].max_files == 7
     assert calls["scene_config"].job_tag == "black_mage"
     assert calls["kwargs"]["grpo"].group_size == 5
     assert calls["kwargs"]["grpo"].max_iterations == 2
     assert calls["kwargs"]["checkpoint_path"] == tmp_path / "best.pt"
     assert calls["kwargs"]["device_name"] == "cpu"
     assert "final.pt" in capsys.readouterr().out
+
+
+def test_grpo_cli_reuses_training_max_files_when_cli_is_absent(
+    monkeypatch,
+    capsys,
+    tmp_path,
+):
+    """省略 --max-files 时 GRPO 复用模型 YAML 的 training.max_files。"""
+    cli = importlib.import_module("grpo.grpo")
+    config_path = tmp_path / "config.yaml"
+    input_config = _StubConfig(
+        raw_data_dir=tmp_path / "raw-default",
+        output_dir=tmp_path / "bc",
+        job_tag=None,
+        max_files=1280,
+    )
+    calls: dict[str, object] = {}
+
+    monkeypatch.setattr(cli, "resolve_policy_model_config_path", lambda value: config_path)
+    monkeypatch.setattr(cli, "load_grpo_run_config", lambda path: input_config)
+    monkeypatch.setattr(cli, "load_grpo_config", lambda path: GrpoConfig())
+    monkeypatch.setattr(cli, "resolve_policy_model_job_tag", lambda path: "black_mage")
+    monkeypatch.setattr(cli, "resolve_policy_model_variant", lambda path: "artzip")
+    monkeypatch.setattr(cli, "resolve_policy_device", lambda value: "cpu")
+    monkeypatch.setattr(cli, "resolve_policy_checkpoint_path", lambda path: tmp_path / "best.pt")
+    monkeypatch.setattr(
+        cli,
+        "_prepare_grpo_scenes",
+        lambda config, max_files: calls.update(max_files=max_files)
+        or [tmp_path / "scene.json"],
+    )
+    monkeypatch.setattr(
+        cli,
+        "run_grpo_training",
+        lambda config, **kwargs: calls.update(config=config)
+        or {"final_checkpoint": tmp_path / "grpo" / "final.pt"},
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["grpo.py", "--config", str(config_path), "--device", "cpu"],
+    )
+
+    cli.main()
+
+    assert calls["max_files"] == 1280
+    assert calls["config"].max_files == 1280
+    assert "final.pt" in capsys.readouterr().out
+
+
+def test_grpo_cli_rejects_non_positive_max_files(monkeypatch, tmp_path):
+    cli = importlib.import_module("grpo.grpo")
+    config_path = tmp_path / "config.yaml"
+    input_config = _StubConfig(
+        raw_data_dir=tmp_path / "raw-default",
+        output_dir=tmp_path / "bc",
+        job_tag=None,
+    )
+
+    monkeypatch.setattr(cli, "resolve_policy_model_config_path", lambda value: config_path)
+    monkeypatch.setattr(cli, "load_grpo_run_config", lambda path: input_config)
+    monkeypatch.setattr(cli, "load_grpo_config", lambda path: GrpoConfig())
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["grpo.py", "--config", str(config_path), "--max-files", "0"],
+    )
+
+    with pytest.raises(ValueError, match="--max-files must be >= 1"):
+        cli.main()
+
+
+def test_grpo_cli_rejects_resume_option(monkeypatch):
+    cli = importlib.import_module("grpo.grpo")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "grpo.py",
+            "--resume",
+        ],
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+    assert exc_info.value.code == 2
 
 
 def test_grpo_directory_follows_env_cache_root_and_job(monkeypatch, tmp_path):

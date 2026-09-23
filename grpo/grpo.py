@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
 import logging
-from pathlib import Path
 import sys
-
+from dataclasses import replace
+from pathlib import Path
 
 if __package__ in {None, ""}:
     # 允许从项目根目录直接执行 `python grpo/grpo.py`。
@@ -17,7 +16,6 @@ if __package__ in {None, ""}:
 
 import torch
 
-from common.project_config import resolve_project_path
 from common.policy.config import (
     PROJECT_ROOT,
     resolve_policy_cache_dir,
@@ -27,6 +25,7 @@ from common.policy.config import (
     resolve_policy_model_job_tag,
     resolve_policy_model_variant,
 )
+from common.project_config import resolve_project_path
 from grpo.config import load_grpo_config, load_grpo_run_config
 from grpo.trainer import run_grpo_training
 
@@ -63,14 +62,14 @@ def main() -> None:
         "--checkpoint",
         type=Path,
         default=None,
-        help="初始 BC/GRPO checkpoint；缺省读取 TRAINING_MODEL_CHECKPOINT 或 best.pt",
+        help="初始 BC/GRPO checkpoint；缺省使用模型配置 output_dir 中的 best.pt",
     )
     parser.add_argument("--raw-data-dir", type=Path, default=None)
     parser.add_argument(
         "--max-files",
         type=int,
         default=None,
-        help="用于 GRPO 的真实训练场景文件数量；缺省使用配置目录下全部有效文件",
+        help="覆盖 training.max_files：用于 GRPO 的真实场景文件数；省略时读取 YAML",
     )
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--device", choices=("cpu", "cuda"), default=None)
@@ -104,15 +103,23 @@ def main() -> None:
     parser.add_argument("--advantage-scale-floor-ratio", type=float, default=None)
     parser.add_argument("--advantage-clip", type=float, default=None)
     args = parser.parse_args()
-
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-
-    if args.max_files is not None and args.max_files < 1:
-        raise ValueError("--max-files must be >= 1")
 
     config_path = resolve_policy_model_config_path(args.config)
     config = load_grpo_run_config(config_path)
     grpo_config = load_grpo_config(config_path)
+    if args.max_files is not None and args.max_files < 1:
+        raise ValueError("--max-files must be >= 1")
+    # --max-files 优先于 YAML；省略时复用 training.max_files，与 BC 共用同一字段。
+    max_files = args.max_files if args.max_files is not None else config.max_files
+    logging.info(
+        "GRPO 真实场景数量上限: %s（来源: %s）",
+        "全部有效文件" if max_files is None else max_files,
+        "--max-files" if args.max_files is not None else "training.max_files",
+    )
+    # 与 BC 入口一致：把最终生效的上限写回配置，checkpoint 的 run_config 才能记录
+    # 本次真实使用的场景规模，而不是 YAML 里的原值。
+    config = replace(config, max_files=max_files)
     output_dir = (
         resolve_project_path(args.output_dir, project_root=PROJECT_ROOT)
         if args.output_dir is not None
@@ -176,7 +183,7 @@ def main() -> None:
         if args.checkpoint is not None
         else resolve_policy_checkpoint_path(config_path)
     )
-    raw_paths = _prepare_grpo_scenes(config, args.max_files)
+    raw_paths = _prepare_grpo_scenes(config, max_files)
     if not raw_paths:
         raise FileNotFoundError("--max-files selected no valid real training scenes")
 

@@ -18,8 +18,10 @@ from common.policy.data import ModelInputContract, SkillVocab, DataSpec
 
 from .checkpoint import (
     _best_metric_key,
+    _checkpoint_data_files_digest,
     _checkpoint_metrics,
     _epoch_checkpoint_name,
+    _has_resume_data_mismatch,
     _load_resume_checkpoint,
     _restore_best_state,
     _restore_rng_state,
@@ -27,6 +29,7 @@ from .checkpoint import (
     _save_checkpoint,
     _top1_val_ppg_average,
     _validate_resume_checkpoint,
+    data_files_digest,
 )
 from ..config import RunConfig, ValuePreferenceConfig
 from .dataloaders import build_dataloaders
@@ -61,6 +64,7 @@ def run_training(
     device_name: str = "cuda",
     validation_metrics_callback=None,
     resume_path: Path | None = None,
+    force_resume_data_mismatch: bool = False,
     _build_dataloaders=None,
     _train_epoch=None,
     _validate=None,
@@ -97,6 +101,17 @@ def run_training(
     device = torch.device(device_name)
     if not raw_paths:
         raise FileNotFoundError("no prepared raw JSON files supplied for training")
+    # 数据上限相同的两次训练也可能选中不同文件，这里记录实际参与的文件集合。
+    data_file_count = len(raw_paths)
+    current_data_files_digest = data_files_digest(
+        raw_paths,
+        raw_root=config.raw_data_dir,
+    )
+    logger.info(
+        "训练/验证候选 raw JSON: files=%d digest=%s",
+        data_file_count,
+        current_data_files_digest[:12],
+    )
     model_variant = config.model_variant
     if not isinstance(model_variant, str) or not model_variant.strip():
         raise ValueError("training model_variant must be configured before initialization")
@@ -126,14 +141,31 @@ def run_training(
         normalizer=normalizer,
     )
     resume_epoch = 0
+    resume_data_mismatch = False
     if resume_checkpoint is not None:
+        resume_data_mismatch = _has_resume_data_mismatch(
+            resume_checkpoint,
+            config,
+            current_data_files_digest=current_data_files_digest,
+        )
         resume_epoch = _validate_resume_checkpoint(
             resume_checkpoint,
             data_spec=data_spec,
             dataset=train_dataset,
             config=config,
             input_contract=input_contract,
+            current_data_files_digest=current_data_files_digest,
+            force_resume_data_mismatch=force_resume_data_mismatch,
         )
+        checkpoint_data_files_digest = _checkpoint_data_files_digest(resume_checkpoint)
+        if (
+            checkpoint_data_files_digest is not None
+            and checkpoint_data_files_digest != current_data_files_digest
+        ):
+            logger.warning(
+                "续训使用了不同的 raw JSON 文件集合：checkpoint 保存时的文件集合与当前"
+                "选择结果不一致（max_files 相同也可能发生）。"
+            )
         if resume_epoch >= config.max_epochs:
             raise ValueError(
                 f"resume checkpoint already reached epoch {resume_epoch}; "
@@ -211,11 +243,17 @@ def run_training(
             completed_steps=resume_epoch * len(train_loader),
         )
         start_epoch = resume_epoch + 1
-        best_key, best_val_metrics = _restore_best_state(
-            resume_checkpoint,
-            Path(resume_path),
-            ppg_enabled=config.ppg.enabled,
-        )
+        if resume_data_mismatch:
+            logger.info(
+                "当前以强制数据上限不匹配模式续训，清空旧 checkpoint 的 best 基线，"
+                "改用当前训练/验证数据重新评估。"
+            )
+        else:
+            best_key, best_val_metrics = _restore_best_state(
+                resume_checkpoint,
+                Path(resume_path),
+                ppg_enabled=config.ppg.enabled,
+            )
         last_val_metrics = _checkpoint_metrics(resume_checkpoint)
         _restore_rng_state(resume_checkpoint)
         logger.info(
@@ -310,6 +348,8 @@ def run_training(
             scheduler=scheduler,
             best_key=best_key,
             best_val_metrics=best_val_metrics,
+            data_file_count=data_file_count,
+            data_files_digest=current_data_files_digest,
         )
         if is_best:
             save_checkpoint_fn(
@@ -324,6 +364,8 @@ def run_training(
                 scheduler=scheduler,
                 best_key=best_key,
                 best_val_metrics=best_val_metrics,
+                data_file_count=data_file_count,
+                data_files_digest=current_data_files_digest,
             )
 
     save_checkpoint_fn(
@@ -338,6 +380,8 @@ def run_training(
         scheduler=scheduler,
         best_key=best_key,
         best_val_metrics=best_val_metrics,
+        data_file_count=data_file_count,
+        data_files_digest=current_data_files_digest,
     )
     return {
         "data_spec": data_spec,

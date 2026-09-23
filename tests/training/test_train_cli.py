@@ -26,6 +26,7 @@ class StubRunConfig:
     output_dir: Path
     job_tag: str | None
     model_variant: str | None = None
+    max_files: int | None = None
 
 
 def _install_fake_training_modules(monkeypatch):
@@ -105,6 +106,7 @@ def test_train_main_forwards_cli_overrides(monkeypatch, caplog, tmp_path):
         raw_data_dir=Path("configured-data"),
         output_dir=Path("configured-checkpoints"),
         job_tag=None,
+        max_files=5,
     )
     calls: dict[str, object] = {}
 
@@ -175,6 +177,7 @@ def test_train_main_forwards_cli_overrides(monkeypatch, caplog, tmp_path):
             "cuda",
             "--resume",
             str(tmp_path / "epoch_009.pt"),
+            "--force-resume-data-mismatch",
         ],
     )
 
@@ -189,6 +192,7 @@ def test_train_main_forwards_cli_overrides(monkeypatch, caplog, tmp_path):
     assert calls["config"].raw_data_dir == raw_data_dir
     assert calls["prepare_config"].raw_data_dir == raw_data_dir
     assert calls["prepare_max_files"] == 7
+    assert calls["config"].max_files == 7
     assert calls["training_kwargs"] == {
         "raw_paths": prepared_paths,
         "output_dir": output_dir,
@@ -197,6 +201,7 @@ def test_train_main_forwards_cli_overrides(monkeypatch, caplog, tmp_path):
         "learning_rate": 0.0005,
         "device_name": "cuda:0",
         "resume_path": tmp_path / "epoch_009.pt",
+        "force_resume_data_mismatch": True,
     }
     assert any(
         "训练完成: job=black_mage model_variant=artzip" in record.getMessage()
@@ -271,3 +276,93 @@ def test_train_main_uses_config_and_environment_defaults(monkeypatch):
         "device_name": "cuda",
         "resume_path": None,
     }
+
+
+def test_train_main_uses_config_max_files_when_cli_is_absent(monkeypatch, tmp_path):
+    """一键脚本不带参数时，数据量上限应来自 training.max_files。"""
+    train_cli = _load_train_cli(monkeypatch)
+
+    config_path = tmp_path / "job.yaml"
+    loaded_config = StubRunConfig(
+        raw_data_dir=Path("configured-data"),
+        output_dir=Path("configured-checkpoints"),
+        job_tag=None,
+        max_files=5,
+    )
+    calls: dict[str, object] = {}
+
+    def fake_run_training(config, **kwargs):
+        calls["config"] = config
+        calls["training_kwargs"] = kwargs
+        return {
+            "data_spec": SimpleNamespace(
+                job_tag="black_mage",
+                num_candidates=28,
+                state_dim=149,
+                scene_dim=7,
+                skill_feature_dim=23,
+            ),
+            "output_dir": Path("output"),
+        }
+
+    def fake_prepare_training_caches(config, max_files):
+        calls["prepare_max_files"] = max_files
+        return [Path("prepared.json")]
+
+    monkeypatch.setattr(
+        train_cli, "resolve_policy_model_config_path", lambda _value: config_path
+    )
+    monkeypatch.setattr(train_cli, "load_run_config", lambda _path: loaded_config)
+    monkeypatch.setattr(
+        train_cli, "resolve_policy_model_job_tag", lambda _path: "black_mage"
+    )
+    monkeypatch.setattr(
+        train_cli, "resolve_policy_model_variant", lambda _path: "artzip"
+    )
+    monkeypatch.setattr(train_cli, "resolve_policy_device", lambda _value: "cuda")
+    monkeypatch.setattr(
+        train_cli, "_prepare_training_caches", fake_prepare_training_caches
+    )
+    monkeypatch.setattr(train_cli, "run_training", fake_run_training)
+    monkeypatch.setattr(sys, "argv", ["train.py"])
+
+    train_cli.main()
+
+    assert calls["prepare_max_files"] == 5
+    assert calls["config"].max_files == 5
+    assert calls["training_kwargs"]["raw_paths"] == [Path("prepared.json")]
+
+
+def test_train_main_rejects_non_positive_cli_max_files(monkeypatch, tmp_path):
+    """显式传入非法的 --max-files 时应在准备 cache 前直接失败。"""
+    train_cli = _load_train_cli(monkeypatch)
+
+    config_path = tmp_path / "job.yaml"
+    loaded_config = StubRunConfig(
+        raw_data_dir=Path("configured-data"),
+        output_dir=Path("configured-checkpoints"),
+        job_tag=None,
+    )
+    calls: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        train_cli, "resolve_policy_model_config_path", lambda _value: config_path
+    )
+    monkeypatch.setattr(train_cli, "load_run_config", lambda _path: loaded_config)
+    monkeypatch.setattr(
+        train_cli, "resolve_policy_model_job_tag", lambda _path: "black_mage"
+    )
+    monkeypatch.setattr(
+        train_cli, "resolve_policy_model_variant", lambda _path: "artzip"
+    )
+    monkeypatch.setattr(
+        train_cli,
+        "_prepare_training_caches",
+        lambda config, max_files: calls.update(max_files=max_files) or [],
+    )
+    monkeypatch.setattr(sys, "argv", ["train.py", "--max-files", "0"])
+
+    with pytest.raises(ValueError, match="--max-files must be >= 1"):
+        train_cli.main()
+
+    assert calls == {}

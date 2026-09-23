@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import asdict
+import hashlib
+import logging
 import random
+from collections.abc import Iterable, Mapping
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import torch
 
+from common.policy.data import DataSpec, ModelInputContract
+from common.policy.model import CandidateTransformerModel
 from common.torch_serialization import safe_torch_load
-from common.policy.data import ModelInputContract, DataSpec
 
 from ..config import RunConfig
-from common.policy.model import CandidateTransformerModel
+
+logger = logging.getLogger(__name__)
 
 
 def _top1_val_ppg_average(top1_accuracy: float, normalized_val_ppg: float) -> float:
@@ -59,6 +63,181 @@ def _load_resume_checkpoint(path: Path) -> dict[str, object]:
     return dict(payload)
 
 
+def _normalized_checkpoint_epoch(checkpoint: Mapping[str, object]) -> int:
+    """校验并返回载荷中的 epoch；续训校验与列目录共用这一条规则。"""
+    epoch = checkpoint.get("epoch")
+    if isinstance(epoch, bool):
+        raise ValueError("resume checkpoint epoch must be an integer")
+    try:
+        normalized_epoch = int(epoch)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("resume checkpoint epoch must be an integer") from exc
+    if normalized_epoch < 1:
+        raise ValueError("resume checkpoint epoch must be >= 1")
+    return normalized_epoch
+
+
+def data_files_digest(raw_paths: Iterable[Path], *, raw_root: Path | None = None) -> str:
+    """按实际参与训练的文件集合生成指纹，用于识别同上限下的语料替换。
+
+    路径优先取相对 raw 根目录的 POSIX 形式，避免不同副本目录下的同名文件互相掩盖；
+    文件存在时同时纳入字节数，覆盖同名文件被替换后 cache 重建的情形。
+    """
+    root = Path(raw_root).resolve() if raw_root is not None else None
+    entries: list[str] = []
+    for path in raw_paths:
+        resolved = Path(path).resolve()
+        label = resolved.name
+        if root is not None:
+            try:
+                label = resolved.relative_to(root).as_posix()
+            except ValueError:
+                # 不在 raw 根目录下（例如测试用的相对路径）时退化为文件名。
+                label = resolved.name
+        try:
+            size = resolved.stat().st_size
+        except OSError:
+            size = -1
+        entries.append(f"{label}\t{size}")
+    entries.sort()
+    return hashlib.sha256("\n".join(entries).encode("utf-8")).hexdigest()
+
+
+class UnknownMaxFiles:
+    """表示旧 checkpoint 没有记录 training.max_files，不能推断其数据规模。"""
+
+    def __repr__(self) -> str:
+        return "UNKNOWN_MAX_FILES"
+
+
+UNKNOWN_MAX_FILES = UnknownMaxFiles()
+
+
+@dataclass(frozen=True)
+class CheckpointCandidate:
+    """恢复训练候选项：文件、真实 epoch 与保存时的数据上限。"""
+
+    path: Path
+    epoch: int
+    max_files: int | None | UnknownMaxFiles
+    data_file_count: int | None = None
+    data_files_digest: str | None = None
+
+
+@dataclass(frozen=True)
+class SkippedCheckpoint:
+    """目录内无法读取的 `.pt`：记录路径与原因，供清单提示而不是中断扫描。"""
+
+    path: Path
+    error: str
+
+
+def _read_checkpoint_metadata(path: Path) -> Mapping[str, object]:
+    """只读取 checkpoint 元数据，不加载权重 storage。"""
+    path = Path(path)
+    # meta 设备只避免把 tensor 放到 CPU；mmap 才能避免为列目录读取完整 storage。
+    payload = safe_torch_load(path, mmap=True, map_location="meta")
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"checkpoint must be a mapping: {path}")
+    return payload
+
+
+def _checkpoint_max_files(checkpoint: Mapping[str, object]) -> int | None | UnknownMaxFiles:
+    """读取 checkpoint 保存的数据上限；旧格式缺省时返回未知哨兵。"""
+    if "run_config" not in checkpoint:
+        return UNKNOWN_MAX_FILES
+    checkpoint_run_config = checkpoint["run_config"]
+    if not isinstance(checkpoint_run_config, Mapping):
+        raise ValueError("resume checkpoint run_config must be a mapping")
+    if "max_files" not in checkpoint_run_config:
+        return UNKNOWN_MAX_FILES
+    max_files = checkpoint_run_config["max_files"]
+    if max_files is not None and (
+        isinstance(max_files, bool) or not isinstance(max_files, int) or max_files < 1
+    ):
+        raise ValueError(
+            "resume checkpoint run_config.max_files must be a positive integer or null"
+        )
+    return max_files
+
+
+def _checkpoint_data_file_count(checkpoint: Mapping[str, object]) -> int | None:
+    """读取 checkpoint 记录的实际参与 raw 文件数；旧格式缺省时返回 None。"""
+    count = checkpoint.get("data_file_count")
+    if count is None:
+        return None
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise ValueError("resume checkpoint data_file_count must be a positive integer")
+    return count
+
+
+def _checkpoint_data_files_digest(checkpoint: Mapping[str, object]) -> str | None:
+    """读取 checkpoint 记录的文件集合指纹；旧格式缺省时返回 None。"""
+    digest = checkpoint.get("data_files_digest")
+    if digest is None:
+        return None
+    if not isinstance(digest, str) or not digest:
+        raise ValueError("resume checkpoint data_files_digest must be a non-empty string")
+    return digest
+
+
+def _has_resume_data_mismatch(
+    checkpoint: Mapping[str, object],
+    config: RunConfig,
+    *,
+    current_data_files_digest: str | None = None,
+) -> bool:
+    """判断 checkpoint 记录的数据上限或实际文件集合是否不同于当前训练配置。"""
+    if _checkpoint_max_files(checkpoint) != config.max_files:
+        return True
+    if current_data_files_digest is None:
+        return False
+    checkpoint_digest = _checkpoint_data_files_digest(checkpoint)
+    # 旧 checkpoint 没有文件集合指纹，无法证明语料一致，按不匹配处理。
+    return checkpoint_digest != current_data_files_digest
+
+
+def read_checkpoint_epoch(path: Path) -> int:
+    """只读取 checkpoint 载荷里的 epoch，不加载权重数据。"""
+    payload = _read_checkpoint_metadata(path)
+    return _normalized_checkpoint_epoch(payload)
+
+
+def collect_checkpoint_candidates(
+    output_dir: Path,
+    *,
+    max_epochs: int,
+) -> tuple[
+    tuple[CheckpointCandidate, ...],
+    tuple[CheckpointCandidate, ...],
+    tuple[SkippedCheckpoint, ...],
+]:
+    """按载荷真实 epoch 分组 `.pt`；无法读取的文件单列，不中断目录扫描。"""
+    if max_epochs < 1:
+        raise ValueError("max_epochs must be >= 1")
+    resumable: list[CheckpointCandidate] = []
+    rejected: list[CheckpointCandidate] = []
+    skipped: list[SkippedCheckpoint] = []
+    for path in sorted(Path(output_dir).glob("*.pt")):
+        try:
+            payload = _read_checkpoint_metadata(path)
+            candidate = CheckpointCandidate(
+                path=path,
+                epoch=_normalized_checkpoint_epoch(payload),
+                max_files=_checkpoint_max_files(payload),
+                data_file_count=_checkpoint_data_file_count(payload),
+                data_files_digest=_checkpoint_data_files_digest(payload),
+            )
+        except Exception as exc:  # 单个损坏/非法 `.pt` 不应让整个清单不可用。
+            logger.warning("跳过无法读取的 checkpoint: %s (%s)", path, exc)
+            skipped.append(SkippedCheckpoint(path=path, error=str(exc)))
+            continue
+        # training_loop 拒绝 resume_epoch >= max_epochs，这里保持同一条边界。
+        target = rejected if candidate.epoch >= max_epochs else resumable
+        target.append(candidate)
+    return tuple(resumable), tuple(rejected), tuple(skipped)
+
+
 def _validate_resume_checkpoint(
     checkpoint: Mapping[str, object],
     *,
@@ -66,6 +245,8 @@ def _validate_resume_checkpoint(
     dataset,
     config: RunConfig,
     input_contract: ModelInputContract,
+    current_data_files_digest: str | None = None,
+    force_resume_data_mismatch: bool = False,
 ) -> int:
     """确保续训 checkpoint 与当前数据、模型和归一化契约完全一致。"""
     checkpoint_data_spec = checkpoint.get("data_spec")
@@ -98,6 +279,34 @@ def _validate_resume_checkpoint(
                 f"{checkpoint_model_variant!r} != {config.model_variant!r}"
             )
 
+    # `max_files` 只是上限，无法证明同上限下选中的文件集合一致，因此同时校验
+    # checkpoint 保存的实际文件集合指纹。缺失指纹的旧 checkpoint 同样按未知处理。
+    data_mismatch_messages: list[str] = []
+    checkpoint_max_files = _checkpoint_max_files(checkpoint)
+    if checkpoint_max_files != config.max_files:
+        data_mismatch_messages.append(
+            "resume checkpoint max_files mismatch: "
+            f"checkpoint={checkpoint_max_files!r} != current={config.max_files!r}"
+        )
+    if current_data_files_digest is not None:
+        checkpoint_digest = _checkpoint_data_files_digest(checkpoint)
+        checkpoint_file_count = _checkpoint_data_file_count(checkpoint)
+        if checkpoint_digest != current_data_files_digest:
+            data_mismatch_messages.append(
+                "resume checkpoint training data files mismatch: "
+                f"checkpoint_digest={checkpoint_digest!r} "
+                f"checkpoint_files={checkpoint_file_count!r} != "
+                f"current_digest={current_data_files_digest!r}"
+            )
+    if data_mismatch_messages:
+        mismatch_message = "; ".join(data_mismatch_messages)
+        if not force_resume_data_mismatch:
+            raise ValueError(mismatch_message)
+        logger.warning(
+            "%s; force_resume_data_mismatch=True，继续使用当前 YAML/CLI 数据上限与文件集合。",
+            mismatch_message,
+        )
+
     checkpoint_precision = checkpoint.get("training_precision")
     if checkpoint_precision is not None and str(checkpoint_precision) != config.precision:
         raise ValueError("resume checkpoint training precision mismatch")
@@ -106,16 +315,7 @@ def _validate_resume_checkpoint(
     if not isinstance(checkpoint.get("optimizer_state_dict"), Mapping):
         raise ValueError("resume checkpoint missing optimizer_state_dict")
 
-    epoch = checkpoint.get("epoch")
-    if isinstance(epoch, bool):
-        raise ValueError("resume checkpoint epoch must be an integer")
-    try:
-        normalized_epoch = int(epoch)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("resume checkpoint epoch must be an integer") from exc
-    if normalized_epoch < 1:
-        raise ValueError("resume checkpoint epoch must be >= 1")
-    return normalized_epoch
+    return _normalized_checkpoint_epoch(checkpoint)
 
 
 def _restore_scheduler_state(scheduler, checkpoint: Mapping[str, object], *, completed_steps: int) -> None:
@@ -228,6 +428,8 @@ def _save_checkpoint(
     scheduler=None,
     best_key: tuple[float, float, float, float] | None = None,
     best_val_metrics: Mapping[str, float] | None = None,
+    data_file_count: int | None = None,
+    data_files_digest: str | None = None,
 ) -> None:
     model_variant = getattr(config, "model_variant", None)
     if not isinstance(model_variant, str) or not model_variant.strip():
@@ -247,6 +449,11 @@ def _save_checkpoint(
         "metrics": metrics,
         "rng_state": _capture_rng_state(),
     }
+    # 记录实际参与训练的文件数与集合指纹，续训时据此识别同上限下的语料替换。
+    if data_file_count is not None:
+        payload["data_file_count"] = int(data_file_count)
+    if data_files_digest is not None:
+        payload["data_files_digest"] = str(data_files_digest)
     if scheduler is not None:
         payload["scheduler_state_dict"] = scheduler.state_dict()
     if best_key is not None:

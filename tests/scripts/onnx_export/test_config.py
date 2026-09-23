@@ -13,6 +13,7 @@ from scripts.onnx_export.config.config import (
     load_export_config,
     load_parity_config,
 )
+from scripts.onnx_export.config import config as export_config_module
 from scripts.onnx_export import __main__ as export_main
 from scripts.onnx_export import workflow
 from scripts.onnx_export.release.policy import minimum_empty_action_budget
@@ -43,16 +44,18 @@ def test_checkpoint_path_derives_matching_export_directory(tmp_path):
 
 
 def test_checkpoint_outside_artifacts_requires_explicit_package(tmp_path):
-    with pytest.raises(ValueError, match="AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE"):
+    with pytest.raises(ValueError, match="or pass an explicit output directory"):
         derive_onnx_output_dir(tmp_path / "best.pt", project_root=tmp_path)
 
 
 def test_export_config_reads_shared_and_export_env(monkeypatch, tmp_path):
-    checkpoint = tmp_path / "best.pt"
-    output = tmp_path / "deployment"
+    monkeypatch.setattr(export_config_module, "PROJECT_ROOT", tmp_path)
+    checkpoint_dir = tmp_path / "artifacts" / "checkpoints" / "black_mage" / "artzip_bc"
+    checkpoint_dir.mkdir(parents=True)
+    checkpoint = checkpoint_dir / "best.pt"
+    checkpoint.write_bytes(b"checkpoint")
     profile = tmp_path / "profile.json"
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_CHECKPOINT", str(checkpoint))
-    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE", str(output))
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_ORT_PROVIDER", "CPUExecutionProvider")
     monkeypatch.setenv("ONNX_EXPORT_DEPLOYMENT_PROFILE", str(profile))
     monkeypatch.setenv("ONNX_EXPORT_OPSET", "19")
@@ -63,7 +66,8 @@ def test_export_config_reads_shared_and_export_env(monkeypatch, tmp_path):
     config = load_export_config()
 
     assert config.checkpoint_path == checkpoint.resolve()
-    assert config.output_dir == output.resolve()
+    # 部署包目录已改为按 checkpoint 推导；旧 .env 的 ONNX_PACKAGE 不再参与。
+    assert config.output_dir == derive_onnx_output_dir(checkpoint, project_root=tmp_path)
     assert config.deployment_profile_path == profile.resolve()
     assert config.opset == 19
     assert config.precision == "float32"
@@ -71,6 +75,25 @@ def test_export_config_reads_shared_and_export_env(monkeypatch, tmp_path):
     assert config.validation_devices == ("cpu", "cuda")
     assert config.overwrite is True
     assert not hasattr(config, "history_capacity")
+
+
+def test_export_config_ignores_legacy_onnx_package_env(monkeypatch, tmp_path):
+    """AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE 已不再读取，不能让旧值劫持部署包目录。"""
+    monkeypatch.setattr(export_config_module, "PROJECT_ROOT", tmp_path)
+    checkpoint_root = tmp_path / "artifacts" / "checkpoints" / "black_mage" / "artzip_bc"
+    checkpoint_root.mkdir(parents=True)
+    checkpoint = checkpoint_root / "best.pt"
+    checkpoint.write_bytes(b"checkpoint")
+    legacy_package = tmp_path / "artifacts" / "exports" / "black_mage" / "legacy_run"
+    legacy_package.mkdir(parents=True)
+    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_ONNX_PACKAGE", str(legacy_package))
+
+    config = export_config_module.load_export_config(checkpoint=checkpoint)
+
+    assert config.output_dir == (
+        tmp_path / "artifacts" / "exports" / "black_mage" / "artzip_bc"
+    ).resolve()
+    assert config.output_dir != legacy_package.resolve()
 
 
 def test_parity_config_reads_dedicated_env(monkeypatch, tmp_path):
@@ -148,11 +171,11 @@ def test_export_cli_accepts_no_arguments_and_uses_env_config(monkeypatch, tmp_pa
 
 
 def test_full_workflow_returns_gate_exit_without_raising(monkeypatch, capsys):
-    monkeypatch.setattr(workflow, "check_environment", lambda: None)
-    monkeypatch.setattr(workflow, "run_export", lambda: None)
-    monkeypatch.setattr(workflow, "print_release_status", lambda: None)
+    monkeypatch.setattr(workflow, "check_environment", lambda **_kwargs: None)
+    monkeypatch.setattr(workflow, "run_export", lambda **_kwargs: None)
+    monkeypatch.setattr(workflow, "print_release_status", lambda **_kwargs: None)
 
-    def fail_parity(scenario):
+    def fail_parity(scenario, **_kwargs):
         raise AssertionError(f"{scenario} mismatch")
 
     monkeypatch.setattr(workflow, "run_parity", fail_parity)
@@ -164,17 +187,38 @@ def test_full_workflow_returns_gate_exit_without_raising(monkeypatch, capsys):
     assert "scene mismatch" in output
 
 
+def test_workflow_cli_forwards_explicit_checkpoint(monkeypatch, tmp_path):
+    checkpoint = tmp_path / "epoch_001.pt"
+    received = {}
+
+    def run_all(**kwargs):
+        received.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(workflow, "_run_all", run_all)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["workflow", "all", "--checkpoint", str(checkpoint)],
+    )
+
+    assert workflow.main() == 0
+    assert received == {"checkpoint": checkpoint}
+
+
 def test_full_workflow_reports_export_failure_without_traceback(monkeypatch, capsys):
-    monkeypatch.setattr(workflow, "check_environment", lambda: None)
+    monkeypatch.setattr(workflow, "check_environment", lambda **_kwargs: None)
     monkeypatch.setattr(
         workflow,
         "run_export",
-        lambda: (_ for _ in ()).throw(FileExistsError("deployment exists")),
+        lambda **_kwargs: (_ for _ in ()).throw(FileExistsError("deployment exists")),
     )
     monkeypatch.setattr(
         workflow,
         "run_parity",
-        lambda _scenario: pytest.fail("parity must not run after export failure"),
+        lambda _scenario, **_kwargs: pytest.fail(
+            "parity must not run after export failure"
+        ),
     )
 
     assert workflow._run_all() == 1
@@ -190,12 +234,12 @@ def test_full_workflow_reports_environment_failure_without_traceback(
     monkeypatch.setattr(
         workflow,
         "check_environment",
-        lambda: (_ for _ in ()).throw(RuntimeError("onnxscript mismatch")),
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("onnxscript mismatch")),
     )
     monkeypatch.setattr(
         workflow,
         "run_export",
-        lambda: pytest.fail("export must not run after environment failure"),
+        lambda **_kwargs: pytest.fail("export must not run after environment failure"),
     )
 
     assert workflow._run_all() == 1

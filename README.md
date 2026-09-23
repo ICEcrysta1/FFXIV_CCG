@@ -57,7 +57,7 @@ python -c "import torch, onnxruntime as ort; print(torch.__version__, torch.vers
 # 5) 准备环境变量：按需填写 FFLogs 凭证、职业标签、模型变体和 checkpoint
 Copy-Item .env.example .env
 
-# 6) 启动工具菜单：输入 1～6 执行对应工具，0 退出
+# 6) 启动工具菜单：输入 1～7 执行对应工具，0 退出
 .\ffxiv_ccg.ps1
 ```
 
