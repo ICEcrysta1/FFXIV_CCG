@@ -27,7 +27,6 @@ from .checkpoint import (
     _top1_val_ppg_average,
     _validate_resume_checkpoint,
     collect_checkpoint_candidates,
-    data_files_digest,
     read_checkpoint_epoch,
 )
 from .dataloaders import (
@@ -85,7 +84,6 @@ def run_training(
 __all__ = [
     "build_dataloaders",
     "collect_checkpoint_candidates",
-    "data_files_digest",
     "read_checkpoint_epoch",
     "run_training",
     "train_epoch",

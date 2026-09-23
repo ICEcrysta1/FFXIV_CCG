@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import random
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -77,32 +76,6 @@ def _normalized_checkpoint_epoch(checkpoint: Mapping[str, object]) -> int:
     return normalized_epoch
 
 
-def data_files_digest(raw_paths: Iterable[Path], *, raw_root: Path | None = None) -> str:
-    """按实际参与训练的文件集合生成指纹，用于识别同上限下的语料替换。
-
-    路径优先取相对 raw 根目录的 POSIX 形式，避免不同副本目录下的同名文件互相掩盖；
-    文件存在时同时纳入字节数，覆盖同名文件被替换后 cache 重建的情形。
-    """
-    root = Path(raw_root).resolve() if raw_root is not None else None
-    entries: list[str] = []
-    for path in raw_paths:
-        resolved = Path(path).resolve()
-        label = resolved.name
-        if root is not None:
-            try:
-                label = resolved.relative_to(root).as_posix()
-            except ValueError:
-                # 不在 raw 根目录下（例如测试用的相对路径）时退化为文件名。
-                label = resolved.name
-        try:
-            size = resolved.stat().st_size
-        except OSError:
-            size = -1
-        entries.append(f"{label}\t{size}")
-    entries.sort()
-    return hashlib.sha256("\n".join(entries).encode("utf-8")).hexdigest()
-
-
 class UnknownMaxFiles:
     """表示旧 checkpoint 没有记录 training.max_files，不能推断其数据规模。"""
 
@@ -120,8 +93,6 @@ class CheckpointCandidate:
     path: Path
     epoch: int
     max_files: int | None | UnknownMaxFiles
-    data_file_count: int | None = None
-    data_files_digest: str | None = None
 
 
 @dataclass(frozen=True)
@@ -161,40 +132,9 @@ def _checkpoint_max_files(checkpoint: Mapping[str, object]) -> int | None | Unkn
     return max_files
 
 
-def _checkpoint_data_file_count(checkpoint: Mapping[str, object]) -> int | None:
-    """读取 checkpoint 记录的实际参与 raw 文件数；旧格式缺省时返回 None。"""
-    count = checkpoint.get("data_file_count")
-    if count is None:
-        return None
-    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
-        raise ValueError("resume checkpoint data_file_count must be a positive integer")
-    return count
-
-
-def _checkpoint_data_files_digest(checkpoint: Mapping[str, object]) -> str | None:
-    """读取 checkpoint 记录的文件集合指纹；旧格式缺省时返回 None。"""
-    digest = checkpoint.get("data_files_digest")
-    if digest is None:
-        return None
-    if not isinstance(digest, str) or not digest:
-        raise ValueError("resume checkpoint data_files_digest must be a non-empty string")
-    return digest
-
-
-def _has_resume_data_mismatch(
-    checkpoint: Mapping[str, object],
-    config: RunConfig,
-    *,
-    current_data_files_digest: str | None = None,
-) -> bool:
-    """判断 checkpoint 记录的数据上限或实际文件集合是否不同于当前训练配置。"""
-    if _checkpoint_max_files(checkpoint) != config.max_files:
-        return True
-    if current_data_files_digest is None:
-        return False
-    checkpoint_digest = _checkpoint_data_files_digest(checkpoint)
-    # 旧 checkpoint 没有文件集合指纹，无法证明语料一致，按不匹配处理。
-    return checkpoint_digest != current_data_files_digest
+def _has_resume_data_mismatch(checkpoint: Mapping[str, object], config: RunConfig) -> bool:
+    """判断 checkpoint 记录的数据上限是否不同于当前训练配置。"""
+    return _checkpoint_max_files(checkpoint) != config.max_files
 
 
 def read_checkpoint_epoch(path: Path) -> int:
@@ -225,8 +165,6 @@ def collect_checkpoint_candidates(
                 path=path,
                 epoch=_normalized_checkpoint_epoch(payload),
                 max_files=_checkpoint_max_files(payload),
-                data_file_count=_checkpoint_data_file_count(payload),
-                data_files_digest=_checkpoint_data_files_digest(payload),
             )
         except Exception as exc:  # 单个损坏/非法 `.pt` 不应让整个清单不可用。
             logger.warning("跳过无法读取的 checkpoint: %s (%s)", path, exc)
@@ -245,7 +183,6 @@ def _validate_resume_checkpoint(
     dataset,
     config: RunConfig,
     input_contract: ModelInputContract,
-    current_data_files_digest: str | None = None,
     force_resume_data_mismatch: bool = False,
 ) -> int:
     """确保续训 checkpoint 与当前数据、模型和归一化契约完全一致。"""
@@ -279,31 +216,18 @@ def _validate_resume_checkpoint(
                 f"{checkpoint_model_variant!r} != {config.model_variant!r}"
             )
 
-    # `max_files` 只是上限，无法证明同上限下选中的文件集合一致，因此同时校验
-    # checkpoint 保存的实际文件集合指纹。缺失指纹的旧 checkpoint 同样按未知处理。
-    data_mismatch_messages: list[str] = []
+    # 只有 checkpoint 明确记录 null 才表示不限量；缺失字段的旧 checkpoint
+    # 无法推断历史数据规模，必须按不匹配处理。
     checkpoint_max_files = _checkpoint_max_files(checkpoint)
     if checkpoint_max_files != config.max_files:
-        data_mismatch_messages.append(
+        mismatch_message = (
             "resume checkpoint max_files mismatch: "
             f"checkpoint={checkpoint_max_files!r} != current={config.max_files!r}"
         )
-    if current_data_files_digest is not None:
-        checkpoint_digest = _checkpoint_data_files_digest(checkpoint)
-        checkpoint_file_count = _checkpoint_data_file_count(checkpoint)
-        if checkpoint_digest != current_data_files_digest:
-            data_mismatch_messages.append(
-                "resume checkpoint training data files mismatch: "
-                f"checkpoint_digest={checkpoint_digest!r} "
-                f"checkpoint_files={checkpoint_file_count!r} != "
-                f"current_digest={current_data_files_digest!r}"
-            )
-    if data_mismatch_messages:
-        mismatch_message = "; ".join(data_mismatch_messages)
         if not force_resume_data_mismatch:
             raise ValueError(mismatch_message)
         logger.warning(
-            "%s; force_resume_data_mismatch=True，继续使用当前 YAML/CLI 数据上限与文件集合。",
+            "%s; force_resume_data_mismatch=True，继续使用当前 YAML/CLI 数据上限。",
             mismatch_message,
         )
 
@@ -428,8 +352,6 @@ def _save_checkpoint(
     scheduler=None,
     best_key: tuple[float, float, float, float] | None = None,
     best_val_metrics: Mapping[str, float] | None = None,
-    data_file_count: int | None = None,
-    data_files_digest: str | None = None,
 ) -> None:
     model_variant = getattr(config, "model_variant", None)
     if not isinstance(model_variant, str) or not model_variant.strip():
@@ -449,11 +371,6 @@ def _save_checkpoint(
         "metrics": metrics,
         "rng_state": _capture_rng_state(),
     }
-    # 记录实际参与训练的文件数与集合指纹，续训时据此识别同上限下的语料替换。
-    if data_file_count is not None:
-        payload["data_file_count"] = int(data_file_count)
-    if data_files_digest is not None:
-        payload["data_files_digest"] = str(data_files_digest)
     if scheduler is not None:
         payload["scheduler_state_dict"] = scheduler.state_dict()
     if best_key is not None:
