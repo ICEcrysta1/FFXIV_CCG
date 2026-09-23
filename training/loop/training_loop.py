@@ -86,6 +86,7 @@ def run_training(
     skill_vocab_cls = _skill_vocab or SkillVocab
     model_cls = _model_class or CandidateTransformerModel
 
+    tensorboard_output_dir = config.output_dir
     if output_dir is not None:
         config = replace(config, output_dir=Path(output_dir))
     if max_epochs is not None:
@@ -209,7 +210,7 @@ def run_training(
     config.output_dir.mkdir(parents=True, exist_ok=True)
     tensorboard_writer = create_tensorboard_writer(
         config.tensorboard,
-        config.output_dir,
+        tensorboard_output_dir,
         run_name="bc",
         model_variant=config.model_variant,
     )

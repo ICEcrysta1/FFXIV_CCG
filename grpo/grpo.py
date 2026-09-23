@@ -120,6 +120,7 @@ def main() -> None:
     # 与 BC 入口一致：把最终生效的上限写回配置，checkpoint 的 run_config 才能记录
     # 本次真实使用的场景规模，而不是 YAML 里的原值。
     config = replace(config, max_files=max_files)
+    tensorboard_output_dir = config.output_dir
     output_dir = (
         resolve_project_path(args.output_dir, project_root=PROJECT_ROOT)
         if args.output_dir is not None
@@ -193,6 +194,7 @@ def main() -> None:
         checkpoint_path=checkpoint_path,
         raw_paths=raw_paths,
         output_dir=output_dir,
+        tensorboard_output_dir=tensorboard_output_dir,
         device_name=resolve_policy_device(args.device),
         precision=args.precision,
     )

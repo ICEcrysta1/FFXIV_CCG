@@ -1484,6 +1484,7 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
             self.closed = True
 
     tensorboard_writer = ScalarRecorder()
+    tensorboard_output_dirs: list[Path] = []
 
     class FakeVocab:
         @classmethod
@@ -1564,7 +1565,9 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
     monkeypatch.setattr(
         training_loop_impl,
         "create_tensorboard_writer",
-        lambda *_args, **_kwargs: tensorboard_writer,
+        lambda _config, output_dir, **_kwargs: (
+            tensorboard_output_dirs.append(Path(output_dir)) or tensorboard_writer
+        ),
     )
 
     config = RunConfig(
@@ -1593,6 +1596,7 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
     assert result["last_val_metrics"]["top1_accuracy"] == pytest.approx(0.6)
     assert result["last_val_metrics"]["val_ppg"] == pytest.approx(900.0)
     assert result["output_dir"] == tmp_path / "override-output"
+    assert tensorboard_output_dirs == [config.output_dir]
     assert tensorboard_writer.closed
     assert any(
         tag == "validation/val_ppg" and step == 1

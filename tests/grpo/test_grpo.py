@@ -297,6 +297,8 @@ def _run_grpo_with_backend(
     config: GrpoRunConfig,
     checkpoint_path: Path,
     checkpoint_payload,
+    run_output_dir: Path | None = None,
+    capture_output: dict[str, object] | None = None,
 ):
     """在只跑到 setup 阶段的环境里执行 run_grpo_training，返回输出目录。"""
     scene_path = tmp_path / "scene.json"
@@ -334,6 +336,12 @@ def _run_grpo_with_backend(
     monkeypatch.setattr("grpo.trainer.PyTorchPolicyBackend", lambda *_a, **_k: FakeBackend())
     monkeypatch.setattr("grpo.trainer.AutoregressiveReplaySession", FakeSession)
     monkeypatch.setattr(
+        "grpo.trainer.create_tensorboard_writer",
+        lambda _tensorboard_config, output_dir, **_kwargs: (
+            captured.update(tensorboard_output_dir=Path(output_dir)) or None
+        ),
+    )
+    monkeypatch.setattr(
         "grpo.trainer.resolve_policy_cache_dir",
         lambda _job_tag: tmp_path / "cache",
     )
@@ -359,9 +367,36 @@ def _run_grpo_with_backend(
             grpo=GrpoConfig(group_size=2, max_iterations=1),
             checkpoint_path=checkpoint_path,
             raw_paths=(scene_path,),
+            output_dir=run_output_dir,
             device_name="cpu",
         )
+    if capture_output is not None:
+        capture_output.update(captured)
     return captured["replay_config"].output_path.parent
+
+
+def test_grpo_tensorboard_root_uses_model_output_when_run_output_is_overridden(
+    monkeypatch,
+    tmp_path,
+):
+    config = GrpoRunConfig(
+        raw_data_dir=tmp_path / "raw",
+        output_dir=tmp_path / "artifacts" / "checkpoints" / "black_mage" / "artzip_bc",
+        job_tag="black_mage",
+    )
+    capture: dict[str, object] = {}
+
+    _run_grpo_with_backend(
+        monkeypatch,
+        tmp_path,
+        config=config,
+        checkpoint_path=tmp_path / "checkpoint.pt",
+        checkpoint_payload={},
+        run_output_dir=tmp_path / "custom-output" / "grpo-run",
+        capture_output=capture,
+    )
+
+    assert capture["tensorboard_output_dir"] == config.output_dir
 
 
 def test_grpo_hotstart_output_dir_derives_from_config_not_checkpoint_location(
@@ -607,6 +642,7 @@ class _StubConfig:
 def test_grpo_cli_forwards_max_files_and_overrides(monkeypatch, capsys, tmp_path):
     cli = importlib.import_module("grpo.grpo")
     config_path = tmp_path / "config.yaml"
+    output_dir = tmp_path / "custom-output" / "grpo-run"
     input_config = _StubConfig(
         raw_data_dir=tmp_path / "raw-default",
         output_dir=tmp_path / "bc",
@@ -648,6 +684,8 @@ def test_grpo_cli_forwards_max_files_and_overrides(monkeypatch, capsys, tmp_path
             "5",
             "--iterations",
             "2",
+            "--output-dir",
+            str(output_dir),
             "--device",
             "cpu",
         ],
@@ -658,10 +696,13 @@ def test_grpo_cli_forwards_max_files_and_overrides(monkeypatch, capsys, tmp_path
     assert calls["max_files"] == 7
     # 最终生效的上限必须写回配置，checkpoint 才能记录真实场景规模。
     assert calls["config"].max_files == 7
+    assert calls["config"].output_dir == output_dir
     assert calls["scene_config"].job_tag == "black_mage"
     assert calls["kwargs"]["grpo"].group_size == 5
     assert calls["kwargs"]["grpo"].max_iterations == 2
     assert calls["kwargs"]["checkpoint_path"] == tmp_path / "best.pt"
+    assert calls["kwargs"]["output_dir"] == output_dir
+    assert calls["kwargs"]["tensorboard_output_dir"] == input_config.output_dir
     assert calls["kwargs"]["device_name"] == "cpu"
     assert "final.pt" in capsys.readouterr().out
 

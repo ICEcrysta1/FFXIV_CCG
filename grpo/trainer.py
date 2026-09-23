@@ -658,6 +658,7 @@ def run_grpo_training(
     checkpoint_path: Path,
     raw_paths: Sequence[Path],
     output_dir: Path | None = None,
+    tensorboard_output_dir: Path | None = None,
     device_name: str = "cuda",
     precision: str | None = None,
 ) -> dict[str, object]:
@@ -750,7 +751,11 @@ def run_grpo_training(
     try:
         tensorboard_writer = create_tensorboard_writer(
             grpo.tensorboard,
-            config.output_dir,
+            (
+                tensorboard_output_dir
+                if tensorboard_output_dir is not None
+                else config.output_dir
+            ),
             run_name="grpo",
             model_variant=config.model_variant,
         )
