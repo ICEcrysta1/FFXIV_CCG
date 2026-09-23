@@ -96,7 +96,7 @@ training:
     gcd_count: 128
     normalization: 1000.0
 
-  # 可选 TensorBoard 曲线；开启后写入 output_dir/tensorboard/<run>/。
+  # 可选 TensorBoard 曲线；事件写入 output_dir 父目录/<model_variant>_tensorboard/<run_name>-<timestamp>/。
   # BC 按 batch 记录训练指标，验证 PPG 按轮记录；GRPO 复用本节配置。
   tensorboard:
     enabled: true
