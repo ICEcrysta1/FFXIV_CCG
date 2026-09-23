@@ -844,3 +844,40 @@ def test_grpo_update_streams_disk_rollouts_without_full_decision_buffer(monkeypa
     )
 
     assert metrics["optimizer_updates"] == 4.0
+
+
+def test_grpo_update_logs_optimizer_metrics_to_tensorboard(monkeypatch):
+    policy = torch.nn.Linear(1, 1)
+    optimizer = torch.optim.SGD(policy.parameters(), lr=0.0)
+    decision = _decision(history_length=1, scene_length=1, action_index=0)
+
+    def loss_fn(model, _batch, **_kwargs):
+        loss = model.weight.sum() * 0.0 + 1.0
+        metric_names = ("loss", "policy_loss", "kl", "entropy", "clip_fraction", "mean_ratio")
+        return loss, {name: loss.detach() * 0.0 + 0.5 for name in metric_names}
+
+    class ScalarRecorder:
+        def __init__(self):
+            self.values = []
+
+        def add_scalar(self, tag, value, step):
+            self.values.append((tag, value, step))
+
+    writer = ScalarRecorder()
+    monkeypatch.setattr("grpo.trainer.compute_grpo_loss", loss_fn)
+    _update_policy(
+        policy,
+        optimizer,
+        None,
+        [decision],
+        torch.ones(1),
+        grpo=GrpoConfig(minibatch_size=1, inner_updates=1),
+        repetition=repetition_module.RepetitionConfig("blacklist", ("fire_iii",), 1.0),
+        device=torch.device("cpu"),
+        precision="float32",
+        tensorboard_writer=writer,
+        tensorboard_log_every_steps=1,
+        global_step_offset=5,
+    )
+
+    assert any(tag == "grpo/update/loss" and step == 6 for tag, _value, step in writer.values)

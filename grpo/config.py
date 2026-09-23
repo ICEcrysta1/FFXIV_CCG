@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from common.policy.config import (
@@ -13,6 +13,7 @@ from common.policy.config import (
     load_policy_config,
 )
 from common.project_config import resolve_project_path
+from common.training.tensorboard import TensorBoardConfig
 
 
 @dataclass(frozen=True)
@@ -39,9 +40,10 @@ class GrpoConfig:
     greedy_guard_tolerance: float = 0.0
     advantage_scale_floor_ratio: float = 0.1
     advantage_clip: float = 5.0
+    tensorboard: TensorBoardConfig = field(default_factory=TensorBoardConfig)
 
     @classmethod
-    def from_mapping(cls, raw: Mapping[str, object] | None = None) -> "GrpoConfig":
+    def from_mapping(cls, raw: Mapping[str, object] | None = None) -> GrpoConfig:
         """从拆分后的 `grpo` mapping 构造并校验配置。"""
         values = {} if raw is None else raw
         if not isinstance(values, Mapping):
@@ -79,6 +81,9 @@ class GrpoConfig:
                 )
             ),
             advantage_clip=float(values.get("advantage_clip", cls.advantage_clip)),
+            tensorboard=TensorBoardConfig.from_mapping(
+                values.get("tensorboard", {}) or {}
+            ),
         )
 
     def __post_init__(self) -> None:
@@ -126,13 +131,17 @@ def load_grpo_config(path: Path) -> GrpoConfig:
     旧单文件的 `training.grpo` 仍可读取，避免已有实验配置失效。
     """
     raw = load_policy_config(Path(path).resolve(), description="GRPO config")
+    training_raw = raw.get("training", {}) or {}
+    if not isinstance(training_raw, Mapping):
+        raise ValueError("training config section must be a mapping")
     grpo_raw = raw.get("grpo")
     if grpo_raw is None:
-        training_raw = raw.get("training", {}) or {}
-        if not isinstance(training_raw, Mapping):
-            raise ValueError("training config section must be a mapping")
         grpo_raw = training_raw.get("grpo", {})
-    return GrpoConfig.from_mapping(grpo_raw or {})
+    if not isinstance(grpo_raw, Mapping):
+        raise ValueError("grpo must be a mapping")
+    grpo_values = dict(grpo_raw or {})
+    grpo_values.setdefault("tensorboard", training_raw.get("tensorboard", {}))
+    return GrpoConfig.from_mapping(grpo_values)
 
 
 @dataclass(frozen=True)
