@@ -1712,6 +1712,114 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
     ]
 
 
+def test_run_training_closes_tensorboard_writer_when_validation_callback_raises(
+    tmp_path,
+    monkeypatch,
+):
+    schema = TrainingSchema(
+        serialization_format="test",
+        sample_schema_version=1,
+        context_schema_version=1,
+        scene_context_mode="absolute",
+        scene_windows=(),
+        state_group_feature_keys={"player_state": ("a", "b", "c")},
+        candidate_skill_fields=("potency",),
+        skill_history_fields=(),
+    )
+    normalizer = Normalizer()
+    normalizer.configure_job_resources("black_mage")
+    dataset = SimpleNamespace(
+        job_tag="black_mage",
+        num_candidates=2,
+        state_dim=3,
+        scene_dim=1,
+        num_scene_types=1,
+        candidate_action_keys=("a", "b"),
+        skill_feature_names=("potency",),
+        schema=schema,
+        normalizer=normalizer,
+    )
+
+    class FakeWriter:
+        log_dir = str(tmp_path / "artifacts" / "tensorboard" / "failed-run")
+
+        def __init__(self):
+            self.closed = False
+
+        def add_scalar(self, *_args):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    class FakeVocab:
+        @classmethod
+        def build_from_job_tag(cls, _job_tag):
+            return cls()
+
+        def size(self):
+            return 2
+
+    class FakeModel(_TinyModel):
+        def __init__(self, *_args, **_kwargs):
+            super().__init__()
+
+    writer = FakeWriter()
+    monkeypatch.setattr(
+        training_loop_impl,
+        "create_tensorboard_writer",
+        lambda *_args, **_kwargs: writer,
+    )
+
+    def fail_validation_callback(**_kwargs):
+        raise RuntimeError("validation callback failed")
+
+    config = RunConfig(
+        raw_data_dir=tmp_path / "raw",
+        output_dir=tmp_path / "output",
+        job_tag="black_mage",
+        model_variant="artzip",
+        max_epochs=1,
+        tensorboard=TensorBoardConfig(enabled=True),
+        model=ModelConfig(
+            d_model=8,
+            pair_embedding_dim=4,
+            n_layers=1,
+            n_heads=2,
+            ff_dim=16,
+        ),
+    )
+    metrics = {
+        "loss": 1.0,
+        "cross_entropy_loss": 1.0,
+        "value_preference_loss": 0.0,
+        "top1_accuracy": 0.7,
+        "top3_accuracy": 0.9,
+    }
+
+    with pytest.raises(RuntimeError, match="validation callback failed"):
+        training_module.run_training(
+            config,
+            raw_paths=[tmp_path / "scene.json"],
+            device_name="cpu",
+            validation_metrics_callback=fail_validation_callback,
+            _build_dataloaders=lambda *_args, **_kwargs: (
+                [0],
+                [0],
+                dataset,
+                dataset,
+            ),
+            _train_epoch=lambda *_args, **_kwargs: metrics,
+            _validate=lambda *_args, **_kwargs: metrics,
+            _resolve_cache_dir=lambda _job: tmp_path / "cache",
+            _registered_job_tags=lambda: ("black_mage",),
+            _skill_vocab=FakeVocab,
+            _model_class=FakeModel,
+        )
+
+    assert writer.closed
+
+
 def test_best_metric_key_uses_requested_tie_break_order():
     base = {
         "top1_accuracy": 0.8,
