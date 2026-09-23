@@ -36,28 +36,16 @@
 请见下文快速启动安装和使用示例。有关FLogs 数据下载、行为克隆预训练、GRPO 后训练、ONNX 导出、模型分析与自回归回放的详细命令参数请参阅我们完整的 [说明文档](./docs/命令行使用说明.md)。
 
 ```pwsh
-# 1) 准备虚拟环境：Python >= 3.12 均可，项目正式环境固定为根目录 .venv
-python -m venv .venv
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass   # 仅当 Activate.ps1 被执行策略拦截时
-.\.venv\Scripts\Activate.ps1
+# 1) 一键准备环境：检查系统 Python >= 3.12，创建根目录 .venv，安装 CUDA/GPU 依赖
+.\setup.ps1
+# 如果执行策略拦截脚本，再执行：
+# Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+# .\setup.ps1
 
-# 2) 安装主依赖：固定 torch 2.12.0+cu132
-# 可直接运行在 CUDA 13.x 驱动上
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+# 2) 按 setup.ps1 输出和 .env.example 的说明准备环境变量
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 
-# 3) 安装 ONNX GPU 依赖
-python -m pip uninstall -y onnxruntime onnxruntime-gpu
-python -m pip install -r requirements-onnx-gpu.txt
-
-# 4) 确认 GPU 依赖就绪
-# 应输出 torch 2.12.0+cu132 与 CUDAExecutionProvider
-python -c "import torch, onnxruntime as ort; print(torch.__version__, torch.version.cuda); print(ort.__version__, ort.get_available_providers())"
-
-# 5) 准备环境变量：按需填写 FFLogs 凭证、职业标签、模型变体和 checkpoint
-Copy-Item .env.example .env
-
-# 6) 启动工具菜单：输入 1～7 执行对应工具，0 退出
+# 3) 启动工具菜单：输入 1～7 执行对应工具，0 退出
 .\ffxiv_ccg.ps1
 ```
 
