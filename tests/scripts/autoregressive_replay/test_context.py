@@ -560,7 +560,19 @@ def test_live_batch_builder_reuses_history_rows_and_refreshes_changed_rows():
             state_vector_dim=lambda: 2,
             scene_feature_dim=lambda: 1,
         )
-        return CountingBuilder(
+        class FakeSceneProvider:
+            def __init__(self):
+                self.calls = 0
+
+            def at_time(self, _time):
+                self.calls += 1
+                return (
+                    torch.zeros((0, 1), dtype=torch.float32),
+                    torch.zeros((0,), dtype=torch.int32),
+                )
+
+        scene_provider = FakeSceneProvider()
+        builder = CountingBuilder(
             backend=SimpleNamespace(),
             vocab=SimpleNamespace(
                 require_lookup=lambda value, **_kwargs: int(value) + 100
@@ -568,16 +580,13 @@ def test_live_batch_builder_reuses_history_rows_and_refreshes_changed_rows():
             normalizer=FakeNormalizer(),
             schema=schema,
             skill_feature_names=("kind", "potency"),
-            scene_provider=SimpleNamespace(
-                at_time=lambda _time: (
-                    torch.zeros((0, 1), dtype=torch.float32),
-                    torch.zeros((0,), dtype=torch.int32),
-                )
-            ),
+            scene_provider=scene_provider,
             device=torch.device("cpu"),
             max_history=2,
             candidate_action_keys=("candidate",),
         )
+        builder.fake_scene_provider = scene_provider
+        return builder
 
     def make_context(history, *, candidate_legal=True, candidate_remaining=0.0):
         skill_history = [
@@ -635,8 +644,15 @@ def test_live_batch_builder_reuses_history_rows_and_refreshes_changed_rows():
 
     builder = make_builder()
     first = make_context([(1, "first", 10), (2, "second", 20)])
-    builder.build_from_canonical(first, max_history=2)
+    first_batch, _ = builder.build_from_canonical(first, max_history=2)
     assert builder.built_history_keys == ["first", "second"]
+    repeated_batch, _ = builder.build_from_canonical(first, max_history=2)
+    assert repeated_batch["scene_vectors"] is first_batch["scene_vectors"]
+    assert (
+        repeated_batch["history_skill_features"].data_ptr()
+        == first_batch["history_skill_features"].data_ptr()
+    )
+    assert builder.fake_scene_provider.calls == 1
 
     # 历史窗口滚动时复用仍在窗口内的行，只转换新追加的一行。
     appended = make_context([(1, "first", 10), (2, "second", 20), (3, "third", 30)])

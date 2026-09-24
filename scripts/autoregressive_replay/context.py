@@ -478,6 +478,11 @@ class LiveBatchBuilder:
         self._scene_dim = schema.scene_feature_dim()
         self._cached_history_rows: list[_CachedHistoryFeatureRow] = []
         self._cached_history_max_history: int | None = None
+        self._cached_scene_batch: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None = None
+        self._cached_history_device_rows: tuple[_CachedHistoryFeatureRow, ...] | None = None
+        self._cached_history_device_tensors: tuple[
+            torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
+        ] | None = None
 
     def build(
         self,
@@ -561,8 +566,7 @@ class LiveBatchBuilder:
             state_history_tokens,
             max_history=max_history,
         )
-        # scene provider 的 at_time 忽略时间参数：scene 模板固定整场
-        scene_vectors, scene_types = self._scene_provider.at_time(0.0)
+        scene_vectors, scene_types, scene_mask = self._scene_batch_tensors()
         candidate_skill_ids = torch.tensor(
             [self._map_skill_id(token.get("skill_id")) for token in candidate_context],
             dtype=torch.int32,
@@ -582,17 +586,18 @@ class LiveBatchBuilder:
 
         history_length = len(history_action_keys)
         batch = {
-            "scene_vectors": scene_vectors.unsqueeze(0),
-            "scene_types": scene_types.unsqueeze(0),
-            "scene_mask": torch.ones(
-                (1, scene_vectors.shape[0]),
-                dtype=torch.bool,
-            ),
+            "scene_vectors": scene_vectors,
+            "scene_types": scene_types,
+            "scene_mask": scene_mask,
             "history_skill_ids": history_skill_ids.unsqueeze(0),
             "history_skill_features": history_skill_features.unsqueeze(0),
             "history_state_vectors": history_state_vectors.unsqueeze(0),
             "history_state_null_mask": history_state_null_mask.unsqueeze(0),
-            "history_mask": torch.ones((1, history_length), dtype=torch.bool),
+            "history_mask": torch.ones(
+                (1, history_length),
+                dtype=torch.bool,
+                device=self._device,
+            ),
             "candidate_skill_ids": candidate_skill_ids.unsqueeze(0),
             "candidate_skill_features": candidate_skill_features.unsqueeze(0),
             "candidate_state_vectors": candidate_state_vectors.unsqueeze(0),
@@ -628,6 +633,8 @@ class LiveBatchBuilder:
         if self._cached_history_max_history != max_history:
             self._cached_history_rows.clear()
             self._cached_history_max_history = max_history
+            self._cached_history_device_rows = None
+            self._cached_history_device_tensors = None
 
         identities = [self._history_row_identity(token) for token in skill_tokens]
         cached_rows, overlap = self._find_history_overlap(
@@ -648,21 +655,113 @@ class LiveBatchBuilder:
         # 输入已经按 max_history 裁剪；这里再限制一次，避免缓存持有旧窗口。
         self._cached_history_rows = rows[-max_history:] if max_history > 0 else []
         rows = self._cached_history_rows
+        history_tensors = self._history_tensors_for_rows(rows)
+        return (*history_tensors, [row.action_key for row in rows])
+
+    def _scene_batch_tensors(
+        self,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """每个验证副本只把固定 scene 张量搬到目标设备一次。"""
+        if self._cached_scene_batch is None:
+            scene_vectors, scene_types = self._scene_provider.at_time(0.0)
+            scene_vectors = scene_vectors.unsqueeze(0).to(self._device)
+            scene_types = scene_types.unsqueeze(0).to(self._device)
+            scene_mask = torch.ones(
+                (1, scene_vectors.shape[1]),
+                dtype=torch.bool,
+                device=self._device,
+            )
+            self._cached_scene_batch = (scene_vectors, scene_types, scene_mask)
+        return self._cached_scene_batch
+
+    def _history_tensors_for_rows(
+        self,
+        rows: list[_CachedHistoryFeatureRow],
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """复用设备端历史窗口；只传新行，并正确处理窗口滑动或重建。"""
+        current_rows = tuple(rows)
+        previous_rows = self._cached_history_device_rows
+        previous_tensors = self._cached_history_device_tensors
+
+        if previous_rows is None or previous_tensors is None:
+            tensors = self._tensorize_history_rows(current_rows)
+        elif self._same_history_rows(current_rows, previous_rows):
+            tensors = previous_tensors
+        elif len(current_rows) < len(previous_rows) and self._same_history_rows(
+            current_rows,
+            previous_rows[: len(current_rows)],
+        ):
+            tensors = tuple(tensor[: len(current_rows)] for tensor in previous_tensors)
+        elif len(current_rows) > len(previous_rows) and self._same_history_rows(
+            previous_rows,
+            current_rows[: len(previous_rows)],
+        ):
+            new_tensors = self._tensorize_history_rows(current_rows[len(previous_rows) :])
+            tensors = self._append_history_tensors(previous_tensors, new_tensors)
+        else:
+            overlap = 0
+            for candidate_overlap in range(min(len(previous_rows), len(current_rows)), 0, -1):
+                if self._same_history_rows(
+                    previous_rows[-candidate_overlap:],
+                    current_rows[:candidate_overlap],
+                ):
+                    overlap = candidate_overlap
+                    break
+            if overlap == 0:
+                tensors = self._tensorize_history_rows(current_rows)
+            else:
+                dropped_rows = len(previous_rows) - overlap
+                base_tensors = tuple(
+                    tensor[dropped_rows:] for tensor in previous_tensors
+                )
+                new_rows = current_rows[overlap:]
+                if new_rows:
+                    new_tensors = self._tensorize_history_rows(new_rows)
+                    tensors = self._append_history_tensors(base_tensors, new_tensors)
+                else:
+                    tensors = base_tensors
+
+        self._cached_history_device_rows = current_rows
+        self._cached_history_device_tensors = tensors
+        return tensors
+
+    @staticmethod
+    def _same_history_rows(left, right) -> bool:
+        return len(left) == len(right) and all(
+            left_row is right_row for left_row, right_row in zip(left, right)
+        )
+
+    def _tensorize_history_rows(
+        self,
+        rows: tuple[_CachedHistoryFeatureRow, ...],
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         if not rows:
             return (
-                torch.empty((0,), dtype=torch.int32),
-                torch.empty((0, len(self._skill_feature_names)), dtype=torch.float32),
-                torch.empty((0, self._state_dim), dtype=torch.float32),
-                torch.empty((0, self._state_dim), dtype=torch.bool),
-                [],
+                torch.empty((0,), dtype=torch.int32, device=self._device),
+                torch.empty(
+                    (0, len(self._skill_feature_names)),
+                    dtype=torch.float32,
+                    device=self._device,
+                ),
+                torch.empty((0, self._state_dim), dtype=torch.float32, device=self._device),
+                torch.empty((0, self._state_dim), dtype=torch.bool, device=self._device),
             )
-
         return (
-            torch.tensor([row.skill_id for row in rows], dtype=torch.int32),
-            torch.stack([row.skill_features for row in rows]),
-            torch.stack([row.state_vector for row in rows]),
-            torch.stack([row.state_null_mask for row in rows]),
-            [row.action_key for row in rows],
+            torch.tensor(
+                [row.skill_id for row in rows],
+                dtype=torch.int32,
+                device=self._device,
+            ),
+            torch.stack([row.skill_features for row in rows]).to(self._device),
+            torch.stack([row.state_vector for row in rows]).to(self._device),
+            torch.stack([row.state_null_mask for row in rows]).to(self._device),
+        )
+
+    @staticmethod
+    def _append_history_tensors(base_tensors, new_tensors):
+        return tuple(
+            torch.cat((base, new), dim=0)
+            for base, new in zip(base_tensors, new_tensors)
         )
 
     @staticmethod
