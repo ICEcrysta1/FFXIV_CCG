@@ -60,16 +60,15 @@
 
 ## Combat.Sim 部署契约
 
-转换与自回归回放使用 `SidecarHost` C# 状态机。修改 `FightEngine`、`SidecarHost` 或
-`config/schema.yaml` 后，必须在同一工作树重建宿主：
+转换与自回归回放通过 Python.NET 在当前 Python 进程内调用 C# 状态机。修改
+`FightEngine`、`PythonBridge` 或 `config/schema.yaml` 后，必须在同一工作树重建桥接程序集：
 
 ```powershell
-dotnet build Combat.Sim/SidecarHost/SidecarHost.csproj --configuration Debug
+dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj --configuration Debug
 ```
 
-`SidecarHost` 与 Python 客户端都从 `config/schema.yaml` 读取运行时契约版本（当前 `sidecar_contract_version: 8`），`init` 会拒绝旧 DLL；新版 DLL 使用缺少
+Python 客户端会将程序集嵌入的契约版本与 `config/schema.yaml`（当前 `sidecar_contract_version: 8`）比较，拒绝旧 DLL；新版 DLL 使用缺少
 `contracts.scene_epsilon` 或 `contracts.sidecar_contract_version` 的旧 schema 则会在 C# 配置加载时失败。
-DLL、`config/schema.yaml` 与输出 token 契约必须作为同一版本部署；启动转换或回放前应先执行真实 Sidecar init 握手。
-宿主接受技能提交与四类影响状态机合法性/结算的外部事实（Boss 可选中、移动、目标数、团辅窗口）；自回归回放把移动事实直接提交给状态机，训练样本转换仍可在输出层合成移动字段。
+FightEngine DLL、`config/schema.yaml` 与输出 token 契约必须作为同一版本构建和使用。自回归回放把移动事实直接提交给状态机，训练样本转换仍可在输出层合成移动字段。
 
-职业状态机的合法性或状态转移语义发生变化时，必须检查所有受影响的边界并同步升级契约：Sidecar 运行时版本、checkpoint 输入契约（`INPUT_CONTRACT_VERSION`）、compiled cache 转换版本（`CACHE_FORMAT` / `DEFAULT_CONVERSION_VERSION`）和 ONNX deployment contract（`DEPLOYMENT_CONTRACT_VERSION`，以及 `manifest.schema.json` 里对应的 `const`）；同时补充 Python/C# 状态机回归测试，并重建 Sidecar、缓存、checkpoint 和部署包，禁止旧产物静默复用。
+职业状态机的合法性或状态转移语义发生变化时，必须检查所有受影响的边界并同步升级契约：`sidecar_contract_version`、checkpoint 输入契约（`INPUT_CONTRACT_VERSION`）、compiled cache 转换版本（`CACHE_FORMAT` / `DEFAULT_CONVERSION_VERSION`）和 ONNX deployment contract（`DEPLOYMENT_CONTRACT_VERSION`，以及 `manifest.schema.json` 里对应的 `const`）；同时补充 Python/C# 状态机回归测试，并重建 PythonBridge、缓存、checkpoint 和部署包，禁止旧产物静默复用。

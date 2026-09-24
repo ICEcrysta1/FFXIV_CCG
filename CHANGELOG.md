@@ -6,7 +6,7 @@
 
 ### Added
 
-- 新增 Python.NET 进程内状态机后端：训练样本转换、自回归回放和主入口直接调用 C# `FightEngine`，省去启动 `SidecarHost` 子进程及 Python/C# 间逐请求的 JSON Lines IPC；保留 `SidecarHost` JSON Lines 兼容入口。
+- 新增 Python.NET 进程内状态机后端和 `PythonBridge`：训练样本转换、自回归回放和主入口在当前 Python 进程直接调用 C# `FightEngine`，观测上下文映射为 Python 原生容器；`setup.ps1` 确保 pythonnet 安装在项目 `.venv`。
 - 新增 BC 与 GRPO TensorBoard 标量记录及本地 Web 启动入口：BC 按训练步和轮记录指标，GRPO 按优化步和迭代记录指标；两者按模型 YAML 的 `output_dir` 和 `.env` 选择的模型变体写入同一 `<output_dir 父目录>/<model_variant>_tensorboard`，启动器默认扫描该目录；Web 端口从项目 `.env` 的 `TENSORBOARD_PORT` 读取（默认 `6006`，仅监听本机）；当前黑魔 `artzip` 配置已启用。
 - 新增根目录 `setup.ps1` 一键准备脚本：优先使用 Windows `python` 检查 Python 3.12+，创建或复用项目 `.venv`，安装 CUDA 版 PyTorch 与 ONNX Runtime GPU 依赖，验证 CUDA provider，并在完成后提示按 `.env.example` 准备 `.env`；已有环境可重复执行且不会覆盖 `.env`。
 - 新增 `scripts/ffxiv_ccg_menu.psm1` 公共 PowerShell 菜单模块：统一工具编号、action 名称和 checkpoint 选择；菜单 2～6 共用同一个 checkpoint 清单，2 只显示可续训的 BC checkpoint，3～6 可选择目录中的全部 `.pt`，每项显示 checkpoint 载荷中的真实 epoch。
@@ -18,6 +18,10 @@
 
 ### Changed
 
+- 优化训练 `val_ppg` 自回归验证：每个验证副本重置并恢复 KV cache，缓存固定 scene 张量并增量复用设备端历史张量，同时合并合法候选检查与 argmax 的设备同步。8 场实测中关闭 KV 为 181.3 秒，开启 KV 为 460.7 秒；验证默认关闭 KV cache，可通过根目录 `.env` 的 `TRAINING_VAL_PPG_USE_KV_CACHE=true` 显式启用，回放结束后恢复模型原有开关状态。
+
+- 优化自回归 `LiveBatchBuilder` 的技能与状态张量构造：批量创建技能特征、状态向量和空值掩码，再按原分组归一化；代表性 CPU 微基准（25 个候选、20 项技能特征、147 维状态）中，技能特征构造耗时由 1.673 ms 降至 0.298 ms，状态张量由 1.803 ms 降至 1.382 ms，新旧张量数值与空值掩码一致。
+- 优化自回归 `LiveBatchBuilder` 的历史特征构建：缓存已转换的历史行，增量转换新行并复用滑动窗口重叠；历史内容变化时重新计算。64 次真实决策前缀的 CPU batch 构建中位耗时由 2.043 秒降至 1.355 秒（减少 33.7%，不含模型与状态机耗时），新旧 batch 输出一致。
 - 移除 GRPO 连续恢复训练支持：恢复训练菜单仅接受 BC checkpoint；GRPO checkpoint 只作为新的模型权重起点，不恢复旧运行的 optimizer、scheduler、RNG 或 iteration。
 - GRPO 热启动输出目录改为按模型 YAML 的 `training.output_dir` 派生 `<run>_grpo_hotstart[_NNN]`：来源是 GRPO checkpoint 时不再以 checkpoint 所在目录命名，checkpoint 位于项目外也不会把新 run 写到项目外；重复热启动只在同一基础目录上从 `_001` 起追加编号，不再叠加 `_hotstart_hotstart`。
 - 修复 `ffxiv_ccg.ps1 -Action grpo/export/analysis/replay` 仍进入 checkpoint 交互菜单的问题：非菜单调用现在支持 `-Checkpoint <路径>`，省略时使用配置解析出的默认 checkpoint；`resume` 在非交互模式下也不会读取 `Read-Host`，数据上限不一致时需显式使用 `-ForceResumeDataMismatch`。
@@ -49,7 +53,11 @@
 
 ### Fixed
 
-- 修复状态机后端通过 Python 与 C# 同读 `config/schema.yaml` 比较契约版本、导致旧 `FightEngine.dll` 仍可能通过校验的问题：构建时将版本嵌入程序集，配置加载时校验 schema 与程序集元数据；进程内后端和 Sidecar init 握手分别检查实际程序集版本，拒绝旧 DLL 或无法证明 DLL 版本的旧宿主。
+- 修复状态机后端通过 Python 与 C# 同读 `config/schema.yaml` 比较契约版本、导致旧 `FightEngine.dll` 仍可能通过校验的问题：构建时将版本嵌入程序集，配置加载时校验 schema 与程序集元数据；进程内后端检查实际加载的程序集版本并拒绝旧 DLL。
+
+### Removed
+
+- 移除 `SidecarHost` JSON Lines 宿主、对应 xUnit 项目及旧 Python 客户端 `scripts/common/cs_backend.py`；Python 调用不再经由 Sidecar 或逐请求 JSON IPC。
 
 ## [0.1.0] - 2026-09-21
 

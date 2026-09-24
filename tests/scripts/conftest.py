@@ -1,7 +1,7 @@
 """scripts 测试公共 fixture：进程内 C# 状态机后端。
 
-转换与自回归回放测试共用同一后端客户端；托管运行文件未构建时跳过
-依赖后端的测试（提示先构建 SidecarHost 项目以生成依赖文件）。
+转换与自回归回放测试共用同一后端客户端；托管运行文件或 Python.NET
+桥接程序集未构建时跳过依赖后端的测试。
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import pytest
 from scripts.common.inprocess_backend import (
     InProcessBackend,
     _FIGHT_ENGINE_DLL,
+    _PYTHON_BRIDGE_DLL,
     _RUNTIME_CONFIG,
     _YAML_DOTNET_DLL,
 )
@@ -20,13 +21,18 @@ from scripts.convert_fflogs.utils import build_skill_book, load_job_project_conf
 def _require_inprocess_backend() -> None:
     missing = [
         path
-        for path in (_RUNTIME_CONFIG, _FIGHT_ENGINE_DLL, _YAML_DOTNET_DLL)
+        for path in (
+            _RUNTIME_CONFIG,
+            _FIGHT_ENGINE_DLL,
+            _YAML_DOTNET_DLL,
+            _PYTHON_BRIDGE_DLL,
+        )
         if not path.is_file()
     ]
     if missing:
         pytest.skip(
-            "C# 状态机运行文件未构建，请先运行 "
-            "dotnet build Combat.Sim/SidecarHost/SidecarHost.csproj"
+            "C# 状态机或 Python.NET 桥接程序集未构建；请先构建 "
+            "Combat.Sim/PythonBridge/PythonBridge.csproj。"
         )
     try:
         import pythonnet  # noqa: F401

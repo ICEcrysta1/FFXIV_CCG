@@ -2,21 +2,22 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 
 import torch
 
-from .scheduler import gcd_request_delay, is_gcd_decision
-from common.numeric import flatten_numeric_mapping
 from common.contracts import SLIDECAST_WINDOW_SECONDS
+from common.numeric import flatten_numeric_mapping
 from common.policy.data.candidate_order import candidate_permutation
 from common.policy.data.schema import (
     SCENE_TYPE_MOVEMENT,
     SCENE_TYPE_RAID_BUFF,
-    SCENE_TYPE_TARGETABLE,
     SCENE_TYPE_TARGET_COUNT,
+    SCENE_TYPE_TARGETABLE,
 )
 
+from .scheduler import gcd_request_delay, is_gcd_decision
 
 REPLAY_SKILL_IGNORED_FIELDS = frozenset(
     {"skill_key", "skill_name", "invalid_reason", "skill_id"}
@@ -425,6 +426,20 @@ class SceneTemplateProvider:
                 )
 
 
+@dataclass(frozen=True)
+class _CachedHistoryFeatureRow:
+    """单条不可变历史事件对应的模型特征。"""
+
+    identity: tuple[object, ...]
+    skill_token: dict[str, object]
+    state_token: dict[str, object]
+    skill_id: int
+    skill_features: torch.Tensor
+    state_vector: torch.Tensor
+    state_null_mask: torch.Tensor
+    action_key: str
+
+
 class LiveBatchBuilder:
     """使用 compiled cache 的 schema 和 scene 模板构造 live 推理输入。
 
@@ -461,6 +476,13 @@ class LiveBatchBuilder:
         self._state_groups = tuple(schema.state_group_feature_keys)
         self._state_dim = schema.state_vector_dim()
         self._scene_dim = schema.scene_feature_dim()
+        self._cached_history_rows: list[_CachedHistoryFeatureRow] = []
+        self._cached_history_max_history: int | None = None
+        self._cached_scene_batch: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None = None
+        self._cached_history_device_rows: tuple[_CachedHistoryFeatureRow, ...] | None = None
+        self._cached_history_device_tensors: tuple[
+            torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
+        ] | None = None
 
     def build(
         self,
@@ -533,8 +555,18 @@ class LiveBatchBuilder:
         skill_history = _tail_history(canonical["skill_history_context"], max_history)
         state_history = canonical["state_history_context"]
         state_history_tokens = _tail_history(state_history["tokens"], max_history)
-        # scene provider 的 at_time 忽略时间参数：scene 模板固定整场
-        scene_vectors, scene_types = self._scene_provider.at_time(0.0)
+        (
+            history_skill_ids,
+            history_skill_features,
+            history_state_vectors,
+            history_state_null_mask,
+            history_action_keys,
+        ) = self._build_history_batch(
+            skill_history,
+            state_history_tokens,
+            max_history=max_history,
+        )
+        scene_vectors, scene_types, scene_mask = self._scene_batch_tensors()
         candidate_skill_ids = torch.tensor(
             [self._map_skill_id(token.get("skill_id")) for token in candidate_context],
             dtype=torch.int32,
@@ -552,35 +584,26 @@ class LiveBatchBuilder:
             dtype=torch.bool,
         )
 
-        history_skill_ids = torch.tensor(
-            [self._map_skill_id(token.get("skill_id")) for token in skill_history],
-            dtype=torch.int32,
-        )
-        history_skill_features = self._build_skill_features(skill_history)
-        history_state_vectors, history_state_null_mask = self._build_state_tensors(
-            state_history_tokens
-        )
-        history_length = len(skill_history)
+        history_length = len(history_action_keys)
         batch = {
-            "scene_vectors": scene_vectors.unsqueeze(0),
-            "scene_types": scene_types.unsqueeze(0),
-            "scene_mask": torch.ones(
-                (1, scene_vectors.shape[0]),
-                dtype=torch.bool,
-            ),
+            "scene_vectors": scene_vectors,
+            "scene_types": scene_types,
+            "scene_mask": scene_mask,
             "history_skill_ids": history_skill_ids.unsqueeze(0),
             "history_skill_features": history_skill_features.unsqueeze(0),
             "history_state_vectors": history_state_vectors.unsqueeze(0),
             "history_state_null_mask": history_state_null_mask.unsqueeze(0),
-            "history_mask": torch.ones((1, history_length), dtype=torch.bool),
+            "history_mask": torch.ones(
+                (1, history_length),
+                dtype=torch.bool,
+                device=self._device,
+            ),
             "candidate_skill_ids": candidate_skill_ids.unsqueeze(0),
             "candidate_skill_features": candidate_skill_features.unsqueeze(0),
             "candidate_state_vectors": candidate_state_vectors.unsqueeze(0),
             "candidate_state_null_mask": candidate_state_null_mask.unsqueeze(0),
             "candidate_legal_mask": candidate_legal_mask.unsqueeze(0),
-            "history_action_keys": [
-                [str(token.get("skill_key", "")) for token in skill_history]
-            ],
+            "history_action_keys": [history_action_keys],
             "candidate_action_keys": [
                 [str(token.get("skill_key", "")) for token in candidate_context]
             ],
@@ -593,62 +616,285 @@ class LiveBatchBuilder:
             [str(token.get("skill_key", "")) for token in candidate_context],
         )
 
+    def _build_history_batch(
+        self,
+        skill_tokens,
+        state_tokens,
+        *,
+        max_history: int,
+    ):
+        """只转换新增历史行；缓存不匹配时安全地重建当前窗口。"""
+        if len(skill_tokens) != len(state_tokens):
+            raise ValueError(
+                "live skill and state history rows must have the same length: "
+                f"skills={len(skill_tokens)} states={len(state_tokens)}"
+            )
+
+        if self._cached_history_max_history != max_history:
+            self._cached_history_rows.clear()
+            self._cached_history_max_history = max_history
+            self._cached_history_device_rows = None
+            self._cached_history_device_tensors = None
+
+        identities = [self._history_row_identity(token) for token in skill_tokens]
+        cached_rows, overlap = self._find_history_overlap(
+            skill_tokens,
+            state_tokens,
+            identities,
+        )
+        rows = list(cached_rows)
+        for index in range(overlap, len(skill_tokens)):
+            rows.append(
+                self._build_cached_history_row(
+                    skill_tokens[index],
+                    state_tokens[index],
+                    identities[index],
+                )
+            )
+
+        # 输入已经按 max_history 裁剪；这里再限制一次，避免缓存持有旧窗口。
+        self._cached_history_rows = rows[-max_history:] if max_history > 0 else []
+        rows = self._cached_history_rows
+        history_tensors = self._history_tensors_for_rows(rows)
+        return (*history_tensors, [row.action_key for row in rows])
+
+    def _scene_batch_tensors(
+        self,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """每个验证副本只把固定 scene 张量搬到目标设备一次。"""
+        if self._cached_scene_batch is None:
+            scene_vectors, scene_types = self._scene_provider.at_time(0.0)
+            scene_vectors = scene_vectors.unsqueeze(0).to(self._device)
+            scene_types = scene_types.unsqueeze(0).to(self._device)
+            scene_mask = torch.ones(
+                (1, scene_vectors.shape[1]),
+                dtype=torch.bool,
+                device=self._device,
+            )
+            self._cached_scene_batch = (scene_vectors, scene_types, scene_mask)
+        return self._cached_scene_batch
+
+    def _history_tensors_for_rows(
+        self,
+        rows: list[_CachedHistoryFeatureRow],
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """复用设备端历史窗口；只传新行，并正确处理窗口滑动或重建。"""
+        current_rows = tuple(rows)
+        previous_rows = self._cached_history_device_rows
+        previous_tensors = self._cached_history_device_tensors
+
+        if previous_rows is None or previous_tensors is None:
+            tensors = self._tensorize_history_rows(current_rows)
+        elif self._same_history_rows(current_rows, previous_rows):
+            tensors = previous_tensors
+        elif len(current_rows) < len(previous_rows) and self._same_history_rows(
+            current_rows,
+            previous_rows[: len(current_rows)],
+        ):
+            tensors = tuple(tensor[: len(current_rows)] for tensor in previous_tensors)
+        elif len(current_rows) > len(previous_rows) and self._same_history_rows(
+            previous_rows,
+            current_rows[: len(previous_rows)],
+        ):
+            new_tensors = self._tensorize_history_rows(current_rows[len(previous_rows) :])
+            tensors = self._append_history_tensors(previous_tensors, new_tensors)
+        else:
+            overlap = 0
+            for candidate_overlap in range(min(len(previous_rows), len(current_rows)), 0, -1):
+                if self._same_history_rows(
+                    previous_rows[-candidate_overlap:],
+                    current_rows[:candidate_overlap],
+                ):
+                    overlap = candidate_overlap
+                    break
+            if overlap == 0:
+                tensors = self._tensorize_history_rows(current_rows)
+            else:
+                dropped_rows = len(previous_rows) - overlap
+                base_tensors = tuple(
+                    tensor[dropped_rows:] for tensor in previous_tensors
+                )
+                new_rows = current_rows[overlap:]
+                if new_rows:
+                    new_tensors = self._tensorize_history_rows(new_rows)
+                    tensors = self._append_history_tensors(base_tensors, new_tensors)
+                else:
+                    tensors = base_tensors
+
+        self._cached_history_device_rows = current_rows
+        self._cached_history_device_tensors = tensors
+        return tensors
+
+    @staticmethod
+    def _same_history_rows(left, right) -> bool:
+        return len(left) == len(right) and all(
+            left_row is right_row for left_row, right_row in zip(left, right)
+        )
+
+    def _tensorize_history_rows(
+        self,
+        rows: tuple[_CachedHistoryFeatureRow, ...],
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        if not rows:
+            return (
+                torch.empty((0,), dtype=torch.int32, device=self._device),
+                torch.empty(
+                    (0, len(self._skill_feature_names)),
+                    dtype=torch.float32,
+                    device=self._device,
+                ),
+                torch.empty((0, self._state_dim), dtype=torch.float32, device=self._device),
+                torch.empty((0, self._state_dim), dtype=torch.bool, device=self._device),
+            )
+        return (
+            torch.tensor(
+                [row.skill_id for row in rows],
+                dtype=torch.int32,
+                device=self._device,
+            ),
+            torch.stack([row.skill_features for row in rows]).to(self._device),
+            torch.stack([row.state_vector for row in rows]).to(self._device),
+            torch.stack([row.state_null_mask for row in rows]).to(self._device),
+        )
+
+    @staticmethod
+    def _append_history_tensors(base_tensors, new_tensors):
+        return tuple(
+            torch.cat((base, new), dim=0)
+            for base, new in zip(base_tensors, new_tensors)
+        )
+
+    @staticmethod
+    def _history_row_identity(skill_token) -> tuple[object, ...]:
+        """用稳定的事件字段定位历史行；完整 token 仍会用于缓存命中校验。"""
+        return (
+            skill_token.get("time_seconds"),
+            skill_token.get("gcd_index"),
+            skill_token.get("skill_key"),
+            skill_token.get("skill_id"),
+        )
+
+    def _find_history_overlap(
+        self,
+        skill_tokens,
+        state_tokens,
+        identities: list[tuple[object, ...]],
+    ) -> tuple[list[_CachedHistoryFeatureRow], int]:
+        """识别追加或滑动窗口的重合区，并拒绝复用已变化的历史行。"""
+        prefix_length = 0
+        for index, row in enumerate(self._cached_history_rows):
+            if index >= len(skill_tokens):
+                break
+            if (
+                row.identity != identities[index]
+                or row.skill_token != skill_tokens[index]
+                or row.state_token != state_tokens[index]
+            ):
+                break
+            prefix_length += 1
+        if prefix_length:
+            return self._cached_history_rows[:prefix_length], prefix_length
+
+        max_overlap = min(len(self._cached_history_rows), len(skill_tokens))
+        for overlap in range(max_overlap, 0, -1):
+            cached_rows = self._cached_history_rows[-overlap:]
+            if any(
+                row.identity != identities[index]
+                or row.skill_token != skill_tokens[index]
+                or row.state_token != state_tokens[index]
+                for index, row in enumerate(cached_rows)
+            ):
+                continue
+            return cached_rows, overlap
+        return [], 0
+
+    def _build_cached_history_row(
+        self,
+        skill_token,
+        state_token,
+        identity: tuple[object, ...],
+    ) -> _CachedHistoryFeatureRow:
+        """把一条历史 token 转成可跨决策复用的 CPU 特征行。"""
+        skill_features = self._build_skill_features([skill_token])[0]
+        state_vectors, state_null_mask = self._build_state_tensors([state_token])
+        return _CachedHistoryFeatureRow(
+            identity=identity,
+            skill_token=deepcopy(skill_token),
+            state_token=deepcopy(state_token),
+            skill_id=self._map_skill_id(skill_token.get("skill_id")),
+            skill_features=skill_features.detach().cpu(),
+            state_vector=state_vectors[0].detach().cpu(),
+            state_null_mask=state_null_mask[0].detach().cpu(),
+            action_key=str(skill_token.get("skill_key", "")),
+        )
+
     def _map_skill_id(self, raw_skill_id) -> int:
         if raw_skill_id is None:
             return 0
         return self._vocab.require_lookup(int(raw_skill_id), context="live replay")
 
     def _build_skill_features(self, tokens) -> torch.Tensor:
-        values = torch.zeros(
-            (len(tokens), len(self._skill_feature_names)),
-            dtype=torch.float32,
-        )
-        for row_index, token in enumerate(tokens):
+        feature_rows = []
+        for token in tokens:
             flattened = flatten_numeric_mapping(
                 token,
                 ignored_keys=REPLAY_SKILL_IGNORED_FIELDS,
             )
-            for feature_index, feature_name in enumerate(self._skill_feature_names):
-                values[row_index, feature_index] = float(flattened.get(feature_name, 0.0))
+            feature_rows.append(
+                [
+                    float(flattened.get(feature_name, 0.0))
+                    for feature_name in self._skill_feature_names
+                ]
+            )
+        if feature_rows:
+            values = torch.tensor(feature_rows, dtype=torch.float32)
+        else:
+            values = torch.zeros(
+                (0, len(self._skill_feature_names)),
+                dtype=torch.float32,
+            )
         return self._normalizer.normalize_skill_features(values, self._skill_feature_names)
 
     def _build_state_tensors(self, tokens):
-        values = []
-        null_masks = []
-        for group_key in self._state_groups:
-            group_values = []
-            group_null_masks = []
-            for token in tokens:
-                group_value, group_null_mask = _extract_nullable_vector(
-                    token.get(group_key),
-                )
-                if group_value.shape[0] != len(self._schema.state_group_feature_keys[group_key]):
-                    raise ValueError(
-                        f"live {group_key} vector width mismatch: "
-                        f"{group_value.shape[0]} != {len(self._schema.state_group_feature_keys[group_key])}"
-                    )
-                group_values.append(group_value)
-                group_null_masks.append(group_null_mask)
-            if group_values:
-                group_tensor = torch.stack(group_values)
-                group_null_tensor = torch.stack(group_null_masks)
-            else:
-                width = len(self._schema.state_group_feature_keys[group_key])
-                group_tensor = torch.zeros((0, width), dtype=torch.float32)
-                group_null_tensor = torch.zeros((0, width), dtype=torch.bool)
-            group_tensor = self._normalizer.normalize(
-                group_tensor,
-                group_key,
-                null_mask=group_null_tensor,
-            )
-            values.append(group_tensor)
-            null_masks.append(group_null_tensor)
-        if not values:
+        if not self._state_groups:
             return (
                 torch.zeros((0, self._state_dim), dtype=torch.float32),
                 torch.zeros((0, self._state_dim), dtype=torch.bool),
             )
-        return torch.cat(values, dim=-1), torch.cat(null_masks, dim=-1)
+
+        value_rows = [[] for _ in tokens]
+        null_mask_rows = [[] for _ in tokens]
+        group_slices = []
+        offset = 0
+        for group_key in self._state_groups:
+            width = len(self._schema.state_group_feature_keys[group_key])
+            group_slices.append((group_key, offset, offset + width))
+            offset += width
+            for row_index, token in enumerate(tokens):
+                group_values, group_null_masks = _extract_nullable_values(
+                    token.get(group_key)
+                )
+                if len(group_values) != width:
+                    raise ValueError(
+                        f"live {group_key} vector width mismatch: "
+                        f"{len(group_values)} != {width}"
+                    )
+                value_rows[row_index].extend(group_values)
+                null_mask_rows[row_index].extend(group_null_masks)
+        if value_rows:
+            values = torch.tensor(value_rows, dtype=torch.float32)
+            null_masks = torch.tensor(null_mask_rows, dtype=torch.bool)
+        else:
+            values = torch.empty((0, offset), dtype=torch.float32)
+            null_masks = torch.empty((0, offset), dtype=torch.bool)
+
+        for group_key, start, end in group_slices:
+            values[:, start:end] = self._normalizer.normalize(
+                values[:, start:end],
+                group_key,
+                null_mask=null_masks[:, start:end],
+            )
+        return values, null_masks
 
 
 def _tail_history(values, max_history: int):
@@ -660,7 +906,7 @@ def _tail_history(values, max_history: int):
     return values[-max_history:]
 
 
-def _extract_nullable_vector(node):
+def _extract_nullable_values(node):
     if not isinstance(node, (list, tuple)):
         raise ValueError("live state vector group must be a list")
     values = []
@@ -677,4 +923,9 @@ def _extract_nullable_vector(node):
             null_mask.append(False)
         else:
             raise ValueError(f"unsupported live state vector value: {item!r}")
+    return values, null_mask
+
+
+def _extract_nullable_vector(node):
+    values, null_mask = _extract_nullable_values(node)
     return torch.tensor(values, dtype=torch.float32), torch.tensor(null_mask, dtype=torch.bool)

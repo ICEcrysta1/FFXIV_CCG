@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from common.policy.model.repetition import (
     parse_repetition_config as _parse_repetition_config,
 )
 from common.project_config import (
+    load_root_dotenv,
     resolve_project_path,
 )
 from common.training.tensorboard import TensorBoardConfig
@@ -19,6 +21,7 @@ from common.training.tensorboard import TensorBoardConfig
 from ..runtime.runtime_debug import RuntimeDebugConfig
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+VAL_PPG_USE_KV_CACHE_ENV = "TRAINING_VAL_PPG_USE_KV_CACHE"
 
 _TRAINING_PRECISION_ALIASES = {
     "float32": "float32",
@@ -46,6 +49,7 @@ class PpgConfig:
     enabled: bool = True
     gcd_count: int = 128
     normalization: float = 1000.0
+    use_kv_cache: bool = False
 
 
 @dataclass(frozen=True)
@@ -92,8 +96,24 @@ class RunConfig:
     model: _ModelConfig = _ModelConfig()
 
 
+def _parse_val_ppg_use_kv_cache() -> bool:
+    """读取验证回放专用 KV 开关，缺省保持关闭。"""
+    value = os.environ.get(VAL_PPG_USE_KV_CACHE_ENV)
+    if value is None:
+        return False
+    normalized = value.strip().lower()
+    if normalized in {"true", "yes", "1"}:
+        return True
+    if normalized in {"false", "no", "0"}:
+        return False
+    raise ValueError(
+        f"{VAL_PPG_USE_KV_CACHE_ENV} must be true/yes/1 or false/no/0, got {value!r}"
+    )
+
+
 def load_run_config(path: Path) -> RunConfig:
     """读取职业 YAML，并把相对路径解析到项目根目录。"""
+    load_root_dotenv(PROJECT_ROOT)
     path = Path(path).resolve()
     raw = load_policy_config(path, description="training config")
 
@@ -189,6 +209,7 @@ def load_run_config(path: Path) -> RunConfig:
         normalization=float(
             ppg_raw.get("normalization", PpgConfig.normalization)
         ),
+        use_kv_cache=_parse_val_ppg_use_kv_cache(),
     )
     if ppg.gcd_count < 1:
         raise ValueError("training.ppg.gcd_count must be >= 1")

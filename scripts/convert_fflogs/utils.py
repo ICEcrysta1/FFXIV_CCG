@@ -29,7 +29,7 @@ def build_skill_book(project_config):
 
 
 def build_backend(job_tag: str, *, max_history: int | None = None) -> InProcessBackend:
-    """构造进程内 C# 状态机后端，不启动 SidecarHost 子进程。"""
+    """构造通过 Python.NET 在当前进程调用的 C# 状态机后端。"""
     return InProcessBackend(job_tag, max_history=max_history)
 
 

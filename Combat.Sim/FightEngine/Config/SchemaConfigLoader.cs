@@ -89,7 +89,7 @@ public static class SchemaConfigLoader
             {
                 throw new InvalidOperationException(
                     $"{configPath}: schema sidecar_contract_version={schema.SidecarContractVersion} " +
-                    $"与 FightEngine 程序集内嵌版本={assemblyContractVersion} 不一致；请重新构建 SidecarHost。");
+                    $"与 FightEngine 程序集内嵌版本={assemblyContractVersion} 不一致；请重新构建 PythonBridge。");
             }
             _instance = schema;
             _projectRoot = projectRoot;

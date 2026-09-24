@@ -13,6 +13,7 @@ from scripts.autoregressive_replay.ppg import (
     _infer_initial_base_gcd,
     _run_rollout,
     _run_rollout_until_time,
+    _select_legal_candidate,
 )
 from common.policy.data import Normalizer
 from scripts.autoregressive_replay.context import LiveBatchBuilder
@@ -163,6 +164,28 @@ def test_real_ppg_counts_queued_gcds_and_masks_policy_wait(cs_backend, monkeypat
     assert len(submissions) == 3
     assert [item.request_timestamp for item in submissions] == pytest.approx([0.0, 2.45, 4.9])
     assert [item.queued for item in submissions] == [False, True, True]
+
+
+@pytest.mark.parametrize(
+    ("logits", "legal", "expected_index", "expected_has_legal"),
+    (
+        ([1.0, 10.0, 2.0], [True, False, True], 2, True),
+        ([1.0, 10.0], [False, False], 0, False),
+    ),
+)
+def test_select_legal_candidate_returns_index_and_legality(
+    logits,
+    legal,
+    expected_index,
+    expected_has_legal,
+):
+    selected_index, has_legal = _select_legal_candidate(
+        torch.tensor(logits),
+        torch.tensor(legal),
+    )
+
+    assert selected_index == expected_index
+    assert has_legal is expected_has_legal
 
 
 def test_ppg_rollout_counts_output_gcds_and_includes_dot_potency():
@@ -326,7 +349,11 @@ def test_validation_ppg_recovers_initial_base_gcd_from_cached_candidate_token():
     ) == pytest.approx(2.4)
 
 
-def test_validation_ppg_reads_history_capacity_from_model_config(monkeypatch):
+@pytest.mark.parametrize("cache_was_enabled", [False, True])
+@pytest.mark.parametrize("use_kv_cache", [False, True])
+def test_validation_ppg_reads_history_capacity_from_model_config(
+    monkeypatch, cache_was_enabled, use_kv_cache
+):
     captured = {}
 
     class FakeNormalizer:
@@ -398,21 +425,23 @@ def test_validation_ppg_reads_history_capacity_from_model_config(monkeypatch):
     monkeypatch.setattr(ppg_module, "SceneTemplateProvider", FakeSceneProvider)
     monkeypatch.setattr(ppg_module, "LiveBatchBuilder", FakeBatcher)
     monkeypatch.setattr(ppg_module, "_infer_initial_base_gcd", lambda *args, **kwargs: 2.5)
-    monkeypatch.setattr(
-        ppg_module,
-        "_run_rollout_until_time",
-        lambda *args, **kwargs: PpgResult(
+    def fake_rollout(model, *args, **kwargs):
+        assert model._kv_cache_enabled is use_kv_cache
+        return PpgResult(
             output_gcds=1,
             cumulative_potency=100.0,
             cumulative_dot_potency=0.0,
             ppg=100.0,
             normalized_ppg=0.1,
-        ),
-    )
+        )
+
+    monkeypatch.setattr(ppg_module, "_run_rollout_until_time", fake_rollout)
 
     config = SimpleNamespace(
         model=SimpleNamespace(history_capacity=37),
-        ppg=SimpleNamespace(enabled=True, normalization=1000.0),
+        ppg=SimpleNamespace(
+            enabled=True, normalization=1000.0, use_kv_cache=use_kv_cache
+        ),
         precision="float32",
     )
     dataset = SimpleNamespace(
@@ -424,7 +453,24 @@ def test_validation_ppg_reads_history_capacity_from_model_config(monkeypatch):
         job_tag="black_mage",
         candidate_action_keys=("fire",),
     )
-    model = SimpleNamespace(eval=lambda: None)
+    cache_events = []
+
+    class FakeModel:
+        _kv_cache_enabled = False
+
+        @staticmethod
+        def eval():
+            return None
+
+        def enable_kv_cache(self, enabled):
+            self._kv_cache_enabled = bool(enabled)
+            cache_events.append(("enable", self._kv_cache_enabled))
+
+        def reset_kv_cache(self):
+            cache_events.append(("reset", self._kv_cache_enabled))
+
+    model = FakeModel()
+    model._kv_cache_enabled = cache_was_enabled
 
     result = ppg_module.evaluate_validation_ppg(
         model=model,
@@ -441,3 +487,10 @@ def test_validation_ppg_reads_history_capacity_from_model_config(monkeypatch):
     }
     assert result["val_ppg"] == pytest.approx(100.0)
     assert result["val_ppg_normalized"] == pytest.approx(0.1)
+    assert model._kv_cache_enabled is cache_was_enabled
+    assert cache_events == [
+        ("enable", use_kv_cache),
+        ("reset", use_kv_cache),
+        ("reset", use_kv_cache),
+        ("enable", cache_was_enabled),
+    ]

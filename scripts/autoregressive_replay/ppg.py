@@ -125,63 +125,77 @@ def evaluate_validation_ppg(
     normalizer.register_schema(dataset.schema)
     source_results: list[PpgResult] = []
     model.eval()
-    with InProcessBackend(
-        job_tag=data_spec.job_tag,
-        max_history=config.model.history_capacity,
-    ) as backend:
-        for source_index, reader in enumerate(iter_source_readers()):
-            initial_metadata = reader.step_metadata(0)
-            initial_time = float(initial_metadata["time_offset"])
-            scene_provider = SceneTemplateProvider(
-                reader,
-                normalizer=normalizer,
-                initial_sample_index=0,
-                backend=backend,
-            )
-            fight_end_time = scene_provider.last_targetable_end()
-            if fight_end_time <= initial_time + PPG_TIME_EPSILON:
-                raise ValueError(
-                    "validation PPG source must have a positive replay window: "
-                    f"fight={reader.fight_id!r} initial={initial_time} end={fight_end_time}"
+    enable_kv_cache = getattr(model, "enable_kv_cache", None)
+    reset_kv_cache = getattr(model, "reset_kv_cache", None)
+    cache_was_enabled = bool(getattr(model, "_kv_cache_enabled", False))
+    if callable(enable_kv_cache):
+        # 当前基准中 KV 路径更慢，只有显式配置才启用。
+        enable_kv_cache(ppg_config.use_kv_cache)
+    try:
+        with InProcessBackend(
+            job_tag=data_spec.job_tag,
+            max_history=config.model.history_capacity,
+        ) as backend:
+            for source_index, reader in enumerate(iter_source_readers()):
+                if callable(reset_kv_cache):
+                    reset_kv_cache()
+                initial_metadata = reader.step_metadata(0)
+                initial_time = float(initial_metadata["time_offset"])
+                scene_provider = SceneTemplateProvider(
+                    reader,
+                    normalizer=normalizer,
+                    initial_sample_index=0,
+                    backend=backend,
                 )
-            actual_base_gcd = _infer_initial_base_gcd(
-                reader,
-                normalizer=normalizer,
-                skill_feature_names=dataset.skill_feature_names,
-            )
+                fight_end_time = scene_provider.last_targetable_end()
+                if fight_end_time <= initial_time + PPG_TIME_EPSILON:
+                    raise ValueError(
+                        "validation PPG source must have a positive replay window: "
+                        f"fight={reader.fight_id!r} initial={initial_time} end={fight_end_time}"
+                    )
+                actual_base_gcd = _infer_initial_base_gcd(
+                    reader,
+                    normalizer=normalizer,
+                    skill_feature_names=dataset.skill_feature_names,
+                )
 
-            backend.init(
-                actual_base_gcd=float(actual_base_gcd),
-                fight_remaining=fight_end_time - initial_time,
-                initial_timestamp=initial_time,
-            )
-            state = observe_replay_state(backend, initial_time)
-            scene_provider.sync_state(state)
-            batcher = LiveBatchBuilder(
-                backend=backend,
-                vocab=vocab,
-                normalizer=normalizer,
-                schema=dataset.schema,
-                skill_feature_names=dataset.skill_feature_names,
-                scene_provider=scene_provider,
-                device=device,
-                max_history=config.model.history_capacity,
-                candidate_action_keys=data_spec.candidate_action_keys,
-            )
-            source_results.append(
-                _run_rollout_until_time(
-                    model,
-                    backend,
-                    batcher,
-                    scene_provider=scene_provider,
-                    end_time=fight_end_time,
-                    normalization=ppg_config.normalization,
-                    precision=config.precision,
-                    device=device,
-                    expected_candidate_keys=data_spec.candidate_action_keys,
-                    source_label=f"{source_index}:{reader.fight_id}",
+                backend.init(
+                    actual_base_gcd=float(actual_base_gcd),
+                    fight_remaining=fight_end_time - initial_time,
+                    initial_timestamp=initial_time,
                 )
-            )
+                state = observe_replay_state(backend, initial_time)
+                scene_provider.sync_state(state)
+                batcher = LiveBatchBuilder(
+                    backend=backend,
+                    vocab=vocab,
+                    normalizer=normalizer,
+                    schema=dataset.schema,
+                    skill_feature_names=dataset.skill_feature_names,
+                    scene_provider=scene_provider,
+                    device=device,
+                    max_history=config.model.history_capacity,
+                    candidate_action_keys=data_spec.candidate_action_keys,
+                )
+                source_results.append(
+                    _run_rollout_until_time(
+                        model,
+                        backend,
+                        batcher,
+                        scene_provider=scene_provider,
+                        end_time=fight_end_time,
+                        normalization=ppg_config.normalization,
+                        precision=config.precision,
+                        device=device,
+                        expected_candidate_keys=data_spec.candidate_action_keys,
+                        source_label=f"{source_index}:{reader.fight_id}",
+                    )
+                )
+    finally:
+        if callable(reset_kv_cache):
+            reset_kv_cache()
+        if callable(enable_kv_cache):
+            enable_kv_cache(cache_was_enabled)
 
     if not source_results:
         raise ValueError("validation PPG found no source to replay")
@@ -294,7 +308,8 @@ def _run_rollout(
         with autocast_context(device, precision):
             logits = model(batch)["logits"][0].float()
         legal_mask = batch["candidate_legal_mask"][0].bool()
-        if not bool(legal_mask.any().item()):
+        selected_index, has_legal_candidate = _select_legal_candidate(logits, legal_mask)
+        if not has_legal_candidate:
             advanced = DecisionScheduler(
                 backend, lambda timestamp: observe_replay_state(backend, timestamp),
             ).advance_to_next_decision(state)
@@ -302,7 +317,6 @@ def _run_rollout(
                 state = advanced
                 continue
             raise RuntimeError("PPG live state has no legal candidate")
-        selected_index = int(logits.masked_fill(~legal_mask, float("-inf")).argmax().item())
         action_key = candidate_keys[selected_index]
         if action_key == OGCD_WAIT_ACTION_KEY:
             wait_seconds = gcd_request_delay(state)
@@ -388,7 +402,8 @@ def _run_rollout_until_time(
         with autocast_context(device, precision):
             logits = model(batch)["logits"][0].float()
         legal_mask = batch["candidate_legal_mask"][0].bool()
-        if not bool(legal_mask.any().item()):
+        selected_index, has_legal_candidate = _select_legal_candidate(logits, legal_mask)
+        if not has_legal_candidate:
             advanced = DecisionScheduler(
                 backend, lambda timestamp: observe_replay_state(backend, timestamp), scene_provider,
             ).advance_to_next_decision(state, end_time=end_time)
@@ -409,9 +424,6 @@ def _run_rollout_until_time(
                 ppg=0.0,
                 normalized_ppg=0.0,
             )
-        selected_index = int(
-            logits.masked_fill(~legal_mask, float("-inf")).argmax().item()
-        )
         action_key = candidate_keys[selected_index]
         if action_key == OGCD_WAIT_ACTION_KEY:
             wait_seconds = gcd_request_delay(state)
@@ -486,6 +498,23 @@ def _advance_after_action(
         action_kind=action_kind,
         end_time=end_time,
     )
+
+
+def _select_legal_candidate(
+    logits: torch.Tensor,
+    legal_mask: torch.Tensor,
+) -> tuple[int, bool]:
+    """合并动作索引与合法性读取，避免两次 CUDA 到 CPU 同步。"""
+    selected_index = logits.masked_fill(~legal_mask, float("-inf")).argmax()
+    has_legal_candidate = legal_mask.any()
+    decision = torch.stack(
+        (
+            selected_index.to(dtype=torch.int64),
+            has_legal_candidate.to(dtype=torch.int64),
+        )
+    )
+    selected_value, has_legal_value = decision.cpu().tolist()
+    return int(selected_value), bool(has_legal_value)
 
 
 def _advance_event_time(

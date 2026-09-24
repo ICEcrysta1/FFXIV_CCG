@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <AssemblyName>FightEngine.PythonBridge</AssemblyName>
+    <RootNamespace>Combat.Sim.PythonBridge</RootNamespace>
+  </PropertyGroup>
+  <PropertyGroup>
+    <PythonRuntimeAssembly Condition="'$(PythonRuntimeAssembly)' == ''">$(MSBuildProjectDirectory)\..\..\.venv\Lib\site-packages\pythonnet\runtime\Python.Runtime.dll</PythonRuntimeAssembly>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\FightEngine\FightEngine.csproj" />
+    <Reference Include="Python.Runtime">
+      <HintPath>$(PythonRuntimeAssembly)</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+  <Target Name="ValidatePythonRuntimeAssembly" BeforeTargets="ResolveReferences">
+    <Error Condition="!Exists('$(PythonRuntimeAssembly)')"
+           Text="Python.Runtime.dll was not found in the project .venv. Run setup.ps1 to install requirements.txt, or pass -p:PythonRuntimeAssembly=&lt;path to Python.Runtime.dll&gt;." />
+  </Target>
+</Project>

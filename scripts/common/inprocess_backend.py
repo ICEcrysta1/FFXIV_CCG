@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import os
 import threading
 from pathlib import Path
 from typing import Any, Self
 
 from common.contracts import SIDECAR_CONTRACT_VERSION
-from scripts.common.cs_backend import (
+from scripts.common.state_machine_types import (
     ActionSubmissionResult,
     ExternalEventResult,
     ObservationResult,
@@ -23,14 +22,15 @@ _CONFIGURATION = os.environ.get("COMBAT_SIM_CONFIGURATION", "Debug")
 _DOTNET_OUTPUT = (
     _PROJECT_ROOT
     / "Combat.Sim"
-    / "SidecarHost"
+    / "PythonBridge"
     / "bin"
     / _CONFIGURATION
     / "net10.0"
 )
-_RUNTIME_CONFIG = _DOTNET_OUTPUT / "SidecarHost.runtimeconfig.json"
+_RUNTIME_CONFIG = _DOTNET_OUTPUT / "FightEngine.PythonBridge.runtimeconfig.json"
 _FIGHT_ENGINE_DLL = _DOTNET_OUTPUT / "FightEngine.dll"
 _YAML_DOTNET_DLL = _DOTNET_OUTPUT / "YamlDotNet.dll"
+_PYTHON_BRIDGE_DLL = _DOTNET_OUTPUT / "FightEngine.PythonBridge.dll"
 
 _DOTNET_LOCK = threading.Lock()
 _DOTNET_TYPES: tuple[Any, Any, Any, Any, Any] | None = None
@@ -46,13 +46,19 @@ def _load_dotnet_types() -> tuple[Any, Any, Any, Any, Any]:
         if _DOTNET_TYPES is not None:
             return _DOTNET_TYPES
 
-        required_files = (_RUNTIME_CONFIG, _FIGHT_ENGINE_DLL, _YAML_DOTNET_DLL)
+        required_files = (
+            _RUNTIME_CONFIG,
+            _FIGHT_ENGINE_DLL,
+            _YAML_DOTNET_DLL,
+            _PYTHON_BRIDGE_DLL,
+        )
         missing_files = [path for path in required_files if not path.is_file()]
         if missing_files:
             missing = ", ".join(str(path) for path in missing_files)
             raise FileNotFoundError(
-                f"C# 状态机运行文件缺失：{missing}；请先运行 "
-                "dotnet build Combat.Sim/SidecarHost/SidecarHost.csproj"
+                f"C# 状态机运行文件缺失：{missing}；"
+                "请执行 .\\setup.ps1 安装项目依赖，再运行 "
+                "dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj。"
             )
 
         try:
@@ -69,21 +75,21 @@ def _load_dotnet_types() -> tuple[Any, Any, Any, Any, Any]:
 
             import clr
 
-            # SidecarHost 输出目录同时包含运行时配置与 FightEngine 的托管依赖；
-            # 这里只加载程序集，不启动 SidecarHost 进程。
+            # PythonBridge 输出目录包含运行时配置与 FightEngine 的托管依赖。
             clr.AddReference(str(_YAML_DOTNET_DLL))
             clr.AddReference(str(_FIGHT_ENGINE_DLL))
-            clr.AddReference("System.Text.Json")
+            clr.AddReference(str(_PYTHON_BRIDGE_DLL))
 
             from Combat.Sim.Config import SchemaConfigLoader
             from Combat.Sim.Facade import JobSimulator
             from Combat.Sim.Models.Timeline import ExternalCombatEvent
             from Combat.Sim.Policy import PolicySession
-            from System.Text.Json import JsonSerializer
+            from Combat.Sim.PythonBridge import NativeContextMarshaller
         except Exception as exc:
             raise RuntimeError(
-                "无法在 Python 进程内加载 FightEngine；请确认当前工作树已构建 "
-                "net10.0 SidecarHost，且本 Python 进程尚未加载其他版本的 .NET runtime。"
+                "无法在 Python 进程内加载 FightEngine/PythonBridge；请确认两个程序集来自当前工作树，"
+                "PythonBridge 按当前 pythonnet 的 Python.Runtime.dll 构建，"
+                "且本 Python 进程尚未加载其他版本的 .NET runtime。"
             ) from exc
 
         _DOTNET_TYPES = (
@@ -91,13 +97,13 @@ def _load_dotnet_types() -> tuple[Any, Any, Any, Any, Any]:
             PolicySession,
             ExternalCombatEvent,
             SchemaConfigLoader,
-            JsonSerializer,
+            NativeContextMarshaller,
         )
         return _DOTNET_TYPES
 
 
 class InProcessBackend:
-    """SidecarBackend 兼容接口的进程内实现；不创建子进程、不传输 JSON。"""
+    """在当前 Python 进程内调用 C# 状态机，不创建子进程或传输 JSON。"""
 
     def __init__(
         self,
@@ -159,7 +165,7 @@ class InProcessBackend:
             self._policy = None
             raise RuntimeError(
                 "实际加载的 FightEngine DLL 缺少可验证的程序集契约版本；"
-                "请使用当前工作树重新构建 SidecarHost。"
+                "请使用当前工作树重新构建 PythonBridge。"
             ) from exc
         if assembly_version != SIDECAR_CONTRACT_VERSION:
             self._simulator = None
@@ -167,7 +173,7 @@ class InProcessBackend:
             raise RuntimeError(
                 "实际加载的 FightEngine DLL 契约版本与当前 Python schema 不匹配："
                 f"expected={SIDECAR_CONTRACT_VERSION}, dll={assembly_version}。"
-                "请使用当前工作树重新构建 SidecarHost。"
+                "请使用当前工作树重新构建 PythonBridge。"
             )
 
         simulator = job_simulator.Create(
@@ -301,10 +307,8 @@ class InProcessBackend:
         else:
             context = simulator.FormatState(format)
 
-        *_, json_serializer = self._types()
-        # Vector 包含多层候选与历史容器；在 CLR 侧一次序列化后由 Python 解码，
-        # 比逐字段跨 Python.NET 反射枚举快，且只发生在当前进程内。
-        python_context = json.loads(str(json_serializer.Serialize(context)))
+        *_, native_context_marshaller = self._types()
+        python_context = native_context_marshaller.Convert(context)
         return ObservationResult(
             timestamp=float(simulator.Time),
             format=format,

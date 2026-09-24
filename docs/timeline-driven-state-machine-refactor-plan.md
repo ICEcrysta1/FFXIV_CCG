@@ -4,6 +4,8 @@
 > 记录日期：2026-09-13
 > 范围：`Combat.Sim/FightEngine`、Sidecar、FFLogs 转换、自回归/PPG 回放及对应契约和测试
 
+> 后续变更：2026-09-24 起，Python 调用已统一使用 Python.NET 进程内接口，SidecarHost 与 JSON Lines 兼容层已删除。本计划中关于 Sidecar 的内容仅记录当时的实施设计。
+
 ## 1. 背景与结论
 
 当前 FightEngine 已经有 `CombatState.Time`、`AdvanceTime`、冷却/Buff/DoT/MP 等公共运行时，但它仍是“调用方手工拼装时间语义”的状态机，而不是单一时间基准的完整模拟器：
