@@ -119,7 +119,8 @@ def test_server_uses_dotenv_selected_model_tensorboard_root(
             / "artifacts"
             / "checkpoints"
             / "black_mage"
-            / "artzip_bc"
+            / "artzip_bc",
+            tensorboard=SimpleNamespace(enabled=True),
         ),
     )
     monkeypatch.setattr(sys, "argv", ["tensorboard_server"])
@@ -145,6 +146,90 @@ def test_server_uses_dotenv_selected_model_tensorboard_root(
     assert Path(command[4]) == expected_root
     assert command[-1] == "6017"
     assert calls["cwd"] == tmp_path
+
+    started = []
+    opened = []
+    monkeypatch.setattr(
+        tensorboard_server,
+        "_start_background",
+        lambda command, *, port: started.append((command, port)),
+    )
+    monkeypatch.setattr(tensorboard_server.webbrowser, "open", opened.append)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["tensorboard_server", "--background", "--open-browser", "--if-enabled"],
+    )
+    assert tensorboard_server.main() == 0
+    assert started == [(command, 6017)]
+    assert opened == ["http://127.0.0.1:6017"]
+
+    monkeypatch.setattr(
+        tensorboard_server,
+        "load_run_config",
+        lambda _path: SimpleNamespace(tensorboard=SimpleNamespace(enabled=False)),
+    )
+    assert tensorboard_server.main() == 0
+    assert len(started) == 1
+
+
+def test_background_server_waits_for_readiness(monkeypatch, tmp_path):
+    monkeypatch.setattr(tensorboard_server, "PROJECT_ROOT", tmp_path)
+    checks = iter((False, False, True))
+    monkeypatch.setattr(tensorboard_server, "_is_ready", lambda _port: next(checks))
+    monkeypatch.setattr(tensorboard_server.time, "sleep", lambda _seconds: None)
+    calls = []
+
+    class FakeProcess:
+        def poll(self):
+            return None
+
+    def fake_popen(command, **kwargs):
+        calls.append((command, kwargs))
+        return FakeProcess()
+
+    monkeypatch.setattr(tensorboard_server.subprocess, "Popen", fake_popen)
+    tensorboard_server._start_background(["python", "-m", "tensorboard.main"], port=6017)
+    assert len(calls) == 1
+    assert calls[0][1]["cwd"] == tmp_path
+
+
+def test_ready_check_uses_tensorboard_plugins_route(monkeypatch):
+    requested = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    def fake_urlopen(url, *, timeout):
+        requested.append((url, timeout))
+        return Response()
+
+    monkeypatch.setattr(tensorboard_server.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(tensorboard_server.json, "load", lambda _response: {})
+    assert tensorboard_server._is_ready(6017)
+    assert requested == [("http://127.0.0.1:6017/data/plugins_listing", 0.5)]
+
+
+def test_background_server_reports_early_exit(monkeypatch, tmp_path):
+    monkeypatch.setattr(tensorboard_server, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(tensorboard_server, "_is_ready", lambda _port: False)
+
+    class FakeProcess:
+        def poll(self):
+            return 1
+
+    def fake_popen(_command, **kwargs):
+        kwargs["stdout"].write("port already in use\n")
+        kwargs["stdout"].flush()
+        return FakeProcess()
+
+    monkeypatch.setattr(tensorboard_server.subprocess, "Popen", fake_popen)
+    with pytest.raises(RuntimeError, match="port already in use"):
+        tensorboard_server._start_background(["python"], port=6017)
 
 
 def test_enabled_writer_reports_missing_tensorboard_dependency(monkeypatch, tmp_path):

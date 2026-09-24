@@ -48,9 +48,11 @@ if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 # 3) 构建 Python.NET 可加载的状态机程序集、依赖和运行时配置
 dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj --configuration Debug
 
-# 4) 启动工具菜单：输入 1～7 执行对应工具，0 退出
+# 4) 启动工具菜单：输入 1～8 执行对应工具，0 退出
 .\ffxiv_ccg.ps1
 ```
+
+菜单中的 BC 训练、恢复训练和 GRPO 会共用 TensorBoard Web 监控启动入口；菜单第 8 项或 `-Action monitor` 可单独打开监控。服务就绪后会打开本机浏览器，端口由 `.env` 的 `TENSORBOARD_PORT` 指定。
 
 训练、转换和回放通过 Python.NET 在当前 Python 进程内调用 C# 状态机。PythonBridge 构建会生成 CoreCLR 运行时配置，并将 FightEngine 与 YAML 依赖复制到同一输出目录；观测树由桥接程序集直接映射为 Python 原生字典和列表，不经过 JSON 文本。
 
