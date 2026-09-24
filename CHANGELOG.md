@@ -18,6 +18,7 @@
 
 ### Changed
 
+- 优化自回归 `LiveBatchBuilder` 的历史特征构建：缓存已转换的历史行，增量转换新行并复用滑动窗口重叠；历史内容变化时重新计算。64 次真实决策前缀的 CPU batch 构建中位耗时由 2.043 秒降至 1.355 秒（减少 33.7%，不含模型与状态机耗时），新旧 batch 输出一致。
 - 移除 GRPO 连续恢复训练支持：恢复训练菜单仅接受 BC checkpoint；GRPO checkpoint 只作为新的模型权重起点，不恢复旧运行的 optimizer、scheduler、RNG 或 iteration。
 - GRPO 热启动输出目录改为按模型 YAML 的 `training.output_dir` 派生 `<run>_grpo_hotstart[_NNN]`：来源是 GRPO checkpoint 时不再以 checkpoint 所在目录命名，checkpoint 位于项目外也不会把新 run 写到项目外；重复热启动只在同一基础目录上从 `_001` 起追加编号，不再叠加 `_hotstart_hotstart`。
 - 修复 `ffxiv_ccg.ps1 -Action grpo/export/analysis/replay` 仍进入 checkpoint 交互菜单的问题：非菜单调用现在支持 `-Checkpoint <路径>`，省略时使用配置解析出的默认 checkpoint；`resume` 在非交互模式下也不会读取 `Read-Host`，数据上限不一致时需显式使用 `-ForceResumeDataMismatch`。

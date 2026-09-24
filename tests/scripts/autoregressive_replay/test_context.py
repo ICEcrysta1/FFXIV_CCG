@@ -7,14 +7,14 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from common.numeric import flatten_numeric_mapping
 from common.contracts import SLIDECAST_WINDOW_SECONDS
+from common.numeric import flatten_numeric_mapping
 from common.policy.data import Normalizer
 from common.policy.data.schema import (
     SCENE_TYPE_MOVEMENT,
     SCENE_TYPE_RAID_BUFF,
-    SCENE_TYPE_TARGETABLE,
     SCENE_TYPE_TARGET_COUNT,
+    SCENE_TYPE_TARGETABLE,
 )
 from scripts.autoregressive_replay import context as replay_context_module
 from scripts.autoregressive_replay.context import (
@@ -511,6 +511,145 @@ def test_live_batch_builder_builds_padded_history_and_state_vectors():
     )
     with pytest.raises(RuntimeError, match="no candidate actions"):
         empty_builder.build(state)
+
+
+def test_live_batch_builder_reuses_history_rows_and_refreshes_changed_rows():
+    class FakeNormalizer:
+        @staticmethod
+        def normalize_skill_features(values, _names):
+            normalized = values + 1.0
+            normalized[..., 0] = values[..., 0]
+            return normalized
+
+        @staticmethod
+        def normalize(values, _group, *, null_mask):
+            del null_mask
+            return values + 2.0
+
+    class CountingBuilder(LiveBatchBuilder):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.built_history_keys = []
+
+        def _build_cached_history_row(self, skill_token, state_token, identity):
+            self.built_history_keys.append(str(skill_token.get("skill_key", "")))
+            return super()._build_cached_history_row(skill_token, state_token, identity)
+
+    def make_builder():
+        schema = SimpleNamespace(
+            state_group_feature_keys={
+                "player_state": ("mp",),
+                "resource_state": ("af",),
+            },
+            state_vector_dim=lambda: 2,
+            scene_feature_dim=lambda: 1,
+        )
+        return CountingBuilder(
+            backend=SimpleNamespace(),
+            vocab=SimpleNamespace(
+                require_lookup=lambda value, **_kwargs: int(value) + 100
+            ),
+            normalizer=FakeNormalizer(),
+            schema=schema,
+            skill_feature_names=("kind", "potency"),
+            scene_provider=SimpleNamespace(
+                at_time=lambda _time: (
+                    torch.zeros((0, 1), dtype=torch.float32),
+                    torch.zeros((0,), dtype=torch.int32),
+                )
+            ),
+            device=torch.device("cpu"),
+            max_history=2,
+            candidate_action_keys=("candidate",),
+        )
+
+    def make_context(history, *, candidate_legal=True, candidate_remaining=0.0):
+        skill_history = [
+            {
+                "skill_id": skill_id,
+                "skill_key": key,
+                "kind": 1,
+                "potency": potency,
+                "time_seconds": float(skill_id),
+                "gcd_index": skill_id,
+            }
+            for skill_id, key, potency in history
+        ]
+        state_history = [
+            {
+                "player_state": [float(skill_id)],
+                "resource_state": [bool(skill_id % 2)],
+            }
+            for skill_id, _key, _potency in history
+        ]
+        return {
+            "candidate_skill_context": [
+                {
+                    "skill_id": 99,
+                    "skill_key": "candidate",
+                    "kind": 1,
+                    "potency": 50,
+                    "is_legal": candidate_legal,
+                }
+            ],
+            "candidate_state_context": {
+                "player_state_feature_keys": ["before.gcd_remaining_seconds"],
+                "tokens": [
+                    {
+                        "player_state": [candidate_remaining],
+                        "resource_state": [True],
+                    }
+                ],
+            },
+            "skill_history_context": skill_history,
+            "state_history_context": {"tokens": state_history},
+        }
+
+    def assert_batches_equal(actual, expected):
+        actual_batch, actual_keys = actual
+        expected_batch, expected_keys = expected
+        assert actual_keys == expected_keys
+        assert actual_batch.keys() == expected_batch.keys()
+        for name, actual_value in actual_batch.items():
+            expected_value = expected_batch[name]
+            if isinstance(actual_value, torch.Tensor):
+                assert torch.equal(actual_value, expected_value), name
+            else:
+                assert actual_value == expected_value, name
+
+    builder = make_builder()
+    first = make_context([(1, "first", 10), (2, "second", 20)])
+    builder.build_from_canonical(first, max_history=2)
+    assert builder.built_history_keys == ["first", "second"]
+
+    # 历史窗口滚动时复用仍在窗口内的行，只转换新追加的一行。
+    appended = make_context([(1, "first", 10), (2, "second", 20), (3, "third", 30)])
+    cached_appended = builder.build_from_canonical(appended, max_history=2)
+    assert builder.built_history_keys == ["first", "second", "third"]
+    fresh_appended = make_builder().build_from_canonical(appended, max_history=2)
+    assert_batches_equal(cached_appended, fresh_appended)
+
+    # 同一事件标识的历史内容若变化，必须重算该行，不能命中旧特征。
+    changed = make_context([(2, "second", 20), (3, "third", 300)])
+    changed["state_history_context"]["tokens"][1]["player_state"] = [300.0]
+    cached_changed = builder.build_from_canonical(changed, max_history=2)
+    assert builder.built_history_keys == ["first", "second", "third", "third"]
+    assert cached_changed[0]["history_skill_features"][0, -1, 1].item() == 301.0
+    fresh_changed = make_builder().build_from_canonical(changed, max_history=2)
+    assert_batches_equal(cached_changed, fresh_changed)
+
+    # 候选状态每步重建；候选变化不能被历史缓存遮蔽。
+    dynamic = make_context(
+        [(2, "second", 20), (3, "third", 300)],
+        candidate_legal=False,
+        candidate_remaining=0.75,
+    )
+    dynamic["state_history_context"]["tokens"][1]["player_state"] = [300.0]
+    cached_dynamic = builder.build_from_canonical(dynamic, max_history=2)
+    assert builder.built_history_keys == ["first", "second", "third", "third"]
+    assert cached_dynamic[0]["candidate_legal_mask"].tolist() == [[False]]
+    fresh_dynamic = make_builder().build_from_canonical(dynamic, max_history=2)
+    assert_batches_equal(cached_dynamic, fresh_dynamic)
 
 
 @pytest.mark.parametrize("remaining,expected", [

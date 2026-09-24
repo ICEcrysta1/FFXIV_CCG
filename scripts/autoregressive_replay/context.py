@@ -2,21 +2,22 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 
 import torch
 
-from .scheduler import gcd_request_delay, is_gcd_decision
-from common.numeric import flatten_numeric_mapping
 from common.contracts import SLIDECAST_WINDOW_SECONDS
+from common.numeric import flatten_numeric_mapping
 from common.policy.data.candidate_order import candidate_permutation
 from common.policy.data.schema import (
     SCENE_TYPE_MOVEMENT,
     SCENE_TYPE_RAID_BUFF,
-    SCENE_TYPE_TARGETABLE,
     SCENE_TYPE_TARGET_COUNT,
+    SCENE_TYPE_TARGETABLE,
 )
 
+from .scheduler import gcd_request_delay, is_gcd_decision
 
 REPLAY_SKILL_IGNORED_FIELDS = frozenset(
     {"skill_key", "skill_name", "invalid_reason", "skill_id"}
@@ -425,6 +426,20 @@ class SceneTemplateProvider:
                 )
 
 
+@dataclass(frozen=True)
+class _CachedHistoryFeatureRow:
+    """单条不可变历史事件对应的模型特征。"""
+
+    identity: tuple[object, ...]
+    skill_token: dict[str, object]
+    state_token: dict[str, object]
+    skill_id: int
+    skill_features: torch.Tensor
+    state_vector: torch.Tensor
+    state_null_mask: torch.Tensor
+    action_key: str
+
+
 class LiveBatchBuilder:
     """使用 compiled cache 的 schema 和 scene 模板构造 live 推理输入。
 
@@ -461,6 +476,8 @@ class LiveBatchBuilder:
         self._state_groups = tuple(schema.state_group_feature_keys)
         self._state_dim = schema.state_vector_dim()
         self._scene_dim = schema.scene_feature_dim()
+        self._cached_history_rows: list[_CachedHistoryFeatureRow] = []
+        self._cached_history_max_history: int | None = None
 
     def build(
         self,
@@ -533,6 +550,17 @@ class LiveBatchBuilder:
         skill_history = _tail_history(canonical["skill_history_context"], max_history)
         state_history = canonical["state_history_context"]
         state_history_tokens = _tail_history(state_history["tokens"], max_history)
+        (
+            history_skill_ids,
+            history_skill_features,
+            history_state_vectors,
+            history_state_null_mask,
+            history_action_keys,
+        ) = self._build_history_batch(
+            skill_history,
+            state_history_tokens,
+            max_history=max_history,
+        )
         # scene provider 的 at_time 忽略时间参数：scene 模板固定整场
         scene_vectors, scene_types = self._scene_provider.at_time(0.0)
         candidate_skill_ids = torch.tensor(
@@ -552,15 +580,7 @@ class LiveBatchBuilder:
             dtype=torch.bool,
         )
 
-        history_skill_ids = torch.tensor(
-            [self._map_skill_id(token.get("skill_id")) for token in skill_history],
-            dtype=torch.int32,
-        )
-        history_skill_features = self._build_skill_features(skill_history)
-        history_state_vectors, history_state_null_mask = self._build_state_tensors(
-            state_history_tokens
-        )
-        history_length = len(skill_history)
+        history_length = len(history_action_keys)
         batch = {
             "scene_vectors": scene_vectors.unsqueeze(0),
             "scene_types": scene_types.unsqueeze(0),
@@ -578,9 +598,7 @@ class LiveBatchBuilder:
             "candidate_state_vectors": candidate_state_vectors.unsqueeze(0),
             "candidate_state_null_mask": candidate_state_null_mask.unsqueeze(0),
             "candidate_legal_mask": candidate_legal_mask.unsqueeze(0),
-            "history_action_keys": [
-                [str(token.get("skill_key", "")) for token in skill_history]
-            ],
+            "history_action_keys": [history_action_keys],
             "candidate_action_keys": [
                 [str(token.get("skill_key", "")) for token in candidate_context]
             ],
@@ -591,6 +609,124 @@ class LiveBatchBuilder:
                 for key, value in batch.items()
             },
             [str(token.get("skill_key", "")) for token in candidate_context],
+        )
+
+    def _build_history_batch(
+        self,
+        skill_tokens,
+        state_tokens,
+        *,
+        max_history: int,
+    ):
+        """只转换新增历史行；缓存不匹配时安全地重建当前窗口。"""
+        if len(skill_tokens) != len(state_tokens):
+            raise ValueError(
+                "live skill and state history rows must have the same length: "
+                f"skills={len(skill_tokens)} states={len(state_tokens)}"
+            )
+
+        if self._cached_history_max_history != max_history:
+            self._cached_history_rows.clear()
+            self._cached_history_max_history = max_history
+
+        identities = [self._history_row_identity(token) for token in skill_tokens]
+        cached_rows, overlap = self._find_history_overlap(
+            skill_tokens,
+            state_tokens,
+            identities,
+        )
+        rows = list(cached_rows)
+        for index in range(overlap, len(skill_tokens)):
+            rows.append(
+                self._build_cached_history_row(
+                    skill_tokens[index],
+                    state_tokens[index],
+                    identities[index],
+                )
+            )
+
+        # 输入已经按 max_history 裁剪；这里再限制一次，避免缓存持有旧窗口。
+        self._cached_history_rows = rows[-max_history:] if max_history > 0 else []
+        rows = self._cached_history_rows
+        if not rows:
+            return (
+                torch.empty((0,), dtype=torch.int32),
+                torch.empty((0, len(self._skill_feature_names)), dtype=torch.float32),
+                torch.empty((0, self._state_dim), dtype=torch.float32),
+                torch.empty((0, self._state_dim), dtype=torch.bool),
+                [],
+            )
+
+        return (
+            torch.tensor([row.skill_id for row in rows], dtype=torch.int32),
+            torch.stack([row.skill_features for row in rows]),
+            torch.stack([row.state_vector for row in rows]),
+            torch.stack([row.state_null_mask for row in rows]),
+            [row.action_key for row in rows],
+        )
+
+    @staticmethod
+    def _history_row_identity(skill_token) -> tuple[object, ...]:
+        """用稳定的事件字段定位历史行；完整 token 仍会用于缓存命中校验。"""
+        return (
+            skill_token.get("time_seconds"),
+            skill_token.get("gcd_index"),
+            skill_token.get("skill_key"),
+            skill_token.get("skill_id"),
+        )
+
+    def _find_history_overlap(
+        self,
+        skill_tokens,
+        state_tokens,
+        identities: list[tuple[object, ...]],
+    ) -> tuple[list[_CachedHistoryFeatureRow], int]:
+        """识别追加或滑动窗口的重合区，并拒绝复用已变化的历史行。"""
+        prefix_length = 0
+        for index, row in enumerate(self._cached_history_rows):
+            if index >= len(skill_tokens):
+                break
+            if (
+                row.identity != identities[index]
+                or row.skill_token != skill_tokens[index]
+                or row.state_token != state_tokens[index]
+            ):
+                break
+            prefix_length += 1
+        if prefix_length:
+            return self._cached_history_rows[:prefix_length], prefix_length
+
+        max_overlap = min(len(self._cached_history_rows), len(skill_tokens))
+        for overlap in range(max_overlap, 0, -1):
+            cached_rows = self._cached_history_rows[-overlap:]
+            if any(
+                row.identity != identities[index]
+                or row.skill_token != skill_tokens[index]
+                or row.state_token != state_tokens[index]
+                for index, row in enumerate(cached_rows)
+            ):
+                continue
+            return cached_rows, overlap
+        return [], 0
+
+    def _build_cached_history_row(
+        self,
+        skill_token,
+        state_token,
+        identity: tuple[object, ...],
+    ) -> _CachedHistoryFeatureRow:
+        """把一条历史 token 转成可跨决策复用的 CPU 特征行。"""
+        skill_features = self._build_skill_features([skill_token])[0]
+        state_vectors, state_null_mask = self._build_state_tensors([state_token])
+        return _CachedHistoryFeatureRow(
+            identity=identity,
+            skill_token=deepcopy(skill_token),
+            state_token=deepcopy(state_token),
+            skill_id=self._map_skill_id(skill_token.get("skill_id")),
+            skill_features=skill_features.detach().cpu(),
+            state_vector=state_vectors[0].detach().cpu(),
+            state_null_mask=state_null_mask[0].detach().cpu(),
+            action_key=str(skill_token.get("skill_key", "")),
         )
 
     def _map_skill_id(self, raw_skill_id) -> int:
