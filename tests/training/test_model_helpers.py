@@ -341,7 +341,9 @@ def test_policy_config_resolver_rejects_variant_path(monkeypatch, invalid_varian
         policy_config_module.resolve_policy_model_config_path()
 
 
-def test_load_run_config_parses_ppg_settings(tmp_path):
+def test_load_run_config_parses_ppg_settings(tmp_path, monkeypatch):
+    monkeypatch.delenv(config_module.VAL_PPG_USE_KV_CACHE_ENV, raising=False)
+    monkeypatch.setattr(config_module, "load_root_dotenv", lambda _root: None)
     config = config_module.load_run_config(
         _write_config(
             tmp_path,
@@ -352,6 +354,37 @@ def test_load_run_config_parses_ppg_settings(tmp_path):
     assert config.ppg.enabled is False
     assert config.ppg.gcd_count == 64
     assert config.ppg.normalization == pytest.approx(800.0)
+    assert config.ppg.use_kv_cache is False
+
+
+def test_load_run_config_reads_val_ppg_kv_cache_from_dotenv(tmp_path, monkeypatch):
+    monkeypatch.setattr(config_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.delenv(config_module.VAL_PPG_USE_KV_CACHE_ENV, raising=False)
+    (tmp_path / ".env").write_text(
+        f"{config_module.VAL_PPG_USE_KV_CACHE_ENV}=true\n", encoding="utf-8", newline="\n"
+    )
+    path = _write_config(tmp_path, {})
+
+    assert config_module.load_run_config(path).ppg.use_kv_cache is True
+
+    monkeypatch.setenv(config_module.VAL_PPG_USE_KV_CACHE_ENV, "false")
+    assert config_module.load_run_config(path).ppg.use_kv_cache is False
+    monkeypatch.delenv(config_module.VAL_PPG_USE_KV_CACHE_ENV)
+
+
+@pytest.mark.parametrize("value", ["TRUE", "yes", "1", "false", "No", "0"])
+def test_load_run_config_parses_val_ppg_kv_cache_env(tmp_path, monkeypatch, value):
+    monkeypatch.setattr(config_module, "load_root_dotenv", lambda _root: None)
+    monkeypatch.setenv(config_module.VAL_PPG_USE_KV_CACHE_ENV, value)
+    config = config_module.load_run_config(_write_config(tmp_path, {}))
+    assert config.ppg.use_kv_cache is (value.lower() in {"true", "yes", "1"})
+
+
+def test_load_run_config_rejects_invalid_val_ppg_kv_cache_env(tmp_path, monkeypatch):
+    monkeypatch.setattr(config_module, "load_root_dotenv", lambda _root: None)
+    monkeypatch.setenv(config_module.VAL_PPG_USE_KV_CACHE_ENV, "maybe")
+    with pytest.raises(ValueError, match=config_module.VAL_PPG_USE_KV_CACHE_ENV):
+        config_module.load_run_config(_write_config(tmp_path, {}))
 
 
 def test_attention_rejects_negative_token_lengths():

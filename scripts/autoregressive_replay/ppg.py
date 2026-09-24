@@ -129,7 +129,8 @@ def evaluate_validation_ppg(
     reset_kv_cache = getattr(model, "reset_kv_cache", None)
     cache_was_enabled = bool(getattr(model, "_kv_cache_enabled", False))
     if callable(enable_kv_cache):
-        enable_kv_cache(True)
+        # 当前基准中 KV 路径更慢，只有显式配置才启用。
+        enable_kv_cache(ppg_config.use_kv_cache)
     try:
         with InProcessBackend(
             job_tag=data_spec.job_tag,

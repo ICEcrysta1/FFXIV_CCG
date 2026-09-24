@@ -349,7 +349,11 @@ def test_validation_ppg_recovers_initial_base_gcd_from_cached_candidate_token():
     ) == pytest.approx(2.4)
 
 
-def test_validation_ppg_reads_history_capacity_from_model_config(monkeypatch):
+@pytest.mark.parametrize("cache_was_enabled", [False, True])
+@pytest.mark.parametrize("use_kv_cache", [False, True])
+def test_validation_ppg_reads_history_capacity_from_model_config(
+    monkeypatch, cache_was_enabled, use_kv_cache
+):
     captured = {}
 
     class FakeNormalizer:
@@ -421,21 +425,23 @@ def test_validation_ppg_reads_history_capacity_from_model_config(monkeypatch):
     monkeypatch.setattr(ppg_module, "SceneTemplateProvider", FakeSceneProvider)
     monkeypatch.setattr(ppg_module, "LiveBatchBuilder", FakeBatcher)
     monkeypatch.setattr(ppg_module, "_infer_initial_base_gcd", lambda *args, **kwargs: 2.5)
-    monkeypatch.setattr(
-        ppg_module,
-        "_run_rollout_until_time",
-        lambda *args, **kwargs: PpgResult(
+    def fake_rollout(model, *args, **kwargs):
+        assert model._kv_cache_enabled is use_kv_cache
+        return PpgResult(
             output_gcds=1,
             cumulative_potency=100.0,
             cumulative_dot_potency=0.0,
             ppg=100.0,
             normalized_ppg=0.1,
-        ),
-    )
+        )
+
+    monkeypatch.setattr(ppg_module, "_run_rollout_until_time", fake_rollout)
 
     config = SimpleNamespace(
         model=SimpleNamespace(history_capacity=37),
-        ppg=SimpleNamespace(enabled=True, normalization=1000.0),
+        ppg=SimpleNamespace(
+            enabled=True, normalization=1000.0, use_kv_cache=use_kv_cache
+        ),
         precision="float32",
     )
     dataset = SimpleNamespace(
@@ -464,6 +470,7 @@ def test_validation_ppg_reads_history_capacity_from_model_config(monkeypatch):
             cache_events.append(("reset", self._kv_cache_enabled))
 
     model = FakeModel()
+    model._kv_cache_enabled = cache_was_enabled
 
     result = ppg_module.evaluate_validation_ppg(
         model=model,
@@ -480,9 +487,10 @@ def test_validation_ppg_reads_history_capacity_from_model_config(monkeypatch):
     }
     assert result["val_ppg"] == pytest.approx(100.0)
     assert result["val_ppg_normalized"] == pytest.approx(0.1)
+    assert model._kv_cache_enabled is cache_was_enabled
     assert cache_events == [
-        ("enable", True),
-        ("reset", True),
-        ("reset", True),
-        ("enable", False),
+        ("enable", use_kv_cache),
+        ("reset", use_kv_cache),
+        ("reset", use_kv_cache),
+        ("enable", cache_was_enabled),
     ]
