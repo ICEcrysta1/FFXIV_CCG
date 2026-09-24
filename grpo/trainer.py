@@ -672,7 +672,7 @@ def run_grpo_training(
         raise RuntimeError("CUDA is required by GRPO, but torch.cuda.is_available() is false")
     device = torch.device(device_name)
     resolved_precision = str(precision or config.precision).strip().lower()
-    # backend 与 replay session 只创建一次：模型、SidecarHost 和 compiled cache
+    # backend 与 replay session 只创建一次：模型、进程内状态机和 compiled cache
     # 均跨场景/轨迹复用，单条轨迹开始时由 session.reset() 恢复初始状态。
     backend = PyTorchPolicyBackend(
         checkpoint_path,

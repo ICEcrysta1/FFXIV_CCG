@@ -45,15 +45,14 @@
 # 2) 按 setup.ps1 输出和 .env.example 的说明准备环境变量
 if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 
-# 3) 构建 C# 状态机运行文件；Python.NET 随后在同一 Python 进程内加载 FightEngine
-dotnet build Combat.Sim/SidecarHost/SidecarHost.csproj --configuration Debug
+# 3) 构建 Python.NET 可加载的状态机程序集、依赖和运行时配置
+dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj --configuration Debug
 
 # 4) 启动工具菜单：输入 1～7 执行对应工具，0 退出
 .\ffxiv_ccg.ps1
 ```
 
-训练、转换和回放直接调用 C# 状态机，不会启动 SidecarHost 子进程或逐次传输 JSON。
-SidecarHost 项目只用于生成 Python.NET 所需的 CoreCLR 配置与托管依赖文件，同时保留 JSON Lines 兼容入口。
+训练、转换和回放通过 Python.NET 在当前 Python 进程内调用 C# 状态机。PythonBridge 构建会生成 CoreCLR 运行时配置，并将 FightEngine 与 YAML 依赖复制到同一输出目录；观测树由桥接程序集直接映射为 Python 原生字典和列表，不经过 JSON 文本。
 
 本项目只支持 NVIDIA CUDA 环境，训练、导出和自回归不提供 CPU 支持。
 
@@ -71,8 +70,8 @@ Combat.Sim/FightEngine/FightEngine.csproj. Those files also carry the
 additional permission in
 LICENSE-FightEngine-Linking-Exception, Version 1.0. The exception permits
 combining the FightEngine Library with Independent Modules under its stated
-conditions; it does not automatically apply to SidecarHost, tests, tools,
-Python code, or other repository components.
+conditions; it does not automatically apply to tests, tools, Python code, or
+other repository components.
 
 Copyright notices for the relevant material identify ICE_crystal and, for
 the original Machinist implementation, SpikeHS.

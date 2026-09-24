@@ -17,6 +17,7 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = [IO.Path]::GetFullPath($PSScriptRoot)
 $VenvPath = Join-Path $ProjectRoot ".venv"
 $ProjectPython = Join-Path $VenvPath "Scripts\python.exe"
+$PythonRuntimeAssembly = Join-Path $VenvPath "Lib\site-packages\pythonnet\runtime\Python.Runtime.dll"
 $RequirementsPath = Join-Path $ProjectRoot "requirements.txt"
 $GpuRequirementsPath = Join-Path $ProjectRoot "requirements-onnx-gpu.txt"
 $EnvExamplePath = Join-Path $ProjectRoot ".env.example"
@@ -194,6 +195,12 @@ try {
         -FilePath $ProjectPython `
         -Arguments @("-m", "pip", "install", "-r", $RequirementsPath) `
         -Description "安装项目核心依赖与 CUDA 版 PyTorch"
+    if (-not (Test-Path -LiteralPath $PythonRuntimeAssembly -PathType Leaf)) {
+        Invoke-RequiredCommand `
+            -FilePath $ProjectPython `
+            -Arguments @("-m", "pip", "install", "--ignore-installed", "pythonnet>=3.0.5,<4.0") `
+            -Description "确保 Python.NET 安装在项目 .venv 中"
+    }
     if (Test-PipPackageInstalled -FilePath $ProjectPython -PackageName "onnxruntime") {
         Invoke-RequiredCommand `
             -FilePath $ProjectPython `

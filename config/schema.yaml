@@ -9,10 +9,10 @@ schema_version: 1
 contracts:
   slidecast_window_seconds: 0.5
   scene_epsilon: 0.000001
-  # Python SidecarBackend 与 C# SidecarHost 共用的 JSON Lines 运行时契约版本。
+  # Python InProcessBackend 与 C# FightEngine 程序集共用的运行时契约版本。
   # 6：绝对时间动作、policy 决策和外部事实分别提交；动作响应与完整观测分离。
   # 7：新增 validate_at 只读探测；observe_at 响应补 next_scheduled_event_time。
-  #    宿主接受技能提交与场景外部事实（可选中/移动/目标数/团辅）；
+  #    状态机接受技能提交与场景外部事实（可选中/移动/目标数/团辅）；
   #    回放调用方把移动事实提交给状态机，训练样本转换仍可在输出层合成移动字段。
   # 8：移除动画锁状态与输出；秒制观测提供完整 cast_remaining_seconds 供调用方调度。
   sidecar_contract_version: 8
