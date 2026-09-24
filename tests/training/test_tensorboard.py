@@ -1,11 +1,12 @@
 """TensorBoard 训练指标配置与共享写入工具测试。"""
 
+import json
+import os
 from pathlib import Path
 
 import pytest
 
-from common.training import tensorboard
-from common.training import tensorboard_server
+from common.training import tensorboard, tensorboard_server
 from grpo.config import load_grpo_config
 from training.config import load_run_config
 
@@ -152,7 +153,7 @@ def test_server_uses_dotenv_selected_model_tensorboard_root(
     monkeypatch.setattr(
         tensorboard_server,
         "_start_background",
-        lambda command, *, port: started.append((command, port)),
+        lambda command, *, port, log_dir: started.append((command, port, log_dir)),
     )
     monkeypatch.setattr(tensorboard_server.webbrowser, "open", opened.append)
     monkeypatch.setattr(
@@ -161,7 +162,7 @@ def test_server_uses_dotenv_selected_model_tensorboard_root(
         ["tensorboard_server", "--background", "--open-browser", "--if-enabled"],
     )
     assert tensorboard_server.main() == 0
-    assert started == [(command, 6017)]
+    assert started == [(command, 6017, expected_root)]
     assert opened == ["http://127.0.0.1:6017"]
 
     monkeypatch.setattr(
@@ -175,12 +176,23 @@ def test_server_uses_dotenv_selected_model_tensorboard_root(
 
 def test_background_server_waits_for_readiness(monkeypatch, tmp_path):
     monkeypatch.setattr(tensorboard_server, "PROJECT_ROOT", tmp_path)
-    checks = iter((False, False, True))
+    monkeypatch.setattr(
+        tensorboard_server, "_check_existing_service", lambda _port, _log_dir: False
+    )
+    checks = iter((False, True))
     monkeypatch.setattr(tensorboard_server, "_is_ready", lambda _port: next(checks))
     monkeypatch.setattr(tensorboard_server.time, "sleep", lambda _seconds: None)
     calls = []
+    records = []
+    monkeypatch.setattr(
+        tensorboard_server,
+        "_write_record",
+        lambda port, log_dir, pid: records.append((port, log_dir, pid)),
+    )
 
     class FakeProcess:
+        pid = 42
+
         def poll(self):
             return None
 
@@ -189,9 +201,36 @@ def test_background_server_waits_for_readiness(monkeypatch, tmp_path):
         return FakeProcess()
 
     monkeypatch.setattr(tensorboard_server.subprocess, "Popen", fake_popen)
-    tensorboard_server._start_background(["python", "-m", "tensorboard.main"], port=6017)
+    tensorboard_server._start_background(
+        ["python", "-m", "tensorboard.main"], port=6017, log_dir=tmp_path
+    )
     assert len(calls) == 1
     assert calls[0][1]["cwd"] == tmp_path
+    assert records == [(6017, tmp_path, 42)]
+
+
+def test_existing_server_must_match_event_directory(monkeypatch, tmp_path):
+    record = tmp_path / "server.json"
+    record.write_text(
+        json.dumps({"pid": os.getpid(), "log_dir": "C:/old-model"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(tensorboard_server, "_record_path", lambda _port: record)
+    monkeypatch.setattr(tensorboard_server, "_is_ready", lambda _port: True)
+
+    with pytest.raises(RuntimeError, match="当前模型需要"):
+        tensorboard_server._check_existing_service(6017, tmp_path / "new-model")
+
+    tensorboard_server._write_record(6017, tmp_path / "new-model", os.getpid())
+    assert tensorboard_server._check_existing_service(6017, tmp_path / "new-model")
+
+    record.write_text('{"pid": 0, "log_dir": "C:/old-model"}', encoding="utf-8")
+    with pytest.raises(RuntimeError, match="无法确认"):
+        tensorboard_server._check_existing_service(6017, tmp_path / "new-model")
+
+    record.unlink()
+    with pytest.raises(RuntimeError, match="无法确认"):
+        tensorboard_server._check_existing_service(6017, tmp_path / "new-model")
 
 
 def test_ready_check_uses_tensorboard_plugins_route(monkeypatch):
@@ -216,6 +255,9 @@ def test_ready_check_uses_tensorboard_plugins_route(monkeypatch):
 
 def test_background_server_reports_early_exit(monkeypatch, tmp_path):
     monkeypatch.setattr(tensorboard_server, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        tensorboard_server, "_check_existing_service", lambda _port, _log_dir: False
+    )
     monkeypatch.setattr(tensorboard_server, "_is_ready", lambda _port: False)
 
     class FakeProcess:
@@ -229,7 +271,7 @@ def test_background_server_reports_early_exit(monkeypatch, tmp_path):
 
     monkeypatch.setattr(tensorboard_server.subprocess, "Popen", fake_popen)
     with pytest.raises(RuntimeError, match="port already in use"):
-        tensorboard_server._start_background(["python"], port=6017)
+        tensorboard_server._start_background(["python"], port=6017, log_dir=tmp_path)
 
 
 def test_enabled_writer_reports_missing_tensorboard_dependency(monkeypatch, tmp_path):

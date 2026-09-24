@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import subprocess
@@ -39,9 +40,71 @@ def _is_ready(port: int) -> bool:
         return False
 
 
-def _start_background(command: list[str], *, port: int) -> None:
+def _record_path(port: int) -> Path:
+    return Path(tempfile.gettempdir()) / f"ffxiv-ccg-tensorboard-{port}.json"
+
+
+def _pid_is_alive(pid: object) -> bool:
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    if sys.platform == "win32":
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        handle = kernel32.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return False
+        try:
+            exit_code = ctypes.c_ulong()
+            return (
+                bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)))
+                and exit_code.value == 259
+            )
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _check_existing_service(port: int, log_dir: Path) -> bool:
+    if not _is_ready(port):
+        return False
+    record = _record_path(port)
+    try:
+        metadata = json.loads(record.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        metadata = None
+    if not isinstance(metadata, dict) or not _pid_is_alive(metadata.get("pid")):
+        raise RuntimeError(
+            f"端口 {port} 已有 TensorBoard，但无法确认它的事件目录；"
+            "请关闭旧服务或修改 .env 的 TENSORBOARD_PORT。"
+        )
+    existing_dir = metadata.get("log_dir")
+    if existing_dir != str(log_dir.resolve()):
+        raise RuntimeError(
+            f"端口 {port} 的 TensorBoard 正在读取 {existing_dir}，"
+            f"当前模型需要 {log_dir.resolve()}；请关闭旧服务或修改 TENSORBOARD_PORT。"
+        )
+    return True
+
+
+def _write_record(port: int, log_dir: Path, pid: int) -> None:
+    record = _record_path(port)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=record.name, dir=record.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as temporary:
+            json.dump({"pid": pid, "log_dir": str(log_dir.resolve())}, temporary)
+        os.replace(temporary_name, record)
+    finally:
+        Path(temporary_name).unlink(missing_ok=True)
+
+
+def _start_background(command: list[str], *, port: int, log_dir: Path) -> None:
     """启动后台服务并等待就绪，失败时保留日志供排查。"""
-    if _is_ready(port):
+    if _check_existing_service(port, log_dir):
         print(f"TensorBoard 已在 http://127.0.0.1:{port} 运行。", flush=True)
         return
 
@@ -57,7 +120,9 @@ def _start_background(command: list[str], *, port: int) -> None:
                 stdin=subprocess.DEVNULL,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
-                creationflags=(subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0),
+                creationflags=(
+                    subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+                ),
                 start_new_session=(sys.platform != "win32"),
             )
     except Exception:
@@ -67,6 +132,14 @@ def _start_background(command: list[str], *, port: int) -> None:
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         if _is_ready(port):
+            if process.poll() is not None:
+                _check_existing_service(port, log_dir)
+                raise RuntimeError(f"TensorBoard 进程已退出；请查看日志：{log_path}")
+            try:
+                _write_record(port, log_dir, process.pid)
+            except Exception:
+                process.terminate()
+                raise
             print(f"TensorBoard 已就绪：http://127.0.0.1:{port}", flush=True)
             return
         if process.poll() is not None:
@@ -94,9 +167,13 @@ def main() -> int:
         default=None,
         help="覆盖默认事件目录；默认读取所选模型的 <model_variant>_tensorboard",
     )
-    parser.add_argument("--background", action="store_true", help="后台启动并等待网页就绪")
+    parser.add_argument(
+        "--background", action="store_true", help="后台启动并等待网页就绪"
+    )
     parser.add_argument("--open-browser", action="store_true", help="就绪后打开浏览器")
-    parser.add_argument("--if-enabled", action="store_true", help="仅在训练配置启用 TensorBoard 时启动")
+    parser.add_argument(
+        "--if-enabled", action="store_true", help="仅在训练配置启用 TensorBoard 时启动"
+    )
     args = parser.parse_args()
 
     load_root_dotenv(PROJECT_ROOT)
@@ -128,7 +205,7 @@ def main() -> int:
     print(f"TensorBoard 网页: http://127.0.0.1:{port}", flush=True)
     print(f"事件目录: {log_dir}", flush=True)
     if args.background:
-        _start_background(command, port=port)
+        _start_background(command, port=port, log_dir=log_dir)
         if args.open_browser:
             webbrowser.open(f"http://127.0.0.1:{port}")
         return 0
