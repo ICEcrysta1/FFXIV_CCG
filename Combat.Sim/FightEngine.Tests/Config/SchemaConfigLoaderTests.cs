@@ -72,8 +72,47 @@ public class SchemaConfigContentTests
     [Fact]
     public void SidecarContractVersion_来自共享Schema()
     {
-        // Sidecar 契约版本升级时需同步更新此断言。
+        // 契约版本来自 schema，构建时同时嵌入 FightEngine 程序集供运行时识别旧 DLL。
         Assert.Equal(8, SchemaConfigLoader.Instance.SidecarContractVersion);
+        Assert.Equal(
+            SchemaConfigLoader.Instance.SidecarContractVersion,
+            SchemaConfigLoader.AssemblySidecarContractVersion);
+    }
+
+    [Fact]
+    public void Load_程序集契约版本与schema不一致时拒绝旧DLL()
+    {
+        var realRoot = TestRepoRoot.Find();
+        var fakeRoot = Path.Combine(Path.GetTempPath(), $"ffxiv_schema_stale_{Guid.NewGuid():N}");
+        var fakeConfigDirectory = Path.Combine(fakeRoot, "config");
+        Directory.CreateDirectory(fakeConfigDirectory);
+        var realSchemaPath = Path.Combine(realRoot, "config", "schema.yaml");
+        var fakeSchemaPath = Path.Combine(fakeConfigDirectory, "schema.yaml");
+        var schemaText = File.ReadAllText(realSchemaPath);
+        var oldVersionLine = $"sidecar_contract_version: {SchemaConfigLoader.AssemblySidecarContractVersion}";
+        var newVersionLine = $"sidecar_contract_version: {SchemaConfigLoader.AssemblySidecarContractVersion + 1}";
+        var staleSchemaText = schemaText.Replace(oldVersionLine, newVersionLine, StringComparison.Ordinal);
+        Assert.NotEqual(schemaText, staleSchemaText);
+        File.WriteAllText(fakeSchemaPath, staleSchemaText);
+
+        try
+        {
+            var exception = Assert.Throws<InvalidOperationException>(
+                () => SchemaConfigLoader.Load(fakeRoot));
+            Assert.Contains(newVersionLine.Split(':')[1].Trim(), exception.Message);
+            Assert.Contains("FightEngine 程序集内嵌版本", exception.Message);
+        }
+        finally
+        {
+            try
+            {
+                SchemaConfigLoader.Load(realRoot);
+            }
+            finally
+            {
+                Directory.Delete(fakeRoot, recursive: true);
+            }
+        }
     }
 
     [Fact]

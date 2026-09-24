@@ -12,6 +12,8 @@ import pytest
 from common.contracts import SIDECAR_CONTRACT_VERSION
 from scripts.common import cs_backend as cs_backend_mod
 from scripts.common.cs_backend import SidecarBackend
+from scripts.common.inprocess_backend import InProcessBackend
+from tests.scripts.conftest import _require_inprocess_backend
 
 
 @pytest.fixture
@@ -54,7 +56,7 @@ def test_sidecar_backend_close_kills_stuck_child(fake_sidecar_env):
     """close 时子进程 5s 内不退出则 kill 兜底，并 wait 回收。"""
     fake_proc = fake_sidecar_env
     fake_proc.stdout.readline.side_effect = [
-        f'{{"seq": 1, "ok": true, "timestamp": 0.0, "sidecar_contract_version": {SIDECAR_CONTRACT_VERSION}}}',  # init 成功
+        f'{{"seq": 1, "ok": true, "timestamp": 0.0, "sidecar_contract_version": {SIDECAR_CONTRACT_VERSION}, "fight_engine_assembly_contract_version": {SIDECAR_CONTRACT_VERSION}}}',  # init 成功
         "",                          # close 命令时进程已崩溃
     ]
     fake_proc.wait.side_effect = [subprocess.TimeoutExpired("SidecarHost", 5), 0]
@@ -90,8 +92,8 @@ def test_sidecar_backend_init_failure_logs_suppressed_close_error(fake_sidecar_e
     assert "unexpected close failure" in caplog.text
 
 
-def test_sidecar_backend_submit_rejects_illegal_cooldown_action(cs_backend):
-    """Sidecar 在动作产生任何状态变更前拒绝尚未转好的 oGCD。"""
+def test_inprocess_backend_submit_rejects_illegal_cooldown_action(cs_backend):
+    """进程内状态机在动作产生任何状态变更前拒绝尚未转好的 oGCD。"""
     first = cs_backend.submit_action(0.0, "lucid_dreaming")
     assert first.accepted
     cs_backend.advance_to(21.0)
@@ -105,7 +107,7 @@ def test_sidecar_backend_submit_rejects_illegal_cooldown_action(cs_backend):
     assert after == before
 
 
-def test_sidecar_backend_accepts_observed_cast_duration_override(cs_backend):
+def test_inprocess_backend_accepts_observed_cast_duration_override(cs_backend):
     """日志缺少 begincast 时，转换层提供的实际读条时长应覆盖默认技能表读条。"""
     result = cs_backend.submit_action(
         0.0,
@@ -123,7 +125,7 @@ def test_sidecar_backend_close_is_idempotent_after_dead_child(fake_sidecar_env):
     """子进程已退出后 close 不抛错（正常转换 finally 路径）。"""
     fake_proc = fake_sidecar_env
     fake_proc.stdout.readline.side_effect = [
-        f'{{"seq": 1, "ok": true, "timestamp": 0.0, "sidecar_contract_version": {SIDECAR_CONTRACT_VERSION}}}',  # init 成功
+        f'{{"seq": 1, "ok": true, "timestamp": 0.0, "sidecar_contract_version": {SIDECAR_CONTRACT_VERSION}, "fight_engine_assembly_contract_version": {SIDECAR_CONTRACT_VERSION}}}',  # init 成功
         "", "",                      # 两次 close 时进程已崩溃
     ]
 
@@ -133,13 +135,13 @@ def test_sidecar_backend_close_is_idempotent_after_dead_child(fake_sidecar_env):
 
 
 def test_sidecar_backend_rejects_stale_runtime_contract(fake_sidecar_env):
-    """旧 DLL 即使能启动，也必须在 init 阶段因输出契约过期而拒绝。"""
+    """旧 SidecarHost 只回报 YAML 契约版本时，不能据此认定 DLL 是新版。"""
     fake_proc = fake_sidecar_env
     fake_proc.stdout.readline.return_value = (
-        f'{{"seq": 1, "ok": true, "sidecar_contract_version": {SIDECAR_CONTRACT_VERSION - 1}}}'
+        f'{{"seq": 1, "ok": true, "sidecar_contract_version": {SIDECAR_CONTRACT_VERSION}}}'
     )
 
-    with pytest.raises(RuntimeError, match="契约不匹配"):
+    with pytest.raises(RuntimeError, match="无法证明实际加载的 FightEngine DLL"):
         SidecarBackend("black_mage")
 
     assert fake_proc.wait.call_count >= 1
@@ -149,8 +151,8 @@ def test_sidecar_backend_reinit_preserves_max_history(fake_sidecar_env):
     """转换提取与训练阶段重复 init 时必须继续发送历史上限。"""
     fake_proc = fake_sidecar_env
     fake_proc.stdout.readline.side_effect = [
-        f'{{"seq": 1, "ok": true, "timestamp": 0.0, "sidecar_contract_version": {SIDECAR_CONTRACT_VERSION}}}',
-        f'{{"seq": 2, "ok": true, "timestamp": 0.0, "sidecar_contract_version": {SIDECAR_CONTRACT_VERSION}}}',
+        f'{{"seq": 1, "ok": true, "timestamp": 0.0, "sidecar_contract_version": {SIDECAR_CONTRACT_VERSION}, "fight_engine_assembly_contract_version": {SIDECAR_CONTRACT_VERSION}}}',
+        f'{{"seq": 2, "ok": true, "timestamp": 0.0, "sidecar_contract_version": {SIDECAR_CONTRACT_VERSION}, "fight_engine_assembly_contract_version": {SIDECAR_CONTRACT_VERSION}}}',
         "",  # close：模拟子进程已退出
     ]
 
@@ -165,3 +167,74 @@ def test_sidecar_backend_reinit_preserves_max_history(fake_sidecar_env):
     assert requests[1]["max_history"] == 768
 
     backend.close()
+
+
+def test_inprocess_backend_never_launches_a_host_process(monkeypatch):
+    """进程内状态机即使首次装载 .NET runtime 也不得启动子进程。"""
+    _require_inprocess_backend()
+
+    def reject_process(*_args, **_kwargs):
+        pytest.fail("InProcessBackend must not launch SidecarHost")
+
+    monkeypatch.setattr(subprocess, "Popen", reject_process)
+    with InProcessBackend("black_mage") as backend:
+        assert backend.validate_at(0.0, "fire_iii").legal
+
+
+def test_inprocess_backend_matches_sidecar_state_and_outputs():
+    """进程内调用与 Sidecar 协议使用同一状态机语义及 Python 输出形状。"""
+    _require_inprocess_backend()
+    with (
+        SidecarBackend("black_mage", actual_base_gcd=2.46, max_history=32) as sidecar,
+        InProcessBackend("black_mage", actual_base_gcd=2.46, max_history=32) as direct,
+    ):
+        direct_observation = direct.observe_at(
+            0.0,
+            format="vector",
+            next_observation_timestamp=0.0,
+        )
+        sidecar_observation = sidecar.observe_at(
+            0.0,
+            format="vector",
+            next_observation_timestamp=0.0,
+        )
+        assert direct_observation == sidecar_observation
+
+        direct_validation = direct.validate_at(0.0, "fire_iii")
+        sidecar_validation = sidecar.validate_at(0.0, "fire_iii")
+        assert direct_validation == sidecar_validation
+
+        direct_submission = direct.submit_action(0.0, "fire_iii", actual_cast_seconds=0.0)
+        sidecar_submission = sidecar.submit_action(0.0, "fire_iii", actual_cast_seconds=0.0)
+        assert direct_submission.accepted == sidecar_submission.accepted
+        assert direct_submission.queued == sidecar_submission.queued
+        assert direct_submission.reason == sidecar_submission.reason
+        assert direct_submission.request_timestamp == sidecar_submission.request_timestamp
+        assert direct_submission.accepted_timestamp == sidecar_submission.accepted_timestamp
+        assert direct_submission.effect_timestamp == sidecar_submission.effect_timestamp
+        assert direct_submission.next_scheduled_event_time == sidecar_submission.next_scheduled_event_time
+
+        assert direct.advance_to(0.0) == sidecar.advance_to(0.0)
+        assert direct.observe_at(0.0, format="seconds") == sidecar.observe_at(
+            0.0,
+            format="seconds",
+        )
+
+        direct_event = direct.apply_external_event(
+            1.0,
+            "target_count_changed",
+            target_count=2,
+        )
+        sidecar_event = sidecar.apply_external_event(
+            1.0,
+            "target_count_changed",
+            target_count=2,
+        )
+        assert direct_event == sidecar_event
+        assert direct.observe_at(1.0, format="seconds") == sidecar.observe_at(
+            1.0,
+            format="seconds",
+        )
+        direct_policy = direct.record_policy_action(1.0, "ogcd_wait", 3.46)
+        sidecar_policy = sidecar.record_policy_action(1.0, "ogcd_wait", 3.46)
+        assert direct_policy == sidecar_policy

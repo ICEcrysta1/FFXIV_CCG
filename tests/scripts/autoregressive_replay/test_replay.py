@@ -29,7 +29,7 @@ _FAKE_GCD_SKILL = SimpleNamespace(key="fire", kind=SimpleNamespace(value="gcd"))
 _FAKE_OGCD_SKILL = SimpleNamespace(key="ogcd_wait", kind=SimpleNamespace(value="ogcd"))
 
 
-class _FakeSidecar:
+class _FakeBackend:
     """最小绝对时间后端桩：驱动回放的 observe/submit/advance 接口。"""
 
     def __init__(self, state, skill):
@@ -99,13 +99,13 @@ class _FakeSidecar:
         return None
 
 
-def test_fake_sidecar_does_not_mutate_initial_state():
+def test_fake_backend_does_not_mutate_initial_state():
     initial_state = SimpleNamespace(time=0.0)
 
-    sidecar = _FakeSidecar(initial_state, _FAKE_GCD_SKILL)
+    backend = _FakeBackend(initial_state, _FAKE_GCD_SKILL)
 
     assert not hasattr(initial_state, "ogcd_wait_boundary_pending")
-    assert sidecar.state.ogcd_wait_boundary_pending is False
+    assert backend.state.ogcd_wait_boundary_pending is False
 
 
 def test_replay_device_rejects_unavailable_cuda(monkeypatch):
@@ -187,7 +187,7 @@ def test_replay_cache_store_reuses_reader_for_unchanged_scene(monkeypatch, tmp_p
     assert load_calls[0][1]["shard_cache"] is store._shard_cache
 
 
-def test_replay_session_reset_reinitializes_backend_and_sidecar():
+def test_replay_session_reset_reinitializes_backend_and_state_machine():
     class FakeBackend:
         input_device = torch.device("cpu")
 
@@ -197,7 +197,7 @@ def test_replay_session_reset_reinitializes_backend_and_sidecar():
         def configure_cache(self, enabled):
             self.cache_calls.append(bool(enabled))
 
-    class FakeSidecar:
+    class FakeStateMachine:
         def __init__(self):
             self.init_calls = []
             self.close_calls = 0
@@ -210,7 +210,7 @@ def test_replay_session_reset_reinitializes_backend_and_sidecar():
 
     session = object.__new__(AutoregressiveReplaySession)
     session.backend = FakeBackend()
-    session.sidecar = FakeSidecar()
+    session.state_machine = FakeStateMachine()
     session.data_spec = SimpleNamespace(job_tag="black_mage")
     session._closed = False
     config = SimpleNamespace(
@@ -224,13 +224,13 @@ def test_replay_session_reset_reinitializes_backend_and_sidecar():
     session.reset(config)
 
     assert session.backend.cache_calls == [False, False]
-    assert session.sidecar.init_calls == [
+    assert session.state_machine.init_calls == [
         {"actual_base_gcd": 2.5, "max_history": 768, "initial_timestamp": 0.0},
         {"actual_base_gcd": 2.5, "max_history": 768, "initial_timestamp": 0.0},
     ]
     session.close()
     session.close()
-    assert session.sidecar.close_calls == 1
+    assert session.state_machine.close_calls == 1
 
 
 def test_replay_reset_for_trajectory_resets_scene_provider_before_session():
@@ -295,7 +295,7 @@ def test_replay_uses_session_normalizer_for_context_builders(monkeypatch):
         normalizer=session_normalizer,
         skill_book=object(),
         mp_tick_interval_seconds=None,
-        sidecar=object(),
+        state_machine=object(),
         load_reader=lambda _config: reader,
     )
     config = SimpleNamespace(
@@ -518,7 +518,7 @@ def test_replay_waits_until_early_gcd_decision():
         ogcd_wait_boundary_pending=False,
     )
 
-    class ScriptedSidecar:
+    class ScriptedBackend:
         def __init__(self, initial_state):
             self.state = initial_state
             self.actions = []
@@ -568,7 +568,7 @@ def test_replay_waits_until_early_gcd_decision():
             self.state.gcd_remaining = max(0.0, self.state.gcd_remaining - delta)
             return SimpleNamespace(timestamp=self.state.time, next_scheduled_event_time=None)
 
-    replay._sidecar = ScriptedSidecar(state)
+    replay._state_machine = ScriptedBackend(state)
     seen_restrictions = []
 
     def predict(_state, *, gcd_step):
@@ -685,7 +685,7 @@ def test_replay_event_timeline_advances_action_completion_and_gcd_window(cs_back
     replay = object.__new__(AutoregressiveReplay)
     replay.config = SimpleNamespace()
     replay.scene_provider = None
-    replay._sidecar = cs_backend
+    replay._state_machine = cs_backend
     replay.skill_book = SimpleNamespace(
         get=lambda key: SimpleNamespace(
             key=key,
@@ -746,7 +746,7 @@ def test_replay_no_legal_candidate_waits_until_next_event_and_continues():
         dots={},
         fight_remaining=600.0,
     )
-    replay._sidecar = _FakeSidecar(initial_state, _FAKE_GCD_SKILL)
+    replay._state_machine = _FakeBackend(initial_state, _FAKE_GCD_SKILL)
     replay.backend = SimpleNamespace(configure_cache=lambda _enabled: None)
 
     def predict(state, *, gcd_step):
@@ -782,7 +782,7 @@ def test_replay_no_legal_candidate_reports_finished_fight():
         statuses={},
         dots={},
     )
-    replay._sidecar = _FakeSidecar(state, _FAKE_GCD_SKILL)
+    replay._state_machine = _FakeBackend(state, _FAKE_GCD_SKILL)
     replay.backend = SimpleNamespace(configure_cache=lambda _enabled: None)
     replay._predict_row = lambda *_args, **_kwargs: (_ for _ in ()).throw(
         NoLegalCandidateError("finished")
@@ -815,7 +815,7 @@ def test_replay_rejects_unreached_max_gcd_target():
         statuses={},
         dots={},
     )
-    replay._sidecar = _FakeSidecar(state, _FAKE_OGCD_SKILL)
+    replay._state_machine = _FakeBackend(state, _FAKE_OGCD_SKILL)
     replay.backend = SimpleNamespace(configure_cache=lambda _enabled: None)
     replay._predict_row = lambda *_args, **_kwargs: ReplayRow(
         0,

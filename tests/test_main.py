@@ -68,7 +68,7 @@ class _FakeBackend:
 
 def test_list_actions_uses_vector_observation(monkeypatch, capsys):
     _FakeBackend.instances.clear()
-    monkeypatch.setattr(main, "SidecarBackend", _FakeBackend)
+    monkeypatch.setattr(main, "InProcessBackend", _FakeBackend)
 
     main.cmd_list_actions("black_mage")
 
@@ -79,7 +79,7 @@ def test_list_actions_uses_vector_observation(monkeypatch, capsys):
 
 def test_smoke_uses_absolute_time_protocol(monkeypatch, capsys):
     _FakeBackend.instances.clear()
-    monkeypatch.setattr(main, "SidecarBackend", _FakeBackend)
+    monkeypatch.setattr(main, "InProcessBackend", _FakeBackend)
 
     main.cmd_smoke("black_mage")
 

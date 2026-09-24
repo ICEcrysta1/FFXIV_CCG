@@ -45,9 +45,15 @@
 # 2) 按 setup.ps1 输出和 .env.example 的说明准备环境变量
 if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 
-# 3) 启动工具菜单：输入 1～7 执行对应工具，0 退出
+# 3) 构建 C# 状态机运行文件；Python.NET 随后在同一 Python 进程内加载 FightEngine
+dotnet build Combat.Sim/SidecarHost/SidecarHost.csproj --configuration Debug
+
+# 4) 启动工具菜单：输入 1～7 执行对应工具，0 退出
 .\ffxiv_ccg.ps1
 ```
+
+训练、转换和回放直接调用 C# 状态机，不会启动 SidecarHost 子进程或逐次传输 JSON。
+SidecarHost 项目只用于生成 Python.NET 所需的 CoreCLR 配置与托管依赖文件，同时保留 JSON Lines 兼容入口。
 
 本项目只支持 NVIDIA CUDA 环境，训练、导出和自回归不提供 CPU 支持。
 

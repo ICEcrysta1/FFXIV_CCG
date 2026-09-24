@@ -1,7 +1,7 @@
 """命令行入口。
 
-这个文件只提供最小的手动检查命令；战斗状态机统一由 C#
-`SidecarHost` 进程承载，Python 入口只负责静态配置、技能索引和命令编排。
+这个文件只提供最小的手动检查命令；战斗状态机由 Python.NET 在当前进程中
+直接调用 C# `FightEngine`，Python 入口只负责配置、技能索引和命令编排。
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import json
 
 from common.config import load_project_config
 from common.skills import SkillBook
-from scripts.common.cs_backend import SidecarBackend
+from scripts.common.inprocess_backend import InProcessBackend
 
 
 def _resolve_job_tag(job_tag: str | None) -> str:
@@ -53,7 +53,7 @@ def cmd_list_skills(job_tag: str | None) -> None:
 def cmd_list_actions(job_tag: str | None) -> None:
     """列出初始状态下的合法动作。"""
     job = _resolve_job_tag(job_tag)
-    with SidecarBackend(job_tag=job) as backend:
+    with InProcessBackend(job_tag=job) as backend:
         observation = backend.observe_at(
             0.0,
             format="vector",
@@ -61,7 +61,7 @@ def cmd_list_actions(job_tag: str | None) -> None:
         )
         context = observation.context
         if not isinstance(context, dict):
-            raise RuntimeError("Sidecar vector observation must return a mapping context")
+            raise RuntimeError("C# vector observation must return a mapping context")
         for token in context["candidate_skill_context"]:
             if bool(token.get("is_legal", False)):
                 print(str(token["skill_key"]))
@@ -80,7 +80,7 @@ def cmd_smoke(job_tag: str | None) -> None:
     ]
 
     timestamp = 0.0
-    with SidecarBackend(job_tag=job) as backend:
+    with InProcessBackend(job_tag=job) as backend:
         for action in sequence:
             result = backend.submit_action(timestamp, action)
             if not result.accepted or result.accepted_timestamp is None:
@@ -92,7 +92,7 @@ def cmd_smoke(job_tag: str | None) -> None:
             backend.advance_to(timestamp)
             state = backend.observe_at(timestamp, format="seconds").context
             if not isinstance(state, dict):
-                raise RuntimeError("Sidecar seconds observation must return a mapping context")
+                raise RuntimeError("C# seconds observation must return a mapping context")
 
             wait_seconds = max(
                 float(state.get("cast_remaining_seconds", 0.0) or 0.0),
@@ -104,7 +104,7 @@ def cmd_smoke(job_tag: str | None) -> None:
 
         state = backend.observe_at(timestamp, format="seconds").context
         if not isinstance(state, dict):
-            raise RuntimeError("Sidecar seconds observation must return a mapping context")
+            raise RuntimeError("C# seconds observation must return a mapping context")
     print(
         json.dumps(
             {

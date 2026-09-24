@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # === 核心依赖 (状态机运行必需) ===
 pyyaml>=6.0
+pythonnet>=3.0.5,<4.0
 
 # === 训练 / tensor 输出 (可选, 缺失时有 try/except 降级) ===
 # 训练模型使用 CUDA；固定 CUDA 13.2 构建，可在 CUDA 13.x 驱动上运行，
