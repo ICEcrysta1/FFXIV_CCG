@@ -13,6 +13,7 @@ from common.contracts import SIDECAR_CONTRACT_VERSION
 from scripts.common import cs_backend as cs_backend_mod
 from scripts.common.cs_backend import SidecarBackend
 from scripts.common.inprocess_backend import InProcessBackend
+from tests.scripts.conftest import _require_inprocess_backend
 
 
 @pytest.fixture
@@ -170,6 +171,7 @@ def test_sidecar_backend_reinit_preserves_max_history(fake_sidecar_env):
 
 def test_inprocess_backend_never_launches_a_host_process(monkeypatch):
     """进程内状态机即使首次装载 .NET runtime 也不得启动子进程。"""
+    _require_inprocess_backend()
 
     def reject_process(*_args, **_kwargs):
         pytest.fail("InProcessBackend must not launch SidecarHost")
@@ -181,6 +183,7 @@ def test_inprocess_backend_never_launches_a_host_process(monkeypatch):
 
 def test_inprocess_backend_matches_sidecar_state_and_outputs():
     """进程内调用与 Sidecar 协议使用同一状态机语义及 Python 输出形状。"""
+    _require_inprocess_backend()
     with (
         SidecarBackend("black_mage", actual_base_gcd=2.46, max_history=32) as sidecar,
         InProcessBackend("black_mage", actual_base_gcd=2.46, max_history=32) as direct,
