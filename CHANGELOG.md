@@ -18,6 +18,7 @@
 
 ### Changed
 
+- 优化自回归 `LiveBatchBuilder` 的技能与状态张量构造：批量创建技能特征、状态向量和空值掩码，再按原分组归一化；代表性 CPU 微基准（25 个候选、20 项技能特征、147 维状态）中，技能特征构造耗时由 1.673 ms 降至 0.298 ms，状态张量由 1.803 ms 降至 1.382 ms，新旧张量数值与空值掩码一致。
 - 优化自回归 `LiveBatchBuilder` 的历史特征构建：缓存已转换的历史行，增量转换新行并复用滑动窗口重叠；历史内容变化时重新计算。64 次真实决策前缀的 CPU batch 构建中位耗时由 2.043 秒降至 1.355 秒（减少 33.7%，不含模型与状态机耗时），新旧 batch 输出一致。
 - 移除 GRPO 连续恢复训练支持：恢复训练菜单仅接受 BC checkpoint；GRPO checkpoint 只作为新的模型权重起点，不恢复旧运行的 optimizer、scheduler、RNG 或 iteration。
 - GRPO 热启动输出目录改为按模型 YAML 的 `training.output_dir` 派生 `<run>_grpo_hotstart[_NNN]`：来源是 GRPO checkpoint 时不再以 checkpoint 所在目录命名，checkpoint 位于项目外也不会把新 run 写到项目外；重复热启动只在同一基础目录上从 `_001` 起追加编号，不再叠加 `_hotstart_hotstart`。

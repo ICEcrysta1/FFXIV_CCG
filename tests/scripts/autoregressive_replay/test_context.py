@@ -470,7 +470,23 @@ def test_live_batch_builder_builds_padded_history_and_state_vectors():
     assert batch["candidate_skill_ids"].tolist() == [[111, 110]]
     assert batch["candidate_skill_features"].tolist() == [[[0.0, 1.0, 1.0], [1.0, 101.0, 3.5]]]
     assert batch["candidate_legal_mask"].tolist() == [[False, True]]
+    assert batch["history_state_vectors"].tolist() == [[[2.0, 2.0]]]
+    assert batch["history_state_null_mask"].tolist() == [[[False, True]]]
+    torch.testing.assert_close(
+        batch["candidate_state_vectors"],
+        torch.tensor([[[2.2, 3.0], [2.0, 2.0]]]),
+    )
+    assert batch["candidate_state_null_mask"].tolist() == [[[False, False], [False, True]]]
     assert batch["scene_vectors"].shape == (1, 1, 2)
+
+    empty_state_values, empty_state_null_mask = builder._build_state_tensors([])
+    assert empty_state_values.shape == (0, 2)
+    assert empty_state_null_mask.shape == (0, 2)
+    assert builder._build_skill_features([]).shape == (0, 3)
+    with pytest.raises(ValueError, match="player_state vector width mismatch"):
+        builder._build_state_tensors(
+            [{"player_state": [0.0, 1.0], "resource_state": [None]}]
+        )
 
     with pytest.raises(ValueError, match="max_history"):
         replay_context_module._tail_history([], -1)

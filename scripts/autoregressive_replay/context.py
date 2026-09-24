@@ -735,56 +735,67 @@ class LiveBatchBuilder:
         return self._vocab.require_lookup(int(raw_skill_id), context="live replay")
 
     def _build_skill_features(self, tokens) -> torch.Tensor:
-        values = torch.zeros(
-            (len(tokens), len(self._skill_feature_names)),
-            dtype=torch.float32,
-        )
-        for row_index, token in enumerate(tokens):
+        feature_rows = []
+        for token in tokens:
             flattened = flatten_numeric_mapping(
                 token,
                 ignored_keys=REPLAY_SKILL_IGNORED_FIELDS,
             )
-            for feature_index, feature_name in enumerate(self._skill_feature_names):
-                values[row_index, feature_index] = float(flattened.get(feature_name, 0.0))
+            feature_rows.append(
+                [
+                    float(flattened.get(feature_name, 0.0))
+                    for feature_name in self._skill_feature_names
+                ]
+            )
+        if feature_rows:
+            values = torch.tensor(feature_rows, dtype=torch.float32)
+        else:
+            values = torch.zeros(
+                (0, len(self._skill_feature_names)),
+                dtype=torch.float32,
+            )
         return self._normalizer.normalize_skill_features(values, self._skill_feature_names)
 
     def _build_state_tensors(self, tokens):
-        values = []
-        null_masks = []
-        for group_key in self._state_groups:
-            group_values = []
-            group_null_masks = []
-            for token in tokens:
-                group_value, group_null_mask = _extract_nullable_vector(
-                    token.get(group_key),
-                )
-                if group_value.shape[0] != len(self._schema.state_group_feature_keys[group_key]):
-                    raise ValueError(
-                        f"live {group_key} vector width mismatch: "
-                        f"{group_value.shape[0]} != {len(self._schema.state_group_feature_keys[group_key])}"
-                    )
-                group_values.append(group_value)
-                group_null_masks.append(group_null_mask)
-            if group_values:
-                group_tensor = torch.stack(group_values)
-                group_null_tensor = torch.stack(group_null_masks)
-            else:
-                width = len(self._schema.state_group_feature_keys[group_key])
-                group_tensor = torch.zeros((0, width), dtype=torch.float32)
-                group_null_tensor = torch.zeros((0, width), dtype=torch.bool)
-            group_tensor = self._normalizer.normalize(
-                group_tensor,
-                group_key,
-                null_mask=group_null_tensor,
-            )
-            values.append(group_tensor)
-            null_masks.append(group_null_tensor)
-        if not values:
+        if not self._state_groups:
             return (
                 torch.zeros((0, self._state_dim), dtype=torch.float32),
                 torch.zeros((0, self._state_dim), dtype=torch.bool),
             )
-        return torch.cat(values, dim=-1), torch.cat(null_masks, dim=-1)
+
+        value_rows = [[] for _ in tokens]
+        null_mask_rows = [[] for _ in tokens]
+        group_slices = []
+        offset = 0
+        for group_key in self._state_groups:
+            width = len(self._schema.state_group_feature_keys[group_key])
+            group_slices.append((group_key, offset, offset + width))
+            offset += width
+            for row_index, token in enumerate(tokens):
+                group_values, group_null_masks = _extract_nullable_values(
+                    token.get(group_key)
+                )
+                if len(group_values) != width:
+                    raise ValueError(
+                        f"live {group_key} vector width mismatch: "
+                        f"{len(group_values)} != {width}"
+                    )
+                value_rows[row_index].extend(group_values)
+                null_mask_rows[row_index].extend(group_null_masks)
+        if value_rows:
+            values = torch.tensor(value_rows, dtype=torch.float32)
+            null_masks = torch.tensor(null_mask_rows, dtype=torch.bool)
+        else:
+            values = torch.empty((0, offset), dtype=torch.float32)
+            null_masks = torch.empty((0, offset), dtype=torch.bool)
+
+        for group_key, start, end in group_slices:
+            values[:, start:end] = self._normalizer.normalize(
+                values[:, start:end],
+                group_key,
+                null_mask=null_masks[:, start:end],
+            )
+        return values, null_masks
 
 
 def _tail_history(values, max_history: int):
@@ -796,7 +807,7 @@ def _tail_history(values, max_history: int):
     return values[-max_history:]
 
 
-def _extract_nullable_vector(node):
+def _extract_nullable_values(node):
     if not isinstance(node, (list, tuple)):
         raise ValueError("live state vector group must be a list")
     values = []
@@ -813,4 +824,9 @@ def _extract_nullable_vector(node):
             null_mask.append(False)
         else:
             raise ValueError(f"unsupported live state vector value: {item!r}")
+    return values, null_mask
+
+
+def _extract_nullable_vector(node):
+    values, null_mask = _extract_nullable_values(node)
     return torch.tensor(values, dtype=torch.float32), torch.tensor(null_mask, dtype=torch.bool)
