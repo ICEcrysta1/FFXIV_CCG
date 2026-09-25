@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 
 import torch
@@ -14,11 +15,24 @@ from common.policy.model.trace import trace_encoder
 class OnnxPolicy(nn.Module):
     """只接收张量并输出策略后处理前的候选 ``raw_logits``。"""
 
-    def __init__(self, model: nn.Module):
+    def __init__(self, model: nn.Module, *, bf16_float_compute: bool = False):
         super().__init__()
         self.model = model
         self.model.enable_kv_cache(False)
+        # 部署 BF16 权重先按原链路量化，再用 FP32 计算影子模型减少
+        # CUDA/ORT 各算子逐层 BF16 舍入差异；图的权重和 I/O 仍保持 BF16。
+        self.compute_model = (
+            deepcopy(model).to(dtype=torch.float32)
+            if bf16_float_compute
+            else None
+        )
         super().train(False)
+
+    def to(self, *args, **kwargs):
+        result = super().to(*args, **kwargs)
+        if self.compute_model is not None:
+            self.compute_model.to(dtype=torch.float32)
+        return result
 
     def train(self, mode: bool = True):
         """部署图固定为 eval 模式，避免导出 dropout 或训练态分支。"""
@@ -56,16 +70,23 @@ class OnnxPolicy(nn.Module):
             candidate_state_vectors,
             candidate_state_null_mask,
         )
-        encoded = self.model.input_encoder(batch)
+        compute_model = self.compute_model or self.model
+        if self.compute_model is not None:
+            batch = {
+                key: value.float() if value.dtype == torch.bfloat16 else value
+                for key, value in batch.items()
+            }
+        encoded = compute_model.input_encoder(batch)
         _prefix_hidden, candidate_hidden, cls_hidden, _layers, _attentions = run_split_encoder(
-            self.model.encoder,
+            compute_model.encoder,
             encoded,
             force_explicit_mask=True,
         )
-        return self.model.scorer(
+        logits = compute_model.scorer(
             cls_hidden=cls_hidden[:, -1, :],
             candidate_hidden=candidate_hidden,
         )
+        return logits.to(torch.bfloat16) if self.compute_model is not None else logits
 
     @torch.no_grad()
     def trace(self, *inputs: torch.Tensor) -> "OnnxPolicyTrace":

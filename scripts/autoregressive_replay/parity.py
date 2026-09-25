@@ -2,21 +2,22 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import json
 import math
+from dataclasses import replace
 from pathlib import Path
+
+from scripts.onnx_export.release.release import (
+    RELEASE_GATE_VERSION,
+    package_runtime_targets,
+    parity_artifact_bindings,
+    record_parity_result,
+)
+from scripts.onnx_export.runtime.precision import parity_max_abs_tolerance
 
 from .backends import OrtPolicyBackend, ParityPolicyBackend
 from .config import AutoregressiveReplayConfig
 from .replay import AutoregressiveReplay
-from scripts.onnx_export.release.release import (
-    RELEASE_GATE_VERSION,
-    parity_artifact_bindings,
-    package_runtime_targets,
-    record_parity_result,
-)
-from scripts.onnx_export.runtime.precision import parity_max_abs_tolerance
 
 
 def run_rollout_parity(
@@ -52,6 +53,8 @@ def run_rollout_parity(
         policy_precision=candidate.contract.precision,
     )
     replay = AutoregressiveReplay(reference_config)
+    if candidate.contract.precision == "bf16" and candidate.compute_precision == "float32":
+        replay.backend.enable_bf16_float_compute()
     parity_backend = ParityPolicyBackend(
         replay.backend,
         candidate,

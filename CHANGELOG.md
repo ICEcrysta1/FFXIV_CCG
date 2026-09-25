@@ -55,6 +55,7 @@
 
 ### Fixed
 
+- 修复 BF16 模型导出 ONNX 后 PyTorch/ORT 逐层舍入差异导致 Top-1 动作反转、阻断发布门禁的问题：checkpoint 权重先量化为 BF16，部署图以 BF16 保存权重并保持 BF16 浮点输入与输出，内部显式提升到 FP32 计算；manifest 与 ONNX metadata 记录计算精度，自回归门禁使用相同的 BF16 权重与 FP32 计算作为 PyTorch 参考，保留原有 logits 容差、Top-1、Top-3 和最终动作校验，并补充精度与参考路径回归测试。
 - 修复状态机后端通过 Python 与 C# 同读 `config/schema.yaml` 比较契约版本、导致旧 `FightEngine.dll` 仍可能通过校验的问题：构建时将版本嵌入程序集，配置加载时校验 schema 与程序集元数据；进程内后端检查实际加载的程序集版本并拒绝旧 DLL。
 
 ### Removed

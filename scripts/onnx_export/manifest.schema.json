@@ -510,6 +510,9 @@
           "type": "string",
           "minLength": 1
         },
+        "compute_precision": {
+          "enum": ["bf16", "float16", "float32"]
+        },
         "sha256": {
           "$ref": "#/$defs/sha256"
         },

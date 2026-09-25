@@ -21,7 +21,7 @@ from ..contracts.deployment_contract import DeploymentContract
 from ..contracts.deployment_profile import DeploymentProfile
 from ..io.artifact_io import file_sha256
 from ..policy.policy import OnnxPolicy
-from ..runtime.precision import precision_torch_dtype
+from ..runtime.precision import PRECISION_BF16, precision_torch_dtype
 from .context import ExportContracts
 
 
@@ -58,7 +58,7 @@ def load_policy(
     dtype = _precision_dtype(precision)
     model.to(device="cpu", dtype=dtype)
     model.eval()
-    return OnnxPolicy(model), data_spec, vocab_size, dtype, checkpoint
+    return OnnxPolicy(model, bf16_float_compute=precision == PRECISION_BF16), data_spec, vocab_size, dtype, checkpoint
 
 
 def load_policy_contracts(
