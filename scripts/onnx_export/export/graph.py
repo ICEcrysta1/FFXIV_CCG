@@ -61,6 +61,8 @@ def export_and_stamp(
     normalize_torch_reports(package_dir)
 
     model_proto = onnx.load(model_path, load_external_data=True)
+    if precision == PRECISION_BF16 and contracts.policy.compute_model is not None:
+        _store_float_compute_weights_as_bf16(model_proto, onnx)
     _set_onnx_metadata(
         model_proto,
         {
@@ -75,6 +77,11 @@ def export_and_stamp(
             "ffxiv.scene_dim": str(contracts.data_spec.scene_dim),
             "ffxiv.num_scene_types": str(contracts.data_spec.num_scene_types),
             "ffxiv.precision": precision,
+            "ffxiv.compute_precision": (
+                "float32"
+                if precision == PRECISION_BF16 and contracts.policy.compute_model is not None
+                else precision
+            ),
         },
     )
     onnx.save(model_proto, model_path)
@@ -117,6 +124,39 @@ def export_and_stamp(
         alignment=alignment,
         golden_inputs=golden_inputs,
     )
+
+
+def _store_float_compute_weights_as_bf16(model_proto, onnx) -> None:
+    """将量化后 FP32 计算图的常量还原为 BF16 存储，并显式恢复计算 dtype。"""
+    from onnx import numpy_helper
+
+    casts = []
+    for initializer in model_proto.graph.initializer:
+        if initializer.data_type != onnx.TensorProto.FLOAT or math.prod(initializer.dims) <= 1:
+            continue
+        values = torch.from_numpy(numpy_helper.to_array(initializer).copy())
+        quantized = values.to(torch.bfloat16)
+        if not torch.equal(values, quantized.float()):
+            raise AssertionError(
+                f"float compute initializer cannot be stored exactly as BF16: {initializer.name}"
+            )
+        compute_name = initializer.name
+        initializer.name = f"{compute_name}_bf16_stored"
+        initializer.data_type = onnx.TensorProto.BFLOAT16
+        initializer.ClearField("float_data")
+        initializer.raw_data = quantized.view(torch.uint16).numpy().tobytes()
+        casts.append(
+            onnx.helper.make_node(
+                "Cast",
+                [initializer.name],
+                [compute_name],
+                to=onnx.TensorProto.FLOAT,
+            )
+        )
+    if not casts:
+        raise AssertionError("BF16 storage conversion found no model initializers")
+    for cast in reversed(casts):
+        model_proto.graph.node.insert(0, cast)
 
 
 def model_alignment(

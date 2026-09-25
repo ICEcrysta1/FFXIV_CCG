@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import perf_counter
@@ -10,9 +11,17 @@ from typing import Protocol
 
 import torch
 
+from common.policy.data import DataSpec, ModelInputContract, SkillVocab
+from common.policy.model import (
+    CandidateTransformerModel,
+    RepetitionConfig,
+    parse_repetition_config,
+    repetition_config_from_checkpoint,
+)
 from common.torch_runtime import autocast_context, model_dtype
 from common.torch_serialization import safe_torch_load
-from scripts.onnx_export import DeploymentManifest, TENSOR_INPUT_NAMES
+from scripts.onnx_export import TENSOR_INPUT_NAMES, DeploymentManifest
+from scripts.onnx_export.release.release import RELEASE_REPORT_FILENAME, verify_release
 from scripts.onnx_export.runtime.ort_runtime import (
     ORT_PROVIDER_CUDA,
     create_ort_session,
@@ -21,15 +30,7 @@ from scripts.onnx_export.runtime.precision import (
     PRECISION_BF16,
     onnx_torch_dtype,
 )
-from scripts.onnx_export.release.release import RELEASE_REPORT_FILENAME, verify_release
 from scripts.onnx_export.runtime.tensor_runtime import run_ort_tensors
-from common.policy.data import DataSpec, ModelInputContract, SkillVocab
-from common.policy.model import (
-    CandidateTransformerModel,
-    RepetitionConfig,
-    repetition_config_from_checkpoint,
-    parse_repetition_config,
-)
 
 
 @dataclass(frozen=True)
@@ -164,7 +165,20 @@ class PyTorchPolicyBackend(_MeasuredBackend):
             dtype=model_dtype(self.precision),
         )
         self.model.eval()
+        self._bf16_float_compute = False
         self.configure_cache(use_kv_cache)
+
+    def enable_bf16_float_compute(self) -> None:
+        """按部署包的 BF16 权重/FP32 计算模式装配正式 parity 参考。"""
+        if self.precision != PRECISION_BF16 or self._bf16_float_compute:
+            raise ValueError("BF16 float compute requires a fresh BF16 reference")
+        if self.model._kv_cache_enabled:
+            raise ValueError("BF16 float compute parity requires KV cache disabled")
+        self.model.to(dtype=torch.float32)
+        self._bf16_float_compute = True
+        self.execution_provider = (
+            f"PyTorch:{self.input_device.type}:bf16_weights_fp32_compute"
+        )
 
     def raw_logits(
         self,
@@ -174,9 +188,29 @@ class PyTorchPolicyBackend(_MeasuredBackend):
         _validate_candidate_order(self.data_spec, candidate_action_keys)
         started_at = self._start_measurement()
         try:
-            with torch.no_grad(), autocast_context(self.input_device, self.precision):
-                output = self.model(dict(batch))
-                return output["logits"].float()
+            context = (
+                nullcontext()
+                if self._bf16_float_compute
+                else autocast_context(self.input_device, self.precision)
+            )
+            values = (
+                {
+                    key: value.float()
+                    if isinstance(value, torch.Tensor) and value.dtype == torch.bfloat16
+                    else value
+                    for key, value in batch.items()
+                }
+                if self._bf16_float_compute
+                else dict(batch)
+            )
+            with torch.no_grad(), context:
+                output = self.model(values)
+                logits = output["logits"]
+                return (
+                    logits.bfloat16().float()
+                    if self._bf16_float_compute
+                    else logits.float()
+                )
         finally:
             self._finish_measurement(started_at)
 
@@ -221,6 +255,14 @@ class OrtPolicyBackend(_MeasuredBackend):
         self.vocab_entries = self.contract.vocab_entries
         self.input_device = torch.device("cpu")
         model_payload = self.manifest.payload["model"]
+        self.compute_precision = str(
+            model_payload.get("compute_precision", self.contract.precision)
+        )
+        if self.compute_precision != self.contract.precision and not (
+            self.contract.precision == PRECISION_BF16
+            and self.compute_precision == "float32"
+        ):
+            raise ValueError("unsupported ONNX model compute precision")
         model_path = self.package_dir / str(model_payload["filename"])
         if package_path.is_file() and package_path != model_path:
             raise ValueError(
@@ -241,6 +283,18 @@ class OrtPolicyBackend(_MeasuredBackend):
         )
         self.provider = self.providers[0]
         self.execution_provider = self.provider
+        metadata = self.session.get_modelmeta().custom_metadata_map
+        runtime_compute_precision = metadata.get("ffxiv.compute_precision")
+        if (
+            self.compute_precision != self.contract.precision
+            and runtime_compute_precision is None
+        ):
+            raise ValueError("ORT mixed compute precision metadata is missing")
+        if (
+            runtime_compute_precision is not None
+            and runtime_compute_precision != self.compute_precision
+        ):
+            raise ValueError("ORT compute precision metadata differs from deployment manifest")
         self._validate_runtime_contract()
 
     def raw_logits(

@@ -136,6 +136,11 @@ def build_manifest(
         "model": {
             "filename": artifacts.model_path.name,
             "model_variant": contracts.model_variant,
+            "compute_precision": (
+                "float32"
+                if precision == "bf16" and contracts.policy.compute_model is not None
+                else precision
+            ),
             "sha256": file_sha256(artifacts.model_path),
             "size_bytes": artifacts.model_path.stat().st_size,
             "external_data": bool(artifacts.external_files),

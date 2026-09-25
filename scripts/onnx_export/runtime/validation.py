@@ -7,8 +7,8 @@ from dataclasses import asdict, dataclass
 import torch
 
 from ..contracts.contract import (
-    CapacityContract,
     TENSOR_INPUT_NAMES,
+    CapacityContract,
     fill_padding_values,
     make_inputs,
     slice_dynamic_inputs,
@@ -231,7 +231,15 @@ def validate_ort_matrix(
             torch.equal(actual.argmax(dim=-1), expected.argmax(dim=-1))
         )
         if not argmax_match:
-            raise AssertionError("ORT/PyTorch argmax mismatch")
+            pt_top = expected.float().topk(3, dim=-1)
+            ort_top = actual.float().topk(3, dim=-1)
+            raise AssertionError(
+                "ORT/PyTorch argmax mismatch: "
+                f"scene_valid={scene_valid}, history_valid={history_valid}, "
+                f"pt_top={list(zip(pt_top.indices[0].tolist(), pt_top.values[0].tolist()))}, "
+                f"ort_top={list(zip(ort_top.indices[0].tolist(), ort_top.values[0].tolist()))}, "
+                f"max_abs_diff={(actual.float() - expected.float()).abs().max().item():.6g}"
+            )
         results.append(
             asdict(
                 MatrixCaseResult(

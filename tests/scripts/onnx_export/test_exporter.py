@@ -899,6 +899,7 @@ def test_small_bf16_model_exports_and_runs_on_strict_cuda(tmp_path, activation):
     assert manifest["manifest_version"] == 7
     assert manifest["contract"]["contract_version"] == 9
     assert manifest["contract"]["precision"] == "bf16"
+    assert manifest["model"]["compute_precision"] == "float32"
     assert manifest["exporter"]["onnxscript"] == BF16_TARGET_ONNXSCRIPT_VERSION
     assert manifest["contract"]["tensor_outputs"][0]["dtype"] == (
         "tensor(bfloat16)"
@@ -906,6 +907,12 @@ def test_small_bf16_model_exports_and_runs_on_strict_cuda(tmp_path, activation):
     assert manifest["golden"]["float_encoding"] == GOLDEN_BF16_ENCODING
     assert manifest["model"]["onnx_other_float_initializer_max_elements"] <= 1
     assert manifest["model"]["onnx_float_initializer_dtype_counts"]["bfloat16"] > 0
+    model_metadata = {
+        item.key: item.value
+        for item in pytest.importorskip("onnx").load(output / "model.onnx").metadata_props
+    }
+    assert model_metadata["ffxiv.precision"] == "bf16"
+    assert model_metadata["ffxiv.compute_precision"] == "float32"
     report = json.loads((output / "export_report.json").read_text(encoding="utf-8"))
     assert report["status"] == "graph_validated"
     assert report["release_gate"] == "requires_rollout_parity"

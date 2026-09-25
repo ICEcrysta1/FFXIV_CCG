@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +13,53 @@ from scripts.autoregressive_replay import main as replay_main_module
 from scripts.autoregressive_replay import parity as parity_module
 from scripts.autoregressive_replay.backends import compare_backend_logits
 from scripts.autoregressive_replay.config import AutoregressiveReplayConfig
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_bf16_float_compute_reference_keeps_quantized_checkpoint_weights(tmp_path):
+    from scripts.autoregressive_replay.backends import PyTorchPolicyBackend
+    from scripts.onnx_export.contracts.contract import (
+        TENSOR_INPUT_NAMES,
+        CapacityContract,
+        make_inputs,
+    )
+    from tests.scripts.onnx_export.test_exporter import _write_small_checkpoint
+
+    checkpoint = tmp_path / "model.pt"
+    data_spec, _ = _write_small_checkpoint(checkpoint)
+    reference = PyTorchPolicyBackend(
+        checkpoint,
+        device="cuda",
+        use_kv_cache=False,
+        precision="bf16",
+    )
+    original_bf16 = next(reference.model.parameters()).detach().clone()
+    reference.enable_bf16_float_compute()
+    promoted = next(reference.model.parameters()).detach()
+    assert promoted.dtype == torch.float32
+    assert torch.equal(promoted, original_bf16.float())
+
+    inputs = make_inputs(
+        data_spec,
+        CapacityContract(3, 4, data_spec.num_candidates),
+        vocab_size=8,
+        scene_valid=1,
+        history_valid=1,
+        dtype=torch.bfloat16,
+        seed=7,
+    )
+    batch = {
+        name: value.cuda()
+        for name, value in zip(TENSOR_INPUT_NAMES, inputs, strict=True)
+    }
+    batch["candidate_legal_mask"] = torch.ones(
+        (1, data_spec.num_candidates), dtype=torch.bool, device="cuda"
+    )
+    logits = reference.raw_logits(batch, data_spec.candidate_action_keys)
+    assert logits.dtype == torch.float32
+    assert torch.equal(logits, logits.bfloat16().float())
+    with pytest.raises(ValueError, match="fresh BF16 reference"):
+        reference.enable_bf16_float_compute()
 
 
 def test_backend_parity_failure_reports_candidate_logits_and_actions():
@@ -44,15 +90,15 @@ def test_parity_fixed_capacity_batch_stays_on_reference_device(tmp_path):
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
         pytest.skip("requires CUDA")
-    from tests.scripts.onnx_export.test_exporter import _write_small_checkpoint
     from scripts.autoregressive_replay.backends import (
         ParityPolicyBackend,
         PyTorchPolicyBackend,
         _require_tensor,
     )
-    from scripts.onnx_export import CapacityContract, TENSOR_INPUT_NAMES
+    from scripts.onnx_export import TENSOR_INPUT_NAMES, CapacityContract
     from scripts.onnx_export.contracts.contract import make_inputs, slice_dynamic_inputs
     from scripts.onnx_export.contracts.deployment_contract import TensorSpec
+    from tests.scripts.onnx_export.test_exporter import _write_small_checkpoint
 
     checkpoint = tmp_path / "model.pt"
     data_spec, _input_contract = _write_small_checkpoint(checkpoint)
