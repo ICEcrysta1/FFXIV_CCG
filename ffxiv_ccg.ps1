@@ -22,6 +22,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProjectRoot = $PSScriptRoot
 $ProjectPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+$script:MonitorAttempted = $false
 $ScraperScript = Join-Path $ProjectRoot "scripts\fflogs_scraper.py"
 $MenuModulePath = Join-Path $ProjectRoot "scripts\ffxiv_ccg_menu.psm1"
 if (-not (Test-Path -LiteralPath $MenuModulePath -PathType Leaf)) {
@@ -161,7 +162,9 @@ function Start-TrainingMonitor {
         [string]$Scope
     )
 
-    $arguments = @("-m", "common.training.tensorboard_server", "--background", "--open-browser", "--if-enabled", "--scope", $Scope)
+    # 训练入口持有本次 Web 服务，脚本退出时由 finally 回收。
+    $script:MonitorAttempted = $true
+    $arguments = @("-m", "common.training.tensorboard_server", "--background", "--open-browser", "--if-enabled", "--scope", $Scope, "--owner-pid", $PID)
     & $ProjectPython @arguments | Out-Host
     return $LASTEXITCODE
 }
@@ -463,5 +466,16 @@ catch {
     exit 1
 }
 finally {
+    if ($script:MonitorAttempted) {
+        try {
+            & $ProjectPython -m common.training.tensorboard_server --stop-owned --owner-pid $PID | Out-Host
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warning "TensorBoard Web 监控关闭失败；请检查占用端口的进程。"
+            }
+        }
+        catch {
+            Write-Warning "TensorBoard Web 监控关闭失败：$($_.Exception.Message)"
+        }
+    }
     Pop-Location
 }

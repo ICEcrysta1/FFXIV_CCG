@@ -324,6 +324,64 @@ def test_background_server_reports_early_exit(monkeypatch, tmp_path):
         tensorboard_server._start_background(["python"], port=6017, log_dir=tmp_path)
 
 
+@pytest.mark.parametrize("exit_kind", ("owner", "spawner"))
+def test_owned_worker_closes_tensorboard_when_parent_exits(
+    monkeypatch, tmp_path, exit_kind
+):
+    record = tmp_path / "server.json"
+    stop_file = tmp_path / "server.stop"
+    monkeypatch.setattr(tensorboard_server, "_record_path", lambda _port: record)
+    monkeypatch.setattr(tensorboard_server, "_stop_path", lambda _port, _pid: stop_file)
+    monkeypatch.setattr(tensorboard_server, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(tensorboard_server.os, "getpid", lambda: 42)
+    alive = {
+        11: [True, False] if exit_kind == "owner" else [True, True],
+        12: [False] if exit_kind == "spawner" else [True],
+    }
+    monkeypatch.setattr(
+        tensorboard_server, "_pid_is_alive", lambda pid: alive[pid].pop(0)
+    )
+    monkeypatch.setattr(tensorboard_server.time, "sleep", lambda _seconds: None)
+
+    class FakeProcess:
+        returncode = None
+        terminated = False
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, *, timeout):
+            assert timeout == 5
+            return 0
+
+    child = FakeProcess()
+    monkeypatch.setattr(tensorboard_server.subprocess, "Popen", lambda *_args, **_kwargs: child)
+    assert tensorboard_server._run_owned_worker(
+        ["python"], port=6017, log_dir=tmp_path, owner_pid=11, spawner_pid=12
+    ) == 0
+    assert child.terminated
+    assert not record.exists()
+
+
+def test_stop_owned_only_signals_matching_owner(monkeypatch, tmp_path):
+    record = tmp_path / "server.json"
+    stop_file = tmp_path / "server.stop"
+    monkeypatch.setattr(tensorboard_server, "_record_path", lambda _port: record)
+    monkeypatch.setattr(tensorboard_server, "_stop_path", lambda _port, _pid: stop_file)
+    alive = iter((True, False, False))
+    monkeypatch.setattr(tensorboard_server, "_pid_is_alive", lambda _pid: next(alive))
+    monkeypatch.setattr(tensorboard_server.time, "sleep", lambda _seconds: None)
+    record.write_text(json.dumps({"pid": 42, "owner_pid": 11}), encoding="utf-8")
+
+    tensorboard_server._stop_owned(6017, 12)
+    assert not stop_file.exists()
+    tensorboard_server._stop_owned(6017, 11)
+    assert stop_file.exists()
+
+
 def test_enabled_writer_reports_missing_tensorboard_dependency(monkeypatch, tmp_path):
     def missing_dependency():
         raise ImportError("No module named tensorboard")

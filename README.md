@@ -52,7 +52,7 @@ dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj --configuration Debug
 .\ffxiv_ccg.ps1
 ```
 
-菜单中的 BC 训练与恢复训练按 `training.yaml` 顶部的 `training.tensorboard.enabled` 决定是否自动打开 TensorBoard；GRPO 按 `grpo.yaml` 顶部的 `grpo.tensorboard.enabled` 独立决定。服务就绪后会打开本机浏览器，端口由 `.env` 的 `TENSORBOARD_PORT` 指定。若该端口上的旧服务读取其他模型的事件目录，启动器会报错并提示关闭旧服务或换端口。
+菜单中的 BC 训练与恢复训练按 `training.yaml` 顶部的 `training.tensorboard.enabled` 决定是否自动打开 TensorBoard；GRPO 按 `grpo.yaml` 顶部的 `grpo.tensorboard.enabled` 独立决定。服务就绪后会打开本机浏览器，端口由 `.env` 的 `TENSORBOARD_PORT` 指定。由 `ffxiv_ccg.ps1` 启动的 Web 服务会在训练入口结束或中断后关闭；手动启动的后台服务仍需手动管理。若该端口上的旧服务读取其他模型的事件目录，启动器会报错并提示关闭旧服务或换端口。
 
 训练、转换和回放通过 Python.NET 在当前 Python 进程内调用 C# 状态机。PythonBridge 构建会生成 CoreCLR 运行时配置，并将 FightEngine 与 YAML 依赖复制到同一输出目录；观测树由桥接程序集直接映射为 Python 原生字典和列表，不经过 JSON 文本。
 
