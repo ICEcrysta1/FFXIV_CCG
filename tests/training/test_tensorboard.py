@@ -1,11 +1,12 @@
 """TensorBoard 训练指标配置与共享写入工具测试。"""
 
+import json
+import os
 from pathlib import Path
 
 import pytest
 
-from common.training import tensorboard
-from common.training import tensorboard_server
+from common.training import tensorboard, tensorboard_server
 from grpo.config import load_grpo_config
 from training.config import load_run_config
 
@@ -17,7 +18,7 @@ def test_tensorboard_config_rejects_invalid_values():
         tensorboard.TensorBoardConfig.from_mapping({"log_every_steps": 0})
 
 
-def test_bc_and_grpo_share_yaml_tensorboard_settings():
+def test_bc_and_grpo_yaml_tensorboard_settings():
     manifest = Path("config/models/black_mage/artzip/config.yaml")
 
     bc = load_run_config(manifest).tensorboard
@@ -27,6 +28,22 @@ def test_bc_and_grpo_share_yaml_tensorboard_settings():
     assert bc.enabled is True
     assert bc.log_every_steps == 50
     assert bc.flush_secs == 30
+
+
+def test_grpo_tensorboard_does_not_inherit_bc_switch(monkeypatch, tmp_path):
+    from grpo import config as grpo_config
+
+    raw = {
+        "training": {"tensorboard": {"enabled": True}},
+        "grpo": {},
+    }
+    monkeypatch.setattr(grpo_config, "load_policy_config", lambda *_args, **_kwargs: raw)
+    manifest = tmp_path / "config.yaml"
+
+    assert load_grpo_config(manifest).tensorboard.enabled is False
+    raw["grpo"]["tensorboard"] = {"enabled": True}
+    raw["training"]["tensorboard"]["enabled"] = False
+    assert load_grpo_config(manifest).tensorboard.enabled is True
 
 
 def test_disabled_writer_does_not_import_optional_dependency(monkeypatch, tmp_path):
@@ -119,7 +136,8 @@ def test_server_uses_dotenv_selected_model_tensorboard_root(
             / "artifacts"
             / "checkpoints"
             / "black_mage"
-            / "artzip_bc"
+            / "artzip_bc",
+            tensorboard=SimpleNamespace(enabled=True),
         ),
     )
     monkeypatch.setattr(sys, "argv", ["tensorboard_server"])
@@ -145,6 +163,165 @@ def test_server_uses_dotenv_selected_model_tensorboard_root(
     assert Path(command[4]) == expected_root
     assert command[-1] == "6017"
     assert calls["cwd"] == tmp_path
+
+    started = []
+    opened = []
+    monkeypatch.setattr(
+        tensorboard_server,
+        "_start_background",
+        lambda command, *, port, log_dir: started.append((command, port, log_dir)),
+    )
+    monkeypatch.setattr(tensorboard_server.webbrowser, "open", opened.append)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["tensorboard_server", "--background", "--open-browser", "--if-enabled"],
+    )
+    assert tensorboard_server.main() == 0
+    assert started == [(command, 6017, expected_root)]
+    assert opened == ["http://127.0.0.1:6017"]
+
+    monkeypatch.setattr(
+        tensorboard_server,
+        "load_run_config",
+        lambda _path: SimpleNamespace(tensorboard=SimpleNamespace(enabled=False)),
+    )
+    assert tensorboard_server.main() == 0
+    assert len(started) == 1
+
+    monkeypatch.setattr(
+        tensorboard_server,
+        "load_grpo_run_config",
+        lambda _path: SimpleNamespace(output_dir=expected_root.parent / "artzip_bc"),
+    )
+    monkeypatch.setattr(
+        tensorboard_server,
+        "load_grpo_config",
+        lambda _path: SimpleNamespace(tensorboard=SimpleNamespace(enabled=False)),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "tensorboard_server",
+            "--background",
+            "--open-browser",
+            "--if-enabled",
+            "--scope",
+            "grpo",
+        ],
+    )
+    assert tensorboard_server.main() == 0
+    assert len(started) == 1
+
+    monkeypatch.setattr(
+        tensorboard_server,
+        "load_grpo_config",
+        lambda _path: SimpleNamespace(tensorboard=SimpleNamespace(enabled=True)),
+    )
+    assert tensorboard_server.main() == 0
+    assert len(started) == 2
+    assert opened[-1] == "http://127.0.0.1:6017"
+
+
+def test_background_server_waits_for_readiness(monkeypatch, tmp_path):
+    monkeypatch.setattr(tensorboard_server, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        tensorboard_server, "_check_existing_service", lambda _port, _log_dir: False
+    )
+    checks = iter((False, True))
+    monkeypatch.setattr(tensorboard_server, "_is_ready", lambda _port: next(checks))
+    monkeypatch.setattr(tensorboard_server.time, "sleep", lambda _seconds: None)
+    calls = []
+    records = []
+    monkeypatch.setattr(
+        tensorboard_server,
+        "_write_record",
+        lambda port, log_dir, pid: records.append((port, log_dir, pid)),
+    )
+
+    class FakeProcess:
+        pid = 42
+
+        def poll(self):
+            return None
+
+    def fake_popen(command, **kwargs):
+        calls.append((command, kwargs))
+        return FakeProcess()
+
+    monkeypatch.setattr(tensorboard_server.subprocess, "Popen", fake_popen)
+    tensorboard_server._start_background(
+        ["python", "-m", "tensorboard.main"], port=6017, log_dir=tmp_path
+    )
+    assert len(calls) == 1
+    assert calls[0][1]["cwd"] == tmp_path
+    assert records == [(6017, tmp_path, 42)]
+
+
+def test_existing_server_must_match_event_directory(monkeypatch, tmp_path):
+    record = tmp_path / "server.json"
+    record.write_text(
+        json.dumps({"pid": os.getpid(), "log_dir": "C:/old-model"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(tensorboard_server, "_record_path", lambda _port: record)
+    monkeypatch.setattr(tensorboard_server, "_is_ready", lambda _port: True)
+
+    with pytest.raises(RuntimeError, match="当前模型需要"):
+        tensorboard_server._check_existing_service(6017, tmp_path / "new-model")
+
+    tensorboard_server._write_record(6017, tmp_path / "new-model", os.getpid())
+    assert tensorboard_server._check_existing_service(6017, tmp_path / "new-model")
+
+    record.write_text('{"pid": 0, "log_dir": "C:/old-model"}', encoding="utf-8")
+    with pytest.raises(RuntimeError, match="无法确认"):
+        tensorboard_server._check_existing_service(6017, tmp_path / "new-model")
+
+    record.unlink()
+    with pytest.raises(RuntimeError, match="无法确认"):
+        tensorboard_server._check_existing_service(6017, tmp_path / "new-model")
+
+
+def test_ready_check_uses_tensorboard_plugins_route(monkeypatch):
+    requested = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    def fake_urlopen(url, *, timeout):
+        requested.append((url, timeout))
+        return Response()
+
+    monkeypatch.setattr(tensorboard_server.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(tensorboard_server.json, "load", lambda _response: {})
+    assert tensorboard_server._is_ready(6017)
+    assert requested == [("http://127.0.0.1:6017/data/plugins_listing", 0.5)]
+
+
+def test_background_server_reports_early_exit(monkeypatch, tmp_path):
+    monkeypatch.setattr(tensorboard_server, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        tensorboard_server, "_check_existing_service", lambda _port, _log_dir: False
+    )
+    monkeypatch.setattr(tensorboard_server, "_is_ready", lambda _port: False)
+
+    class FakeProcess:
+        def poll(self):
+            return 1
+
+    def fake_popen(_command, **kwargs):
+        kwargs["stdout"].write("port already in use\n")
+        kwargs["stdout"].flush()
+        return FakeProcess()
+
+    monkeypatch.setattr(tensorboard_server.subprocess, "Popen", fake_popen)
+    with pytest.raises(RuntimeError, match="port already in use"):
+        tensorboard_server._start_background(["python"], port=6017, log_dir=tmp_path)
 
 
 def test_enabled_writer_reports_missing_tensorboard_dependency(monkeypatch, tmp_path):

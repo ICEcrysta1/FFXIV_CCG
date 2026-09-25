@@ -154,6 +154,18 @@ function Invoke-FFLogsDownload {
     return $LASTEXITCODE
 }
 
+function Start-TrainingMonitor {
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet("bc", "grpo")]
+        [string]$Scope
+    )
+
+    $arguments = @("-m", "common.training.tensorboard_server", "--background", "--open-browser", "--if-enabled", "--scope", $Scope)
+    & $ProjectPython @arguments | Out-Host
+    return $LASTEXITCODE
+}
+
 function Invoke-PythonProbe {
     # 统一执行探针并把 Python stderr 一并返回，避免把 checkpoint 读取失败误报成配置解析失败。
     param(
@@ -352,6 +364,9 @@ function Invoke-Tool {
     $exitCode = 0
     switch ($ResolvedAction) {
         "train" {
+            if ((Start-TrainingMonitor -Scope bc) -ne 0) {
+                Write-Warning "TensorBoard Web 监控启动失败；BC 训练仍会继续。"
+            }
             & $ProjectPython -m training.train
             $exitCode = $LASTEXITCODE
         }
@@ -376,6 +391,9 @@ function Invoke-Tool {
                 }
                 Write-Host ""
                 Write-Host ("恢复 BC 预训练：{0}" -f $selectedCheckpoint.path)
+                if ((Start-TrainingMonitor -Scope bc) -ne 0) {
+                    Write-Warning "TensorBoard Web 监控启动失败；BC 恢复训练仍会继续。"
+                }
                 $trainingArguments = @("-m", "training.train", "--resume", $selectedCheckpoint.path)
                 if ($forceSelectedDataMismatch) {
                     $trainingArguments += "--force-resume-data-mismatch"
@@ -386,6 +404,9 @@ function Invoke-Tool {
             }
         }
         "grpo" {
+            if ((Start-TrainingMonitor -Scope grpo) -ne 0) {
+                Write-Warning "TensorBoard Web 监控启动失败；GRPO 训练仍会继续。"
+            }
             & $ProjectPython -m grpo --checkpoint $selectedCheckpoint.path
             $exitCode = $LASTEXITCODE
         }

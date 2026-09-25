@@ -139,9 +139,7 @@ def load_grpo_config(path: Path) -> GrpoConfig:
         grpo_raw = training_raw.get("grpo", {})
     if not isinstance(grpo_raw, Mapping):
         raise ValueError("grpo must be a mapping")
-    grpo_values = dict(grpo_raw or {})
-    grpo_values.setdefault("tensorboard", training_raw.get("tensorboard", {}))
-    return GrpoConfig.from_mapping(grpo_values)
+    return GrpoConfig.from_mapping(grpo_raw)
 
 
 @dataclass(frozen=True)
