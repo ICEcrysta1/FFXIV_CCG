@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-26
+
 ### Added
 
 - 新增 Python.NET 进程内状态机后端和 `PythonBridge`：训练样本转换、自回归回放和主入口在当前 Python 进程直接调用 C# `FightEngine`，观测上下文映射为 Python 原生容器；`setup.ps1` 确保 pythonnet 安装在项目 `.venv`。
