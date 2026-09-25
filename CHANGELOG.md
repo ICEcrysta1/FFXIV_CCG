@@ -55,7 +55,6 @@
 
 ### Fixed
 
-- 修复通过 `ffxiv_ccg.ps1` 启动的 TensorBoard Web 监控在 BC、恢复训练或 GRPO 结束、按 Ctrl+C 中断后仍占用端口的问题：训练入口退出时主动关闭其持有的服务，入口进程意外终止时由后台监控进程检测并回收；手动启动的后台服务仍独立运行。
 - 修复状态机后端通过 Python 与 C# 同读 `config/schema.yaml` 比较契约版本、导致旧 `FightEngine.dll` 仍可能通过校验的问题：构建时将版本嵌入程序集，配置加载时校验 schema 与程序集元数据；进程内后端检查实际加载的程序集版本并拒绝旧 DLL。
 
 ### Removed
