@@ -18,7 +18,7 @@ def test_tensorboard_config_rejects_invalid_values():
         tensorboard.TensorBoardConfig.from_mapping({"log_every_steps": 0})
 
 
-def test_bc_and_grpo_share_yaml_tensorboard_settings():
+def test_bc_and_grpo_yaml_tensorboard_settings():
     manifest = Path("config/models/black_mage/artzip/config.yaml")
 
     bc = load_run_config(manifest).tensorboard
@@ -28,6 +28,22 @@ def test_bc_and_grpo_share_yaml_tensorboard_settings():
     assert bc.enabled is True
     assert bc.log_every_steps == 50
     assert bc.flush_secs == 30
+
+
+def test_grpo_tensorboard_does_not_inherit_bc_switch(monkeypatch, tmp_path):
+    from grpo import config as grpo_config
+
+    raw = {
+        "training": {"tensorboard": {"enabled": True}},
+        "grpo": {},
+    }
+    monkeypatch.setattr(grpo_config, "load_policy_config", lambda *_args, **_kwargs: raw)
+    manifest = tmp_path / "config.yaml"
+
+    assert load_grpo_config(manifest).tensorboard.enabled is False
+    raw["grpo"]["tensorboard"] = {"enabled": True}
+    raw["training"]["tensorboard"]["enabled"] = False
+    assert load_grpo_config(manifest).tensorboard.enabled is True
 
 
 def test_disabled_writer_does_not_import_optional_dependency(monkeypatch, tmp_path):
@@ -172,6 +188,40 @@ def test_server_uses_dotenv_selected_model_tensorboard_root(
     )
     assert tensorboard_server.main() == 0
     assert len(started) == 1
+
+    monkeypatch.setattr(
+        tensorboard_server,
+        "load_grpo_run_config",
+        lambda _path: SimpleNamespace(output_dir=expected_root.parent / "artzip_bc"),
+    )
+    monkeypatch.setattr(
+        tensorboard_server,
+        "load_grpo_config",
+        lambda _path: SimpleNamespace(tensorboard=SimpleNamespace(enabled=False)),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "tensorboard_server",
+            "--background",
+            "--open-browser",
+            "--if-enabled",
+            "--scope",
+            "grpo",
+        ],
+    )
+    assert tensorboard_server.main() == 0
+    assert len(started) == 1
+
+    monkeypatch.setattr(
+        tensorboard_server,
+        "load_grpo_config",
+        lambda _path: SimpleNamespace(tensorboard=SimpleNamespace(enabled=True)),
+    )
+    assert tensorboard_server.main() == 0
+    assert len(started) == 2
+    assert opened[-1] == "http://127.0.0.1:6017"
 
 
 def test_background_server_waits_for_readiness(monkeypatch, tmp_path):

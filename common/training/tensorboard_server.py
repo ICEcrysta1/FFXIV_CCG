@@ -26,6 +26,7 @@ from common.project_config import (
     resolve_tensorboard_port,
 )
 from common.training.tensorboard import resolve_tensorboard_root
+from grpo.config import load_grpo_config, load_grpo_run_config
 from training.config import load_run_config
 
 
@@ -174,15 +175,31 @@ def main() -> int:
     parser.add_argument(
         "--if-enabled", action="store_true", help="仅在训练配置启用 TensorBoard 时启动"
     )
+    parser.add_argument(
+        "--scope",
+        choices=("bc", "grpo"),
+        default="bc",
+        help="自动启动时检查 BC 或 GRPO 的 TensorBoard 开关",
+    )
     args = parser.parse_args()
 
     load_root_dotenv(PROJECT_ROOT)
     port = resolve_tensorboard_port(project_root=PROJECT_ROOT)
     config_path = resolve_policy_model_config_path(args.config)
-    config = load_run_config(config_path)
-    if args.if_enabled and not config.tensorboard.enabled:
-        print("当前模型未启用 TensorBoard 指标记录，跳过 Web 监控。", flush=True)
-        return 0
+    config = (
+        load_run_config(config_path)
+        if args.scope == "bc"
+        else load_grpo_run_config(config_path)
+    )
+    if args.if_enabled:
+        tensorboard_config = (
+            config.tensorboard
+            if args.scope == "bc"
+            else load_grpo_config(config_path).tensorboard
+        )
+        if not tensorboard_config.enabled:
+            print(f"当前模型未启用 {args.scope.upper()} TensorBoard，跳过 Web 监控。", flush=True)
+            return 0
     model_variant = resolve_policy_model_variant(config_path)
     log_dir = (
         resolve_project_path(args.logdir, project_root=PROJECT_ROOT)

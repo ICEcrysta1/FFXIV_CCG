@@ -155,12 +155,13 @@ function Invoke-FFLogsDownload {
 }
 
 function Start-TrainingMonitor {
-    param([switch]$OnlyWhenEnabled)
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet("bc", "grpo")]
+        [string]$Scope
+    )
 
-    $arguments = @("-m", "common.training.tensorboard_server", "--background", "--open-browser")
-    if ($OnlyWhenEnabled) {
-        $arguments += "--if-enabled"
-    }
+    $arguments = @("-m", "common.training.tensorboard_server", "--background", "--open-browser", "--if-enabled", "--scope", $Scope)
     & $ProjectPython @arguments | Out-Host
     return $LASTEXITCODE
 }
@@ -363,7 +364,7 @@ function Invoke-Tool {
     $exitCode = 0
     switch ($ResolvedAction) {
         "train" {
-            if ((Start-TrainingMonitor -OnlyWhenEnabled) -ne 0) {
+            if ((Start-TrainingMonitor -Scope bc) -ne 0) {
                 Write-Warning "TensorBoard Web 监控启动失败；BC 训练仍会继续。"
             }
             & $ProjectPython -m training.train
@@ -390,7 +391,7 @@ function Invoke-Tool {
                 }
                 Write-Host ""
                 Write-Host ("恢复 BC 预训练：{0}" -f $selectedCheckpoint.path)
-                if ((Start-TrainingMonitor -OnlyWhenEnabled) -ne 0) {
+                if ((Start-TrainingMonitor -Scope bc) -ne 0) {
                     Write-Warning "TensorBoard Web 监控启动失败；BC 恢复训练仍会继续。"
                 }
                 $trainingArguments = @("-m", "training.train", "--resume", $selectedCheckpoint.path)
@@ -403,7 +404,7 @@ function Invoke-Tool {
             }
         }
         "grpo" {
-            if ((Start-TrainingMonitor -OnlyWhenEnabled) -ne 0) {
+            if ((Start-TrainingMonitor -Scope grpo) -ne 0) {
                 Write-Warning "TensorBoard Web 监控启动失败；GRPO 训练仍会继续。"
             }
             & $ProjectPython -m grpo --checkpoint $selectedCheckpoint.path
@@ -426,9 +427,6 @@ function Invoke-Tool {
         }
         "fflogs" {
             $exitCode = Invoke-FFLogsDownload
-        }
-        "monitor" {
-            $exitCode = Start-TrainingMonitor
         }
         default {
             throw "未知操作：$ResolvedAction"

@@ -1,10 +1,22 @@
 # 黑魔 Artzip 预训练配置。
 
-# ------------------------------
-# 训练运行参数
-# ------------------------------
-
 training:
+
+  # ------------------------------
+  # TensorBoard 监控
+  # ------------------------------
+
+  # 只控制 BC 预训练；事件写入 output_dir 父目录/<model_variant>_tensorboard/<run_name>-<timestamp>/。
+  # 按 batch 记录训练指标，验证 PPG 按轮记录。
+  tensorboard:
+    enabled: true
+    log_every_steps: 50
+    flush_secs: 30
+
+  # ------------------------------
+  # 训练运行参数
+  # ------------------------------
+
   # 每个 GPU batch 的样本数；显存不足时优先降低此值。
   batch_size: 20
 
@@ -95,13 +107,6 @@ training:
     enabled: true
     gcd_count: 128
     normalization: 1000.0
-
-  # 可选 TensorBoard 曲线；事件写入 output_dir 父目录/<model_variant>_tensorboard/<run_name>-<timestamp>/。
-  # BC 按 batch 记录训练指标，验证 PPG 按轮记录；GRPO 复用本节配置。
-  tensorboard:
-    enabled: true
-    log_every_steps: 50
-    flush_secs: 30
 
   # 连续重复动作的 soft penalty；只降低候选 logit，不改变状态机合法性。
   repetition:

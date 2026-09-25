@@ -18,6 +18,8 @@
 
 ### Changed
 
+- TensorBoard 配置迁移：BC 继续使用 `training.yaml` 顶部的 `training.tensorboard`，GRPO 改为独立使用 `grpo.yaml` 顶部的 `grpo.tensorboard`，不再继承 BC 设置；已有模型若希望 GRPO 继续记录曲线，需将原先用于 GRPO 的 `enabled`、`log_every_steps` 和 `flush_secs` 迁至 `grpo.tensorboard`，未配置时默认关闭。黑魔 `artzip` 已显式迁入原有参数（`true` / `50` / `30`），运行行为保持一致。`ffxiv_ccg.ps1` 的 BC/恢复训练与 GRPO 分别按所属开关自动启动 Web 监控，并移除独立监控菜单项；端口仍由 `.env` 的 `TENSORBOARD_PORT` 控制。
+
 - 优化训练 `val_ppg` 自回归验证：每个验证副本重置并恢复 KV cache，缓存固定 scene 张量并增量复用设备端历史张量，同时合并合法候选检查与 argmax 的设备同步。8 场实测中关闭 KV 为 181.3 秒，开启 KV 为 460.7 秒；验证默认关闭 KV cache，可通过根目录 `.env` 的 `TRAINING_VAL_PPG_USE_KV_CACHE=true` 显式启用，回放结束后恢复模型原有开关状态。
 
 - 优化自回归 `LiveBatchBuilder` 的技能与状态张量构造：批量创建技能特征、状态向量和空值掩码，再按原分组归一化；代表性 CPU 微基准（25 个候选、20 项技能特征、147 维状态）中，技能特征构造耗时由 1.673 ms 降至 0.298 ms，状态张量由 1.803 ms 降至 1.382 ms，新旧张量数值与空值掩码一致。

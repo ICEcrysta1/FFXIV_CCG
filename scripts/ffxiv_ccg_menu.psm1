@@ -10,7 +10,6 @@ $script:ToolMenuEntries = @(
     [PSCustomObject]@{ Number = "5"; Action = "analysis"; Label = "模型分析图生成（不含损失地形图）" }
     [PSCustomObject]@{ Number = "6"; Action = "replay"; Label = "模型自回归回放" }
     [PSCustomObject]@{ Number = "7"; Action = "fflogs"; Label = "FFLogs 数据下载" }
-    [PSCustomObject]@{ Number = "8"; Action = "monitor"; Label = "TensorBoard Web 监控" }
 )
 
 function Get-FfxivCcgMenuEntries {
