@@ -15,6 +15,7 @@ bin/
 obj/
 
 # Virtual environments
+node_modules/
 venv/
 .venv/
 .agents/

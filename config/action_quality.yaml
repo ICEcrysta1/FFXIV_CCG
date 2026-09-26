@@ -1,0 +1,4 @@
+# 离线动作质量桥接运行配置；模型等级权重仍由职业模型 YAML 管理。
+bridge:
+  analyzer_root: third_party/xivanalysis
+  timeout_seconds: 180
