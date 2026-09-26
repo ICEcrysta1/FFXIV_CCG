@@ -7,6 +7,7 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
+from scripts.common.dataset_layout import find_dataset_json_files
 
 logger = logging.getLogger(__name__)
 
@@ -34,12 +35,12 @@ def select_training_raw_path_groups(
     directory_groups = []
     if data_dir.is_dir():
         for directory in sorted(path for path in data_dir.iterdir() if path.is_dir()):
-            files = sorted(directory.rglob("*.json"))
+            files = find_dataset_json_files(directory)
             if files:
                 directory_groups.append((directory.name, files))
 
     if not directory_groups:
-        files = sorted(data_dir.rglob("*.json"))
+        files = find_dataset_json_files(data_dir)
         if not files:
             return ()
         target = len(files) if max_files is None or max_files <= 0 else min(int(max_files), len(files))

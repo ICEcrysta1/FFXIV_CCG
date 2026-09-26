@@ -3,6 +3,8 @@
 import logging
 from collections.abc import Iterator
 
+from scripts.common.dataset_layout import PERCENTILE_BUCKETS
+
 from ..api.client import FFLogsV2Client
 from ..config.validation import _validate_integer
 from ..contracts.rankings import (
@@ -20,8 +22,8 @@ def _allocate_percentile_quotas(total: int) -> dict[str, int]:
     total = _validate_integer(total, "count", minimum=1)
     base, remainder = divmod(total, 10)
     return {
-        f"{lower:02d}-{lower + 10}": base + (index < remainder)
-        for index, lower in enumerate(range(90, -1, -10))
+        bucket: base + (index < remainder)
+        for index, bucket in enumerate(PERCENTILE_BUCKETS)
     }
 
 

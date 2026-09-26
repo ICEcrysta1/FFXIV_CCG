@@ -3,6 +3,8 @@
 import math
 from dataclasses import dataclass
 
+from scripts.common.dataset_layout import percentile_bucket as _percentile_bucket
+
 from ..config.validation import _validate_integer, _validate_report_code
 
 
@@ -17,16 +19,6 @@ def _is_anonymous_name(name: object) -> bool:
         return True
     normalized = name.strip().casefold()
     return normalized in {"anonymous", "匿名"}
-
-
-def _percentile_bucket(percentile: float) -> str:
-    """区间左闭右开，最高档同时包含 100；最低档固定写作 00-10。"""
-    if isinstance(percentile, bool) or not isinstance(percentile, (int, float)):
-        raise TypeError(f"invalid historical percentile: {percentile!r}")
-    if not math.isfinite(percentile) or not 0 <= percentile <= 100:
-        raise ValueError(f"invalid historical percentile: {percentile!r}")
-    lower = min(int(percentile // 10) * 10, 90)
-    return f"{lower:02d}-{lower + 10}"
 
 
 @dataclass(frozen=True)

@@ -5,6 +5,8 @@ import logging
 import os
 import sys
 
+from scripts.common.dataset_layout import percentile_directory
+
 from ..api.client import FFLogsV2Client
 from ..config.constants import DOWNLOAD_SCHEMA_VERSION
 from ..contracts.events import _attach_analysis_events
@@ -122,7 +124,7 @@ def _stratified_batch_download(client, reports, quotas, output_dir, mode="defaul
     statistics = {"success": 0, "existing": 0, "failed": 0, "anonymous": 0}
     seen = set()
     for bucket in quotas:
-        os.makedirs(os.path.join(output_dir, bucket), exist_ok=True)
+        percentile_directory(output_dir, bucket).mkdir(parents=True, exist_ok=True)
     for record in reports:
         if client._cancelled or all(counts[bucket] >= quota for bucket, quota in quotas.items()):
             break
@@ -137,7 +139,7 @@ def _stratified_batch_download(client, reports, quotas, output_dir, mode="defaul
         try:
             status = _download_report(
                 client, record.code, record.fight_id, record.player_name, record.amount,
-                os.path.join(output_dir, bucket), mode,
+                str(percentile_directory(output_dir, bucket)), mode,
                 ranking_metadata=record.ranking_metadata(metric),
             )
             statistics[status] += 1
