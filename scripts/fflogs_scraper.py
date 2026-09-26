@@ -2,6 +2,8 @@
 """FFLogs 数据拉取工具。
 
 从 FFLogs V2 GraphQL API (OAuth) 拉取战斗报告事件数据。
+事件模式保存 FFLogs V1 报告/事件契约，供离线分析器读取，并保留训练索引。
+--source 选择分析玩家与伤害表，不裁剪整场事件；damage-only 不提供分析事件。
 
 使用方式:
   python fflogs_scraper.py "https://www.fflogs.com/reports/JFLCXcQjBd9zgWR1?fight=6&type=damage-done&source=10"
@@ -22,6 +24,7 @@ import os
 import re
 import signal
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -43,6 +46,7 @@ REPORT_CODE_PATTERN = re.compile(r"^[A-Za-z0-9]+$")
 INTEGER_PATTERN = re.compile(r"^-?\d+$")
 RANKING_METRICS = frozenset({"dps", "rdps", "ndps", "adps"})
 MAX_EVENTS = 100_000
+DOWNLOAD_SCHEMA_VERSION = 2
 
 
 def _validate_alphanumeric(value: str, field_name: str) -> str:
@@ -124,6 +128,170 @@ class ReportMeta:
     """一份报告的元信息。"""
     code: str
     fights: list[FightInfo] = field(default_factory=list)
+    # FFLogs V1 报告元数据，训练选定玩家另存于下载包装字段。
+    report: dict = field(default_factory=dict)
+
+
+def _adapt_report_metadata(report_code: str, report: dict) -> ReportMeta:
+    """把 V2 元数据转成离线分析器使用的 FFLogs V1 报告契约。"""
+    master = report.get("masterData") or {}
+    lang = master.get("lang")
+    if lang not in {"en", "ja", "de", "fr", "cn", "kr"}:
+        raise ValueError(f"报告缺少可识别的原始语言，无法选择分析规则版本: {lang!r}")
+    if not isinstance(report.get("startTime"), (int, float)) or report["startTime"] <= 0:
+        raise ValueError("报告缺少真实 startTime，不能用下载日期代替")
+    if not isinstance(report.get("endTime"), (int, float)) or report["endTime"] < report["startTime"]:
+        raise ValueError("报告缺少有效 endTime")
+
+    zone = report.get("zone") or {}
+    raw_fights = report.get("fights") or []
+    fights = []
+    for raw in raw_fights:
+        game_zone = raw.get("gameZone") or zone
+        fight = {
+            "id": raw["id"], "boss": raw["encounterID"], "name": raw["name"],
+            "start_time": raw["startTime"], "end_time": raw["endTime"],
+            "zoneID": game_zone["id"], "zoneName": game_zone["name"],
+            "zone_name": zone.get("name", ""),
+            "difficulty": raw.get("difficulty"), "kill": raw.get("kill", False),
+            "size": raw.get("size"), "standardComposition": raw.get("standardComposition"),
+        }
+        if raw.get("combatTime") is not None:
+            fight["combatTime"] = raw["combatTime"]
+        # V2 返回百分数，V1 的战斗进度使用万分数。
+        for key in ("bossPercentage", "fightPercentage"):
+            if raw.get(key) is not None:
+                fight[key] = raw[key] * 100
+        fights.append(fight)
+
+    actors = {actor["id"]: actor for actor in master.get("actors") or []}
+    groups: dict[str, dict[int, dict]] = {
+        key: {} for key in ("friendlies", "enemies", "friendlyPets", "enemyPets")
+    }
+    memberships = (
+        ("friendlyPlayers", "friendlies"), ("friendlyNPCs", "friendlies"),
+        ("enemyPlayers", "enemies"), ("enemyNPCs", "enemies"),
+        ("friendlyPets", "friendlyPets"), ("enemyPets", "enemyPets"),
+    )
+    for fight in raw_fights:
+        for field_name, group_name in memberships:
+            for member in fight.get(field_name) or []:
+                actor_id = member["id"] if isinstance(member, dict) else member
+                if actor_id not in actors:
+                    raise ValueError(f"fight={fight['id']} 的 actor={actor_id} 缺少 masterData")
+                raw_actor = actors[actor_id]
+                if actor_id not in groups[group_name]:
+                    actor_type = raw_actor.get("subType") or raw_actor["type"]
+                    if group_name.endswith("Pets"):
+                        actor_type = "Pet"
+                    actor = {
+                        "id": actor_id, "guid": raw_actor["gameID"],
+                        "name": raw_actor["name"], "type": actor_type, "fights": [],
+                    }
+                    if group_name.endswith("Pets"):
+                        if raw_actor.get("petOwner") not in actors:
+                            raise ValueError(f"宠物 actor={actor_id} 缺少有效 petOwner")
+                        actor["petOwner"] = raw_actor["petOwner"]
+                    groups[group_name][actor_id] = actor
+                membership = {"id": fight["id"]}
+                if isinstance(member, dict):
+                    membership.update({
+                        "instances": member.get("instanceCount") or 1,
+                        "groups": member.get("groupCount") or 0,
+                    })
+                groups[group_name][actor_id]["fights"].append(membership)
+
+    legacy = {
+        "code": report_code, "loading": False, "start": report["startTime"],
+        "end": report["endTime"], "title": report["title"],
+        "owner": (report.get("owner") or {}).get("name", ""),
+        "zone": zone.get("id", 0), "lang": lang, "fights": fights,
+        # V2 没有 V1 的阶段名称表，当前报告解析只依赖战斗和角色元数据。
+        "phases": [], **{key: list(value.values()) for key, value in groups.items()},
+    }
+    return ReportMeta(
+        code=report_code,
+        fights=[FightInfo(
+            id=f["id"], name=f["name"], start_time=f["start_time"], end_time=f["end_time"],
+            difficulty=f["difficulty"], kill=f["kill"], size=f["size"], zone_name=f["zone_name"],
+        ) for f in fights],
+        report=legacy,
+    )
+
+
+def _build_download_payload(meta: ReportMeta, fight: FightInfo | None, source_id: int | None) -> dict:
+    """同一 JSON 保存完整分析上下文及现有训练入口需要的索引。"""
+    if not meta.report:
+        raise ValueError("下载报告缺少离线分析所需的元数据")
+    selected_fights = [f for f in meta.report["fights"] if fight is None or f["id"] == fight.id]
+    if not selected_fights:
+        raise ValueError("报告没有可下载的战斗")
+    selected_ids = {f["id"] for f in selected_fights}
+    selected_actors = {}
+    for group in ("friendlies", "enemies", "friendlyPets", "enemyPets"):
+        selected_actors[group] = []
+        for actor in meta.report[group]:
+            memberships = [f for f in actor["fights"] if f["id"] in selected_ids]
+            if memberships:
+                selected_actors[group].append({**actor, "fights": memberships})
+    if source_id is not None:
+        source_id = _validate_integer(source_id, "source_id", minimum=1)
+        if not any(actor["id"] == source_id for group in selected_actors.values() for actor in group):
+            raise ValueError(f"选定战斗中不存在 source={source_id}")
+    return {
+        **meta.report, **selected_actors, "fights": selected_fights,
+        "download_schema_version": DOWNLOAD_SCHEMA_VERSION,
+        "report_code": meta.code, "fight_id": fight.id if fight else None,
+        "source_id": source_id, "fetched_at": datetime.now().isoformat(),
+        "events_complete": False,
+    }
+
+
+def _attach_analysis_events(result: dict, events: list[dict]) -> None:
+    """保留嵌套技能与实例信息，并增加训练兼容字段和友好关系标记。"""
+    friendly_by_fight: dict[int, set[int]] = {}
+    for group in ("friendlies", "friendlyPets"):
+        for actor in result[group]:
+            for membership in actor["fights"]:
+                friendly_by_fight.setdefault(membership["id"], set()).add(actor["id"])
+    adapted = []
+    for event in events:
+        event = dict(event)
+        ability = event.get("ability")
+        if isinstance(ability, dict):
+            event["abilityGameID"] = ability["guid"]
+        elif "abilityGameID" in event or "abilityID" in event:
+            raise ValueError("API 未返回嵌套 ability，不能保存为离线分析输入")
+        extra = event.get("extraAbility")
+        if isinstance(extra, dict):
+            event["extraAbilityGameID"] = extra["guid"]
+        friends = friendly_by_fight.get(event.get("fight"), set())
+        event["sourceIsFriendly"] = event.get("sourceID") in friends
+        event["targetIsFriendly"] = event.get("targetID") in friends
+        adapted.append(event)
+    result.update(
+        events=adapted, event_count=len(adapted), events_complete=True,
+        event_scope="fight" if result["fight_id"] is not None else "report",
+    )
+
+
+def _write_download_json(output_path: str, result: dict) -> None:
+    """仅在完整序列化成功后替换目标，避免留下被批量任务误跳过的半文件。"""
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", newline="\n",
+            dir=path.parent, suffix=".tmp", delete=False,
+        ) as output:
+            temporary_path = Path(output.name)
+            json.dump(result, output, ensure_ascii=False, indent=2, allow_nan=False)
+            output.write("\n")
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -190,14 +358,24 @@ class FFLogsV2Client:
     # ---- 报告查询 ----
 
     def get_report_fights(self, report_code: str) -> ReportMeta:
-        """获取报告中的战斗列表。"""
+        """获取报告、战斗及角色元数据，生成离线分析报告上下文。"""
+        report_code = _validate_report_code(report_code)
         gql = f"""
         query {{
           reportData {{
             report(code: "{report_code}") {{
-              zone {{ name }}
+              title startTime endTime owner {{ name }} zone {{ id name }}
+              masterData(translate: true) {{
+                lang actors {{ id gameID name type subType petOwner }}
+              }}
               fights {{
-                id name startTime endTime difficulty kill size
+                id name encounterID startTime endTime combatTime difficulty kill size
+                bossPercentage fightPercentage standardComposition gameZone {{ id name }}
+                friendlyPlayers enemyPlayers
+                friendlyNPCs {{ id instanceCount groupCount }}
+                enemyNPCs {{ id instanceCount groupCount }}
+                friendlyPets {{ id instanceCount groupCount }}
+                enemyPets {{ id instanceCount groupCount }}
               }}
             }}
           }}
@@ -205,20 +383,9 @@ class FFLogsV2Client:
         """
         data = self.query(gql)
         report = data.get("reportData", {}).get("report", {})
-        zone_name = ""
-        zone = report.get("zone", {})
-        if isinstance(zone, dict):
-            zone_name = zone.get("name", "")
-        fights = [
-            FightInfo(
-                id=f["id"], name=f["name"],
-                start_time=f["startTime"], end_time=f["endTime"],
-                difficulty=f.get("difficulty"), kill=f.get("kill", False),
-                size=f.get("size"), zone_name=zone_name,
-            )
-            for f in (report.get("fights") or [])
-        ]
-        return ReportMeta(code=report_code, fights=fights)
+        if not report:
+            raise ValueError(f"报告不存在或无权读取: {report_code}")
+        return _adapt_report_metadata(report_code, report)
 
     def get_report_players(self, report_code: str, fight_id: int) -> list[dict]:
         """获取报告中某场战斗的玩家列表。"""
@@ -264,12 +431,21 @@ class FFLogsV2Client:
         start_time: int = 0,
         end_time: int = 999999999999,
         max_pages: int = 50,
+        *,
+        require_complete: bool = False,
     ) -> list[dict]:
         """拉取报告事件（V2 分页）。"""
+        report_code = _validate_report_code(report_code)
+        max_pages = _validate_integer(max_pages, "max_pages", minimum=1)
+        if source_id is not None:
+            source_id = _validate_integer(source_id, "source_id", minimum=1)
         all_events: list[dict] = []
         next_ts: Optional[int] = start_time
 
         for _ in range(max_pages):
+            if self._cancelled:
+                raise RuntimeError("下载已取消，未保存不完整事件")
+            requested_ts = next_ts
             args = [
                 f'startTime: {next_ts}',
                 f'endTime: {end_time}',
@@ -289,7 +465,8 @@ class FFLogsV2Client:
             query {{
               reportData {{
                 report(code: "{report_code}") {{
-                  events({arg_str} limit: 10000 includeResources: true) {{
+                  events({arg_str} limit: 10000 includeResources: true
+                         useAbilityIDs: false useActorIDs: true translate: true) {{
                     data
                     nextPageTimestamp
                   }}
@@ -299,12 +476,18 @@ class FFLogsV2Client:
             """
             data = self.query(gql)
             report = data.get("reportData", {}).get("report", {})
-            events_wrapper = report.get("events", {}) if report else {}
-            events = events_wrapper.get("data", []) if isinstance(events_wrapper, dict) else []
-            next_ts = events_wrapper.get("nextPageTimestamp") if isinstance(events_wrapper, dict) else None
+            events_wrapper = report.get("events") if report else None
+            if not isinstance(events_wrapper, dict) or not isinstance(events_wrapper.get("data"), list):
+                raise RuntimeError("FFLogs 未返回有效 events.data，不能视为完整空日志")
+            events = events_wrapper["data"]
+            next_ts = events_wrapper.get("nextPageTimestamp")
 
             remaining_events = MAX_EVENTS - len(all_events)
             if len(events) >= remaining_events:
+                if require_complete and (
+                    len(events) > remaining_events or (next_ts is not None and next_ts < end_time)
+                ):
+                    raise RuntimeError(f"事件超过上限 {MAX_EVENTS}，未保存不完整分析输入")
                 accepted_events = events[:remaining_events]
                 all_events.extend(accepted_events)
                 logger.info(
@@ -319,12 +502,17 @@ class FFLogsV2Client:
             logger.info("获取到 %d 条事件 (累计 %d)", len(events), len(all_events))
 
             if next_ts is None or next_ts >= end_time:
-                break
+                return all_events
+            if next_ts <= requested_ts:
+                raise RuntimeError("FFLogs 事件分页时间未前进")
 
+        if require_complete and next_ts is not None and next_ts < end_time:
+            raise RuntimeError(f"事件分页超过上限 {max_pages}，未保存不完整分析输入")
         return all_events
 
     def get_fight_events(
         self, report_code: str, fight: FightInfo, source_id: Optional[int] = None,
+        *, require_complete: bool = False,
     ) -> list[dict]:
         """拉取一场战斗的全部事件。"""
         return self.get_report_events(
@@ -333,6 +521,7 @@ class FFLogsV2Client:
             source_id=source_id,
             start_time=fight.start_time,
             end_time=fight.end_time,
+            require_complete=require_complete,
         )
 
     def get_damage_table(
@@ -528,8 +717,6 @@ def _find_fight(meta: ReportMeta, fight_id: int) -> Optional[FightInfo]:
     for f in meta.fights:
         if f.id == fight_id:
             return f
-    if 1 <= fight_id <= len(meta.fights):
-        return meta.fights[fight_id - 1]
     return None
 
 
@@ -587,32 +774,17 @@ def _cmd_single(client: FFLogsV2Client, args) -> None:
 
     logger.info("目标: report=%s fight=%s source=%s", report_code, fight_id, source_id)
 
-    result: dict = {
-        "report_code": report_code,
-        "fight_id": fight_id,
-        "source_id": source_id,
-        "fetched_at": datetime.now().isoformat(),
-    }
-
     logger.info("拉取战斗列表...")
     meta = client.get_report_fights(report_code)
     fight = _find_fight(meta, fight_id) if fight_id else None
+    if fight_id and fight is None:
+        raise ValueError(f"报告中不存在 fight={fight_id}")
+    result = _build_download_payload(meta, fight, source_id)
 
     if fight:
         logger.info("选定战斗: [%d] %s", fight.id, fight.name)
-        result["fights"] = [{
-            "id": fight.id, "name": fight.name,
-            "start_time": fight.start_time, "end_time": fight.end_time,
-            "difficulty": fight.difficulty, "kill": fight.kill,
-            "size": fight.size, "zone_name": fight.zone_name,
-        }]
     else:
         logger.info("共 %d 场战斗, 全部保留", len(meta.fights))
-        result["fights"] = [{
-            "id": f.id, "name": f.name, "start_time": f.start_time,
-            "end_time": f.end_time, "difficulty": f.difficulty,
-            "kill": f.kill, "size": f.size, "zone_name": f.zone_name,
-        } for f in meta.fights]
 
     if args.damage_only:
         if not fight or not source_id:
@@ -621,39 +793,29 @@ def _cmd_single(client: FFLogsV2Client, args) -> None:
         logger.info("拉取伤害表 (fight=%d, source=%d)...", fight.id, source_id)
         table = client.get_damage_table(report_code, fight, source_id)
         result["damage_table"] = table
-    elif args.events_only:
-        if source_id and fight:
-            events = client.get_fight_events(report_code, fight, source_id)
-        elif fight:
-            events = client.get_fight_events(report_code, fight)
-        else:
-            events = client.get_report_events(report_code)
-        result["events"] = events
-        result["event_count"] = len(events)
     else:
-        if source_id and fight:
+        if not args.events_only and source_id and fight:
             logger.info("拉取伤害表...")
             try:
                 table = client.get_damage_table(report_code, fight, source_id)
                 result["damage_table"] = table
             except Exception as e:
                 logger.warning("获取伤害表失败: %s", e)
-        if source_id and fight:
-            events = client.get_fight_events(report_code, fight, source_id)
-        elif fight:
-            events = client.get_fight_events(report_code, fight)
+        # 分析器需要整场事实；选定玩家只用于训练索引与伤害表。
+        if fight:
+            events = client.get_fight_events(report_code, fight, require_complete=True)
         else:
-            events = client.get_report_events(report_code)
-        result["events"] = events
-        result["event_count"] = len(events)
+            events = client.get_report_events(
+                report_code, end_time=meta.report["end"] - meta.report["start"],
+                require_complete=True,
+            )
+        _attach_analysis_events(result, events)
 
     output_path = args.output or os.path.join(
         args.output_dir or "data",
-        _build_output_filename(report_code, fight_id, source_id),
+        _build_output_filename(report_code, result["fight_id"], source_id),
     )
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(result, f, ensure_ascii=False, indent=2)
+    _write_download_json(output_path, result)
 
     logger.info("已写入 -> %s", output_path)
     print(f"输出文件: {output_path}")
@@ -741,15 +903,6 @@ def _batch_download(
                 failed += 1
                 continue
 
-            result: dict = {
-                "report_code": code,
-                "fight_id": fid,
-                "source_id": sid,
-                "player_name": name,
-                "player_dps": dps,
-                "fetched_at": datetime.now().isoformat(),
-            }
-
             meta = client.get_report_fights(code)
             fight = _find_fight(meta, fid)
             if not fight:
@@ -757,32 +910,23 @@ def _batch_download(
                 failed += 1
                 continue
 
-            result["fights"] = [{
-                "id": fight.id, "name": fight.name,
-                "start_time": fight.start_time, "end_time": fight.end_time,
-                "difficulty": fight.difficulty, "kill": fight.kill,
-                "size": fight.size, "zone_name": fight.zone_name,
-            }]
+            result = _build_download_payload(meta, fight, sid)
+            result.update(player_name=name, player_dps=dps)
 
             if mode == "damage-only":
                 table = client.get_damage_table(code, fight, sid)
                 result["damage_table"] = table
-            elif mode == "events-only":
-                events = client.get_fight_events(code, fight, sid)
-                result["events"] = events
-                result["event_count"] = len(events)
             else:
-                try:
-                    table = client.get_damage_table(code, fight, sid)
-                    result["damage_table"] = table
-                except Exception as e:
-                    logger.warning("  伤害表获取失败: %s", e)
-                events = client.get_fight_events(code, fight, sid)
-                result["events"] = events
-                result["event_count"] = len(events)
+                if mode != "events-only":
+                    try:
+                        table = client.get_damage_table(code, fight, sid)
+                        result["damage_table"] = table
+                    except Exception as e:
+                        logger.warning("  伤害表获取失败: %s", e)
+                events = client.get_fight_events(code, fight, require_complete=True)
+                _attach_analysis_events(result, events)
 
-            with open(output_path, "w", encoding="utf-8") as f:
-                json.dump(result, f, ensure_ascii=False, indent=2)
+            _write_download_json(output_path, result)
             logger.info("  -> %s", output_path)
             success += 1
 
