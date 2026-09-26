@@ -6,11 +6,14 @@
 
 ### Changed
 
+- 将 `scripts/fflogs_scraper.py` 拆为 `scripts/fflogs_scraper/` 工具包，按 `api`、`config`、`contracts`、`download`、`io` 分类，命令入口改为 `python -m scripts.fflogs_scraper`；保留主要公开 Python 接口，内部 helper 与常量移入所属模块，下载顺序、默认参数、异常处理和 JSON 格式保持不变。测试同步按职责拆分，并覆盖模块入口与根目录 `.env` 定位。
+- 更新命令行与项目结构文档，记录下载器分层和新入口，并修正 C# 测试工程及 PythonBridge 的目录树缩进与排版。
 - FFLogs 下载 JSON 改为兼容离线分析器的 V1 报告/事件契约：仍通过 V2 GraphQL API 获取数据，补齐真实报告日期、原始语言、Boss 与区域标识、角色/宠物归属及敌人实例信息，事件保存嵌套 `ability`；保留 `report_code`、`source_id`、`abilityGameID` 等现有训练读取字段，不重复保存两套事件。
 - 单场和批量事件下载保留整场事实，选定玩家仅用于训练索引与伤害表；新增下载格式版本、事件范围及完整性标记。`damage-only` 仍只保存伤害表与报告元数据，不提供分析事件；已有 JSON 不自动迁移。
 
 ### Fixed
 
+- PowerShell 菜单的 FFLogs 下载改用模块入口，URL 下载显式传入 `single` 子命令，修复旧调用与参数解析器不匹配的问题；CLI 示例同步修正。
 - 下载命令在事件数量或分页超限、分页时间不前进、响应缺失时拒绝保存不完整分析输入；JSON 使用 UTF-8/LF 和原子替换写入，序列化失败保留已有文件，不留下会被批量任务误跳过的半文件。
 - 战斗选择按真实 fight ID 匹配，不再把不存在的 ID 当成列表序号；`fight=last` 保存实际战斗 ID，并校验选定玩家属于下载战斗。
 
