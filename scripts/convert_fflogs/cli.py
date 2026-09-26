@@ -8,19 +8,23 @@ from pathlib import Path
 
 import torch
 
-from common.policy.data import Normalizer
+from common.dataset_layout import find_dataset_json_files
 from common.policy.config import (
     resolve_policy_cache_dir,
     resolve_policy_model_config_path,
     resolve_policy_model_job_tag,
     resolve_policy_model_variant,
 )
+from common.policy.data import Normalizer
 from training.config import load_run_config
 
 from .cache import precompile_raw_training_caches
-from .config import load_convert_fflogs_config, load_convert_fflogs_dotenv, resolve_convert_fflogs_job_tag
+from .config import (
+    load_convert_fflogs_config,
+    load_convert_fflogs_dotenv,
+    resolve_convert_fflogs_job_tag,
+)
 from .config.constants import DEFAULT_DOWNTIME_GAP_SECONDS
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 logger = logging.getLogger(__name__)
@@ -106,7 +110,7 @@ def _resolve_input_files(inputs: list[str | Path]) -> list[Path]:
                 files.append(path)
             continue
         if path.is_dir():
-            files.extend(sorted(path.rglob("*.json")))
+            files.extend(find_dataset_json_files(path))
             continue
         raise FileNotFoundError(f"raw JSON input not found: {path}")
     return sorted(set(files), key=lambda item: str(item).casefold())

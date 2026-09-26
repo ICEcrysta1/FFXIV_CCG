@@ -2,20 +2,26 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from concurrent.futures import Future
+from pathlib import Path
 
 import pytest
 
-from scripts.convert_fflogs import build_training_samples
-from scripts.convert_fflogs.cache import precompile_raw_training_caches
-from scripts.convert_fflogs.cache import cache_compile as cache_compile_module
-from tests.helpers import build_test_scene_context, targetable_window_token
 from common.policy.data import Normalizer
+from common.policy.data.compiled_cache import cache_path_for_source
+from scripts.convert_fflogs import build_training_samples
+from scripts.convert_fflogs.cache import cache_compile as cache_compile_module
+from scripts.convert_fflogs.cache import precompile_raw_training_caches
+from scripts.convert_fflogs.cache.cache_load import load_raw_compiled_cache
+from tests.helpers import build_test_scene_context, targetable_window_token
 from training import TrainingDataset
 
 
-def test_raw_cache_compiler_only_writes_compiled_cache(cs_backend, cs_skill_book, tmp_path, monkeypatch):
+@pytest.mark.parametrize("source_stage", ["raw", "annotated"])
+@pytest.mark.parametrize("legacy_layout", [False, True])
+def test_raw_cache_compiler_only_writes_compiled_cache(
+    cs_backend, cs_skill_book, tmp_path, monkeypatch, source_stage, legacy_layout,
+):
     torch = pytest.importorskip("torch")
     fight_payload = {
         "fight_id": "raw_cache_demo",
@@ -39,8 +45,8 @@ def test_raw_cache_compiler_only_writes_compiled_cache(cs_backend, cs_skill_book
         ],
     }
     training_payload = build_training_samples(cs_backend, cs_skill_book, fight_payload)
-    raw_path = tmp_path / "raw" / "demo.json"
-    raw_path.parent.mkdir()
+    raw_path = tmp_path / source_stage / "FRU" / "00-10" / "demo.json"
+    raw_path.parent.mkdir(parents=True)
     raw_path.write_text("{}", encoding="utf-8", newline="\n")
     raw_before = raw_path.read_bytes()
 
@@ -62,7 +68,24 @@ def test_raw_cache_compiler_only_writes_compiled_cache(cs_backend, cs_skill_book
 
     assert valid_paths == [raw_path]
     assert raw_path.read_bytes() == raw_before
-    assert list(cache_dir.glob("*.compiled.pt"))
+    manifest = cache_path_for_source(cache_dir, raw_path)
+    assert manifest.parent == cache_dir / "FRU" / "00-10"
+    assert manifest.is_file()
+    assert list(manifest.parent.glob("*.shard-*.pt"))
+    assert not list(cache_dir.glob("*.compiled.pt"))
+    if legacy_layout:
+        for path in manifest.parent.glob("*.pt"):
+            path.replace(cache_dir / path.name)
+    monkeypatch.setattr(
+        "scripts.convert_fflogs.cache.cache_compile.convert_raw_file",
+        lambda *_args, **_kwargs: pytest.fail("有效缓存不应重新转换"),
+    )
+    assert precompile_raw_training_caches(
+        [raw_path], job_tag="black_mage", normalizer=Normalizer(),
+        int_dtype=torch.int32, float_dtype=torch.float32,
+        cache_dir=cache_dir, shard_size=1, max_workers=1,
+    ) == [raw_path]
+    assert manifest.is_file() is not legacy_layout
     dataset = TrainingDataset(
         [raw_path],
         normalizer=Normalizer(),
@@ -76,6 +99,11 @@ def test_raw_cache_compiler_only_writes_compiled_cache(cs_backend, cs_skill_book
     assert len(dataset) == 1
     sample = dataset[0]
     assert float(sample["scene_vectors"][:, :3].max().item()) <= 1.0
+    raw_path.write_text('{"changed": true}', encoding="utf-8", newline="\n")
+    assert load_raw_compiled_cache(
+        raw_path, cache_dir=cache_dir, normalizer=Normalizer(),
+        int_dtype=torch.int32, float_dtype=torch.float32, shard_size=1,
+    ) is None
 
 
 def test_parallel_cache_compile_skips_failed_source_and_reports_it(tmp_path, monkeypatch, caplog):

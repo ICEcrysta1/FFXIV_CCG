@@ -23,7 +23,6 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = $PSScriptRoot
 $ProjectPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
 $script:MonitorAttempted = $false
-$ScraperScript = Join-Path $ProjectRoot "scripts\fflogs_scraper.py"
 $MenuModulePath = Join-Path $ProjectRoot "scripts\ffxiv_ccg_menu.psm1"
 if (-not (Test-Path -LiteralPath $MenuModulePath -PathType Leaf)) {
     throw "找不到公共菜单模块：$MenuModulePath"
@@ -147,10 +146,10 @@ function Invoke-FFLogsDownload {
         return 0
     }
     if ($target -match "^https?://") {
-        & $ProjectPython $ScraperScript $target
+        & $ProjectPython -m scripts.fflogs_scraper single $target
     }
     else {
-        & $ProjectPython $ScraperScript single --report $target
+        & $ProjectPython -m scripts.fflogs_scraper single --report $target
     }
     return $LASTEXITCODE
 }
