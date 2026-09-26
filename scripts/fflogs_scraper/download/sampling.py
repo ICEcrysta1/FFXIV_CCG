@@ -3,7 +3,7 @@
 import logging
 from collections.abc import Iterator
 
-from scripts.common.dataset_layout import PERCENTILE_BUCKETS
+from common.dataset_layout import PERCENTILE_BUCKETS
 
 from ..api.client import FFLogsV2Client
 from ..config.validation import _validate_integer

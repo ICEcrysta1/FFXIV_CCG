@@ -2,13 +2,14 @@
 
 import pytest
 
-from scripts.common.dataset_layout import (
+from common.dataset_layout import (
     PERCENTILE_BUCKETS,
     find_dataset_json_files,
     map_dataset_output_path,
     percentile_bucket,
     percentile_directory,
 )
+from common.policy.data.compiled_cache import cache_path_for_source
 from scripts.convert_fflogs.cache.cache_paths import select_training_raw_path_groups
 from scripts.convert_fflogs.cli import _resolve_input_files
 
@@ -71,3 +72,31 @@ def test_conversion_discovers_bucket_files_but_still_groups_by_encounter(tmp_pat
 def test_missing_dataset_directory_remains_empty(tmp_path):
     assert find_dataset_json_files(tmp_path / "missing") == []
     assert select_training_raw_path_groups(tmp_path / "missing") == ()
+
+
+@pytest.mark.parametrize("stage", ["raw", "annotated", ".cache"])
+def test_stage_root_is_inferred_without_each_script_deciding_layout(tmp_path, stage):
+    source = tmp_path / stage / "FRU/00-10/fight.json"
+    output = map_dataset_output_path(source, output_root=tmp_path / ".cache")
+    assert output == tmp_path / ".cache/FRU/00-10/fight.json"
+
+
+def test_standalone_input_remains_flat_and_custom_source_root_is_supported(tmp_path):
+    source = tmp_path / "custom/FRU/00-10/fight.json"
+    assert map_dataset_output_path(source, output_root=tmp_path / ".cache") == tmp_path / ".cache/fight.json"
+    assert map_dataset_output_path(
+        source, source_root=tmp_path / "custom", output_root=tmp_path / ".cache",
+    ) == tmp_path / ".cache/FRU/00-10/fight.json"
+
+
+def test_compiled_cache_uses_shared_layout_and_keeps_source_identity(tmp_path):
+    paths = [
+        tmp_path / "raw/FRU/00-10/fight.json",
+        tmp_path / "raw/FRU/90-100/fight.json",
+        tmp_path / "annotated/FRU/00-10/fight.json",
+    ]
+    outputs = [cache_path_for_source(tmp_path / ".cache", source) for source in paths]
+    assert outputs[0].parent == outputs[2].parent == tmp_path / ".cache/FRU/00-10"
+    assert outputs[1].parent == tmp_path / ".cache/FRU/90-100"
+    assert len({output.name for output in outputs}) == 3
+    assert all(output.name.endswith(".compiled.pt") for output in outputs)

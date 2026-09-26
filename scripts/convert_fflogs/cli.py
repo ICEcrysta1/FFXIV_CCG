@@ -8,6 +8,7 @@ from pathlib import Path
 
 import torch
 
+from common.dataset_layout import find_dataset_json_files
 from common.policy.config import (
     resolve_policy_cache_dir,
     resolve_policy_model_config_path,
@@ -15,7 +16,6 @@ from common.policy.config import (
     resolve_policy_model_variant,
 )
 from common.policy.data import Normalizer
-from scripts.common.dataset_layout import find_dataset_json_files
 from training.config import load_run_config
 
 from .cache import precompile_raw_training_caches

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from bisect import bisect_right
 import logging
+from bisect import bisect_right
 from pathlib import Path
 
 try:  # pragma: no cover - 缺依赖时由调用方感知
@@ -12,18 +12,20 @@ except ModuleNotFoundError:  # pragma: no cover
     class Dataset:  # type: ignore[no-redef]
         pass
 
-from common.policy.data.normalizer import Normalizer
-from common.policy.data.skill_vocab import SkillVocab
-from common.policy.data.candidate_order import candidate_permutation, load_candidate_order
+from common.policy.data.candidate_order import (
+    candidate_permutation,
+    load_candidate_order,
+)
 from common.policy.data.compiled_cache import (
     DEFAULT_CACHE_MAX_SHARDS,
     DEFAULT_CACHE_SHARD_SIZE,
     CompiledCacheReader,
     CompiledShardCache,
     build_cache_signature,
-    cache_path_for_source,
-    load_compiled_cache,
+    load_compiled_cache_for_source,
 )
+from common.policy.data.normalizer import Normalizer
+from common.policy.data.skill_vocab import SkillVocab
 
 
 class TrainingDataset(Dataset):
@@ -203,8 +205,8 @@ class TrainingDataset(Dataset):
             normalizer=self._normalizer,
             shard_size=self._compiled_cache_shard_size,
         )
-        return load_compiled_cache(
-            cache_path_for_source(self._cache_dir, source_path),
+        return load_compiled_cache_for_source(
+            self._cache_dir,
             source_path,
             signature=signature,
             shard_cache=self._shard_cache,

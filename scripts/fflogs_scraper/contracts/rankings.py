@@ -3,7 +3,7 @@
 import math
 from dataclasses import dataclass
 
-from scripts.common.dataset_layout import percentile_bucket as _percentile_bucket
+from common.dataset_layout import percentile_bucket as _percentile_bucket
 
 from ..config.validation import _validate_integer, _validate_report_code
 

@@ -1,9 +1,10 @@
-"""数据脚本共用的副本/百分位目录约定与路径映射，不负责读写数据。"""
+"""数据阶段共用的副本/百分位目录约定与路径映射，不负责读写数据。"""
 
 import math
 from pathlib import Path
 
 PERCENTILE_BUCKETS = tuple(f"{lower:02d}-{lower + 10}" for lower in range(90, -1, -10))
+DATASET_STAGES = frozenset({"raw", "annotated", ".cache"})
 
 
 def percentile_bucket(percentile: float) -> str:
@@ -24,14 +25,18 @@ def percentile_directory(encounter_dir: str | Path, bucket: str) -> Path:
 
 
 def map_dataset_output_path(
-    source_path: str | Path, *, source_root: str | Path, output_root: str | Path,
+    source_path: str | Path, *, output_root: str | Path, source_root: str | Path | None = None,
 ) -> Path:
     """替换数据阶段根目录，保留副本、水平区间和文件名，也兼容旧目录层级。
 
     例如 raw/FRU/00-10/a.json 映射为 annotated/FRU/00-10/a.json。
+    不传 source_root 时自动定位 raw/annotated/.cache 阶段目录；不在阶段目录下的
+    独立输入文件按平铺布局处理。自定义源目录可显式传入 source_root。
     不读取 JSON、不重新评分或分档，也不创建目录；转换产物可再调用 with_suffix。
     """
     source = Path(source_path).resolve()
+    if source_root is None:
+        source_root = next((parent for parent in source.parents if parent.name in DATASET_STAGES), source.parent)
     relative = source.relative_to(Path(source_root).resolve())
     if relative == Path("."):
         raise ValueError("source_path must be below source_root")

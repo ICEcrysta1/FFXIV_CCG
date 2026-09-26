@@ -10,11 +10,9 @@ from common.policy.data.compiled_cache import (
     DEFAULT_CONVERSION_VERSION,
     CompiledShardCache,
     build_cache_signature,
-    cache_path_for_source,
-    load_compiled_cache,
+    load_compiled_cache_for_source,
 )
 from common.policy.data.normalizer import Normalizer
-
 
 RAW_CONVERSION_VERSION = DEFAULT_CONVERSION_VERSION
 
@@ -64,8 +62,8 @@ def _load_cache(
         shard_size=shard_size,
         conversion_version=RAW_CONVERSION_VERSION,
     )
-    return load_compiled_cache(
-        cache_path_for_source(Path(cache_dir), source_path),
+    return load_compiled_cache_for_source(
+        Path(cache_dir),
         source_path,
         signature=signature,
         shard_cache=shard_cache,

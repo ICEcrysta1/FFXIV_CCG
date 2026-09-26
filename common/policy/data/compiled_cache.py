@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections import OrderedDict
 from collections.abc import Callable, Sequence
-import hashlib
 from dataclasses import asdict
 from pathlib import Path
 
+from common.dataset_layout import map_dataset_output_path
 from common.torch_dependencies import import_torch
 from common.torch_serialization import safe_torch_load
-from .schema import SceneWindowSchema, TrainingSchema
 
+from .schema import SceneWindowSchema, TrainingSchema
 
 # v12：黑魔候选集合移除 retrace、manaward、surecast，compiled cache 的候选布局
 # 不再与旧缓存兼容；同时保留 v11 的提前效果结算语义。
@@ -263,10 +264,34 @@ class CompiledCacheReader:
 
 
 def cache_path_for_source(cache_dir: Path, source_path: Path) -> Path:
-    """为 raw JSON 生成稳定且不冲突的 manifest 文件名。"""
+    """复用数据阶段布局，生成保留副本/区间且不冲突的 manifest 路径。"""
+    output_path = map_dataset_output_path(source_path, output_root=cache_dir)
+    return output_path.with_name(_cache_filename_for_source(source_path))
+
+
+def _cache_filename_for_source(source_path: Path) -> str:
+    """保留现有缓存文件身份，目录布局不参与编译签名。"""
     source_key = str(source_path.resolve()).lower().encode("utf-8")
     digest = hashlib.sha1(source_key).hexdigest()[:12]
-    return Path(cache_dir) / f"{source_path.stem}.{digest}.compiled.pt"
+    return f"{source_path.stem}.{digest}.compiled.pt"
+
+
+def load_compiled_cache_for_source(
+    cache_dir: Path,
+    source_path: Path,
+    *,
+    signature: dict[str, object],
+    shard_cache: CompiledShardCache,
+) -> CompiledCacheReader | None:
+    """统一定位新布局缓存，签名一致时也复用旧的平铺 manifest 和分片。"""
+    cache_path = cache_path_for_source(cache_dir, source_path)
+    legacy_path = Path(cache_dir).resolve() / _cache_filename_for_source(source_path)
+    paths = (cache_path,) if cache_path == legacy_path else (cache_path, legacy_path)
+    for path in paths:
+        cached = load_compiled_cache(path, source_path, signature=signature, shard_cache=shard_cache)
+        if cached is not None:
+            return cached
+    return None
 
 
 def build_cache_signature(

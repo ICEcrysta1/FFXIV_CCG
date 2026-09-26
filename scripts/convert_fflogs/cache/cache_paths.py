@@ -7,7 +7,7 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
-from scripts.common.dataset_layout import find_dataset_json_files
+from common.dataset_layout import find_dataset_json_files
 
 logger = logging.getLogger(__name__)
 

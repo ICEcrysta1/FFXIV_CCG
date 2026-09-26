@@ -5,7 +5,7 @@ import logging
 import os
 import sys
 
-from scripts.common.dataset_layout import percentile_directory
+from common.dataset_layout import percentile_directory
 
 from ..api.client import FFLogsV2Client
 from ..config.constants import DOWNLOAD_SCHEMA_VERSION
