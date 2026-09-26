@@ -12,6 +12,7 @@
 
 ### Changed
 
+- 删除 `scripts/fflogs_scraper/io/json_io.py` 的兼容门面，单场和批量下载直接调用 `scripts/common/json_io.py` 的 `atomic_write_json`；同步调整测试与项目结构说明，JSON 保存行为保持不变。
 - 将 UTF-8/LF JSON 原子写入抽离到 `scripts/common/json_io.py`，下载器和动作质量桥接共用；仅在完整序列化成功后替换目标文件，失败时保留已有产物，下载器原有保存行为保持不变。
 - 将副本/百分位目录约定统一到 `common/dataset_layout.py`，供下载、转换与训练复用；公共层自动定位 `raw`、`annotated`、`.cache` 数据阶段根目录，跨阶段映射保留副本、区间和文件名，自定义源根目录可显式指定。下载目录、分档配额、JSON 文件发现与按副本选择行为保持不变；同步补充目录映射、旧目录兼容测试和使用文档。
 - 转换生成的 compiled cache 按输入分类写入 `.cache/<副本>/<区间>/`，manifest 与分片保存在同一目录；转换、训练和回放读取共用缓存定位入口，并兼容签名有效的旧平铺缓存。保留源路径摘要文件名、缓存格式、编译签名和完整 history bank 契约，不因目录适配强制重建旧缓存；补充 `raw`/`annotated` 输入、新旧缓存布局、重复转换复用及源文件变化失效的编译与训练读取测试。

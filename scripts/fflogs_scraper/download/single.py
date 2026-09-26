@@ -4,12 +4,13 @@ import logging
 import os
 import sys
 
+from scripts.common.json_io import atomic_write_json
+
 from ..api.client import FFLogsV2Client
 from ..config.validation import _validate_report_code
 from ..contracts.events import _attach_analysis_events
 from ..contracts.report import _build_download_payload, _find_fight
 from ..io.filenames import _build_output_filename
-from ..io.json_io import _write_download_json
 from ..io.urls import parse_fflogs_url
 
 logger = logging.getLogger(__name__)
@@ -73,7 +74,7 @@ def _cmd_single(client: FFLogsV2Client, args) -> None:
         args.output_dir or "data",
         _build_output_filename(report_code, result["fight_id"], source_id),
     )
-    _write_download_json(output_path, result)
+    atomic_write_json(output_path, result)
 
     logger.info("已写入 -> %s", output_path)
     print(f"输出文件: {output_path}")
