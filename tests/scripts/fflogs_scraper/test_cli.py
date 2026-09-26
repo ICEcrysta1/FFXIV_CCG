@@ -58,7 +58,9 @@ def test_dotenv_resolves_project_root_after_move_and_preserves_environment(monke
     (["single", "--report", "ABC123", "--fight", "33", "--source", "1"],
      "single", {"report": "ABC123", "fight": 33, "source": 1}),
     (["batch", "-e", "1079", "--mode", "events-only"],
-     "batch", {"encounter": 1079, "mode": "events-only", "metric": "rdps"}),
+     "batch", {"encounter": 1079, "mode": "events-only", "metric": "rdps", "count": 200, "partition": None}),
+    (["batch", "-e", "1079", "--count", "203", "--partition", "25", "--output", "raw/FRU"],
+     "batch", {"count": 203, "partition": 25, "output": "raw/FRU"}),
     (["encounters", "-z", "39"], "encounters", {"zone": 39}),
 ])
 def test_cli_dispatch_preserves_arguments(monkeypatch, arguments, command, expected):
@@ -83,3 +85,17 @@ def test_cli_dispatch_preserves_arguments(monkeypatch, arguments, command, expec
     assert actual_command == command
     assert actual_client is client
     assert all(getattr(args, key) == value for key, value in expected.items())
+
+
+@pytest.mark.parametrize("option,value", [
+    ("--count", "0"), ("--count", "-1"), ("--max-pages", "0"),
+    ("--partition", "0"), ("--partition", "-1"), ("--partition", "-2"), ("--bracket", "-1"),
+])
+def test_batch_invalid_limits_fail_before_authentication(monkeypatch, option, value):
+    monkeypatch.setattr(sys, "argv", ["fflogs_scraper", "batch", "-e", "1079", option, value])
+    def unexpected_auth():
+        pytest.fail("无效参数不应读取凭证或请求 API")
+    monkeypatch.setattr(cli, "_load_dotenv", unexpected_auth)
+    with pytest.raises(SystemExit) as error:
+        cli.main()
+    assert error.value.code == 2

@@ -14,6 +14,7 @@ from ..config.validation import (
     _validate_report_code,
 )
 from ..contracts.models import FightInfo, ReportMeta
+from ..contracts.rankings import _is_anonymous_name, _is_anonymous_report
 from ..contracts.report import _adapt_report_metadata
 
 logger = logging.getLogger(__name__)
@@ -293,6 +294,8 @@ class FFLogsV2Client:
         bracket: int = 0,
         page: int = 1,
         metric: str = "dps",
+        *,
+        partition: int | None = None,
     ) -> dict:
         """获取 encounter 排行。"""
         encounter_id = _validate_integer(encounter_id, "encounter_id", minimum=1)
@@ -303,12 +306,16 @@ class FFLogsV2Client:
             spec_name = _validate_alphanumeric(spec_name, "spec_name")
         if class_name is not None:
             class_name = _validate_alphanumeric(class_name, "class_name")
+        if partition is not None:
+            partition = _validate_integer(partition, "partition", minimum=1)
 
         filters = []
         if spec_name:
             filters.append(f'specName: "{spec_name}"')
         if class_name:
             filters.append(f'className: "{class_name}"')
+        if partition is not None:
+            filters.append(f'partition: {partition}')
         filter_str = ", ".join(filters)
         gql = f"""
         query {{
@@ -327,7 +334,64 @@ class FFLogsV2Client:
         data = self.query(gql)
         enc = data.get("worldData", {}).get("encounter", {})
         rankings = enc.get("characterRankings", {}) if enc else {}
+        if isinstance(rankings, dict) and rankings.get("error"):
+            raise RuntimeError(f"FFLogs rankings: {rankings['error']}")
         return rankings if isinstance(rankings, dict) else {}
+
+    def get_encounter_details(self, encounter_id: int) -> dict:
+        """获取副本的基础信息。"""
+        encounter_id = _validate_integer(encounter_id, "encounter_id", minimum=1)
+        data = self.query(f"""query {{ worldData {{ encounter(id: {encounter_id}) {{
+            id name
+        }} }} }}""")
+        encounter = data.get("worldData", {}).get("encounter")
+        if not encounter:
+            raise ValueError(f"副本不存在: {encounter_id}")
+        return encounter
+
+    def resolve_ranking_character_id(self, report_code: str, player_name: str, server_id: int) -> int | None:
+        """无 Lodestone ID 的公开角色按姓名与服务器定位，避免同名角色混淆。"""
+        report_code = _validate_report_code(report_code)
+        server_id = _validate_integer(server_id, "server_id", minimum=1)
+        data = self.query(f"""query {{ reportData {{ report(code: "{report_code}") {{
+            rankedCharacters {{ id name hidden server {{ id }} }}
+        }} }} }}""")
+        report = data.get("reportData", {}).get("report") or {}
+        matches = [
+            character["id"] for character in report.get("rankedCharacters", [])
+            if character.get("name") == player_name and not character.get("hidden")
+            and (character.get("server") or {}).get("id") == server_id
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    def get_character_history(
+        self, lodestone_id: int | None, encounter_id: int, *, spec_name: str,
+        metric: str = "rdps", partition: int | None = None, character_id: int | None = None,
+    ) -> dict:
+        """读取 API 默认或指定分区的角色历史击杀，使用历史排名百分位。"""
+        if lodestone_id is not None:
+            lodestone_id = _validate_integer(lodestone_id, "lodestone_id", minimum=1)
+            selector = f"lodestoneID: {lodestone_id}"
+        else:
+            character_id = _validate_integer(character_id, "character_id", minimum=1)
+            selector = f"id: {character_id}"
+        encounter_id = _validate_integer(encounter_id, "encounter_id", minimum=1)
+        partition_filter = ""
+        if partition is not None:
+            partition = _validate_integer(partition, "partition", minimum=1)
+            partition_filter = f"partition: {partition},"
+        spec_name = _validate_alphanumeric(spec_name, "spec_name")
+        metric = _validate_ranking_metric(metric)
+        data = self.query(f"""query {{ characterData {{ character({selector}) {{
+            id name hidden encounterRankings(encounterID: {encounter_id},
+                specName: "{spec_name}", metric: {metric}, {partition_filter}
+                timeframe: Historical)
+        }} }} }}""")
+        character = data.get("characterData", {}).get("character") or {}
+        history = character.get("encounterRankings") or {}
+        if history.get("error"):
+            raise RuntimeError(f"FFLogs character history: {history['error']}")
+        return {**character, "encounterRankings": history}
 
     def get_high_score_reports(
         self,
@@ -339,7 +403,7 @@ class FFLogsV2Client:
     ) -> list[tuple]:
         """获取高分报告列表。
 
-        bracket: 0=全部, 6=金100%
+        bracket: 0=全部补丁分组，其他值为 FFLogs 补丁分组 ID
         metric: dps / rdps / ndps / adps
 
         Returns
@@ -366,8 +430,12 @@ class FFLogsV2Client:
                 break
 
             for r in entries:
+                if r.get("hidden") or r.get("anonymous") or _is_anonymous_name(r.get("name")):
+                    continue
                 rep = r.get("report", {})
                 rid = rep.get("code", "")
+                if _is_anonymous_report(rid):
+                    continue
                 fid = rep.get("fightID", 0)
                 name = r.get("name", "")
                 dps = r.get("amount", 0)

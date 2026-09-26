@@ -153,6 +153,77 @@ def test_get_encounter_rankings_keeps_valid_filters(monkeypatch):
     assert 'className: "Caster"' in queries[0]
 
 
+def test_ranking_query_uses_partition_and_surfaces_json_errors(monkeypatch):
+    client = FFLogsV2Client("id", "secret")
+    queries = []
+    def query(gql):
+        queries.append(gql)
+        return {"worldData": {"encounter": {"characterRankings": {"error": "Invalid partition specified."}}}}
+    monkeypatch.setattr(client, "query", query)
+    with pytest.raises(RuntimeError, match="Invalid partition"):
+        client.get_encounter_rankings(1079, partition=25)
+    assert "partition: 25" in queries[0]
+
+
+@pytest.mark.parametrize("partition", [None, 25])
+def test_character_history_uses_api_partition_and_historical_percentile(monkeypatch, partition):
+    client = FFLogsV2Client("id", "secret")
+    queries = []
+    character = {"name": "Player", "hidden": False, "encounterRankings": {"ranks": []}}
+    def query(gql):
+        queries.append(gql)
+        return {"characterData": {"character": character}}
+    monkeypatch.setattr(client, "query", query)
+    assert client.get_character_history(123, 1079, spec_name="BlackMage", partition=partition) == character
+    assert "lodestoneID: 123" in queries[0]
+    if partition is None:
+        assert "partition:" not in queries[0]
+    else:
+        assert f"partition: {partition}" in queries[0]
+    assert "timeframe: Historical" in queries[0]
+    assert 'specName: "BlackMage"' in queries[0]
+
+
+@pytest.mark.parametrize("field,value", [
+    ("partition", 0), ("partition", -1), ("partition", -2), ("lodestone_id", True),
+    ("spec_name", 'BlackMage"'), ("metric", "injected"),
+])
+def test_character_history_rejects_invalid_parameters(field, value):
+    client = FFLogsV2Client("id", "secret")
+    kwargs = {"lodestone_id": 1, "encounter_id": 1079, "spec_name": "BlackMage", field: value}
+    with pytest.raises(ValueError):
+        client.get_character_history(**kwargs)
+
+
+def test_legacy_high_score_selection_also_excludes_anonymous(monkeypatch):
+    client = FFLogsV2Client("id", "secret")
+    monkeypatch.setattr(client, "get_encounter_rankings", lambda *args, **kwargs: {"rankings": [
+        {"name": "Anonymous", "report": {"code": "PRIVATE", "fightID": 1}},
+        {"name": "Masked", "report": {"code": "a:DfrP27RKwgqBkQGA", "fightID": 27}},
+        {"name": "Player", "amount": 123, "report": {"code": "PUBLIC", "fightID": 1}},
+    ]})
+    assert client.get_high_score_reports(1079) == [("PUBLIC", 1, "Player", 123)]
+
+
+def test_unlinked_character_resolves_by_name_and_server_before_history_query(monkeypatch):
+    client = FFLogsV2Client("id", "secret")
+    queries = []
+    def query(gql):
+        queries.append(gql)
+        if "rankedCharacters" in gql:
+            return {"reportData": {"report": {"rankedCharacters": [
+                {"id": 1, "name": "Player", "hidden": False, "server": {"id": 81}},
+                {"id": 2, "name": "Player", "hidden": False, "server": {"id": 82}},
+                {"id": 3, "name": "Hidden", "hidden": True, "server": {"id": 81}},
+            ]}}}
+        return {"characterData": {"character": {"id": 1, "name": "Player", "encounterRankings": {"ranks": []}}}}
+    monkeypatch.setattr(client, "query", query)
+    assert client.resolve_ranking_character_id("ABC123", "Player", 81) == 1
+    assert client.resolve_ranking_character_id("ABC123", "Hidden", 81) is None
+    assert client.get_character_history(None, 1079, character_id=1, spec_name="BlackMage")["id"] == 1
+    assert "character(id: 1)" in queries[-1]
+
+
 @pytest.mark.parametrize("reason", ["events_limit", "pages_limit", "missing_response", "stalled"])
 def test_complete_event_download_rejects_incomplete_results(monkeypatch, reason):
     client = FFLogsV2Client("id", "secret")
