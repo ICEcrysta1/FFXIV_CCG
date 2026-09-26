@@ -1,5 +1,6 @@
 # 黑魔 Artzip 策略配置清单。
-# 模型契约、预训练运行参数和 GRPO 后训练参数分别维护，旧入口会自动合并。
+# 模型契约、预训练、GRPO 与动作质量监督配置分别维护，加载时自动合并。
 model_config: model.yaml
 training_config: training.yaml
 grpo_config: grpo.yaml
+action_quality_config: action_quality.yaml

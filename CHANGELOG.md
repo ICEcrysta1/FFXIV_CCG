@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- 新增黑魔 `artzip` 的 `action_quality.yaml`，定义动作质量负监督等级权重：轻微 `0.25`、中等 `0.50`、严重 `1.00`；模型配置清单通过 `action_quality_config` 引用，公共加载器合并子配置并兼容未声明该引用的旧清单。同步补充配置加载测试与项目结构说明；本次仅提供配置和加载支持，尚未接入训练损失或 PPG 权重调整。
+
 ### Changed
 
 - 将 `scripts/fflogs_scraper.py` 拆为 `scripts/fflogs_scraper/` 工具包，按 `api`、`config`、`contracts`、`download`、`io` 分类，命令入口改为 `python -m scripts.fflogs_scraper`；保留主要公开 Python 接口，内部 helper 与常量移入所属模块，下载顺序、默认参数、异常处理和 JSON 格式保持不变。测试同步按职责拆分，并覆盖模块入口与根目录 `.env` 定位。
