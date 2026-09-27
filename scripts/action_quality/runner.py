@@ -78,8 +78,11 @@ def annotate_file(
         if result.returncode:
             raise RuntimeError(f"analysis process failed:\n{result.stderr.strip()}")
         analysis = json.loads(result_path.read_text(encoding="utf-8"))
-    if analysis.get("schema_version") != 1 or analysis.get("source", {}).get("sha256") != checksum:
+    if analysis.get("schema_version") != 2 or analysis.get("source", {}).get("sha256") != checksum:
         raise ValueError("analysis source or schema mismatch")
+    basis = analysis.get("time_basis", {})
+    if basis.get("unit") != "ms" or basis.get("origin") != "pull_start":
+        raise ValueError("analysis time basis mismatch")
     if analysis.get("actor", {}).get("id") != str(selected) or analysis.get("module_errors"):
         raise ValueError("analysis actor mismatch or failed modules")
     if hashlib.sha256(source.read_bytes()).hexdigest() != checksum:

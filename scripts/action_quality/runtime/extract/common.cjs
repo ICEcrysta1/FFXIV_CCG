@@ -1,5 +1,6 @@
 // 通用规则输出；问题等级留在整场建议中，避免把聚合次数等级套到每个动作。
-const {observations, toJson} = require('../serialize.cjs');
+const {observations} = require('../serialize.cjs');
+const {createTimeline} = require('../time.cjs');
 
 function extractCommon(parser, reference) {
   const container = parser.container;
@@ -15,7 +16,7 @@ function extractCommon(parser, reference) {
   // 连击问题的 breaker 往往是伤害结算，不冒充同时间戳的成功施法。
   for (const [index, issue] of (container.combos?.issues ?? []).entries()) {
     windowLabels.push({id: `combo-${index}`, scope: 'combo_window', reason: `combo_${issue.type}`,
-      severity: null, evidence: toJson(issue)});
+      severity: null, evidence: createTimeline(parser.pull.timestamp).evidence(issue)});
   }
   return {actionLabels, windowLabels, cycleLabels: [], cycles: [], observations: observations(container, {
     interrupts: ['droppedCasts', 'missedTimeMS', 'severity'], weaving: ['badWeaves', 'severity'],

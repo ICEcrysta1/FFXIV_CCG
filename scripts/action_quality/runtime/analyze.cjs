@@ -7,6 +7,7 @@ const {toJson} = require('./serialize.cjs');
 const {createReferences} = require('./references.cjs');
 const {extractCommon} = require('./extract/common.cjs');
 const {selectMeta} = require('./routing.cjs');
+const {createTimeline} = require('./time.cjs');
 
 async function analyze(request) {
   const load = name => require(path.join(request.analyzer_root, 'src', name));
@@ -65,19 +66,21 @@ async function analyze(request) {
   const specific = extractors[actor.job]?.() ?? {actionLabels: [], windowLabels: [], cycleLabels: [], cycles: [], observations: {}};
   const commit = execFileSync('git', ['-C', request.analyzer_root, 'rev-parse', 'HEAD'], {encoding: 'utf8'}).trim();
   return {
-    schema_version: 1, bridge_version: 1, status: 'annotated', training_ready: false,
+    schema_version: 2, bridge_version: 2, status: 'annotated', training_ready: false,
+    time_basis: {unit: 'ms', origin: 'pull_start', report_offset_ms: pull.timestamp - raw.start},
     source: {sha256: crypto.createHash('sha256').update(content).digest('hex'), report_code: raw.report_code ?? raw.code, fight_id: raw.fight_id},
     engine: {commit, runtime: process.version, encounter_module: encounterMeta ? pull.encounter.key : null,
       job_module: actor.job, modules: Object.keys(parser.container)},
     actor: {id: actor.id, name: actor.name, job: actor.job},
-    pull: {id: pull.id, timestamp: pull.timestamp, duration: pull.duration,
+    pull: {id: pull.id, duration_ms: pull.duration,
       patch: getPatch(report.edition, pull.timestamp / 1000)},
     module_errors: Object.keys(parser._moduleErrors),
     counts: {raw_events: raw.events.length, adapted_events: events.length,
       visible_suggestions: fightLabels.filter(label => label.visible).length},
     fight_labels: fightLabels, action_labels: [...common.actionLabels, ...specific.actionLabels],
     window_labels: [...common.windowLabels, ...specific.windowLabels], cycle_labels: specific.cycleLabels,
-    cycles: specific.cycles, observations: {...common.observations, ...specific.observations},
+    cycles: specific.cycles,
+    observations: createTimeline(pull.timestamp).evidence({...common.observations, ...specific.observations}),
     coverage: {common: true, job_evidence: Boolean(extractors[actor.job]), action_attribution: 'partial'},
     limitations: ['整场聚合严重程度未自动分配到动作或循环。',
       '逐规则动作归因与训练权重接入尚未完成；没有标签不代表动作正确。', '未计算 PPG，原始 ranking 保持不变。'],
