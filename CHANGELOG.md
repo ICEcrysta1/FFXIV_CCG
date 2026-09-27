@@ -6,12 +6,14 @@
 
 ### Added
 
-- 新增 `scripts.action_quality` 离线动作质量桥接入口：复用根目录 `.env`、模型等级权重和公共数据集目录映射，调用独立 Node 解析进程，在 `annotated/<副本>/<百分位区间>/` 保存保留原始字段与事件的 JSON，并在顶层 `analysis` 输出整场建议、动作引用、插入窗口和黑魔循环证据。按输入职业选择解析模块，补充机工证据提取；保留事件匹配状态，逐动作严重度未确定时不套用整场等级。本次尚未接入训练损失或 PPG 权重，产物明确标记 `training_ready: false`。
+- 新增 `scripts.action_quality` 离线动作质量桥接入口：复用根目录 `.env`、模型等级权重和公共数据集目录映射，调用独立 Node 解析进程，在 `annotated/<副本>/<百分位区间>/` 保存保留原始字段与事件的 JSON，并在顶层 `analysis` 输出整场建议、动作引用、插入窗口和黑魔循环证据。按输入职业选择解析模块，补充机工证据提取；支持归因的错误类别下列出具体技能，统一沿用该类别的整场最终严重程度和配置权重，未支持归因的类别明确标识，不将循环中的全部技能视为错误。本次尚未将标注接入训练 PT、训练损失或 PPG 权重，产物明确标记 `training_ready: false`。
 - 将外部分析依赖以固定版本 Git 子模块纳入 `third_party/xivanalysis/`，新增 `THIRD_PARTY_NOTICES.md` 保留完整 MIT 许可声明，并补充 Node 依赖安装、桥接命令、输出契约和项目结构说明；增加桥接、职业路由、事件关联与序列化回归测试。
 - 新增黑魔 `artzip` 的 `action_quality.yaml`，定义动作质量负监督等级权重：轻微 `0.25`、中等 `0.50`、严重 `1.00`；模型配置清单通过 `action_quality_config` 引用，公共加载器合并子配置并兼容未声明该引用的旧清单。同步补充配置加载测试与项目结构说明；本次仅提供配置和加载支持，尚未接入训练损失或 PPG 权重调整。
 
 ### Changed
 
+- 动作质量分析 JSON 升级为 v2：事件统一使用战斗起点相对毫秒 `time_ms`，窗口和循环的 `start_ms`、`end_ms` 使用相同原点；公共时间换算保留预读负值和原始事件索引，`time_basis` 保存原始报告到战斗起点的偏移，原始 JSON 时间字段保持不变。修复黑魔资源错误使用报告起点、与循环和动作时间不一致的问题；旧评估 JSON 需要重新生成。
+- 在 `analysis.fight_labels[].actions` 输出错误类别对应的技能 ID、战斗相对时刻、原始事件索引和匹配状态，标明 `severity_basis: fight_aggregate`。捕获黑魔多余 Fire I、不满 AF3 的 Fire IV、冷 Fire III、魔泉过早、Firestarter 延长火阶段、可攻击期间灵极魂、Triplecast 覆盖及 AoE 目标不足的规则命中事件；AoE 仅通过相同 `packetID` 关联唯一施法，无法关联时保留未匹配证据，不猜最近技能。缺失目标统一表示为 `unknown`；补充归因与事件关联测试，并用真实 FRU 日志验证原始数据、评估等级和技能引用一致性。
 - 删除 `scripts/fflogs_scraper/io/json_io.py` 的兼容门面，单场和批量下载直接调用 `scripts/common/json_io.py` 的 `atomic_write_json`；同步调整测试与项目结构说明，JSON 保存行为保持不变。
 - 将 UTF-8/LF JSON 原子写入抽离到 `scripts/common/json_io.py`，下载器和动作质量桥接共用；仅在完整序列化成功后替换目标文件，失败时保留已有产物，下载器原有保存行为保持不变。
 - 将副本/百分位目录约定统一到 `common/dataset_layout.py`，供下载、转换与训练复用；公共层自动定位 `raw`、`annotated`、`.cache` 数据阶段根目录，跨阶段映射保留副本、区间和文件名，自定义源根目录可显式指定。下载目录、分档配额、JSON 文件发现与按副本选择行为保持不变；同步补充目录映射、旧目录兼容测试和使用文档。

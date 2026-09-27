@@ -8,6 +8,7 @@ const {createReferences} = require('./references.cjs');
 const {extractCommon} = require('./extract/common.cjs');
 const {selectMeta} = require('./routing.cjs');
 const {createTimeline} = require('./time.cjs');
+const {captureAttribution, attachActions} = require('./attribution.cjs');
 
 async function analyze(request) {
   const load = name => require(path.join(request.analyzer_root, 'src', name));
@@ -36,6 +37,7 @@ async function analyze(request) {
   const events = adaptEvents(report, pull, structuredClone(raw.events), raw.start + fight.start_time);
   const parser = new Parser({report, pull, actor, meta});
   await parser.configure();
+  const attribution = captureAttribution(parser);
   const captured = [];
   const originalAdd = parser.container.suggestions.add.bind(parser.container.suggestions);
   parser.container.suggestions.add = suggestion => {
@@ -58,6 +60,7 @@ async function analyze(request) {
     value: suggestion.value ?? null, tiers: toJson(suggestion.tiers), origin_locations: locations,
   }));
   const reference = createReferences(raw, pull, resolveActorId);
+  attachActions(fightLabels, captured, attribution, reference);
   const common = extractCommon(parser, reference);
   const extractors = {
     BLACK_MAGE: () => require('./extract/black_mage.cjs').extractBlackMage(parser, reference, request.analyzer_root),
@@ -82,8 +85,8 @@ async function analyze(request) {
     cycles: specific.cycles,
     observations: createTimeline(pull.timestamp).evidence({...common.observations, ...specific.observations}),
     coverage: {common: true, job_evidence: Boolean(extractors[actor.job]), action_attribution: 'partial'},
-    limitations: ['整场聚合严重程度未自动分配到动作或循环。',
-      '逐规则动作归因与训练权重接入尚未完成；没有标签不代表动作正确。', '未计算 PPG，原始 ranking 保持不变。'],
+    limitations: ['已支持的动作规则沿用整场聚合等级，未定位的类别保留空 actions。',
+      '训练权重接入尚未完成；没有标签不代表动作正确。', '未计算 PPG，原始 ranking 保持不变。'],
   };
 }
 
