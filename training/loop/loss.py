@@ -63,11 +63,10 @@ def compose_training_loss(
             raise ValueError(
                 f"auxiliary loss weight must be non-negative: {term.metric_name}"
             )
-        value = (
-            term.compute(output, batch)
-            if term.weight > 0
-            else primary.new_zeros(())
-        )
+        if term.weight > 0:
+            value = term.compute(output, batch)
+            total = total + term.weight * value
+        else:
+            value = primary.new_zeros(())
         auxiliary[term.metric_name] = value
-        total = total + term.weight * value if term.weight > 0 else total
     return LossBreakdown(total=total, primary=primary, auxiliary=auxiliary)
