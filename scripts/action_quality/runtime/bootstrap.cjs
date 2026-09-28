@@ -7,7 +7,8 @@ function bootstrap(analyzerRoot, nodeModules) {
   if (!fs.existsSync(path.join(analyzerRoot, 'src/parser/AVAILABLE_MODULES.ts'))) {
     throw new Error('分析器源码缺失，请先运行 git submodule update --init');
   }
-  const paths = [nodeModules, path.join(nodeModules, '.pnpm/node_modules'), path.join(__dirname, 'node_modules')];
+  const projectRoot = path.resolve(__dirname, '../../..');
+  const paths = [nodeModules, path.join(nodeModules, '.pnpm/node_modules'), path.join(projectRoot, 'node_modules')];
   const resolve = name => require.resolve(name, {paths});
   // Lingui 从工作目录发现上游配置；只影响独立子进程。
   process.chdir(analyzerRoot);
@@ -19,7 +20,7 @@ function bootstrap(analyzerRoot, nodeModules) {
   try {
     ({JSDOM} = require(resolve('jsdom')));
   } catch (error) {
-    throw new Error('缺少桥接 DOM 依赖，请在 scripts/action_quality/runtime 运行 npm ci', {cause: error});
+    throw new Error('缺少桥接 DOM 依赖，请在项目根目录运行 npm ci', {cause: error});
   }
   const dom = new JSDOM('<!doctype html><html><body></body></html>', {url: 'http://localhost/'});
   global.window = dom.window;
