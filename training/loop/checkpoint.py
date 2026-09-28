@@ -39,7 +39,7 @@ def _best_metric_key(
         float(score),
         float(metrics["top1_accuracy"]),
         float(metrics["top3_accuracy"]),
-        -float(metrics["value_preference_loss"]),
+        -float(metrics.get("value_preference_loss", 0.0)),
     )
 
 

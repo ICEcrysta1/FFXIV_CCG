@@ -182,15 +182,12 @@ class CandidateTransformerModel(nn.Module):
         if "label_index" not in batch:
             return output
 
-        with self._debug_stage("loss"):
-            label_index = batch["label_index"]
-            loss = nn.functional.cross_entropy(logits, label_index)
+        label_index = batch["label_index"]
         predictions = logits.argmax(dim=-1)
         top_k = min(3, self.data_spec.num_candidates)
         top_indices = logits.topk(top_k, dim=-1).indices
         output.update(
             {
-                "loss": loss,
                 "top1_accuracy": (predictions == label_index).float().mean(),
                 "top3_accuracy": (
                     (top_indices == label_index.unsqueeze(-1)).any(dim=-1).float().mean()

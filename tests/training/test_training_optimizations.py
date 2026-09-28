@@ -308,7 +308,12 @@ def test_epoch_metrics_keep_sample_weighting_and_prepare_repetition(train, monke
         def forward(self, batch):
             assert "repetition_penalty_mask" in batch
             count = batch["label_index"].shape[0]
-            return {"loss": self.weight * count, "top1_accuracy": self.weight.detach() * (count / 4), "top3_accuracy": self.weight.detach()}
+            margin = torch.log(torch.expm1(torch.tensor(float(count))))
+            logits = torch.stack((
+                torch.zeros(count),
+                self.weight * margin.expand(count),
+            ), dim=1)
+            return {"logits": logits, "top1_accuracy": self.weight.detach() * (count / 4), "top3_accuracy": self.weight.detach()}
 
     def reject_item(*_args, **_kwargs):
         pytest.fail("epoch must not read individual device scalars")
@@ -322,4 +327,4 @@ def test_epoch_metrics_keep_sample_weighting_and_prepare_repetition(train, monke
         metrics = training_loop.train_epoch(model, batches, optimizer, scheduler, torch.device("cpu"))
     else:
         metrics = training_loop.validate(model, batches, torch.device("cpu"))
-    assert metrics == {"loss": 2.5, "cross_entropy_loss": 2.5, "value_preference_loss": 0.0, "top1_accuracy": 0.625, "top3_accuracy": 1.0}
+    assert metrics == pytest.approx({"loss": 2.5, "cross_entropy_loss": 2.5, "value_preference_loss": 0.0, "top1_accuracy": 0.625, "top3_accuracy": 1.0})

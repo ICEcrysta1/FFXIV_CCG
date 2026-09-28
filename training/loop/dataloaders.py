@@ -20,10 +20,10 @@ from training.data import (
     build_sample_weights,
     load_sequence_oversampler,
 )
+from training.data.skill_values import load_skill_values
 
 from common.policy.data import DataSpec
 from ..config import RunConfig
-from .value_preference import load_skill_values
 
 
 logger = logging.getLogger(__name__)
