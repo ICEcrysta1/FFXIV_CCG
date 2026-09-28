@@ -14,6 +14,7 @@
   <img src="https://img.shields.io/badge/ONNX%20Runtime-1.27.0%20GPU-005ced?labelColor=555&logo=onnx" alt="ONNX Runtime 1.27.0 GPU" />
   <img src="https://img.shields.io/badge/CUDA-13.x-76b900?labelColor=555&logo=nvidia" alt="CUDA 13.x" />
   <img src="https://img.shields.io/badge/.NET-10.0-512bd4?labelColor=555&logo=dotnet" alt=".NET 10.0" />
+  <img src="https://img.shields.io/badge/Node-22.x-339933?labelColor=555&logo=nodedotjs" alt="Node 22.x" />
   <img src="https://img.shields.io/badge/license-GPL--3.0--only-blue?labelColor=555" alt="License: GPL-3.0-only" />
 </p>
 
