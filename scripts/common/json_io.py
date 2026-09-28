@@ -1,4 +1,4 @@
-"""下载 JSON 的 UTF-8/LF 原子写入。"""
+"""脚本共用的 UTF-8/LF 原子 JSON 写入。"""
 
 import json
 import os
@@ -6,8 +6,8 @@ import tempfile
 from pathlib import Path
 
 
-def _write_download_json(output_path: str, result: dict) -> None:
-    """仅在完整序列化成功后替换目标，避免留下被批量任务误跳过的半文件。"""
+def atomic_write_json(output_path: str | Path, payload: object) -> None:
+    """完整序列化成功后才替换目标；失败时保留已有文件并清理临时文件。"""
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = None
@@ -17,7 +17,7 @@ def _write_download_json(output_path: str, result: dict) -> None:
             dir=path.parent, suffix=".tmp", delete=False,
         ) as output:
             temporary_path = Path(output.name)
-            json.dump(result, output, ensure_ascii=False, indent=2, allow_nan=False)
+            json.dump(payload, output, ensure_ascii=False, indent=2, allow_nan=False)
             output.write("\n")
         os.replace(temporary_path, path)
     finally:

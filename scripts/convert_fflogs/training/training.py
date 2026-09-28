@@ -83,6 +83,8 @@ def build_training_samples(
             resolved_sequence=resolved_sequence,
             policy_action_key=policy_action_key,
         )
+        sample["step"] = next_step_index
+        sample["source_step"] = source_step
         samples.append(sample)
         resolved_sequence.append(str(raw_action["action_key"]))
         next_step_index += 1
@@ -169,6 +171,8 @@ def _run_real_action(
             "action_key": action_key,
             "skill_id": skill.game_id,
             "skill_name": skill.name,
+            "raw_event_index": raw_action.get("raw_event_index"),
+            "quality_labels": list(raw_action.get("quality_labels", [])),
             "candidate_index": _find_candidate_index(context["candidate_skill_context"], action_key),
             "is_legal": True,
             "invalid_reason": "",

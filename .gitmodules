@@ -1,0 +1,3 @@
+[submodule "third_party/xivanalysis"]
+	path = third_party/xivanalysis
+	url = https://github.com/xivanalysis/xivanalysis.git

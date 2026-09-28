@@ -72,6 +72,7 @@ class TrainingCollator:
                 sample.get("candidate_invalid_reasons", []) for sample in samples
             ],
             "label_action_key": [sample["label_action_key"] for sample in samples],
+            "quality_labels": [list(sample.get("quality_labels", [])) for sample in samples],
             "label_index": torch.tensor(
                 [sample["label_index"] for sample in samples],
                 dtype=torch.int64,

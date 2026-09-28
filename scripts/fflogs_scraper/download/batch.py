@@ -6,6 +6,7 @@ import os
 import sys
 
 from common.dataset_layout import percentile_directory
+from scripts.common.json_io import atomic_write_json
 
 from ..api.client import FFLogsV2Client
 from ..config.constants import DOWNLOAD_SCHEMA_VERSION
@@ -13,7 +14,6 @@ from ..contracts.events import _attach_analysis_events
 from ..contracts.rankings import _is_anonymous_name, _is_anonymous_report
 from ..contracts.report import _build_download_payload, _find_fight
 from ..io.filenames import _build_batch_output_filename
-from ..io.json_io import _write_download_json
 from .sampling import _allocate_percentile_quotas, _iter_historical_reports
 
 logger = logging.getLogger(__name__)
@@ -113,7 +113,7 @@ def _download_report(
                 logger.warning("  伤害表获取失败: %s", error)
         events = client.get_fight_events(code, fight, require_complete=True)
         _attach_analysis_events(result, events)
-    _write_download_json(output_path, result)
+    atomic_write_json(output_path, result)
     logger.info("  -> %s", output_path)
     return "success"
 

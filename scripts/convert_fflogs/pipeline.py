@@ -7,6 +7,7 @@ from collections import Counter
 from .config import load_convert_fflogs_job_config
 from .config.constants import DEFAULT_DOWNTIME_GAP_SECONDS
 from .extraction.extraction import detect_gcd_from_logs, extract_supported_actions
+from .extraction.action_quality import attach_action_quality_labels
 from .extraction.fight_payload import build_fight_payload, build_output_fight_id
 from .training.training import build_training_samples, resolve_initial_timestamp
 
@@ -46,6 +47,8 @@ def convert_report_payload(
     )
     if not actions:
         return None, ignored_skill_counts
+
+    attach_action_quality_labels(report_payload, actions, job_tag=job_tag, source_id=source_id)
 
     fight_payload = build_fight_payload(
         actions,

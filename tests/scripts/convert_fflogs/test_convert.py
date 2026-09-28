@@ -57,6 +57,7 @@ def test_extract_supported_actions_resolves_action_keys_and_potion(cs_backend, c
     )
 
     assert [action["action_key"] for action in actions] == ["fire_iii", "potion"]
+    assert [action["raw_event_index"] for action in actions] == [0, 1]
     assert actions[0]["skill_name"] == "爆炎"
     assert actions[1]["skill_name"] == "爆发药"
     assert ignored[(123456, "未知技能")] == 1

@@ -4,8 +4,8 @@ import json
 
 import pytest
 
+from scripts.common.json_io import atomic_write_json
 from scripts.fflogs_scraper import parse_fflogs_url
-from scripts.fflogs_scraper.io import json_io
 from scripts.fflogs_scraper.io.filenames import (
     _build_batch_output_filename,
     _build_output_filename,
@@ -50,11 +50,11 @@ def test_parse_fflogs_url_ignores_non_numeric_source_id():
 
 def test_write_json_preserves_existing_file_on_failure_and_uses_utf8_lf(tmp_path):
     path = tmp_path / "report.json"
-    json_io._write_download_json(str(path), {"title": "中文报告"})
+    atomic_write_json(path, {"title": "中文报告"})
     data = path.read_bytes()
     assert b"\r\n" not in data
     assert json.loads(data)["title"] == "中文报告"
     with pytest.raises(TypeError):
-        json_io._write_download_json(str(path), {"invalid": object()})
+        atomic_write_json(path, {"invalid": object()})
     assert path.read_bytes() == data
     assert list(tmp_path.glob("*.tmp")) == []

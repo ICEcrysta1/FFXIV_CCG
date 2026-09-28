@@ -1,0 +1,76 @@
+# 黑魔动作质量标注准入策略；供 annotated JSON → compiled PT 转换使用。
+# 键与固定评估器版本输出的标签标识一致。true 只表示允许尝试写入目标技能，
+# 仍须有标准严重程度、当前角色的成功施法、唯一且精确的原始事件引用。
+# false 的标签继续保留在评估 JSON 中；没有标签不等于动作正确。
+# 此文件不定义严重程度权重，也不计算 PPG；标签仅作目标监督元数据。
+# 调整标签准入语义后，手动提升 compiled cache 的 DEFAULT_CONVERSION_VERSION；仅修改注释无需重编译。
+job: black_mage
+
+action_quality:
+  skill_label_enabled:
+    fight_suggestions:
+      aoe_usages:
+        core.aoeusages.suggestion.content: true                               # 目标不足时使用 AoE；仅允许 packetID 唯一关联的施法
+      combos:
+        core.combos.content: false                                            # 连击窗口错误，不能归给单次施法
+      deaths:
+        core.deaths.content: false                                            # 死亡不是技能选择错误
+      dots:
+        blm.dots.suggestion.clip.content: false                               # 累计 DoT 提前刷新时长，尚未逐次归因
+      gauge:
+        blm.gauge.suggestions.dropped-enochian.content: false                 # 资源丢失可能由停手或机制导致
+        blm.gauge.suggestions.lost-polyglot.content: false                    # 被动资源损失，不能统一处罚最近技能
+        blm.gauge.suggestions.overwritten-paradox.content: false              # 覆盖由状态转换触发，尚未确认触发动作
+        blm.gauge.suggestions.overwritten-polyglot.content: false             # 覆盖可能由被动生成触发
+      interrupts:
+        core.interrupts.suggestion.content: false                             # 被中断的是读条尝试，不是成功施法样本
+      procs:
+        blm.procs.suggestions.dropped-f3ps.content: false                     # Proc 过期，通常没有单一错误施法
+        blm.procs.suggestions.dropped-thunderheads.content: false             # Proc 过期，通常没有单一错误施法
+      rotation_watchdog:
+        blm.rotation-watchdog.suggestions.coldf3.content: true                # UI3 且冰针满时直接 Fire III；7.2+
+        blm.rotation-watchdog.suggestions.end-with-despair.content: false     # 缺少绝望，属于循环遗漏
+        blm.rotation-watchdog.suggestions.extra-f1s.content: true             # 多余 Fire I
+        blm.rotation-watchdog.suggestions.firestarter-usage.content: true     # 火阶段消耗 Firestarter 的 Fire III；7.2 前
+        blm.rotation-watchdog.suggestions.flarestarusage.content: false       # 缺少 Flare Star，属于循环遗漏
+        blm.rotation-watchdog.suggestions.icemage.content: false              # 整个循环没有火技能
+        blm.rotation-watchdog.suggestions.lukewarmf4.content: true            # AF 未满时的 Fire IV
+        blm.rotation-watchdog.suggestions.mf-before-despair.content: true     # 过早使用 Manafont
+        blm.rotation-watchdog.suggestions.should-skip-thunder.content: false  # 收尾或停手前的循环机会成本
+        blm.rotation-watchdog.suggestions.uptime-souls.content: true          # 可攻击期间使用 Umbral Soul
+      swiftcast:
+        core.swiftcast.missed.suggestion.content: false                       # 整场未使用，没有对应施法
+      thunder:
+        blm.thunder.suggestions.excess-thunder.content: false                 # 旧版本累计 Thunder 提前刷新量
+      triplecast:
+        blm.triplecast.suggestions.overwrote-triplecasts.content: true        # 覆盖旧效果的第二次 Triplecast
+      weaving:
+        core.weaving.content: false                                           # 整个插入组合的问题
+
+    # 循环展示码只保留为证据；不与上方建议一对一对应，也不直接下放整场等级。
+    cycle_errors:
+      NO_ERROR: false
+      FINAL_OR_DOWNTIME: false
+      SHORT: false
+      SHOULD_SKIP_T3: false
+      COLD_F3: false
+      MISSING_FIRE4S: false
+      MISSED_ICE_PARADOX: false
+      MISSING_DESPAIRS: false
+      MISSING_FLARE_STARS: false
+      LUKEWARM_F4: false
+      MANAFONT_BEFORE_DESPAIR: false
+      EXTRA_F1: false
+      NO_FIRE_SPELLS: false
+      DROPPED_AF_UI: false
+      DIED: false
+
+    # 已结构化的局部证据；没有逐动作严重程度或不是成功施法。
+    event_labels:
+      interrupted_cast: false
+      incorrect_weaving: false
+      combo_combobreak: false
+      combo_uncomboed: false
+      combo_failedcombo: false
+      combo_timeout: false
+      gauge_error: false

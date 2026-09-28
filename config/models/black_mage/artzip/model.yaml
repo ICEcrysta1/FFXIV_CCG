@@ -5,8 +5,9 @@
 # 数据与输出
 # ------------------------------
 
-# 原始 FFLogs JSON 输入根目录；训练启动时只读取这里的文件，不向该目录写入转换结果。
-raw_data_dir: data/human/job/black_mage/raw
+# 转换、训练、GRPO、模型分析和自回归回放共用的输入根目录；只读取已评估 JSON，不向该目录写入转换结果。
+# 离线评估入口会从同级 raw 读取原始文件，避免把 annotated 再次当作输入。
+raw_data_dir: data/human/job/black_mage/annotated
 
 # checkpoint、训练日志和最终模型的主线输出目录；所有当前模型变体共用该目录。
 output_dir: artifacts/checkpoints/black_mage/artzip_bc

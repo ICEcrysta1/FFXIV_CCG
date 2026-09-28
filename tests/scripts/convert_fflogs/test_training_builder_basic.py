@@ -121,6 +121,16 @@ def test_build_training_samples_records_ogcd_wait_as_policy_action(
     ]
     assert wait_samples
     assert all(sample["label"]["skill_id"] == 0 for sample in wait_samples)
+    assert [sample["step"] for sample in payload["samples"]] == list(
+        range(1, len(payload["samples"]) + 1)
+    )
+    source_step = 0
+    for sample in payload["samples"]:
+        if sample["label"]["action_key"] != "ogcd_wait":
+            source_step += 1
+        assert sample["source_step"] == source_step + (
+            sample["label"]["action_key"] == "ogcd_wait"
+        )
 
 
 def test_build_training_samples_rejects_non_normalized_request_origin(

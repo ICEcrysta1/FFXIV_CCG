@@ -13,6 +13,36 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 CONVERT_CONFIG_ROOT = _PROJECT_ROOT / "config" / "convert_fflogs"
 CONVERT_DEFAULT_CONFIG_PATH = CONVERT_CONFIG_ROOT / "default.yaml"
 CONVERT_JOB_CONFIG_DIR = CONVERT_CONFIG_ROOT / "jobs"
+CONVERT_ACTION_QUALITY_CONFIG_DIR = CONVERT_CONFIG_ROOT / "action_quality"
+
+
+def load_action_quality_skill_policy(job_tag: str) -> frozenset[str]:
+    """读取职业级建议准入开关；新建议默认不进入技能标签。"""
+    path = CONVERT_ACTION_QUALITY_CONFIG_DIR / f"{job_tag}.yaml"
+    payload = load_yaml_mapping(path, description="action quality conversion policy")
+    if payload.get("job") != job_tag:
+        raise ValueError(f"{path}: job must be {job_tag!r}")
+    section = _require_mapping(payload, "action_quality", source=str(path))
+    switches = _require_mapping(section, "skill_label_enabled", source=str(path))
+    suggestions = _require_mapping(switches, "fight_suggestions", source=str(path))
+    enabled: set[str] = set()
+    seen: set[str] = set()
+    for group, entries in suggestions.items():
+        if not isinstance(entries, dict):
+            raise ValueError(f"{path}: fight_suggestions.{group} must be a mapping")
+        for key, value in entries.items():
+            if not isinstance(key, str) or not isinstance(value, bool) or key in seen:
+                raise ValueError(f"{path}: duplicate or non-boolean suggestion switch {key!r}")
+            seen.add(key)
+            if value:
+                enabled.add(key)
+    for group in ("cycle_errors", "event_labels"):
+        for key, value in _require_mapping(switches, group, source=str(path)).items():
+            if not isinstance(key, str) or not isinstance(value, bool):
+                raise ValueError(f"{path}: {group}.{key} must be boolean")
+            if value:
+                raise ValueError(f"{path}: {group}.{key} has no skill attribution support")
+    return frozenset(enabled)
 
 
 @dataclass(frozen=True)

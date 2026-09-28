@@ -62,6 +62,19 @@ dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj --configuration Debug
 
 ## 📜 许可
 
+离线动作质量标注的外部分析依赖以 Git 子模块保存在
+`third_party/xivanalysis/`，版本由主仓库的子模块 commit 固定。已有仓库可运行
+以下命令获取该版本；新克隆仓库也可以使用 `git clone --recurse-submodules`：
+
+```pwsh
+git submodule update --init -- third_party/xivanalysis
+```
+
+该依赖采用 MIT 许可，原始许可证保留在
+[third_party/xivanalysis/LICENSE](./third_party/xivanalysis/LICENSE)，来源与完整许可声明见
+[THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。离线桥接入口为
+`python -m scripts.action_quality`，安装和输出契约见 [命令行说明](./docs/命令行使用说明.md#附录-d离线动作质量标注)。
+
 Project-owned source code in this repository is licensed under the GNU
 General Public License v3.0 only (GPL-3.0-only); see LICENSE. Third-party
 materials remain under their own applicable licenses.

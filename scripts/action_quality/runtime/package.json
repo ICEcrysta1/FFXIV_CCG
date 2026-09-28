@@ -1,0 +1,8 @@
+{
+  "name": "ffxiv-ccg-action-quality-bridge",
+  "private": true,
+  "version": "1.0.0",
+  "description": "离线分析桥接的独立运行依赖",
+  "engines": {"node": ">=22"},
+  "dependencies": {"jsdom": "16.4.0"}
+}
