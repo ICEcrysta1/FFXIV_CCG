@@ -120,6 +120,20 @@ def test_same_skill_repeated_only_exact_raw_event_is_labelled():
     }]
 
 
+def test_flat_ability_game_id_cast_receives_exact_label():
+    report = _annotated_report()
+    report["events"][1] = {
+        "type": "cast", "timestamp": 1020, "sourceID": 7, "abilityGameID": 152,
+    }
+    actions = [{"raw_event_index": 1, "skill_id": 152}]
+
+    attach_action_quality_labels(report, actions, job_tag="black_mage", source_id=7)
+
+    assert actions[0]["quality_labels"] == [{
+        "reason_id": REASON, "severity": "medium", "raw_event_index": 1,
+    }]
+
+
 @pytest.mark.parametrize("change", [
     lambda report: report["analysis"]["fight_labels"][0]["actions"][0].update(time_ms=21),
     lambda report: report["analysis"]["fight_labels"][0]["actions"][0].update(action_id=153),

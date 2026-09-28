@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 from ..config.config import load_action_quality_skill_policy
+from .extraction import _get_ability_id
 
 
 def attach_action_quality_labels(
@@ -70,8 +71,7 @@ def attach_action_quality_labels(
             event = events[index]
             if not isinstance(event, dict) or event.get("type") != "cast":
                 raise ValueError(f"referenced event is not a cast: {reason_id} index={index}")
-            ability = event.get("ability")
-            action_id = ability.get("guid") if isinstance(ability, dict) else event.get("abilityGameID")
+            action_id = _get_ability_id(event)
             if (
                 event.get("sourceID") != source_id
                 or action_id != reference.get("action_id")
@@ -90,7 +90,7 @@ def attach_action_quality_labels(
     for action in actions:
         index = action.get("raw_event_index")
         if index in by_index:
-            if action["skill_id"] != events[index]["ability"]["guid"]:
+            if action["skill_id"] != _get_ability_id(events[index]):
                 raise ValueError(f"converted action ID mismatch at raw event {index}")
             action["quality_labels"] = list(by_index[index])
             observed.add(index)
