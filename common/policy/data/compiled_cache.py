@@ -26,7 +26,8 @@ CACHE_FORMAT = "raw_json_compiled_samples_v13_action_quality_labels"
 # 场景事实只注入 Boss 可选中/目标数/团辅，移动与停手标量由输出层改写，
 # policy 动作改走 record_policy_action。旧缓存的时序与场景语义不可复用。
 # 调整动作质量标签的准入语义时，手动提升此版本以重编译旧缓存；仅改注释无需提升。
-DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v13_action_quality_labels"
+# v14：真实技能样本补齐 step/source_step；旧 v13 缓存中的零步号不能复用。
+DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v14_real_action_steps"
 # `weights_only=True` 的安全 unpickler 对 protocol 2 支持最稳定；compiled
 # cache 的样本数据只需要普通 mapping 和 tensor，不需要更高协议。
 CACHE_PICKLE_PROTOCOL = 2

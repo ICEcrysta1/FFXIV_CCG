@@ -86,6 +86,7 @@
 
 ### Fixed
 
+- 修复 FFLogs 转换时真实技能样本未写入 `step`、`source_step`，导致 compiled PT 中真实技能全部显示为第 0 步的问题；现在与插入的 `ogcd_wait` 共用连续样本步号，并保留各真实技能的原始动作序号。转换版本提升到 v14，使旧缓存重新编译；补充样本顺序与 PT 元数据回归测试。
 - 修复 BF16 模型导出 ONNX 后 PyTorch/ORT 逐层舍入差异导致 Top-1 动作反转、阻断发布门禁的问题：checkpoint 权重先量化为 BF16，部署图以 BF16 保存权重并保持 BF16 浮点输入与输出，内部显式提升到 FP32 计算；manifest 与 ONNX metadata 记录计算精度，自回归门禁使用相同的 BF16 权重与 FP32 计算作为 PyTorch 参考，保留原有 logits 容差、Top-1、Top-3 和最终动作校验，并补充精度与参考路径回归测试。
 - 修复状态机后端通过 Python 与 C# 同读 `config/schema.yaml` 比较契约版本、导致旧 `FightEngine.dll` 仍可能通过校验的问题：构建时将版本嵌入程序集，配置加载时校验 schema 与程序集元数据；进程内后端检查实际加载的程序集版本并拒绝旧 DLL。
 

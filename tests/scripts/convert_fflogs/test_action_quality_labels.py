@@ -158,6 +158,8 @@ def test_compiled_pt_and_batch_keep_label_outside_model_inputs(
     )
     assert reader is not None
     saved = reader.sample(0)
+    assert saved["metadata"]["step"] == 1
+    assert saved["metadata"]["source_step"] == 1
     assert saved["raw_event_index"] == 1
     assert saved["quality_labels"] == action["quality_labels"]
     dataset = TrainingDataset(

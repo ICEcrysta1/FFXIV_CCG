@@ -83,6 +83,8 @@ def build_training_samples(
             resolved_sequence=resolved_sequence,
             policy_action_key=policy_action_key,
         )
+        sample["step"] = next_step_index
+        sample["source_step"] = source_step
         samples.append(sample)
         resolved_sequence.append(str(raw_action["action_key"]))
         next_step_index += 1
