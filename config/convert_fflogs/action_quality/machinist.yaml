@@ -1,0 +1,48 @@
+# 机工动作质量标注准入策略；保留评估证据，但暂不下放任何技能负标签。
+# 当前机工提取器只输出职业窗口和量谱观察值，尚无逐技能严重程度归因。
+# false 的标签仍保留在评估 JSON 中；没有标签不等于动作正确。
+# 此文件不定义严重程度权重，也不计算 PPG；未列出的新建议默认不进入技能标签。
+# 调整准入语义时手动提升 compiled cache 的 DEFAULT_CONVERSION_VERSION；仅改注释无需重编译。
+job: machinist
+
+action_quality:
+  skill_label_enabled:
+    fight_suggestions:
+      aoe_usages:
+        core.aoeusages.suggestion.content: false                  # 目标不足的 AoE；机工尚未启用逐次伤害到唯一施法的准入
+      combos:
+        core.combos.content: false                                # 连击问题属于窗口或遗漏，不能统一处罚某次成功施法
+      deaths:
+        core.deaths.content: false                                # 死亡结果不是单次技能选择标签
+      interrupts:
+        core.interrupts.suggestion.content: false                 # 被中断的是读条尝试，不是成功施法样本
+      weaving:
+        core.weaving.content: false                               # 插入问题涉及 GCD 间整组动作，不能处罚组内每个技能
+      gauge:
+        mch.gauge.suggestions.heat-waste.content: false           # 整场热量溢出总数，尚未定位每次产生溢出的技能
+        mch.gauge.suggestions.battery-waste.content: false        # 整场电量溢出总数，尚未定位每次产生溢出的技能
+        mch.gauge.suggestions.gauss_round-waste.content: false    # Double Check 次数损失，可能跨越多次冷却与超荷窗口
+        mch.gauge.suggestions.checkmate.content: false            # Checkmate 次数损失，不能统一归因给最近一次施法
+      queen:
+        mch.queen.suggestions.missing-collider.content: false     # 女王窗口缺少最终攻击，可能受目标消失或击杀时间影响
+      reassemble:
+        mch.reassemble.suggestions.bad-gcds.content: false        # 整备覆盖了非优先 GCD；尚未精确关联该次整备及被强化技能
+        mch.reassemble.suggestions.dropped.content: false         # 整备效果未消费，属于窗口遗漏而非成功施法本身
+      tincture:
+        mch.tincture.suggestions.trackedActions.content: false    # 药窗覆盖的关键动作不足，属于整段窗口机会成本
+        mch.tincture.suggestions.blazingShot.content: false       # 药窗内 Blazing Shot 次数不足，不能处罚窗口内已有动作
+      wildfire:
+        mch.wildfire.suggestions.gcds.content: false              # 野火窗口内 GCD 数不足，需结合整段时间与可攻击性
+        mch.wildfire.suggestions.fizzle.content: false            # 野火未命中或零伤害，可能受停手、转阶段和目标消失影响
+
+    # 机工提取器当前不输出 cycle_labels。
+    cycle_errors: {}
+
+    # 通用局部证据没有独立严重程度，暂不转为技能负标签。
+    event_labels:
+      interrupted_cast: false                                     # 读条尝试未完成，不在成功施法训练序列中
+      incorrect_weaving: false                                    # 插入窗口证据，需先判断具体责任动作
+      combo_combobreak: false                                     # 连击被打断，需检查整段连击序列
+      combo_uncomboed: false                                      # 未按连击顺序使用，暂无独立严重程度
+      combo_failedcombo: false                                    # 连击未生效，可能与目标无敌或消失有关
+      combo_timeout: false                                        # 连击过期是时间窗口结果，不对应单次成功施法

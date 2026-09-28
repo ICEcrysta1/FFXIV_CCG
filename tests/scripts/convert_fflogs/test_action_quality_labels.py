@@ -8,7 +8,12 @@ from pathlib import Path
 import pytest
 
 from common.policy.data.normalizer import Normalizer
-from scripts.convert_fflogs import build_training_samples
+from scripts.convert_fflogs import (
+    build_skill_book,
+    build_training_samples,
+    convert_report_payload,
+    load_job_project_config,
+)
 from scripts.convert_fflogs.cache import cache_compile, precompile_raw_training_caches
 from scripts.convert_fflogs.cache.cache_load import load_raw_compiled_cache
 from scripts.convert_fflogs.config.config import load_action_quality_skill_policy
@@ -20,6 +25,58 @@ from training import TrainingDataset
 from training.data.collator import TrainingCollator
 
 REASON = "blm.rotation-watchdog.suggestions.coldf3.content"
+
+
+def test_machinist_annotated_report_converts_with_skill_labels_disabled():
+    assert load_action_quality_skill_policy("machinist") == frozenset()
+    events = [
+        {
+            "type": "cast", "timestamp": timestamp, "sourceID": 7,
+            "abilityGameID": ability_id,
+            "ability": {"guid": ability_id, "name": name},
+            "sourceResources": {"x": 0.0, "y": 0.0},
+        }
+        for timestamp, ability_id, name in (
+            (1010, 7411, "热分裂弹"),
+            (3510, 7412, "热独头弹"),
+        )
+    ]
+    report = {
+        "fight_id": 3, "events": events,
+        "analysis": {
+            "schema_version": 2,
+            "actor": {"id": "7"},
+            "job_tag": "machinist",
+            "source": {"fight_id": 3},
+            "time_basis": {"unit": "ms", "origin": "pull_start", "report_offset_ms": 1000},
+            "fight_labels": [{
+                "content": {"props": {"id": "core.aoeusages.suggestion.content"}},
+                "severity_kind": "standard", "severity": "major",
+                "actions": [{
+                    "event_type": "cast", "match_status": "exact",
+                    "raw_event_indices": [0], "action_id": 7411, "time_ms": 10,
+                }],
+            }],
+        },
+    }
+    project_config = load_job_project_config("machinist")
+    fight, ignored = convert_report_payload(
+        report,
+        job_tag="machinist",
+        project_config=project_config,
+        skill_book=build_skill_book(project_config),
+        source_id=7,
+        encounter_name="Demo",
+        report_code="demo",
+        player_name="Tester",
+        generated_at="2026-09-28T00:00:00Z",
+    )
+    assert ignored == {}
+    assert fight is not None
+    assert [action["action_key"] for action in fight["actions"]] == [
+        "heated_split_shot", "heated_slug_shot",
+    ]
+    assert all(not action["quality_labels"] for action in fight["actions"])
 
 
 def _annotated_report() -> dict[str, object]:
