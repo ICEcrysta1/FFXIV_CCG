@@ -13,7 +13,7 @@
 
 ### Changed
 
-- 黑魔 Artzip 的 `raw_data_dir` 默认切换到 `annotated/`，无显式输入时转换、BC 训练和 GRPO 共用已评估 JSON；离线评分从该阶段定位同级 `raw/`，避免重复评估输出文件。命令行和文档说明先评分再转换、显式 raw 输入与 annotated 输入使用不同缓存身份；质量标签已进入 PT，但训练损失仍未消费标签。
+- 黑魔 Artzip 的 `raw_data_dir` 默认切换到 `annotated/`，无显式输入时转换、BC 训练和 GRPO 共用已评估 JSON；模型分析和自回归回放也跟随该目录，分别默认选取其中排序后的第一份 JSON。离线评分从该阶段定位同级 `raw/`，避免重复评估输出文件。命令行和文档说明先评分再转换、显式 raw 输入与 annotated 输入使用不同缓存身份；质量标签已进入 PT，但训练损失仍未消费标签。
 - 标注 JSON 转换为 compiled PT 时，按 `config/convert_fflogs/action_quality/<job>.yaml` 的职业开关筛选可归因的错误；仅接受身份、技能、时间和原始事件索引一致的唯一成功施法，将类别原因与严重程度写入对应真实动作样本，不按最近时间猜测，也不把标签传给模型输入。训练 batch 保留标签供后续损失使用；compiled cache 的 `CACHE_FORMAT` 升级到 v13，标签准入语义变化通过手动提升 `DEFAULT_CONVERSION_VERSION` 重编译，修改 YAML 注释不会使缓存失效。补充精确归因、PT 落盘和 batch 传递测试，并用真实 FRU 日志核对标签落点。
 - 动作质量分析 JSON 升级为 v2：事件统一使用战斗起点相对毫秒 `time_ms`，窗口和循环的 `start_ms`、`end_ms` 使用相同原点；公共时间换算保留预读负值和原始事件索引，`time_basis` 保存原始报告到战斗起点的偏移，原始 JSON 时间字段保持不变。修复黑魔资源错误使用报告起点、与循环和动作时间不一致的问题；旧评估 JSON 需要重新生成。
 - 在 `analysis.fight_labels[].actions` 输出错误类别对应的技能 ID、战斗相对时刻、原始事件索引和匹配状态，标明 `severity_basis: fight_aggregate`。捕获黑魔多余 Fire I、不满 AF3 的 Fire IV、冷 Fire III、魔泉过早、Firestarter 延长火阶段、可攻击期间灵极魂、Triplecast 覆盖及 AoE 目标不足的规则命中事件；AoE 仅通过相同 `packetID` 关联唯一施法，无法关联时保留未匹配证据，不猜最近技能。缺失目标统一表示为 `unknown`；补充归因与事件关联测试，并用真实 FRU 日志验证原始数据、评估等级和技能引用一致性。
