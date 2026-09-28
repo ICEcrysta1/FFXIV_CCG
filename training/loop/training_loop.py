@@ -40,12 +40,10 @@ from .checkpoint import (
     _validate_resume_checkpoint,
 )
 from .dataloaders import build_dataloaders
-from .value_preference import compute_value_preference_loss
+from .loss import compose_training_loss, configured_auxiliary_losses
 
 logger = logging.getLogger(__name__)
-_EPOCH_METRICS = (
-    "loss", "cross_entropy_loss", "value_preference_loss", "top1_accuracy", "top3_accuracy",
-)
+_EPOCH_METRICS = ("loss", "cross_entropy_loss", "top1_accuracy", "top3_accuracy")
 
 
 def _debug_stage(recorder: RuntimeDebugRecorder | None, name: str):
@@ -328,12 +326,12 @@ def run_training(
                 epoch,
                 train_metrics["loss"],
                 train_metrics["cross_entropy_loss"],
-                train_metrics["value_preference_loss"],
+                train_metrics.get("value_preference_loss", 0.0),
                 train_metrics["top1_accuracy"],
                 train_metrics["top3_accuracy"],
                 val_metrics["loss"],
                 val_metrics["cross_entropy_loss"],
-                val_metrics["value_preference_loss"],
+                val_metrics.get("value_preference_loss", 0.0),
                 val_metrics["top1_accuracy"],
                 val_metrics["top3_accuracy"],
                 val_metrics.get("val_ppg", float("nan")),
@@ -416,7 +414,11 @@ def train_epoch(
     global_step_offset: int = 0,
 ) -> dict[str, float]:
     model.train()
-    totals = MetricAccumulator(_EPOCH_METRICS, device=device)
+    auxiliary_losses = configured_auxiliary_losses(value_preference=value_preference)
+    totals = MetricAccumulator(
+        (*_EPOCH_METRICS, *(term.metric_name for term in auxiliary_losses)),
+        device=device,
+    )
     repetition = getattr(model, "repetition", RepetitionConfig())
     for step, batch in enumerate(loader, start=1):
         optimizer.zero_grad(set_to_none=True)
@@ -430,13 +432,13 @@ def train_epoch(
                 with autocast_context(device, precision):
                     output = model(batch)
             with _debug_stage(runtime_debug, "training_loss"):
-                total_loss, value_loss = _resolve_training_loss(
+                losses = compose_training_loss(
                     output,
                     batch,
-                    value_preference=value_preference,
+                    auxiliary_losses,
                 )
             with _debug_stage(runtime_debug, "backward"):
-                total_loss.backward()
+                losses.total.backward()
             with _debug_stage(runtime_debug, "clip_grad_norm"):
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             with _debug_stage(runtime_debug, "optimizer_step"):
@@ -449,9 +451,9 @@ def train_epoch(
         count = batch["label_index"].shape[0]
         totals.update(
             {
-                "loss": total_loss,
-                "cross_entropy_loss": output["loss"],
-                "value_preference_loss": value_loss,
+                "loss": losses.total,
+                "cross_entropy_loss": losses.primary,
+                **losses.auxiliary,
                 "top1_accuracy": output["top1_accuracy"],
                 "top3_accuracy": output["top3_accuracy"],
             },
@@ -463,9 +465,9 @@ def train_epoch(
             write_scalar_metrics(
                 tensorboard_writer,
                 {
-                    "loss": total_loss,
-                    "cross_entropy_loss": output["loss"],
-                    "value_preference_loss": value_loss,
+                    "loss": losses.total,
+                    "cross_entropy_loss": losses.primary,
+                    **losses.auxiliary,
                     "top1_accuracy": output["top1_accuracy"],
                     "top3_accuracy": output["top3_accuracy"],
                     "learning_rate": optimizer.param_groups[0]["lr"],
@@ -486,48 +488,34 @@ def validate(
     value_preference: ValuePreferenceConfig | None = None,
 ) -> dict[str, float]:
     model.eval()
-    totals = MetricAccumulator(_EPOCH_METRICS, device=device)
+    auxiliary_losses = configured_auxiliary_losses(value_preference=value_preference)
+    totals = MetricAccumulator(
+        (*_EPOCH_METRICS, *(term.metric_name for term in auxiliary_losses)),
+        device=device,
+    )
     repetition = getattr(model, "repetition", RepetitionConfig())
     for batch in loader:
         batch = prepare_repetition_penalty(batch, repetition)
         batch = move_batch(batch, device, non_blocking=device.type == "cuda")
         with autocast_context(device, precision):
             output = model(batch)
-        total_loss, value_loss = _resolve_training_loss(
+        losses = compose_training_loss(
             output,
             batch,
-            value_preference=value_preference,
+            auxiliary_losses,
         )
         count = batch["label_index"].shape[0]
         totals.update(
             {
-                "loss": total_loss,
-                "cross_entropy_loss": output["loss"],
-                "value_preference_loss": value_loss,
+                "loss": losses.total,
+                "cross_entropy_loss": losses.primary,
+                **losses.auxiliary,
                 "top1_accuracy": output["top1_accuracy"],
                 "top3_accuracy": output["top3_accuracy"],
             },
             weight=count,
         )
     return totals.mean()
-
-
-def _resolve_training_loss(
-    output: dict[str, torch.Tensor],
-    batch: dict[str, torch.Tensor],
-    *,
-    value_preference: ValuePreferenceConfig | None,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """组合基础交叉熵和可选的价值辅助损失。"""
-    config = value_preference or ValuePreferenceConfig()
-    if not config.enabled:
-        return output["loss"], output["loss"].new_zeros(())
-    value_loss = compute_value_preference_loss(
-        output["logits"],
-        batch,
-        config,
-    )
-    return output["loss"] + config.loss_weight * value_loss, value_loss
 
 
 def _save_checkpoint_default(*args, **kwargs):

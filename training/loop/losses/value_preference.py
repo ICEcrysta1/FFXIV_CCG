@@ -2,34 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import torch
 import torch.nn.functional as F
 
-from common.config import load_project_config
-from common.skills import SkillBook
-from common.policy.data.policy_actions import load_policy_actions
-
-from ..config import ValuePreferenceConfig
-
-
-def load_skill_values(job_tag: str) -> dict[str, float]:
-    """加载技能与 policy action 的 action key -> value 回退映射。"""
-    project_config = load_project_config(job_tag=job_tag)
-    skill_book = SkillBook.from_project_config(project_config)
-    values = {
-        skill.key: float(skill.value)
-        for skill in skill_book.enabled_skills()
-    }
-    for action in load_policy_actions():
-        if action.key in values:
-            raise ValueError(f"policy action key conflicts with skill key: {action.key}")
-        values[action.key] = float(action.value)
-    return values
+from ...config import ValuePreferenceConfig
 
 
 def compute_value_preference_loss(
     logits: torch.Tensor,
-    batch: dict[str, torch.Tensor],
+    batch: Mapping[str, object],
     config: ValuePreferenceConfig,
 ) -> torch.Tensor:
     """只强化“人类已选择的高价值技能”相对低价值合法候选的排序。

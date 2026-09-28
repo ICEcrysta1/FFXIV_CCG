@@ -25,10 +25,11 @@ from training.config import (
 )
 from common.policy.config import resolve_policy_cache_dir
 from training.config import load_run_config
-from training.loop.value_preference import (
+from training.loop.losses.value_preference import (
     compute_value_preference_loss,
-    load_skill_values,
 )
+from training.data.skill_values import load_skill_values
+from training.loop.losses.primary import primary_loss
 from common.policy.model.input_encoder import build_position_ids
 from common.policy.model.repetition import apply_repetition_penalty
 
@@ -106,7 +107,7 @@ def test_swiglu_training_updates_all_ffn_projections_with_checkpointing(tmp_path
         for name in ("linear1", "gate_proj", "linear2")
     }
     with autocast_context(device, precision):
-        loss = model(batch)["loss"]
+        loss = primary_loss(model(batch), batch)
     assert torch.isfinite(loss)
     loss.backward()
     for layer in model.encoder.layers:

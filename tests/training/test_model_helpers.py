@@ -19,6 +19,7 @@ import training.loop as training_module
 import training.loop.checkpoint as checkpoint_module
 import training.loop.dataloaders as dataloaders_module
 import training.loop.training_loop as training_loop_impl
+from training.loop.loss import compose_training_loss, configured_auxiliary_losses
 from common.policy import config as policy_config_module
 from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, ModelInputContract, Normalizer
@@ -1081,20 +1082,20 @@ def test_training_helpers_and_epoch_metrics(tmp_path, monkeypatch):
     )[0] == "weighted"
 
     output = {
-        "loss": torch.tensor(1.0, requires_grad=True),
         "logits": torch.zeros((1, 2), requires_grad=True),
     }
-    loss, value_loss = training_module._resolve_training_loss(
+    losses = compose_training_loss(
         output,
         {
             "label_index": torch.tensor([0]),
             "candidate_values": torch.tensor([[2.0, 1.0]]),
             "candidate_legal_mask": torch.ones((1, 2), dtype=torch.bool),
         },
-        value_preference=ValuePreferenceConfig(enabled=False),
+        configured_auxiliary_losses(value_preference=ValuePreferenceConfig(enabled=False)),
     )
-    assert loss is output["loss"]
-    assert value_loss.item() == 0.0
+    assert losses.total is losses.primary
+    assert losses.total.item() == pytest.approx(torch.log(torch.tensor(2.0)).item())
+    assert losses.auxiliary["value_preference_loss"].item() == 0.0
 
     model = _TinyModel()
     optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
@@ -1373,9 +1374,8 @@ def test_build_dataloaders_rejects_empty_inputs_and_missing_skill_values(tmp_pat
         )
 
 
-def test_resolve_training_loss_and_autocast_success_paths(monkeypatch):
+def test_compose_training_loss_and_autocast_success_paths(monkeypatch):
     output = {
-        "loss": torch.tensor(1.0, requires_grad=True),
         "logits": torch.tensor([[2.0, 0.0]], requires_grad=True),
     }
     batch = {
@@ -1383,13 +1383,15 @@ def test_resolve_training_loss_and_autocast_success_paths(monkeypatch):
         "candidate_values": torch.tensor([[2.0, 1.0]]),
         "candidate_legal_mask": torch.ones((1, 2), dtype=torch.bool),
     }
-    total_loss, value_loss = training_module._resolve_training_loss(
+    losses = compose_training_loss(
         output,
         batch,
-        value_preference=ValuePreferenceConfig(enabled=True, loss_weight=0.5),
+        configured_auxiliary_losses(
+            value_preference=ValuePreferenceConfig(enabled=True, loss_weight=0.5),
+        ),
     )
-    assert value_loss.item() > 0.0
-    assert total_loss.item() > output["loss"].item()
+    assert losses.auxiliary["value_preference_loss"].item() > 0.0
+    assert losses.total.item() > losses.primary.item()
 
     called = {}
 
@@ -1835,7 +1837,7 @@ def test_run_training_closes_tensorboard_writer_when_validation_callback_raises(
     }
 
     with pytest.raises(RuntimeError, match="validation callback failed"):
-        training_module.run_training(
+        training_loop_impl.run_training(
             config,
             raw_paths=[tmp_path / "scene.json"],
             device_name="cpu",
