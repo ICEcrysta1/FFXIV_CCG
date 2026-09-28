@@ -73,11 +73,24 @@ def annotate_file(
         result = subprocess.run(
             [config.node, str(RUNTIME), str(request_path), str(result_path)],
             cwd=RUNTIME.parent, env=process_env, capture_output=True,
-            text=True, encoding="utf-8", timeout=config.timeout, check=False,
+            text=True, encoding="utf-8", errors="replace", timeout=config.timeout, check=False,
         )
         if result.returncode:
             raise RuntimeError(f"analysis process failed:\n{result.stderr.strip()}")
         analysis = json.loads(result_path.read_text(encoding="utf-8"))
+    if not isinstance(analysis, dict):
+        raise TypeError("analysis result must be a JSON object")
+    for field in ("source", "time_basis", "actor"):
+        if not isinstance(analysis.get(field), dict):
+            raise TypeError(f"analysis {field} must be a JSON object")
+    suggestions = analysis.get("fight_labels")
+    if not isinstance(suggestions, list):
+        raise TypeError("analysis fight_labels must be a list")
+    for suggestion in suggestions:
+        if not isinstance(suggestion, dict):
+            raise TypeError("analysis fight label must be a JSON object")
+        if "severity" not in suggestion:
+            raise ValueError("analysis fight label lacks severity")
     if analysis.get("schema_version") != 2 or analysis.get("source", {}).get("sha256") != checksum:
         raise ValueError("analysis source or schema mismatch")
     basis = analysis.get("time_basis", {})
@@ -87,7 +100,7 @@ def annotate_file(
         raise ValueError("analysis actor mismatch or failed modules")
     if hashlib.sha256(source.read_bytes()).hexdigest() != checksum:
         raise ValueError("raw input changed during analysis")
-    for suggestion in analysis["fight_labels"]:
+    for suggestion in suggestions:
         suggestion["severity_weight"] = weights.get(suggestion["severity"])
     analysis["severity_weights"] = weights
     analysis["job_tag"] = job_tag

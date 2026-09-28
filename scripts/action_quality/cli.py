@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+import os
 import subprocess
 from pathlib import Path
 
@@ -24,6 +25,8 @@ def main() -> int:
         parser.error("--limit must be positive")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     config = load_bridge_config()
+    if not os.environ.get("FFXIV_MODEL_VARIANT", "").strip():
+        logger.warning("未设置 FFXIV_MODEL_VARIANT：评估结果保留严重程度，但不写入模型等级权重")
     inputs = args.inputs or [default_raw_root()]
     files = set()
     for path in inputs:
@@ -50,7 +53,7 @@ def main() -> int:
                 source, config=config, output_root=args.output_root,
                 source_root=args.source_root,
             )
-        except (OSError, TypeError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
+        except (OSError, TypeError, ValueError, RuntimeError, UnicodeError, subprocess.TimeoutExpired) as error:
             logger.error("分析失败 %s: %s", source, error)
             failed += 1
         else:

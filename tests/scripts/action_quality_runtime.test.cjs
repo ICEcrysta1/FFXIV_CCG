@@ -8,6 +8,11 @@ const {extractMachinist} = require('../../scripts/action_quality/runtime/extract
 const {createTimeline} = require('../../scripts/action_quality/runtime/time.cjs');
 const {extractBlackMage} = require('../../scripts/action_quality/runtime/extract/black_mage.cjs');
 const {captureAttribution, attachActions} = require('../../scripts/action_quality/runtime/attribution.cjs');
+const {readCommit} = require('../../scripts/action_quality/runtime/analyze.cjs');
+
+test('Git 审计版本不可用时仍可继续分析', () => {
+  assert.equal(readCommit('/nonexistent/action-quality-analyzer'), null);
+});
 
 test('AoE 伤害仅以唯一 packetID 关联施法，使用施法时间，不猜附近技能', () => {
   const raw = {start: 1000, events: [

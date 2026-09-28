@@ -10,6 +10,15 @@ const {selectMeta} = require('./routing.cjs');
 const {createTimeline} = require('./time.cjs');
 const {captureAttribution, attachActions} = require('./attribution.cjs');
 
+function readCommit(analyzerRoot) {
+  try {
+    return execFileSync('git', ['-C', analyzerRoot, 'rev-parse', 'HEAD'], {encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']}).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 async function analyze(request) {
   const load = name => require(path.join(request.analyzer_root, 'src', name));
   const {adaptReport} = load('reportSources/legacyFflogs/reportAdapter');
@@ -67,7 +76,7 @@ async function analyze(request) {
     MACHINIST: () => require('./extract/machinist.cjs').extractMachinist(parser),
   };
   const specific = extractors[actor.job]?.() ?? {actionLabels: [], windowLabels: [], cycleLabels: [], cycles: [], observations: {}};
-  const commit = execFileSync('git', ['-C', request.analyzer_root, 'rev-parse', 'HEAD'], {encoding: 'utf8'}).trim();
+  const commit = readCommit(request.analyzer_root);
   return {
     schema_version: 2, bridge_version: 2, status: 'annotated', training_ready: false,
     time_basis: {unit: 'ms', origin: 'pull_start', report_offset_ms: pull.timestamp - raw.start},
@@ -90,4 +99,4 @@ async function analyze(request) {
   };
 }
 
-module.exports = {analyze};
+module.exports = {analyze, readCommit};
