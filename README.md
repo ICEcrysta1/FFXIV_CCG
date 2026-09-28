@@ -3,6 +3,12 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/ICEcrysta1/FFXIV_CCG/releases/latest"><img src="https://img.shields.io/github/v/release/ICEcrysta1/FFXIV_CCG?label=CCG&labelColor=555&color=blue&logo=github" alt="CCG 最新版本" /></a>
+  <img src="https://img.shields.io/badge/VRAM-%3E%3D4Gi-76b900?labelColor=555" alt="VRAM >= 4Gi" />
+  <img src="https://img.shields.io/badge/RAM-%3E%3D16Gi-ff6f00?labelColor=555" alt="RAM >= 16Gi" />
+</p>
+
+<p align="center">
   <img src="https://img.shields.io/badge/python-%3E%3D3.12-brightgreen?labelColor=555&logo=python" alt="Python >= 3.12" />
   <img src="https://img.shields.io/badge/torch-2.12.0%2Bcu132-ee4c2c?labelColor=555&logo=pytorch" alt="torch 2.12.0+cu132" />
   <img src="https://img.shields.io/badge/ONNX%20Runtime-1.27.0%20GPU-005ced?labelColor=555&logo=onnx" alt="ONNX Runtime 1.27.0 GPU" />
