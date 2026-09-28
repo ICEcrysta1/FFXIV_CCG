@@ -1,4 +1,4 @@
-"""raw FFLogs JSON 直接编译为最终 compiled cache 的 CLI。"""
+"""FFLogs JSON（可含评估标签）编译为最终 compiled cache 的 CLI。"""
 
 from __future__ import annotations
 
@@ -31,13 +31,13 @@ logger = logging.getLogger(__name__)
 
 
 def main() -> None:
-    """读取 raw JSON，并把最终训练样本写入职业 `.cache`。"""
+    """读取配置的数据阶段，并把最终训练样本写入职业 `.cache`。"""
     load_convert_fflogs_dotenv()
-    parser = argparse.ArgumentParser(description="raw FFLogs JSON -> compiled cache")
+    parser = argparse.ArgumentParser(description="FFLogs JSON -> compiled cache")
     parser.add_argument(
         "inputs",
         nargs="*",
-        help="raw JSON 文件或目录；省略时读取训练 YAML 的 raw_data_dir",
+        help="FFLogs JSON 文件或目录；省略时读取模型 YAML 的 raw_data_dir",
     )
     parser.add_argument("--job-tag", default=None, help="用于解析动作的职业标签")
     parser.add_argument("--source", type=int, default=None, help="覆盖 JSON 中的 source_id")
@@ -66,8 +66,7 @@ def main() -> None:
     raw_root = run_config.raw_data_dir
     input_paths = _resolve_input_files(args.inputs or [raw_root])
     if not input_paths:
-        logger.warning("没有找到 raw JSON 输入文件: %s", raw_root)
-        return
+        raise FileNotFoundError(f"没有找到 FFLogs JSON 输入文件: {raw_root}")
 
     cache_dir = (
         args.cache_root.resolve()
@@ -98,7 +97,9 @@ def main() -> None:
         max_workers=workers,
         max_shards=run_config.compiled_cache_max_shards,
     )
-    logger.info("raw JSON 编译完成: %d 个文件 -> %s", len(valid_paths), cache_dir)
+    if not valid_paths:
+        raise RuntimeError(f"{len(input_paths)} 份 FFLogs JSON 均未编译成功")
+    logger.info("FFLogs JSON 编译完成: %d 个文件 -> %s", len(valid_paths), cache_dir)
 
 
 def _resolve_input_files(inputs: list[str | Path]) -> list[Path]:
@@ -112,7 +113,7 @@ def _resolve_input_files(inputs: list[str | Path]) -> list[Path]:
         if path.is_dir():
             files.extend(find_dataset_json_files(path))
             continue
-        raise FileNotFoundError(f"raw JSON input not found: {path}")
+        raise FileNotFoundError(f"FFLogs JSON input not found: {path}")
     return sorted(set(files), key=lambda item: str(item).casefold())
 
 

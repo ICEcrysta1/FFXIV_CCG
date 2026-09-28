@@ -2,19 +2,49 @@
 
 from __future__ import annotations
 
+import sys
 from concurrent.futures import Future
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from common.policy.data import Normalizer
 from common.policy.data.compiled_cache import cache_path_for_source
 from scripts.convert_fflogs import build_training_samples
+from scripts.convert_fflogs import cli as convert_cli
 from scripts.convert_fflogs.cache import cache_compile as cache_compile_module
 from scripts.convert_fflogs.cache import precompile_raw_training_caches
 from scripts.convert_fflogs.cache.cache_load import load_raw_compiled_cache
 from tests.helpers import build_test_scene_context, targetable_window_token
 from training import TrainingDataset
+
+
+def test_cli_fails_when_annotated_inputs_produce_no_compiled_cache(tmp_path, monkeypatch):
+    source = tmp_path / "annotated" / "FRU" / "00-10" / "old_schema.json"
+    source.parent.mkdir(parents=True)
+    source.write_text("{}", encoding="utf-8")
+    run_config = SimpleNamespace(
+        raw_data_dir=source.parent.parent.parent,
+        compiled_cache_shard_size=16,
+        compiled_cache_max_shards=16,
+    )
+    monkeypatch.setattr(sys, "argv", [
+        "convert_fflogs", "--cache-root", str(tmp_path / ".cache"), "--workers", "1",
+    ])
+    monkeypatch.setattr(convert_cli, "load_convert_fflogs_dotenv", lambda: None)
+    monkeypatch.setattr(convert_cli, "resolve_policy_model_config_path", lambda: tmp_path / "config.yaml")
+    monkeypatch.setattr(convert_cli, "load_run_config", lambda _path: run_config)
+    monkeypatch.setattr(convert_cli, "resolve_policy_model_job_tag", lambda _path: "black_mage")
+    monkeypatch.setattr(convert_cli, "resolve_policy_model_variant", lambda _path: "artzip")
+    monkeypatch.setattr(convert_cli, "resolve_convert_fflogs_job_tag", lambda _tag: "black_mage")
+    monkeypatch.setattr(convert_cli, "precompile_raw_training_caches", lambda *_args, **_kwargs: [])
+
+    with pytest.raises(RuntimeError, match="均未编译成功"):
+        convert_cli.main()
+    source.unlink()
+    with pytest.raises(FileNotFoundError, match="没有找到 FFLogs JSON"):
+        convert_cli.main()
 
 
 @pytest.mark.parametrize("source_stage", ["raw", "annotated"])

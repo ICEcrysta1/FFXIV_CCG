@@ -19,6 +19,7 @@ from scripts.convert_fflogs import (
     load_job_project_config,
 )
 from scripts.convert_fflogs.extraction.extraction import _get_ability_id
+from training.config import load_run_config
 
 
 @pytest.fixture
@@ -142,6 +143,28 @@ def test_dotenv_reuses_loader_and_environment_wins(tmp_path, monkeypatch):
     assert settings.node == "from-process"
     assert settings.node_modules == tmp_path / "engine/node_modules"
     assert settings.timeout == 9
+
+
+@pytest.mark.parametrize("input_stage,expected", [
+    ("raw", "raw"),
+    ("annotated", "raw"),
+    ("annotated/FRU/00-10", "raw/FRU/00-10"),
+])
+def test_default_analysis_input_uses_raw_stage(tmp_path, monkeypatch, input_stage, expected):
+    monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(config, "resolve_policy_model_config_path", lambda: tmp_path / "model.yaml")
+    monkeypatch.setattr(config, "load_policy_config", lambda _path: {
+        "raw_data_dir": f"data/human/job/black_mage/{input_stage}",
+    })
+    assert config.default_raw_root() == tmp_path / "data/human/job/black_mage" / expected
+
+
+def test_artzip_model_defaults_to_annotated_for_conversion_and_training(monkeypatch):
+    manifest = config.PROJECT_ROOT / "config/models/black_mage/artzip/config.yaml"
+    run = load_run_config(manifest)
+    assert run.raw_data_dir == config.PROJECT_ROOT / "data/human/job/black_mage/annotated"
+    monkeypatch.setattr(config, "resolve_policy_model_config_path", lambda: manifest)
+    assert config.default_raw_root() == config.PROJECT_ROOT / "data/human/job/black_mage/raw"
 
 
 def test_job_weight_configuration_isolated(tmp_path, monkeypatch):

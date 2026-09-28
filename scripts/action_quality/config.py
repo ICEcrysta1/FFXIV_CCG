@@ -42,9 +42,13 @@ def load_bridge_config() -> BridgeConfig:
 
 
 def default_raw_root() -> Path:
-    """不重复维护 raw 路径，从现有策略模型配置读取。"""
+    """从模型输入阶段定位同级 raw，避免重复评估 annotated 文件。"""
     config = load_policy_config(resolve_policy_model_config_path())
-    return resolve_project_path(config["raw_data_dir"], project_root=PROJECT_ROOT)
+    source = resolve_project_path(config["raw_data_dir"], project_root=PROJECT_ROOT)
+    annotated = next((part for part in (source, *source.parents) if part.name == "annotated"), None)
+    if annotated is None:
+        return source
+    return annotated.with_name("raw") / source.relative_to(annotated)
 
 
 def severity_weights(job_tag: str) -> dict[str, float]:

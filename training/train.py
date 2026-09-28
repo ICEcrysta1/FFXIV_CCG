@@ -80,7 +80,7 @@ def _evaluate_training_metrics(*, model, dataset, data_spec, vocab, config, devi
 def main() -> None:
     parser = argparse.ArgumentParser(description="训练职业行为克隆模型")
     parser.add_argument("--config", type=Path, default=None, help="职业 YAML 配置；默认读取根目录 .env")
-    parser.add_argument("--raw-data-dir", type=Path, default=None, help="覆盖 YAML 中的 raw JSON 目录")
+    parser.add_argument("--raw-data-dir", type=Path, default=None, help="覆盖 YAML 中的输入 JSON 目录")
     parser.add_argument("--output-dir", type=Path, default=None, help="覆盖 YAML 中的 checkpoint 目录")
     parser.add_argument("--epochs", type=int, default=None, help="覆盖训练轮数")
     parser.add_argument("--batch-size", type=int, default=None, help="覆盖 batch size")
@@ -89,7 +89,7 @@ def main() -> None:
         "--max-files",
         type=int,
         default=None,
-        help="覆盖 training.max_files：按副本目录比例最多使用 N 个 raw JSON 文件；省略时读取 YAML",
+        help="覆盖 training.max_files：按副本目录比例最多使用 N 个输入 JSON 文件；省略时读取 YAML",
     )
     parser.add_argument("--device", default=None, help="覆盖根目录 .env 中的训练设备：cuda 或 cpu")
     parser.add_argument("--resume", type=Path, default=None, help="从指定 checkpoint 继续训练")
@@ -116,7 +116,7 @@ def main() -> None:
     if args.force_resume_data_mismatch and args.resume is None:
         raise ValueError("--force-resume-data-mismatch requires --resume")
     logging.info(
-        "raw JSON 数量上限: %s（来源: %s）",
+        "输入 JSON 数量上限: %s（来源: %s）",
         "全部有效文件" if max_files is None else max_files,
         "--max-files" if args.max_files is not None else "training.max_files",
     )

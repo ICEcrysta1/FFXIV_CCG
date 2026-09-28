@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="raw JSON -> annotated JSON 离线动作质量标注")
-    parser.add_argument("inputs", nargs="*", type=Path, help="JSON 文件或目录；默认读取模型 YAML 的 raw_data_dir")
+    parser.add_argument("inputs", nargs="*", type=Path, help="raw JSON 文件或目录；默认从模型输入阶段定位同级 raw")
     parser.add_argument("--output-root", type=Path, help="评估输出根目录；默认 raw 同级 annotated")
     parser.add_argument("--source-root", type=Path, help="自定义输入阶段根目录，保留其下相对层级")
     parser.add_argument("--limit", type=int, help="只处理前 N 份，便于验证")
