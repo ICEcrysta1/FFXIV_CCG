@@ -14,9 +14,10 @@ from common.torch_serialization import safe_torch_load
 
 from .schema import SceneWindowSchema, TrainingSchema
 
+# v13：样本增加动作质量标签和原始事件索引；旧缓存没有该监督信息，必须重编译。
 # v12：黑魔候选集合移除 retrace、manaward、surecast，compiled cache 的候选布局
 # 不再与旧缓存兼容；同时保留 v11 的提前效果结算语义。
-CACHE_FORMAT = "raw_json_compiled_samples_v12_black_mage_candidate_set"
+CACHE_FORMAT = "raw_json_compiled_samples_v13_action_quality_labels"
 # v11：C# 状态机把硬读条的服务器效果结算与完整读条锁结束拆开；转换请求时刻
 # 仍按统一滑步窗口恢复，日志抖动只由容量一动作队列吸收。旧缓存的效果状态时序不可复用。
 # v10：硬读条请求时刻改由 `cast − 实际读条时长 + 0.5 秒滑步窗口` 解析，
@@ -24,7 +25,8 @@ CACHE_FORMAT = "raw_json_compiled_samples_v12_black_mage_candidate_set"
 # v9：请求时刻改由 `cast − 实际读条时长` 解析（消除服务器提前结算偏差），
 # 场景事实只注入 Boss 可选中/目标数/团辅，移动与停手标量由输出层改写，
 # policy 动作改走 record_policy_action。旧缓存的时序与场景语义不可复用。
-DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v12_black_mage_candidate_set"
+# 调整动作质量标签的准入语义时，手动提升此版本以重编译旧缓存；仅改注释无需提升。
+DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v13_action_quality_labels"
 # `weights_only=True` 的安全 unpickler 对 protocol 2 支持最稳定；compiled
 # cache 的样本数据只需要普通 mapping 和 tensor，不需要更高协议。
 CACHE_PICKLE_PROTOCOL = 2

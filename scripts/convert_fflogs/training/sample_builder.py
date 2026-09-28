@@ -149,6 +149,8 @@ class TrainingSampleBuilder:
             "scene_types": scene_types,
             "label_index": label_index,
             "label_action_key": str(label.get("action_key", "")),
+            "raw_event_index": label.get("raw_event_index"),
+            "quality_labels": list(label.get("quality_labels", [])),
         }
         if compact_history:
             sample.update(

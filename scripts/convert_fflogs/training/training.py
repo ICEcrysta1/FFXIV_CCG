@@ -169,6 +169,8 @@ def _run_real_action(
             "action_key": action_key,
             "skill_id": skill.game_id,
             "skill_name": skill.name,
+            "raw_event_index": raw_action.get("raw_event_index"),
+            "quality_labels": list(raw_action.get("quality_labels", [])),
             "candidate_index": _find_candidate_index(context["candidate_skill_context"], action_key),
             "is_legal": True,
             "invalid_reason": "",

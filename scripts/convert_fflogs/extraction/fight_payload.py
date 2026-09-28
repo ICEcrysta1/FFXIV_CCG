@@ -111,6 +111,8 @@ def build_fight_payload(
                 "request_time_offset": _round_time(request_timestamp - fight_start),
                 "action_key": action["action_key"],
                 "skill_id": int(action["skill_id"]),
+                "raw_event_index": action.get("raw_event_index"),
+                "quality_labels": list(action.get("quality_labels", [])),
                 "skill_name": action["skill_name"],
                 "actual_cast_seconds": _round_time(float(action.get("actual_cast_seconds", 0.0))),
                 "actual_is_instant": bool(action.get("actual_is_instant", False)),

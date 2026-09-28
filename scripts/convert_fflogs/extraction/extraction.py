@@ -95,7 +95,7 @@ def _collect_actions(
     actions: list[dict[str, object]] = []
     ignored_skill_counts: Counter[tuple[int, str]] = Counter()
 
-    for event in events:
+    for raw_event_index, event in enumerate(events):
         if not isinstance(event, dict):
             continue
         if event.get("sourceID") != source_id:
@@ -129,6 +129,7 @@ def _collect_actions(
 
         actions.append(
             {
+                "raw_event_index": raw_event_index,
                 "timestamp": float(event["timestamp"]) / 1000.0,
                 "action_key": skill.key,
                 "skill_id": skill.game_id,
