@@ -13,7 +13,7 @@ from pathlib import Path
 from common.dataset_layout import map_dataset_output_path
 from scripts.common.json_io import atomic_write_json
 
-from .config import BridgeConfig, severity_weights
+from .config import BridgeConfig
 
 RUNTIME = Path(__file__).parent / "runtime" / "run.cjs"
 
@@ -45,7 +45,7 @@ def analyzer_commit(config: BridgeConfig) -> str | None:
 
 
 def annotation_is_current(source: Path, output: Path, *, commit: str | None) -> bool:
-    """仅当原始内容、分析器版本和等级权重均一致时复用已有产物。"""
+    """仅当原始内容与分析器版本一致时复用已有产物。"""
     if commit is None or not output.is_file():
         return False
     try:
@@ -63,12 +63,11 @@ def annotation_is_current(source: Path, output: Path, *, commit: str | None) -> 
         if isinstance(selected, bool) or not isinstance(selected, int) or selected <= 0:
             return False
         job_tag = _selected_job(raw, selected)
-        weights = severity_weights(job_tag)
         labels = analysis.get("fight_labels")
         if not isinstance(labels, list) or any(
             not isinstance(label, dict)
             or "severity" not in label
-            or label.get("severity_weight") != weights.get(label["severity"])
+            or "severity_weight" in label
             for label in labels
         ):
             return False
@@ -76,7 +75,7 @@ def annotation_is_current(source: Path, output: Path, *, commit: str | None) -> 
             raw.get("events_complete") is True
             and bool(raw.get("events"))
             and analysis.get("schema_version") == 2
-            and analysis.get("bridge_version") == 2
+            and analysis.get("bridge_version") == 3
             and analysis.get("status") == "annotated"
             and analysis.get("training_ready") is False
             and analysis.get("source", {}).get("sha256") == hashlib.sha256(content).hexdigest()
@@ -87,7 +86,7 @@ def annotation_is_current(source: Path, output: Path, *, commit: str | None) -> 
             and analysis.get("time_basis", {}).get("unit") == "ms"
             and analysis.get("time_basis", {}).get("origin") == "pull_start"
             and analysis.get("module_errors") == []
-            and analysis.get("severity_weights") == weights
+            and "severity_weights" not in analysis
         )
     except (OSError, TypeError, ValueError, UnicodeError, KeyError):
         return False
@@ -133,7 +132,6 @@ def annotate_file(
     if isinstance(selected, bool) or not isinstance(selected, int) or selected <= 0:
         raise ValueError("source_id must be a positive integer")
     job_tag = _selected_job(raw, selected)
-    weights = severity_weights(job_tag)
     checksum = hashlib.sha256(content).hexdigest()
     with tempfile.TemporaryDirectory(prefix="action-quality-") as temporary:
         request_path = Path(temporary) / "request.json"
@@ -166,8 +164,14 @@ def annotate_file(
             raise TypeError("analysis fight label must be a JSON object")
         if "severity" not in suggestion:
             raise ValueError("analysis fight label lacks severity")
-    if analysis.get("schema_version") != 2 or analysis.get("source", {}).get("sha256") != checksum:
+    if (
+        analysis.get("schema_version") != 2
+        or analysis.get("bridge_version") != 3
+        or analysis.get("source", {}).get("sha256") != checksum
+    ):
         raise ValueError("analysis source or schema mismatch")
+    if "severity_weights" in analysis or any("severity_weight" in label for label in suggestions):
+        raise ValueError("analysis contains obsolete model quality weights")
     basis = analysis.get("time_basis", {})
     if basis.get("unit") != "ms" or basis.get("origin") != "pull_start":
         raise ValueError("analysis time basis mismatch")
@@ -175,9 +179,6 @@ def annotate_file(
         raise ValueError("analysis actor mismatch or failed modules")
     if hashlib.sha256(source.read_bytes()).hexdigest() != checksum:
         raise ValueError("raw input changed during analysis")
-    for suggestion in suggestions:
-        suggestion["severity_weight"] = weights.get(suggestion["severity"])
-    analysis["severity_weights"] = weights
     analysis["job_tag"] = job_tag
     atomic_write_json(output, {**raw, "analysis": analysis})
     return output

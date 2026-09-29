@@ -19,8 +19,17 @@ def attach_action_quality_labels(
     analysis = report.get("analysis")
     if analysis is None:
         return
-    if not isinstance(analysis, dict) or analysis.get("schema_version") != 2:
-        raise ValueError("annotated input requires action quality schema version 2")
+    if (
+        not isinstance(analysis, dict)
+        or analysis.get("schema_version") != 2
+        or analysis.get("bridge_version") != 3
+    ):
+        raise ValueError("annotated input requires action quality schema version 2, bridge version 3")
+    labels = analysis.get("fight_labels")
+    if "severity_weights" in analysis or not isinstance(labels, list) or any(
+        not isinstance(label, dict) or "severity_weight" in label for label in labels
+    ):
+        raise ValueError("annotated input contains obsolete model quality weights; regenerate annotation")
     if analysis.get("actor", {}).get("id") != str(source_id):
         raise ValueError("analysis actor does not match conversion source")
     if analysis.get("job_tag") != job_tag:
@@ -35,8 +44,7 @@ def attach_action_quality_labels(
         raise TypeError("analysis report offset must be integer milliseconds")
     enabled = load_action_quality_skill_policy(job_tag)
     events = report.get("events")
-    labels = analysis.get("fight_labels")
-    if not isinstance(events, list) or not isinstance(labels, list):
+    if not isinstance(events, list):
         raise TypeError("annotated input must contain events and fight labels")
 
     by_index: dict[int, list[dict[str, object]]] = defaultdict(list)

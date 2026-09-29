@@ -45,7 +45,7 @@ def test_machinist_annotated_report_converts_with_skill_labels_disabled():
     report = {
         "fight_id": 3, "events": events,
         "analysis": {
-            "schema_version": 2,
+            "schema_version": 2, "bridge_version": 3,
             "actor": {"id": "7"},
             "job_tag": "machinist",
             "source": {"fight_id": 3},
@@ -89,7 +89,7 @@ def _annotated_report() -> dict[str, object]:
         "fight_id": 3,
         "events": events,
         "analysis": {
-            "schema_version": 2,
+            "schema_version": 2, "bridge_version": 3,
             "actor": {"id": "7"},
             "job_tag": "black_mage",
             "source": {"fight_id": 3},
@@ -169,6 +169,20 @@ def test_older_annotation_without_event_type_must_be_regenerated():
                                      job_tag="black_mage", source_id=7)
 
 
+def test_legacy_weighted_annotation_must_be_regenerated():
+    report = _annotated_report()
+    report["analysis"]["bridge_version"] = 2
+    report["analysis"]["severity_weights"] = {"medium": 0.5}
+    report["analysis"]["fight_labels"][0]["severity_weight"] = 0.5
+    with pytest.raises(ValueError, match="bridge version 3"):
+        attach_action_quality_labels(report, [{"raw_event_index": 1, "skill_id": 152}],
+                                     job_tag="black_mage", source_id=7)
+    report["analysis"]["bridge_version"] = 3
+    with pytest.raises(ValueError, match="regenerate annotation"):
+        attach_action_quality_labels(report, [{"raw_event_index": 1, "skill_id": 152}],
+                                     job_tag="black_mage", source_id=7)
+
+
 def test_label_reaches_real_decision_not_policy_wait(cs_backend, cs_skill_book):
     action = {
         "timestamp": 1.0, "request_timestamp": 1.0, "action_key": "fire_iii",
@@ -206,7 +220,8 @@ def test_compiled_pt_and_batch_keep_label_outside_model_inputs(
 ):
     torch = pytest.importorskip("torch")
     labels = ([
-        {"reason_id": REASON, "severity": "medium", "raw_event_index": 1},
+        {"reason_id": REASON, "severity": "minor", "raw_event_index": 1},
+        {"reason_id": "medium.error", "severity": "medium", "raw_event_index": 1},
         {"reason_id": "second.error", "severity": "major", "raw_event_index": 1},
     ] if with_labels else [])
     action = {
@@ -251,20 +266,49 @@ def test_compiled_pt_and_batch_keep_label_outside_model_inputs(
     assert saved["metadata"]["percentile"] == percentile
     assert saved["metadata"]["percentile_bucket"] == bucket
     assert saved["metadata"]["quality_label_status"] == expected_status
-    assert saved["quality_label_weights"].tolist() == ([0.5, 1.0] if with_labels else [])
+    assert saved["quality_label_levels"].dtype == torch.int32
+    assert saved["quality_label_levels"].tolist() == ([1, 2, 3] if with_labels else [])
+    assert "quality_label_weights" not in saved
     dataset = TrainingDataset(
         [source], job_tag="black_mage", normalizer=normalizer,
         int_dtype=torch.int32, float_dtype=torch.float32,
         cache_dir=cache_root, compiled_cache_shard_size=1,
     )
     batch = TrainingCollator()([dataset[0]])
-    assert batch["quality_label_weights"].tolist() == ([[0.5, 1.0]] if with_labels else [[]])
-    assert batch["quality_label_mask"].tolist() == ([[True, True]] if with_labels else [[]])
+    assert batch["quality_label_levels"].dtype == torch.int32
+    assert batch["label_index"].dtype == torch.int64
+    assert batch["source_quality"].dtype == torch.float32
+    assert batch["quality_label_levels"].tolist() == ([[1, 2, 3]] if with_labels else [[]])
+    assert batch["quality_label_mask"].tolist() == ([[True, True, True]] if with_labels else [[]])
+    assert "quality_label_weights" not in batch
     assert batch["quality_annotation_available"].tolist() == [annotation_status == "partial"]
     assert batch["source_quality"].tolist() == pytest.approx([percentile / 100.0])
     assert "source_percentile" not in batch
     assert "source_percentile_bucket_lower" not in batch
     assert isinstance(batch["candidate_skill_features"], torch.Tensor)
+    if with_labels:
+        empty_label_sample = {**dataset[0], "quality_label_levels": torch.empty(0, dtype=torch.int32)}
+        mixed_batch = TrainingCollator()([dataset[0], empty_label_sample])
+        assert mixed_batch["quality_label_levels"].tolist() == [[1, 2, 3], [0, 0, 0]]
+        assert mixed_batch["quality_label_mask"].tolist() == [[True, True, True], [False, False, False]]
+    if with_labels and percentile == 7.5:
+        from common.policy import config as policy_config
+
+        monkeypatch.setenv("FFXIV_MODEL_VARIANT", "different_quality_weights")
+        monkeypatch.setattr(
+            policy_config, "load_action_quality_severity_weights",
+            lambda _job: {"minor": 0.1, "medium": 0.2, "major": 0.3},
+        )
+        monkeypatch.setattr(
+            cache_compile, "convert_raw_file",
+            lambda *_args, **_kwargs: pytest.fail("changing model weights must reuse compiled PT"),
+        )
+        assert precompile_raw_training_caches(
+            [source], job_tag="black_mage", normalizer=normalizer,
+            int_dtype=torch.int32, float_dtype=torch.float32,
+            cache_dir=cache_root, shard_size=1, max_workers=1,
+        ) == [source]
+        assert reader.sample(0)["quality_label_levels"].tolist() == [1, 2, 3]
 
 
 def test_source_ranking_checks_directory_and_preserves_unknown_percentile(tmp_path):

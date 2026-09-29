@@ -17,7 +17,7 @@ import torch
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
-from common.config import PROJECT_ROOT, load_project_config
+from common.config import PROJECT_ROOT, load_precision_config, load_project_config
 from common.cache_compilation import compile_raw_training_cache
 from common.project_config import resolve_project_job_tag
 from common.torch_runtime import autocast_context, model_dtype, move_batch
@@ -504,13 +504,14 @@ def _load_analysis_dataset(
     """读取分析用 cache；缺失或过期时调用转换 CLI 后重试。"""
     normalizer = Normalizer()
     normalizer.configure_job_resources(job_tag)
+    precision = load_precision_config()
     dataset_kwargs = {
         "normalizer": normalizer,
         "job_tag": job_tag,
         "skill_vocab": skill_vocab,
         "max_history": max_history,
-        "int_dtype": torch.int32,
-        "float_dtype": torch.float32,
+        "int_dtype": precision.resolve_int_dtype(),
+        "float_dtype": precision.resolve_float_dtype(),
         "cache_dir": cache_dir,
         "compiled_cache_shard_size": cache_shard_size,
         "compiled_cache_max_shards": cache_max_shards,

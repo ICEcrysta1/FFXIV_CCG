@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from common.policy.config import (
-    load_action_quality_severity_weights,
     load_policy_config,
     resolve_policy_model_config_path,
 )
@@ -59,8 +58,3 @@ def default_raw_root() -> Path:
     if annotated is None:
         return source
     return annotated.with_name("raw") / source.relative_to(annotated)
-
-
-def severity_weights(job_tag: str) -> dict[str, float]:
-    """按输入职业选择权重；没有配置时保留等级，不借用其他职业配置。"""
-    return load_action_quality_severity_weights(job_tag)

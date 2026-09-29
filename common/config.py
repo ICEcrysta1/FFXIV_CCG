@@ -96,6 +96,7 @@ class PrecisionConfig:
     """统一 tensor 输出精度配置。"""
 
     int_dtype: str
+    index_dtype: str
     float_dtype: str
 
     def resolve_int_dtype(self):
@@ -114,11 +115,22 @@ class PrecisionConfig:
             category_name="floating-point",
         )
 
+    def resolve_index_dtype(self):
+        return _resolve_torch_dtype(
+            self.index_dtype,
+            field_name="index_dtype",
+            allowed_names=_INDEX_DTYPE_NAMES,
+            category_name="index",
+        )
+
 
 _INT_DTYPE_ALIASES = {
     "int32": "int32",
     "int64": "int64",
 }
+
+# 交叉熵目标和 gather 索引需要 int64；作为独立配置显式记录该算子约束。
+_INDEX_DTYPE_ALIASES = {"int64": "int64"}
 
 _FLOAT_DTYPE_ALIASES = {
     "float32": "float32",
@@ -130,6 +142,7 @@ _FLOAT_DTYPE_ALIASES = {
 }
 
 _INT_DTYPE_NAMES = frozenset(_INT_DTYPE_ALIASES.values())
+_INDEX_DTYPE_NAMES = frozenset(_INDEX_DTYPE_ALIASES.values())
 _FLOAT_DTYPE_NAMES = frozenset(_FLOAT_DTYPE_ALIASES.values())
 
 
@@ -143,12 +156,21 @@ def load_precision_config(path: Path | None = None) -> PrecisionConfig:
         field_name="int_dtype",
         aliases=_INT_DTYPE_ALIASES,
     )
+    resolved_index = _resolve_precision_alias(
+        payload["index_dtype"],
+        field_name="index_dtype",
+        aliases=_INDEX_DTYPE_ALIASES,
+    )
     resolved_float = _resolve_precision_alias(
         payload.get("float_dtype", "float32"),
         field_name="float_dtype",
         aliases=_FLOAT_DTYPE_ALIASES,
     )
-    return PrecisionConfig(int_dtype=resolved_int, float_dtype=resolved_float)
+    return PrecisionConfig(
+        int_dtype=resolved_int,
+        index_dtype=resolved_index,
+        float_dtype=resolved_float,
+    )
 
 
 def _resolve_precision_alias(raw_value: object, *, field_name: str, aliases: dict[str, str]) -> str:

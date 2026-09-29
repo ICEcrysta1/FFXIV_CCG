@@ -17,7 +17,6 @@ from common.policy.data.compiled_cache import (
 )
 from common.policy.data.normalizer import Normalizer
 from common.policy.data.skill_vocab import SkillVocab
-from common.policy.config import load_action_quality_severity_weights
 
 from ..config.constants import DEFAULT_DOWNTIME_GAP_SECONDS
 from ..source.raw_source import convert_raw_file
@@ -289,7 +288,6 @@ def _compile_raw_source_worker(task) -> tuple[str, int, int]:
 
     reader = TrainingSourceReader(training_payload)
     ranking = source_ranking(source_path, reader.ranking)
-    quality_weights = load_action_quality_severity_weights(reader.job_tag)
     worker_normalizer = Normalizer.from_contract(normalizer_contract)
     worker_normalizer.ensure_job_resources(str(job_tag))
     worker_normalizer.register_schema(reader.schema)
@@ -315,7 +313,6 @@ def _compile_raw_source_worker(task) -> tuple[str, int, int]:
         history_bank=history_bank,
         ranking=ranking,
         annotation_status=reader.annotation_status,
-        severity_weights=quality_weights,
     )
 
     def sample_batches():

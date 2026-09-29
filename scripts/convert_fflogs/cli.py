@@ -6,8 +6,7 @@ import argparse
 import logging
 from pathlib import Path
 
-import torch
-
+from common.config import load_precision_config
 from common.dataset_layout import find_dataset_json_files
 from common.policy.config import (
     resolve_policy_cache_dir,
@@ -83,6 +82,7 @@ def main() -> None:
         if args.workers is None
         else int(args.workers)
     )
+    precision = load_precision_config()
     valid_paths = precompile_raw_training_caches(
         input_paths,
         job_tag=resolved_job_tag,
@@ -90,8 +90,8 @@ def main() -> None:
         encounter=args.encounter,
         downtime_gap_seconds=float(args.downtime_gap),
         normalizer=Normalizer(),
-        int_dtype=torch.int32,
-        float_dtype=torch.float32,
+        int_dtype=precision.resolve_int_dtype(),
+        float_dtype=precision.resolve_float_dtype(),
         cache_dir=cache_dir,
         shard_size=shard_size,
         max_workers=workers,

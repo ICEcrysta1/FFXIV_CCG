@@ -78,8 +78,14 @@ def build_dataloaders(
         candidate_shuffle_enabled=config.candidate_shuffle_enabled,
         candidate_shuffle_probability=config.candidate_shuffle_probability,
         skill_values=skill_values,
+        int_dtype=int_dtype,
+        float_dtype=float_dtype,
     )
-    val_collator = TrainingCollator(skill_values=skill_values)
+    val_collator = TrainingCollator(
+        skill_values=skill_values,
+        int_dtype=int_dtype,
+        float_dtype=float_dtype,
+    )
     loader_options = _dataloader_options(config)
     sequence_oversampler = load_sequence_oversampler(config.config_path)
     sample_weights = build_sample_weights(train_dataset, sequence_oversampler)

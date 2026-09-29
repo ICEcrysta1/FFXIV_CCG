@@ -2,7 +2,6 @@
 
 import argparse
 import logging
-import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -27,8 +26,6 @@ def main() -> int:
         parser.error("--limit must be positive")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     config = load_bridge_config()
-    if not os.environ.get("FFXIV_MODEL_VARIANT", "").strip():
-        logger.warning("未设置 FFXIV_MODEL_VARIANT：评估结果保留严重程度，但不写入模型等级权重")
     inputs = args.inputs or [default_raw_root()]
     files = set()
     for path in inputs:

@@ -14,11 +14,12 @@ from common.torch_serialization import safe_torch_load
 
 from .schema import SceneWindowSchema, TrainingSchema
 
+# v15：样本只保存配置无关的动作质量等级代码 1/2/3；旧权重缓存必须重编译。
 # v14：样本新增排名区间、标注状态和配置映射后的数值等级权重；旧缓存必须重编译。
 # v13：样本增加动作质量标签和原始事件索引；旧缓存没有该监督信息，必须重编译。
 # v12：黑魔候选集合移除 retrace、manaward、surecast，compiled cache 的候选布局
 # 不再与旧缓存兼容；同时保留 v11 的提前效果结算语义。
-CACHE_FORMAT = "raw_json_compiled_samples_v14_quality_supervision"
+CACHE_FORMAT = "raw_json_compiled_samples_v15_quality_levels"
 # v11：C# 状态机把硬读条的服务器效果结算与完整读条锁结束拆开；转换请求时刻
 # 仍按统一滑步窗口恢复，日志抖动只由容量一动作队列吸收。旧缓存的效果状态时序不可复用。
 # v10：硬读条请求时刻改由 `cast − 实际读条时长 + 0.5 秒滑步窗口` 解析，
@@ -26,10 +27,12 @@ CACHE_FORMAT = "raw_json_compiled_samples_v14_quality_supervision"
 # v9：请求时刻改由 `cast − 实际读条时长` 解析（消除服务器提前结算偏差），
 # 场景事实只注入 Boss 可选中/目标数/团辅，移动与停手标量由输出层改写，
 # policy 动作改走 record_policy_action。旧缓存的时序与场景语义不可复用。
-# 调整动作质量标签的准入语义或等级权重时，手动提升此版本以重编译旧缓存；仅改注释无需提升。
+# 调整动作质量标签的准入语义时，手动提升此版本以重编译旧缓存；
+# 模型等级权重只在损失计算时映射，修改权重或注释无需重编译。
+# v16：移除编译时模型等级权重依赖，输出稳定等级代码；旧结果不能复用。
 # v15：数值权重和来源档位进入 compiled 样本；旧 v14 转换结果不能复用。
 # v14：真实技能样本补齐 step/source_step；旧 v13 缓存中的零步号不能复用。
-DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v15_quality_supervision"
+DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v16_quality_levels"
 # `weights_only=True` 的安全 unpickler 对 protocol 2 支持最稳定；compiled
 # cache 的样本数据只需要普通 mapping 和 tensor，不需要更高协议。
 CACHE_PICKLE_PROTOCOL = 2

@@ -12,6 +12,9 @@ if TYPE_CHECKING:
     from common.policy.data.skill_vocab import SkillVocab
 
 
+QUALITY_SEVERITY_LEVELS = {"minor": 1, "medium": 2, "major": 3}
+
+
 class TrainingSampleBuilder:
     """集中处理词表编码、归一化和compiled cache 样本契约拼装。"""
 
@@ -28,7 +31,6 @@ class TrainingSampleBuilder:
         history_bank: dict[str, object] | None = None,
         ranking: dict[str, object] | None = None,
         annotation_status: str = "unannotated",
-        severity_weights: dict[str, float] | None = None,
     ):
         self._torch = torch
         self._normalizer = normalizer
@@ -40,7 +42,6 @@ class TrainingSampleBuilder:
         self._history_bank = history_bank
         self._ranking = ranking or {"percentile": None, "percentile_bucket": None}
         self._annotation_status = annotation_status
-        self._severity_weights = severity_weights or {}
 
     def build(self, reader, sample_idx: int) -> dict[str, object]:
         compact_history = self._history_bank is not None
@@ -144,14 +145,14 @@ class TrainingSampleBuilder:
         quality_labels = list(label.get("quality_labels", []))
         if quality_labels and self._annotation_status != "partial":
             raise ValueError("action quality labels require an annotated source")
-        numeric_weights = []
+        severity_levels = []
         for quality_label in quality_labels:
             if not isinstance(quality_label, dict):
                 raise TypeError("action quality label must be a mapping")
             severity = quality_label.get("severity")
-            if severity not in self._severity_weights:
-                raise ValueError(f"no configured weight for action quality severity: {severity!r}")
-            numeric_weights.append(self._severity_weights[severity])
+            if severity not in QUALITY_SEVERITY_LEVELS:
+                raise ValueError(f"unknown action quality severity: {severity!r}")
+            severity_levels.append(QUALITY_SEVERITY_LEVELS[severity])
         if label.get("raw_event_index") is None:
             quality_status = "synthetic"
         elif quality_labels:
@@ -181,7 +182,7 @@ class TrainingSampleBuilder:
             "label_action_key": str(label.get("action_key", "")),
             "raw_event_index": label.get("raw_event_index"),
             "quality_labels": quality_labels,
-            "quality_label_weights": self._torch.tensor(numeric_weights, dtype=self._torch.float32),
+            "quality_label_levels": self._torch.tensor(severity_levels, dtype=self._int_dtype),
         }
         if compact_history:
             sample.update(

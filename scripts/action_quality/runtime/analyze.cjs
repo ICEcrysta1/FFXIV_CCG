@@ -78,7 +78,7 @@ async function analyze(request) {
   const specific = extractors[actor.job]?.() ?? {actionLabels: [], windowLabels: [], cycleLabels: [], cycles: [], observations: {}};
   const commit = readCommit(request.analyzer_root);
   return {
-    schema_version: 2, bridge_version: 2, status: 'annotated', training_ready: false,
+    schema_version: 2, bridge_version: 3, status: 'annotated', training_ready: false,
     time_basis: {unit: 'ms', origin: 'pull_start', report_offset_ms: pull.timestamp - raw.start},
     source: {sha256: crypto.createHash('sha256').update(content).digest('hex'), report_code: raw.report_code ?? raw.code, fight_id: raw.fight_id},
     engine: {commit, runtime: process.version, encounter_module: encounterMeta ? pull.encounter.key : null,

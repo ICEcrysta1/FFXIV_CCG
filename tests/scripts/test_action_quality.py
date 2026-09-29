@@ -47,7 +47,7 @@ def fake_process(monkeypatch, *, error=False, wrong_source=False, schema=2,
         content = Path(request["source"]).read_bytes()
         assert "FFLOGS_V2_CLIENT_SECRET" not in kwargs["env"]
         analysis = {
-            "schema_version": schema, "bridge_version": 2, "status": "annotated",
+            "schema_version": schema, "bridge_version": 3, "status": "annotated",
             "training_ready": False,
             "source": {
                 "sha256": "wrong" if wrong_source else hashlib.sha256(content).hexdigest(),
@@ -65,7 +65,6 @@ def fake_process(monkeypatch, *, error=False, wrong_source=False, schema=2,
         atomic_write_json(arguments[-1], analysis)
         return SimpleNamespace(returncode=0, stderr="")
     monkeypatch.setattr(runner.subprocess, "run", run)
-    monkeypatch.setattr(runner, "severity_weights", lambda job: {"medium": 0.5})
 
 
 def test_merge_preserves_raw_and_uses_shared_stage_layout(raw_file, bridge_config, monkeypatch):
@@ -75,20 +74,31 @@ def test_merge_preserves_raw_and_uses_shared_stage_layout(raw_file, bridge_confi
     output = runner.annotate_file(raw_file, config=bridge_config)
     assert output == raw_file.parents[3] / "annotated/FRU/00-10/fight.json"
     payload = json.loads(output.read_bytes())
-    assert payload.pop("analysis")["fight_labels"][0]["severity_weight"] == 0.5
+    analysis = payload.pop("analysis")
+    assert analysis["fight_labels"][0]["severity"] == "medium"
+    assert "severity_weight" not in analysis["fight_labels"][0]
+    assert "severity_weights" not in analysis
     assert payload == json.loads(original)
     assert raw_file.read_bytes() == original
     assert b"\r" not in output.read_bytes()
 
 
-def test_incremental_skip_requires_matching_source_engine_and_weights(raw_file, bridge_config, monkeypatch):
+def test_incremental_skip_requires_matching_source_and_engine(raw_file, bridge_config, monkeypatch):
     fake_process(monkeypatch)
     output = runner.annotate_file(raw_file, config=bridge_config)
     assert runner.annotation_is_current(raw_file, output, commit="test-commit")
     assert not runner.annotation_is_current(raw_file, output, commit="other-commit")
-    monkeypatch.setattr(runner, "severity_weights", lambda _job: {"medium": 0.75})
+    legacy = json.loads(output.read_text(encoding="utf-8"))
+    legacy["analysis"]["bridge_version"] = 2
+    legacy["analysis"]["severity_weights"] = {"medium": 0.5}
+    legacy["analysis"]["fight_labels"][0]["severity_weight"] = 0.5
+    atomic_write_json(output, legacy)
     assert not runner.annotation_is_current(raw_file, output, commit="test-commit")
-    monkeypatch.setattr(runner, "severity_weights", lambda _job: {"medium": 0.5})
+    atomic_write_json(output, {**json.loads(raw_file.read_text(encoding="utf-8")),
+                              "analysis": {**legacy["analysis"], "bridge_version": 3}})
+    assert not runner.annotation_is_current(raw_file, output, commit="test-commit")
+    output = runner.annotate_file(raw_file, config=bridge_config)
+    assert runner.annotation_is_current(raw_file, output, commit="test-commit")
 
     monkeypatch.setattr(cli, "load_bridge_config", lambda: bridge_config)
     monkeypatch.setattr(cli, "analyzer_commit", lambda _config: "test-commit")
@@ -239,23 +249,13 @@ def test_artzip_model_defaults_to_annotated_for_conversion_and_training(monkeypa
     assert config.default_raw_root() == config.PROJECT_ROOT / "data/human/job/black_mage/raw"
 
 
-def test_job_weight_configuration_isolated(tmp_path, monkeypatch):
-    atomic_write_json(tmp_path / "config/models/black_mage/artzip/config.yaml", {
-        "action_quality": {"severity_weights": {"minor": 0.25, "medium": 0.5, "major": 1.0}},
-    })
-    monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setenv("FFXIV_MODEL_VARIANT", "artzip")
-    assert config.severity_weights("black_mage")["major"] == 1.0
-    assert config.severity_weights("machinist") == {}
-
-
-def test_cli_warns_when_model_variant_is_unset(raw_file, bridge_config, monkeypatch, caplog):
+def test_cli_accepts_unset_model_variant(raw_file, bridge_config, monkeypatch, caplog):
     monkeypatch.delenv("FFXIV_MODEL_VARIANT", raising=False)
     monkeypatch.setattr(sys, "argv", ["action_quality", str(raw_file)])
     monkeypatch.setattr(cli, "load_bridge_config", lambda: bridge_config)
     monkeypatch.setattr(cli, "annotate_file", lambda *args, **kwargs: raw_file.with_name("done.json"))
     assert cli.main() == 0
-    assert "未设置 FFXIV_MODEL_VARIANT" in caplog.text
+    assert "未设置 FFXIV_MODEL_VARIANT" not in caplog.text
 
 
 def test_real_node_output_can_attach_exact_cast_labels(tmp_path):
