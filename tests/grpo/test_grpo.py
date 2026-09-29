@@ -495,6 +495,13 @@ def test_load_grpo_run_config_reads_shared_training_max_files(tmp_path):
     with pytest.raises(ValueError, match="max_files must be a positive integer or null"):
         load_grpo_run_config(config_path)
 
+    config_path.write_text(
+        yaml.safe_dump({"training": {"compiled_cache_workers": 4}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="CONVERT_FFLOGS_WORKERS"):
+        load_grpo_run_config(config_path)
+
 
 def test_grpo_defaults_use_sixteen_samples_and_scene_time_horizon():
     config = GrpoConfig()
@@ -659,7 +666,7 @@ def test_grpo_cli_forwards_max_files_and_overrides(monkeypatch, capsys, tmp_path
     monkeypatch.setattr(cli, "resolve_policy_checkpoint_path", lambda path: tmp_path / "best.pt")
     monkeypatch.setattr(
         cli,
-        "_prepare_grpo_scenes",
+        "_load_grpo_scenes",
         lambda config, max_files: calls.update(
             {"scene_config": config, "max_files": max_files}
         ) or [tmp_path / "scene.json"],
@@ -732,7 +739,7 @@ def test_grpo_cli_reuses_training_max_files_when_cli_is_absent(
     monkeypatch.setattr(cli, "resolve_policy_checkpoint_path", lambda path: tmp_path / "best.pt")
     monkeypatch.setattr(
         cli,
-        "_prepare_grpo_scenes",
+        "_load_grpo_scenes",
         lambda config, max_files: calls.update(max_files=max_files)
         or [tmp_path / "scene.json"],
     )

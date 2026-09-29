@@ -1,4 +1,5 @@
 ﻿# FFXIV_CCG：一键准备项目 Python GPU 环境
+# 同时在项目 .node 中安装 Node 22、pnpm 10 与离线分析依赖。
 #
 # 从项目根目录执行：
 #   .\setup.ps1
@@ -6,7 +7,7 @@
 #   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 #   .\setup.ps1
 #
-# 脚本只负责创建/复用根目录 .venv 和安装依赖，不会覆盖本地 .env。
+# 脚本创建/复用根目录 .venv、.node 并安装依赖，不会覆盖本地 .env。
 
 [CmdletBinding()]
 param()
@@ -22,6 +23,13 @@ $RequirementsPath = Join-Path $ProjectRoot "requirements.txt"
 $GpuRequirementsPath = Join-Path $ProjectRoot "requirements-onnx-gpu.txt"
 $EnvExamplePath = Join-Path $ProjectRoot ".env.example"
 $EnvPath = Join-Path $ProjectRoot ".env"
+$NodeVersionPath = Join-Path $ProjectRoot ".node-version"
+$NodeHome = Join-Path $ProjectRoot ".node"
+$NpmCachePath = Join-Path $NodeHome "npm-cache"
+$PnpmStorePath = Join-Path $NodeHome "pnpm-store"
+$AnalyzerRoot = Join-Path $ProjectRoot "third_party\xivanalysis"
+$RootPackageLock = Join-Path $ProjectRoot "package-lock.json"
+$PnpmVersion = "10.0.0"
 $MinimumPythonVersion = [version]"3.12.0"
 
 $PythonVersionProbe = "import sys; print(sys.version_info.major, sys.version_info.minor, sys.version_info.micro, sep='.')"
@@ -126,6 +134,91 @@ function Get-PythonVersion {
     }
 }
 
+function Install-ProjectNode {
+    $nodeVersion = (Get-Content -LiteralPath $NodeVersionPath -Raw -Encoding UTF8).Trim()
+    if ($nodeVersion -ne "22") {
+        throw ".node-version 当前只支持 Node 22：$nodeVersion"
+    }
+    $architecture = switch ($env:PROCESSOR_ARCHITECTURE) {
+        "AMD64" { "x64" }
+        "ARM64" { "arm64" }
+        default { throw "不支持的 Windows 架构：$env:PROCESSOR_ARCHITECTURE" }
+    }
+    $nodeDir = Join-Path $NodeHome "runtime"
+    $nodeExe = Join-Path $nodeDir "node.exe"
+    $npmCli = Join-Path $nodeDir "node_modules\npm\bin\npm-cli.js"
+    if (Test-Path -LiteralPath $nodeDir) {
+        if (-not (Test-Path -LiteralPath $nodeExe -PathType Leaf) -or -not (Test-Path -LiteralPath $npmCli -PathType Leaf)) {
+            throw "项目 Node 安装不完整：$nodeDir；请检查该目录后手动清理再运行。"
+        }
+    }
+    else {
+        New-Item -ItemType Directory -Path $NodeHome -Force | Out-Null
+        $baseUrl = "https://nodejs.org/dist/latest-v22.x"
+        Write-Host "`n>>> 下载项目专用 Node 22.x" -ForegroundColor Cyan
+        $checksums = Invoke-WebRequest -Uri "$baseUrl/SHASUMS256.txt" -UseBasicParsing
+        $archivePattern = "node-v(22\.\d+\.\d+)-win-$architecture\.zip"
+        $checksumLine = ($checksums.Content -split "`n" | Where-Object { $_ -match "^[0-9a-fA-F]{64}\s+$archivePattern\s*$" } | Select-Object -First 1)
+        if (-not $checksumLine) {
+            throw "Node 官方校验清单中找不到 Windows $architecture 的 Node 22 压缩包"
+        }
+        $nodeName = ([regex]::Match($checksumLine, "node-v22\.\d+\.\d+-win-$architecture")).Value
+        $archiveName = "$nodeName.zip"
+        $archivePath = Join-Path $NodeHome $archiveName
+        $stagePath = Join-Path $NodeHome "stage-$PID"
+        $expectedHash = ($checksumLine -split '\s+')[0]
+        try {
+            Invoke-WebRequest -Uri "$baseUrl/$archiveName" -OutFile $archivePath -UseBasicParsing
+            $actualHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash
+            if ($actualHash -ne $expectedHash) {
+                throw "Node 压缩包 SHA-256 校验失败：$archiveName"
+            }
+            if (Test-Path -LiteralPath $stagePath) {
+                throw "临时安装目录已存在：$stagePath"
+            }
+            Expand-Archive -LiteralPath $archivePath -DestinationPath $stagePath
+            $extracted = Join-Path $stagePath $nodeName
+            if (-not (Test-Path -LiteralPath (Join-Path $extracted "node.exe") -PathType Leaf)) {
+                throw "Node 压缩包缺少 node.exe：$archiveName"
+            }
+            # 两条路径均由项目根目录和官方归档名拼出，不跨工作区移动。
+            Move-Item -LiteralPath $extracted -Destination $nodeDir
+        }
+        finally {
+            if (Test-Path -LiteralPath $archivePath -PathType Leaf) {
+                Remove-Item -LiteralPath $archivePath
+            }
+            if (Test-Path -LiteralPath $stagePath -PathType Container) {
+                # 解压失败时保留临时目录供人工检查，成功时只删除空目录。
+                if (-not (Get-ChildItem -LiteralPath $stagePath -Force | Select-Object -First 1)) {
+                    Remove-Item -LiteralPath $stagePath
+                }
+            }
+        }
+    }
+    $installedVersion = Invoke-CapturedCommand -FilePath $nodeExe -Arguments @("--version")
+    if ($installedVersion.ExitCode -ne 0 -or $installedVersion.Output -notmatch '^v22\.\d+\.\d+$') {
+        throw "项目 Node 版本不匹配：预期 Node 22.x，实际 $($installedVersion.Output)"
+    }
+    return [PSCustomObject]@{ Directory = $nodeDir; Executable = $nodeExe; NpmCli = $npmCli }
+}
+
+function Install-ProjectPnpm {
+    param([Parameter(Mandatory)]$Node)
+    $pnpmHome = Join-Path $NodeHome "pnpm\$PnpmVersion"
+    $pnpmCli = Join-Path $pnpmHome "node_modules\pnpm\bin\pnpm.cjs"
+    if (-not (Test-Path -LiteralPath $pnpmCli -PathType Leaf)) {
+        Invoke-RequiredCommand -FilePath $Node.Executable `
+            -Arguments @($Node.NpmCli, "install", "--global", "--prefix", $pnpmHome, "--cache", $NpmCachePath, "pnpm@$PnpmVersion", "--ignore-scripts", "--no-audit", "--no-fund") `
+            -Description "在项目 .node 中安装 pnpm $PnpmVersion"
+    }
+    $installed = Invoke-CapturedCommand -FilePath $Node.Executable -Arguments @($pnpmCli, "--version")
+    if ($installed.ExitCode -ne 0 -or $installed.Output -ne $PnpmVersion) {
+        throw "项目 pnpm 版本不匹配：预期 $PnpmVersion，实际 $($installed.Output)"
+    }
+    return $pnpmCli
+}
+
 function Select-SystemPython {
     $candidates = @(
         [PSCustomObject]@{ Name = "python"; CommandName = "python"; Arguments = [string[]]@() },
@@ -159,7 +252,7 @@ function Select-SystemPython {
 }
 
 try {
-    foreach ($requiredPath in @($RequirementsPath, $GpuRequirementsPath, $EnvExamplePath)) {
+    foreach ($requiredPath in @($RequirementsPath, $GpuRequirementsPath, $EnvExamplePath, $NodeVersionPath, $RootPackageLock)) {
         if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
             throw "项目文件不存在：$requiredPath"
         }
@@ -229,6 +322,35 @@ try {
         Write-Warning "当前 PyTorch 未检测到可用 CUDA 设备；项目训练、导出和自回归不提供 CPU 支持。"
     }
 
+    $node = Install-ProjectNode
+    $previousPath = $env:PATH
+    $previousNpmCache = [Environment]::GetEnvironmentVariable("npm_config_cache", "Process")
+    try {
+        # pnpm 安装脚本及其子进程只从项目目录查找 Node，不依赖系统 Node。
+        New-Item -ItemType Directory -Path $NpmCachePath, $PnpmStorePath -Force | Out-Null
+        $env:PATH = "$($node.Directory);$previousPath"
+        $env:npm_config_cache = $NpmCachePath
+        $pnpmCli = Install-ProjectPnpm -Node $node
+        if (-not (Test-Path -LiteralPath (Join-Path $AnalyzerRoot "package.json") -PathType Leaf)) {
+            Invoke-RequiredCommand -FilePath "git" -Arguments @("-C", $ProjectRoot, "submodule", "update", "--init", "--", "third_party/xivanalysis") -Description "初始化分析器子模块"
+        }
+        Invoke-RequiredCommand -FilePath $node.Executable `
+            -Arguments @($node.NpmCli, "ci", "--ignore-scripts", "--prefix", $ProjectRoot, "--cache", $NpmCachePath, "--no-audit", "--no-fund") `
+            -Description "按 package-lock.json 安装桥接 DOM 依赖"
+        Invoke-RequiredCommand -FilePath $node.Executable `
+            -Arguments @($pnpmCli, "--dir", $AnalyzerRoot, "install", "--frozen-lockfile", "--store-dir", $PnpmStorePath) `
+            -Description "按子模块锁文件安装分析器依赖"
+    }
+    finally {
+        $env:PATH = $previousPath
+        if ($null -eq $previousNpmCache) {
+            Remove-Item Env:npm_config_cache -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:npm_config_cache = $previousNpmCache
+        }
+    }
+
     Write-Host "`n环境准备完成。" -ForegroundColor Green
     if (Test-Path -LiteralPath $EnvPath -PathType Leaf) {
         Write-Host "已检测到根目录 .env，setup.ps1 未覆盖它；请仍按 .env.example 检查本机配置。"
@@ -239,6 +361,7 @@ try {
     }
     Write-Host "`n后续可选步骤："
     Write-Host "  .\.venv\Scripts\Activate.ps1"
+    Write-Host "  项目 Node：$($node.Executable)"
     Write-Host "  .\ffxiv_ccg.ps1"
 }
 catch {

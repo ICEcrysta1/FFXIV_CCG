@@ -430,6 +430,14 @@ function Invoke-Tool {
         "fflogs" {
             $exitCode = Invoke-FFLogsDownload
         }
+        "annotate" {
+            & $ProjectPython -m scripts.action_quality
+            $exitCode = $LASTEXITCODE
+        }
+        "convert" {
+            & $ProjectPython -m scripts.convert_fflogs.cli --training-selection
+            $exitCode = $LASTEXITCODE
+        }
         default {
             throw "未知操作：$ResolvedAction"
         }

@@ -64,7 +64,6 @@ class GcdDetectionConfig:
 class ConvertFflogsConfig:
     """convert_fflogs 全局配置。"""
 
-    default_worker_count: int
     gcd_detection_defaults: GcdDetectionConfig
 
 
@@ -80,12 +79,10 @@ def load_convert_fflogs_config(path: Path | None = None) -> ConvertFflogsConfig:
     config_path = path or CONVERT_DEFAULT_CONFIG_PATH
     payload = load_yaml_mapping(config_path, description="convert_fflogs config")
     section = _require_mapping(payload, "convert_fflogs", source=str(config_path))
+    if "default_worker_count" in section:
+        raise ValueError(f"{config_path}: default_worker_count is removed; set CONVERT_FFLOGS_WORKERS in .env")
     gcd_defaults = _require_mapping(section, "gcd_detection_defaults", source=str(config_path))
-    worker_count = int(section.get("default_worker_count", 6))
-    if worker_count < 1:
-        raise ValueError(f"{config_path}: default_worker_count must be >= 1")
     return ConvertFflogsConfig(
-        default_worker_count=worker_count,
         gcd_detection_defaults=_build_gcd_detection_config(
             gcd_defaults,
             source=str(config_path),

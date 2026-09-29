@@ -16,6 +16,7 @@ obj/
 
 # Virtual environments
 node_modules/
+.node/
 venv/
 .venv/
 .agents/

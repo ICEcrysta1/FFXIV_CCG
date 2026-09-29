@@ -86,7 +86,6 @@ class RunConfig:
     pin_memory: bool = True
     compiled_cache_shard_size: int = 512
     compiled_cache_max_shards: int = 8
-    compiled_cache_workers: int = 1
     repetition: _RepetitionConfig = _RepetitionConfig()
     value_preference: ValuePreferenceConfig = ValuePreferenceConfig()
     ppg: PpgConfig = PpgConfig()
@@ -121,6 +120,8 @@ def load_run_config(path: Path) -> RunConfig:
     training_raw = raw.get("training", {}) or {}
     if not isinstance(model_raw, dict) or not isinstance(training_raw, dict):
         raise ValueError("model and training config sections must be mappings")
+    if "compiled_cache_workers" in training_raw:
+        raise ValueError("training.compiled_cache_workers is removed; set CONVERT_FFLOGS_WORKERS in .env")
     model = _ModelConfig.from_mapping(model_raw)
 
     num_workers = int(training_raw.get("num_workers", 0))
@@ -131,13 +132,10 @@ def load_run_config(path: Path) -> RunConfig:
         raise ValueError("training.prefetch_factor must be >= 1")
     compiled_cache_shard_size = int(training_raw.get("compiled_cache_shard_size", 512))
     compiled_cache_max_shards = int(training_raw.get("compiled_cache_max_shards", 8))
-    compiled_cache_workers = int(training_raw.get("compiled_cache_workers", 1))
     if compiled_cache_shard_size < 1:
         raise ValueError("training.compiled_cache_shard_size must be >= 1")
     if compiled_cache_max_shards < 1:
         raise ValueError("training.compiled_cache_max_shards must be >= 1")
-    if compiled_cache_workers < 1:
-        raise ValueError("training.compiled_cache_workers must be >= 1")
     if "max_history" in training_raw:
         raise ValueError(
             "training.max_history is removed; configure model.history_capacity"
@@ -285,7 +283,6 @@ def load_run_config(path: Path) -> RunConfig:
         pin_memory=bool(training_raw.get("pin_memory", True)),
         compiled_cache_shard_size=compiled_cache_shard_size,
         compiled_cache_max_shards=compiled_cache_max_shards,
-        compiled_cache_workers=compiled_cache_workers,
         repetition=_parse_repetition_config(training_raw.get("repetition", {})),
         value_preference=value_preference,
         ppg=ppg,

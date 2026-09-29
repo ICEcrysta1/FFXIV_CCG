@@ -142,7 +142,7 @@ def test_train_main_forwards_cli_overrides(monkeypatch, caplog, tmp_path):
 
     prepared_paths = [raw_data_dir / "prepared.json"]
 
-    def fake_prepare_training_caches(config, max_files):
+    def fake_load_training_sources(config, max_files):
         calls["prepare_config"] = config
         calls["prepare_max_files"] = max_files
         return prepared_paths
@@ -153,7 +153,7 @@ def test_train_main_forwards_cli_overrides(monkeypatch, caplog, tmp_path):
     monkeypatch.setattr(train_cli, "resolve_policy_model_variant", lambda _path: "artzip")
     monkeypatch.setattr(train_cli, "resolve_policy_device", resolve_device)
     monkeypatch.setattr(train_cli, "run_training", fake_run_training)
-    monkeypatch.setattr(train_cli, "_prepare_training_caches", fake_prepare_training_caches)
+    monkeypatch.setattr(train_cli, "_load_training_sources", fake_load_training_sources)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -255,7 +255,7 @@ def test_train_main_uses_config_and_environment_defaults(monkeypatch):
 
     monkeypatch.setattr(
         train_cli,
-        "_prepare_training_caches",
+        "_load_training_sources",
         lambda config, max_files: [Path("prepared.json")],
     )
     monkeypatch.setattr(train_cli, "run_training", fake_run_training)
@@ -305,7 +305,7 @@ def test_train_main_uses_config_max_files_when_cli_is_absent(monkeypatch, tmp_pa
             "output_dir": Path("output"),
         }
 
-    def fake_prepare_training_caches(config, max_files):
+    def fake_load_training_sources(config, max_files):
         calls["prepare_max_files"] = max_files
         return [Path("prepared.json")]
 
@@ -321,7 +321,7 @@ def test_train_main_uses_config_max_files_when_cli_is_absent(monkeypatch, tmp_pa
     )
     monkeypatch.setattr(train_cli, "resolve_policy_device", lambda _value: "cuda")
     monkeypatch.setattr(
-        train_cli, "_prepare_training_caches", fake_prepare_training_caches
+        train_cli, "_load_training_sources", fake_load_training_sources
     )
     monkeypatch.setattr(train_cli, "run_training", fake_run_training)
     monkeypatch.setattr(sys, "argv", ["train.py"])
@@ -357,7 +357,7 @@ def test_train_main_rejects_non_positive_cli_max_files(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         train_cli,
-        "_prepare_training_caches",
+        "_load_training_sources",
         lambda config, max_files: calls.update(max_files=max_files) or [],
     )
     monkeypatch.setattr(sys, "argv", ["train.py", "--max-files", "0"])

@@ -11,13 +11,72 @@ import pytest
 
 from common.policy.data import Normalizer
 from common.policy.data.compiled_cache import cache_path_for_source
+from common.policy.data import prepared_sources
+from common.policy.data.prepared_sources import select_prepared_training_sources
 from scripts.convert_fflogs import build_training_samples
 from scripts.convert_fflogs import cli as convert_cli
 from scripts.convert_fflogs.cache import cache_compile as cache_compile_module
-from scripts.convert_fflogs.cache import precompile_raw_training_caches
+from scripts.convert_fflogs.cache import prepare_training_caches, precompile_raw_training_caches
 from scripts.convert_fflogs.cache.cache_load import load_raw_compiled_cache
 from tests.helpers import build_test_scene_context, targetable_window_token
 from training import TrainingDataset
+
+
+def test_training_source_selection_requires_precompiled_cache(tmp_path, monkeypatch):
+    """训练侧只读取有效缓存，并按转换侧相同顺序从后备文件补位。"""
+    source_root = tmp_path / "annotated" / "FRU" / "00-10"
+    source_root.mkdir(parents=True)
+    sources = [source_root / f"{index}.json" for index in range(3)]
+    for source in sources:
+        source.write_text("{}", encoding="utf-8", newline="\n")
+
+    valid = {sources[1], sources[2]}
+    checked: list[Path] = []
+    monkeypatch.setattr(prepared_sources, "build_cache_signature", lambda path, **_kwargs: path)
+
+    def read_cache(_cache_dir, source, **_kwargs):
+        checked.append(source)
+        return SimpleNamespace(num_samples=3, job_tag="black_mage") if source in valid else None
+
+    monkeypatch.setattr(prepared_sources, "load_compiled_cache_for_source", read_cache)
+    selected = prepared_sources.select_prepared_training_sources(
+        tmp_path / "annotated", max_files=2, job_tag="black_mage",
+        int_dtype="int32", float_dtype="float32", cache_dir=tmp_path / ".cache",
+    )
+    assert selected == [sources[2], sources[1]]
+    assert checked == [sources[0], sources[2], sources[1]]
+
+    valid.clear()
+    with pytest.raises(FileNotFoundError, match="先运行训练文件转换"):
+        prepared_sources.select_prepared_training_sources(
+            tmp_path / "annotated", max_files=2, job_tag="black_mage",
+            int_dtype="int32", float_dtype="float32", cache_dir=tmp_path / ".cache",
+        )
+
+
+def test_cli_training_selection_uses_model_quota(tmp_path, monkeypatch):
+    """独立转换入口按训练配置选择文件，训练入口不参与编译。"""
+    run_config = SimpleNamespace(
+        raw_data_dir=tmp_path / "annotated",
+        max_files=8,
+        compiled_cache_shard_size=16,
+        compiled_cache_max_shards=4,
+    )
+    calls = {}
+    monkeypatch.setattr(sys, "argv", ["convert_fflogs", "--training-selection"])
+    monkeypatch.setattr(convert_cli, "load_convert_fflogs_dotenv", lambda: None)
+    monkeypatch.setenv("CONVERT_FFLOGS_WORKERS", "2")
+    monkeypatch.setattr(convert_cli, "resolve_policy_model_config_path", lambda: tmp_path / "config.yaml")
+    monkeypatch.setattr(convert_cli, "load_run_config", lambda _path: run_config)
+    monkeypatch.setattr(convert_cli, "resolve_policy_model_job_tag", lambda _path: "black_mage")
+    monkeypatch.setattr(convert_cli, "resolve_policy_model_variant", lambda _path: "artzip")
+    monkeypatch.setattr(convert_cli, "resolve_convert_fflogs_job_tag", lambda _tag: "black_mage")
+    monkeypatch.setattr(convert_cli, "resolve_policy_cache_dir", lambda _tag: tmp_path / ".cache")
+    monkeypatch.setattr(convert_cli, "prepare_training_caches", lambda path, **kwargs: calls.update(path=path, **kwargs) or [tmp_path / "done.json"])
+    convert_cli.main()
+    assert calls["path"] == run_config.raw_data_dir
+    assert calls["max_files"] == 8
+    assert calls["max_workers"] == 2
 
 
 def test_cli_fails_when_annotated_inputs_produce_no_compiled_cache(tmp_path, monkeypatch):
@@ -30,18 +89,24 @@ def test_cli_fails_when_annotated_inputs_produce_no_compiled_cache(tmp_path, mon
         compiled_cache_max_shards=16,
     )
     monkeypatch.setattr(sys, "argv", [
-        "convert_fflogs", "--cache-root", str(tmp_path / ".cache"), "--workers", "1",
+        "convert_fflogs", "--cache-root", str(tmp_path / ".cache"),
     ])
     monkeypatch.setattr(convert_cli, "load_convert_fflogs_dotenv", lambda: None)
+    monkeypatch.setenv("CONVERT_FFLOGS_WORKERS", "3")
     monkeypatch.setattr(convert_cli, "resolve_policy_model_config_path", lambda: tmp_path / "config.yaml")
     monkeypatch.setattr(convert_cli, "load_run_config", lambda _path: run_config)
     monkeypatch.setattr(convert_cli, "resolve_policy_model_job_tag", lambda _path: "black_mage")
     monkeypatch.setattr(convert_cli, "resolve_policy_model_variant", lambda _path: "artzip")
     monkeypatch.setattr(convert_cli, "resolve_convert_fflogs_job_tag", lambda _tag: "black_mage")
-    monkeypatch.setattr(convert_cli, "precompile_raw_training_caches", lambda *_args, **_kwargs: [])
+    calls = {}
+    monkeypatch.setattr(
+        convert_cli, "precompile_raw_training_caches",
+        lambda *_args, **kwargs: calls.update(kwargs) or [],
+    )
 
     with pytest.raises(RuntimeError, match="均未编译成功"):
         convert_cli.main()
+    assert calls["max_workers"] == 3
     source.unlink()
     with pytest.raises(FileNotFoundError, match="没有找到 FFLogs JSON"):
         convert_cli.main()
@@ -114,6 +179,19 @@ def test_raw_cache_compiler_only_writes_compiled_cache(
         [raw_path], job_tag="black_mage", normalizer=Normalizer(),
         int_dtype=torch.int32, float_dtype=torch.float32,
         cache_dir=cache_dir, shard_size=1, max_workers=1,
+    ) == [raw_path]
+    # primary 候选 z.json 没有缓存；现有 demo PT 已满足配额，不应编译 z.json。
+    (raw_path.parent / "z.json").write_text("{}", encoding="utf-8", newline="\n")
+    assert prepare_training_caches(
+        tmp_path / source_stage, max_files=1, job_tag="black_mage",
+        int_dtype=torch.int32, float_dtype=torch.float32,
+        cache_dir=cache_dir, shard_size=1, max_workers=1,
+    ) == [raw_path]
+    assert select_prepared_training_sources(
+        tmp_path / source_stage,
+        max_files=1, job_tag="black_mage",
+        int_dtype=torch.int32, float_dtype=torch.float32,
+        cache_dir=cache_dir, shard_size=1,
     ) == [raw_path]
     assert manifest.is_file() is not legacy_layout
     dataset = TrainingDataset(

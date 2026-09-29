@@ -32,6 +32,18 @@ def load_root_dotenv(project_root: Path, *, override: bool = False) -> Path | No
     return env_path
 
 
+def resolve_positive_worker_count(*, project_root: Path, env_name: str) -> int:
+    """从项目环境读取并发数；未配置时安全地使用单 worker。"""
+    load_root_dotenv(project_root)
+    raw = os.environ.get(env_name)
+    if raw is None:
+        return 1
+    value = raw.strip()
+    if not value.isdecimal() or int(value) < 1:
+        raise ValueError(f"{env_name} must be a positive integer, got {raw!r}")
+    return int(value)
+
+
 def resolve_tensorboard_port(
     *,
     project_root: Path,

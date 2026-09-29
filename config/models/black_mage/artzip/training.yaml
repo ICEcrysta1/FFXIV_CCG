@@ -75,9 +75,6 @@ training:
   # 所有源 cache 之间最多同时驻留多少个编译 shard；只影响内存占用。
   compiled_cache_max_shards: 16
 
-  # 首次编译缓存时使用的独立进程数；每个 worker 处理一个 raw JSON。
-  compiled_cache_workers: 4
-
   # ----------------------------
   # 训练增强
   # ----------------------------

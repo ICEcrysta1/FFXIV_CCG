@@ -13,6 +13,7 @@ from common.policy.config import (
 )
 from common.project_config import (
     load_root_dotenv,
+    resolve_positive_worker_count,
     resolve_project_path,
 )
 from common.yaml_config import load_yaml_mapping
@@ -30,9 +31,11 @@ class BridgeConfig:
 
 
 def load_bridge_config() -> BridgeConfig:
-    """机器路径可由 .env 覆盖，运行时参数以 YAML 为默认权威来源。"""
+    """分析器路径和超时由 YAML 管理，机器并发数从 .env 读取。"""
     load_root_dotenv(PROJECT_ROOT)
     raw = load_yaml_mapping(PROJECT_ROOT / "config/action_quality.yaml")["bridge"]
+    if "max_workers" in raw:
+        raise ValueError("bridge.max_workers is removed; set ACTION_QUALITY_WORKERS in .env")
     analyzer = resolve_project_path(raw["analyzer_root"], project_root=PROJECT_ROOT)
     modules = resolve_project_path(
         os.environ.get("ACTION_QUALITY_NODE_MODULES") or analyzer / "node_modules",
@@ -41,13 +44,13 @@ def load_bridge_config() -> BridgeConfig:
     timeout = float(raw["timeout_seconds"])
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("bridge.timeout_seconds must be positive and finite")
-    max_workers = raw["max_workers"]
-    if isinstance(max_workers, bool) or not isinstance(max_workers, int) or max_workers < 1:
-        raise ValueError("bridge.max_workers must be a positive integer")
-    return BridgeConfig(
-        analyzer, modules, os.environ.get("ACTION_QUALITY_NODE") or "node", timeout,
-        max_workers,
+    max_workers = resolve_positive_worker_count(
+        project_root=PROJECT_ROOT, env_name="ACTION_QUALITY_WORKERS",
     )
+    configured_node = os.environ.get("ACTION_QUALITY_NODE")
+    local_node = PROJECT_ROOT / ".node" / "runtime" / "node.exe"
+    node = configured_node if configured_node and configured_node != "node" else str(local_node)
+    return BridgeConfig(analyzer, modules, node, timeout, max_workers)
 
 
 def default_raw_root() -> Path:

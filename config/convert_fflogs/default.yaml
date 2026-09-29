@@ -1,5 +1,4 @@
 convert_fflogs:
-  default_worker_count: 6
   gcd_detection_defaults:
     probe_skill_game_id: 0
     fallback_seconds: 2.5

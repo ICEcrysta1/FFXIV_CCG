@@ -29,8 +29,6 @@ def compile_raw_training_cache(
         str(Path(cache_dir).resolve()),
         "--shard-size",
         str(cache_shard_size),
-        "--workers",
-        "1",
     ]
     try:
         subprocess.run(command, cwd=PROJECT_ROOT, check=True)
