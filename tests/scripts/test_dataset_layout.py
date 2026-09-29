@@ -116,7 +116,7 @@ def test_bucket_root_preserves_encounter_and_bucket(tmp_path):
     ]
 
 
-def test_fru_quota_of_100_selects_ten_from_each_bucket(tmp_path):
+def test_fru_small_quotas_span_buckets_and_larger_quotas_stay_balanced(tmp_path):
     for bucket in PERCENTILE_BUCKETS:
         directory = tmp_path / "FRU" / bucket
         directory.mkdir(parents=True)
@@ -128,6 +128,19 @@ def test_fru_quota_of_100_selects_ten_from_each_bucket(tmp_path):
     assert [group.directory_name for group in groups] == [f"FRU/{bucket}" for bucket in PERCENTILE_BUCKETS]
     assert [group.target_count for group in groups] == [10] * 10
     assert all(len(group.candidates) == 20 for group in groups)
+
+    assert [group.target_count for group in select_training_raw_path_groups(tmp_path, max_files=1)] == [
+        0, 0, 0, 0, 1, 0, 0, 0, 0, 0,
+    ]
+    assert [group.target_count for group in select_training_raw_path_groups(tmp_path, max_files=2)] == [
+        1, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+    ]
+    assert [group.target_count for group in select_training_raw_path_groups(tmp_path, max_files=5)] == [
+        1, 0, 1, 0, 1, 0, 0, 1, 0, 1,
+    ]
+    assert [group.target_count for group in select_training_raw_path_groups(tmp_path, max_files=128)] == [
+        13, 13, 13, 13, 13, 13, 13, 13, 12, 12,
+    ]
 
 
 def test_missing_dataset_directory_remains_empty(tmp_path):

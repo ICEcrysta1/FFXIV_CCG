@@ -59,6 +59,18 @@ def _balanced_allocations(sizes: list[int], target: int) -> list[int]:
     if target >= sum(sizes):
         return sizes[:]
     allocations = [0] * len(sizes)
+    available = [index for index, size in enumerate(sizes) if size > 0]
+    if 0 < target < len(available):
+        positions = (
+            [round((len(available) - 1) / 2)]
+            if target == 1 else [
+                round(index * (len(available) - 1) / (target - 1))
+                for index in range(target)
+            ]
+        )
+        for position in positions:
+            allocations[available[position]] = 1
+        return allocations
     remaining = target
     while remaining:
         for index, size in enumerate(sizes):
