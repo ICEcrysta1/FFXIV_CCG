@@ -13,7 +13,39 @@ from .compiled_cache import (
     load_compiled_cache_for_source,
 )
 from .normalizer import Normalizer
-from .source_selection import select_training_raw_path_groups
+from .source_selection import RawTrainingPathGroup, select_training_raw_path_groups
+
+
+def cached_candidates_for_group(
+    group: RawTrainingPathGroup,
+    *,
+    job_tag: str,
+    normalizer: Normalizer,
+    int_dtype,
+    float_dtype,
+    cache_dir: Path,
+    shard_size: int,
+    shard_cache: CompiledShardCache,
+) -> list[Path]:
+    """按候选顺序找足本组配额；只有签名和职业均匹配的 PT 才计数。"""
+    cached_paths: list[Path] = []
+    for source in group.candidates:
+        if len(cached_paths) >= group.target_count:
+            break
+        signature = build_cache_signature(
+            source,
+            int_dtype=int_dtype,
+            float_dtype=float_dtype,
+            normalizer=normalizer,
+            shard_size=shard_size,
+            conversion_version=DEFAULT_CONVERSION_VERSION,
+        )
+        cached = load_compiled_cache_for_source(
+            cache_dir, source, signature=signature, shard_cache=shard_cache,
+        )
+        if cached is not None and cached.num_samples > 0 and cached.job_tag == job_tag:
+            cached_paths.append(source)
+    return cached_paths
 
 
 def select_prepared_training_sources(
@@ -37,26 +69,14 @@ def select_prepared_training_sources(
     selected: list[Path] = []
     missing: list[str] = []
     for group in groups:
-        accepted = 0
-        for source in group.candidates:
-            if accepted >= group.target_count:
-                break
-            signature = build_cache_signature(
-                source,
-                int_dtype=int_dtype,
-                float_dtype=float_dtype,
-                normalizer=normalizer,
-                shard_size=shard_size,
-                conversion_version=DEFAULT_CONVERSION_VERSION,
-            )
-            cached = load_compiled_cache_for_source(
-                cache_dir, source, signature=signature, shard_cache=shard_cache,
-            )
-            if cached is not None and cached.num_samples > 0 and cached.job_tag == job_tag:
-                selected.append(source)
-                accepted += 1
-        if accepted < group.target_count:
-            missing.append(f"{group.directory_name}: {accepted}/{group.target_count}")
+        cached_paths = cached_candidates_for_group(
+            group, job_tag=job_tag, normalizer=normalizer,
+            int_dtype=int_dtype, float_dtype=float_dtype,
+            cache_dir=cache_dir, shard_size=shard_size, shard_cache=shard_cache,
+        )
+        selected.extend(cached_paths)
+        if len(cached_paths) < group.target_count:
+            missing.append(f"{group.directory_name}: {len(cached_paths)}/{group.target_count}")
     if missing:
         raise FileNotFoundError(
             "训练缓存缺失或已过期（" + ", ".join(missing)

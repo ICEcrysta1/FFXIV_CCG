@@ -16,7 +16,7 @@ from common.policy.data.prepared_sources import select_prepared_training_sources
 from scripts.convert_fflogs import build_training_samples
 from scripts.convert_fflogs import cli as convert_cli
 from scripts.convert_fflogs.cache import cache_compile as cache_compile_module
-from scripts.convert_fflogs.cache import precompile_raw_training_caches
+from scripts.convert_fflogs.cache import prepare_training_caches, precompile_raw_training_caches
 from scripts.convert_fflogs.cache.cache_load import load_raw_compiled_cache
 from tests.helpers import build_test_scene_context, targetable_window_token
 from training import TrainingDataset
@@ -171,6 +171,13 @@ def test_raw_cache_compiler_only_writes_compiled_cache(
     )
     assert precompile_raw_training_caches(
         [raw_path], job_tag="black_mage", normalizer=Normalizer(),
+        int_dtype=torch.int32, float_dtype=torch.float32,
+        cache_dir=cache_dir, shard_size=1, max_workers=1,
+    ) == [raw_path]
+    # primary 候选 z.json 没有缓存；现有 demo PT 已满足配额，不应编译 z.json。
+    (raw_path.parent / "z.json").write_text("{}", encoding="utf-8", newline="\n")
+    assert prepare_training_caches(
+        tmp_path / source_stage, max_files=1, job_tag="black_mage",
         int_dtype=torch.int32, float_dtype=torch.float32,
         cache_dir=cache_dir, shard_size=1, max_workers=1,
     ) == [raw_path]

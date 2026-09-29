@@ -15,6 +15,7 @@ from common.policy.data.compiled_cache import (
     cache_path_for_source,
 )
 from common.policy.data.normalizer import Normalizer
+from common.policy.data.prepared_sources import cached_candidates_for_group
 from common.policy.data.source_selection import RawTrainingPathGroup, select_training_raw_path_groups
 from common.policy.data.skill_vocab import SkillVocab
 from common.torch_dependencies import import_torch
@@ -78,15 +79,28 @@ def _compile_training_path_groups(
     max_workers: int,
     max_shards: int,
 ) -> list[Path]:
-    """逐轮编译副本候选，并从同副本后备文件补齐有效文件配额。"""
+    """先复用整组已有缓存，再逐轮编译缺额并从同副本候选补位。"""
+    if cache_dir is None:
+        raise ValueError("compiled cache directory is required for training selection")
+    shard_cache = CompiledShardCache(max_shards)
     states = [
         {
             "group": group,
-            "pending": list(group.candidates),
-            "valid": set(),
+            "valid": {
+                path.resolve() for path in cached_candidates_for_group(
+                    group, job_tag=job_tag, normalizer=normalizer,
+                    int_dtype=int_dtype, float_dtype=float_dtype,
+                    cache_dir=cache_dir, shard_size=shard_size, shard_cache=shard_cache,
+                )
+            },
         }
         for group in groups
     ]
+    for state in states:
+        state["pending"] = [
+            path for path in state["group"].candidates
+            if path.resolve() not in state["valid"]
+        ]
     group_by_path = {
         path.resolve(): state
         for state in states
@@ -141,7 +155,7 @@ def _compile_training_path_groups(
                 f"valid={len(group_valid_paths)} missing={shortage}"
             )
             logger.error(
-                "副本有效 raw JSON 不足，无法补齐配额: %s",
+                "副本有效训练文件不足，无法补齐配额: %s",
                 shortages[-1],
             )
 
@@ -190,7 +204,7 @@ def precompile_raw_training_caches(
             shard_size=shard_size,
             shard_cache=shard_cache,
         )
-        if cached is not None and cached.num_samples > 0:
+        if cached is not None and cached.num_samples > 0 and cached.job_tag == job_tag:
             valid_paths.append(source_path)
         else:
             missing.append(source_path)

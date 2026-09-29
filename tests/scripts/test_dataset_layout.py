@@ -55,7 +55,7 @@ def test_mapping_preserves_existing_layout_and_filename(tmp_path, relative):
     assert output == tmp_path / "annotated" / relative
 
 
-def test_conversion_discovers_bucket_files_but_still_groups_by_encounter(tmp_path):
+def test_conversion_groups_by_encounter_and_bucket(tmp_path):
     for relative in ["FRU/00-10/low.json", "FRU/90-100/high.json", "M5s/old.json"]:
         path = tmp_path / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -65,8 +65,38 @@ def test_conversion_discovers_bucket_files_but_still_groups_by_encounter(tmp_pat
     assert len(discovered) == 3
     assert _resolve_input_files([str(tmp_path)]) == sorted(discovered, key=lambda path: str(path).casefold())
     groups = select_training_raw_path_groups(tmp_path)
-    assert [(group.directory_name, group.target_count) for group in groups] == [("FRU", 2), ("M5s", 1)]
+    assert [(group.directory_name, group.target_count) for group in groups] == [
+        ("FRU/90-100", 1), ("FRU/00-10", 1), ("M5s", 1),
+    ]
     assert {path for group in groups for path in group.candidates} == set(discovered)
+
+
+def test_max_files_balances_buckets_and_keeps_fallback_within_bucket(tmp_path):
+    for bucket, count in (("90-100", 4), ("00-10", 4), ("40-50", 1)):
+        directory = tmp_path / "FRU" / bucket
+        directory.mkdir(parents=True)
+        for index in range(count):
+            (directory / f"fight-{index}.json").write_text("{}", encoding="utf-8")
+
+    groups = select_training_raw_path_groups(tmp_path, max_files=5)
+    assert [(group.directory_name, group.target_count) for group in groups] == [
+        ("FRU/90-100", 2), ("FRU/40-50", 1), ("FRU/00-10", 2),
+    ]
+    assert all({path.parent.name for path in group.candidates} == {group.directory_name.split("/")[-1]} for group in groups)
+
+
+def test_fru_quota_of_100_selects_ten_from_each_bucket(tmp_path):
+    for bucket in PERCENTILE_BUCKETS:
+        directory = tmp_path / "FRU" / bucket
+        directory.mkdir(parents=True)
+        for index in range(20):
+            (directory / f"fight-{index:02d}.json").write_text("{}", encoding="utf-8")
+
+    groups = select_training_raw_path_groups(tmp_path, max_files=100)
+    assert len(groups) == 10
+    assert [group.directory_name for group in groups] == [f"FRU/{bucket}" for bucket in PERCENTILE_BUCKETS]
+    assert [group.target_count for group in groups] == [10] * 10
+    assert all(len(group.candidates) == 20 for group in groups)
 
 
 def test_missing_dataset_directory_remains_empty(tmp_path):

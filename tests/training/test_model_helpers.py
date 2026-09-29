@@ -1307,6 +1307,7 @@ def test_training_raw_quota_fills_failed_paths_with_same_directory_candidates(
         return [path for path in paths if path not in failed_paths]
 
     monkeypatch.setattr(cache_compile_module, "select_training_raw_path_groups", lambda *_args: groups)
+    monkeypatch.setattr(cache_compile_module, "cached_candidates_for_group", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(cache_compile_module, "precompile_raw_training_caches", fake_precompile)
 
     valid_paths = cache_module.prepare_training_caches(
@@ -1325,10 +1326,73 @@ def test_training_raw_quota_fills_failed_paths_with_same_directory_candidates(
     ]
 
 
+def test_training_quota_counts_existing_cache_before_compiling(tmp_path, monkeypatch):
+    """首选 JSON 没有缓存时，先用同组已编译 PT 抵扣配额。"""
+    paths = tuple(tmp_path / "FRU" / f"fight-{index}.json" for index in range(4))
+    groups = (cache_module.RawTrainingPathGroup("FRU", 2, paths),)
+    calls = []
+    monkeypatch.setattr(cache_compile_module, "select_training_raw_path_groups", lambda *_args: groups)
+    monkeypatch.setattr(
+        cache_compile_module, "cached_candidates_for_group",
+        lambda *_args, **_kwargs: [paths[3]],
+    )
+
+    def fake_precompile(candidates, **_kwargs):
+        calls.append(list(candidates))
+        return [path for path in candidates if path == paths[1]]
+
+    monkeypatch.setattr(cache_compile_module, "precompile_raw_training_caches", fake_precompile)
+    selected = cache_module.prepare_training_caches(
+        tmp_path, max_files=2, job_tag="black_mage",
+        int_dtype=torch.int32, float_dtype=torch.float32,
+        cache_dir=tmp_path / ".cache",
+    )
+    assert selected == [paths[1], paths[3]]
+    assert calls == [[paths[0]], [paths[1]]]
+
+    monkeypatch.setattr(
+        cache_compile_module, "cached_candidates_for_group",
+        lambda *_args, **_kwargs: [paths[2], paths[3]],
+    )
+    calls.clear()
+    assert cache_module.prepare_training_caches(
+        tmp_path, max_files=2, job_tag="black_mage",
+        int_dtype=torch.int32, float_dtype=torch.float32,
+        cache_dir=tmp_path / ".cache",
+    ) == [paths[2], paths[3]]
+    assert calls == []
+
+
+def test_training_quota_does_not_fill_failed_bucket_from_another_bucket(tmp_path, monkeypatch):
+    for bucket in ("90-100", "00-10"):
+        directory = tmp_path / "FRU" / bucket
+        directory.mkdir(parents=True)
+        for index in range(3):
+            (directory / f"fight-{index}.json").write_text("{}", encoding="utf-8")
+
+    calls = []
+    monkeypatch.setattr(cache_compile_module, "cached_candidates_for_group", lambda *_args, **_kwargs: [])
+
+    def fake_precompile(paths, **_kwargs):
+        calls.extend(paths)
+        return [path for path in paths if path.parent.name == "90-100"]
+
+    monkeypatch.setattr(cache_compile_module, "precompile_raw_training_caches", fake_precompile)
+    with pytest.raises(ValueError, match="FRU/00-10: required=2 valid=0 missing=2"):
+        cache_module.prepare_training_caches(
+            tmp_path, max_files=4, job_tag="black_mage",
+            int_dtype=torch.int32, float_dtype=torch.float32,
+            cache_dir=tmp_path / ".cache",
+        )
+    assert sum(path.parent.name == "00-10" for path in calls) == 3
+    assert sum(path.parent.name == "90-100" for path in calls) == 2
+
+
 def test_training_raw_quota_reports_unfillable_directory_shortage(tmp_path, monkeypatch):
     paths = tuple(tmp_path / "M11s" / f"fight-{index}.json" for index in range(2))
     groups = (cache_module.RawTrainingPathGroup("M11s", 3, paths),)
     monkeypatch.setattr(cache_compile_module, "select_training_raw_path_groups", lambda *_args: groups)
+    monkeypatch.setattr(cache_compile_module, "cached_candidates_for_group", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(
         cache_compile_module,
         "precompile_raw_training_caches",
