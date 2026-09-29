@@ -44,10 +44,10 @@ def load_bridge_config() -> BridgeConfig:
     max_workers = raw["max_workers"]
     if isinstance(max_workers, bool) or not isinstance(max_workers, int) or max_workers < 1:
         raise ValueError("bridge.max_workers must be a positive integer")
-    return BridgeConfig(
-        analyzer, modules, os.environ.get("ACTION_QUALITY_NODE") or "node", timeout,
-        max_workers,
-    )
+    configured_node = os.environ.get("ACTION_QUALITY_NODE")
+    local_node = PROJECT_ROOT / ".node" / "runtime" / "node.exe"
+    node = configured_node if configured_node and configured_node != "node" else str(local_node)
+    return BridgeConfig(analyzer, modules, node, timeout, max_workers)
 
 
 def default_raw_root() -> Path:

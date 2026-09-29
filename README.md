@@ -40,7 +40,7 @@
 请见下文快速启动安装和使用示例。有关FLogs 数据下载、行为克隆预训练、GRPO 后训练、ONNX 导出、模型分析与自回归回放的详细命令参数请参阅我们完整的 [说明文档](./docs/命令行使用说明.md)。
 
 ```pwsh
-# 1) 一键准备环境：检查系统 Python >= 3.12，创建根目录 .venv，安装 CUDA/GPU 依赖
+# 1) 一键准备环境：创建根目录 .venv 和项目本地 .node，安装 Python GPU 与 Node 依赖
 .\setup.ps1
 # 如果执行策略拦截脚本，再执行：
 # Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass

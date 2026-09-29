@@ -20,7 +20,7 @@ function bootstrap(analyzerRoot, nodeModules) {
   try {
     ({JSDOM} = require(resolve('jsdom')));
   } catch (error) {
-    throw new Error('缺少桥接 DOM 依赖，请在项目根目录运行 npm ci', {cause: error});
+    throw new Error('缺少桥接 DOM 依赖，请在项目根目录运行 .\\setup.ps1', {cause: error});
   }
   const dom = new JSDOM('<!doctype html><html><body></body></html>', {url: 'http://localhost/'});
   global.window = dom.window;
