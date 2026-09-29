@@ -2,6 +2,7 @@
 
 import pytest
 
+from common.project_config import resolve_positive_worker_count
 from scripts.convert_fflogs.config import (
     load_convert_fflogs_config,
     load_convert_fflogs_job_config,
@@ -13,9 +14,34 @@ from tests.helpers import DEFAULT_BASE_GCD
 def test_convert_fflogs_config_loads_default_values():
     config = load_convert_fflogs_config()
 
-    assert config.default_worker_count == 6
     assert config.gcd_detection_defaults.fallback_seconds == pytest.approx(DEFAULT_BASE_GCD)
     assert config.gcd_detection_defaults.histogram_bin_width_ms == 10
+
+
+def test_legacy_convert_worker_config_is_rejected(tmp_path):
+    path = tmp_path / "default.yaml"
+    path.write_text(
+        "convert_fflogs:\n  default_worker_count: 6\n",
+        encoding="utf-8", newline="\n",
+    )
+    with pytest.raises(ValueError, match="CONVERT_FFLOGS_WORKERS"):
+        load_convert_fflogs_config(path)
+
+
+@pytest.mark.parametrize("value", ["0", "-2", "1.5", "many", ""])
+def test_convert_worker_env_rejects_invalid_values(tmp_path, monkeypatch, value):
+    monkeypatch.setenv("CONVERT_FFLOGS_WORKERS", value)
+    with pytest.raises(ValueError, match="CONVERT_FFLOGS_WORKERS"):
+        resolve_positive_worker_count(
+            project_root=tmp_path, env_name="CONVERT_FFLOGS_WORKERS",
+        )
+
+
+def test_convert_worker_env_falls_back_to_serial(tmp_path, monkeypatch):
+    monkeypatch.delenv("CONVERT_FFLOGS_WORKERS", raising=False)
+    assert resolve_positive_worker_count(
+        project_root=tmp_path, env_name="CONVERT_FFLOGS_WORKERS",
+    ) == 1
 
 
 def test_convert_fflogs_job_config_loads_black_mage_probe_skill():

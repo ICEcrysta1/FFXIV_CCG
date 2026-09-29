@@ -205,11 +205,15 @@ def test_custom_root_keeps_encounter_and_bucket(tmp_path):
 
 def test_dotenv_reuses_loader_and_environment_wins(tmp_path, monkeypatch):
     atomic_write_json(tmp_path / "config/action_quality.yaml", {
-        "bridge": {"analyzer_root": "engine", "timeout_seconds": 9, "max_workers": 2},
+        "bridge": {"analyzer_root": "engine", "timeout_seconds": 9},
     })
-    (tmp_path / ".env").write_text("ACTION_QUALITY_NODE=from-file\n", encoding="utf-8", newline="\n")
+    (tmp_path / ".env").write_text(
+        "ACTION_QUALITY_NODE=from-file\nACTION_QUALITY_WORKERS=2\n",
+        encoding="utf-8", newline="\n",
+    )
     monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
     monkeypatch.setenv("ACTION_QUALITY_NODE", "from-process")
+    monkeypatch.delenv("ACTION_QUALITY_WORKERS", raising=False)
     monkeypatch.delenv("ACTION_QUALITY_NODE_MODULES", raising=False)
     settings = config.load_bridge_config()
     assert settings.node == "from-process"
@@ -221,7 +225,7 @@ def test_dotenv_reuses_loader_and_environment_wins(tmp_path, monkeypatch):
 @pytest.mark.parametrize("configured_node", [None, "node"])
 def test_bridge_defaults_to_project_node(tmp_path, monkeypatch, configured_node):
     atomic_write_json(tmp_path / "config/action_quality.yaml", {
-        "bridge": {"analyzer_root": "engine", "timeout_seconds": 9, "max_workers": 2},
+        "bridge": {"analyzer_root": "engine", "timeout_seconds": 9},
     })
     monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
     if configured_node is None:
@@ -231,12 +235,23 @@ def test_bridge_defaults_to_project_node(tmp_path, monkeypatch, configured_node)
     assert config.load_bridge_config().node == str(tmp_path / ".node/runtime/node.exe")
 
 
-def test_invalid_parallel_worker_limit_is_rejected(tmp_path, monkeypatch):
+def test_legacy_parallel_worker_limit_is_rejected(tmp_path, monkeypatch):
     atomic_write_json(tmp_path / "config/action_quality.yaml", {
         "bridge": {"analyzer_root": "engine", "timeout_seconds": 9, "max_workers": 0},
     })
     monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
-    with pytest.raises(ValueError, match="max_workers"):
+    with pytest.raises(ValueError, match="ACTION_QUALITY_WORKERS"):
+        config.load_bridge_config()
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "2.5", "many"])
+def test_invalid_parallel_worker_env_is_rejected(tmp_path, monkeypatch, value):
+    atomic_write_json(tmp_path / "config/action_quality.yaml", {
+        "bridge": {"analyzer_root": "engine", "timeout_seconds": 9},
+    })
+    monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setenv("ACTION_QUALITY_WORKERS", value)
+    with pytest.raises(ValueError, match="ACTION_QUALITY_WORKERS"):
         config.load_bridge_config()
 
 

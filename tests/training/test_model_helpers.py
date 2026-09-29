@@ -117,7 +117,7 @@ def _write_config(tmp_path: Path, payload: object) -> Path:
         ({"training": {"compiled_cache_shard_size": 0}}, "compiled_cache_shard_size must be >= 1"),
         ({"training": {"compiled_cache_shard_size": 0}}, "compiled_cache_shard_size must be >= 1"),
         ({"training": {"compiled_cache_max_shards": 0}}, "compiled_cache_max_shards must be >= 1"),
-        ({"training": {"compiled_cache_workers": 0}}, "compiled_cache_workers must be >= 1"),
+        ({"training": {"compiled_cache_workers": 4}}, "CONVERT_FFLOGS_WORKERS"),
         ({"training": {"history_truncation": [1]}}, "history_truncation must be a mapping"),
         ({"training": {"history_truncation": {"probability": 1.1}}}, "probability must be between 0 and 1"),
         ({"training": {"history_truncation": {"min_recent": 0}}}, "history_min_recent must be >= 1"),

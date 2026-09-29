@@ -15,11 +15,11 @@ from common.policy.config import (
     resolve_policy_model_variant,
 )
 from common.policy.data import Normalizer
+from common.project_config import resolve_positive_worker_count
 from training.config import load_run_config
 
 from .cache import prepare_training_caches, precompile_raw_training_caches
 from .config import (
-    load_convert_fflogs_config,
     load_convert_fflogs_dotenv,
     resolve_convert_fflogs_job_tag,
 )
@@ -46,7 +46,7 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=None)
     parser.add_argument(
         "--training-selection", action="store_true",
-        help="按 training.max_files 的配额选择并编译训练文件，失败时按副本补位",
+        help="按 training.max_files 的配额选择并编译训练文件，失败时按副本和区间补位",
     )
     parser.add_argument("--max-files", type=int, default=None, help="覆盖 training.max_files；仅用于 --training-selection")
     parser.add_argument(
@@ -84,12 +84,14 @@ def main() -> None:
         if args.shard_size is None
         else int(args.shard_size)
     )
-    default_workers = (
-        run_config.compiled_cache_workers
-        if args.training_selection
-        else load_convert_fflogs_config().default_worker_count
+    workers = (
+        resolve_positive_worker_count(
+            project_root=PROJECT_ROOT, env_name="CONVERT_FFLOGS_WORKERS",
+        )
+        if args.workers is None else int(args.workers)
     )
-    workers = default_workers if args.workers is None else int(args.workers)
+    if workers < 1:
+        parser.error("--workers must be >= 1")
     precision = load_precision_config()
     if args.training_selection:
         valid_paths = prepare_training_caches(

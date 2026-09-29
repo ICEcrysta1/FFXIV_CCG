@@ -344,7 +344,6 @@ def test_training_dataloader_uses_shard_batch_sampler_after_precompile(tmp_path,
         job_tag="black_mage",
         batch_size=1,
         compiled_cache_shard_size=4,
-        compiled_cache_workers=1,
         config_path=config_path,
     )
     precision = load_precision_config()

@@ -156,7 +156,6 @@ class GrpoRunConfig:
     precision: str = "float32"
     compiled_cache_shard_size: int = 512
     compiled_cache_max_shards: int = 8
-    compiled_cache_workers: int = 1
     model: ModelConfig = ModelConfig()
     config_path: Path | None = None
 
@@ -168,6 +167,8 @@ def load_grpo_run_config(path: Path) -> GrpoRunConfig:
     training_raw = raw.get("training", {}) or {}
     if not isinstance(training_raw, Mapping):
         raise ValueError("training config section must be a mapping")
+    if "compiled_cache_workers" in training_raw:
+        raise ValueError("training.compiled_cache_workers is removed; set CONVERT_FFLOGS_WORKERS in .env")
     precision = str(
         raw.get("precision", training_raw.get("precision", "float32"))
     ).strip().lower()
@@ -187,8 +188,7 @@ def load_grpo_run_config(path: Path) -> GrpoRunConfig:
         ) from exc
     shard_size = int(training_raw.get("compiled_cache_shard_size", 512))
     max_shards = int(training_raw.get("compiled_cache_max_shards", 8))
-    workers = int(training_raw.get("compiled_cache_workers", 1))
-    if shard_size < 1 or max_shards < 1 or workers < 1:
+    if shard_size < 1 or max_shards < 1:
         raise ValueError("GRPO compiled cache settings must be positive")
     max_files_raw = training_raw.get("max_files")
     if max_files_raw is None:
@@ -219,7 +219,6 @@ def load_grpo_run_config(path: Path) -> GrpoRunConfig:
         precision=normalized_precision,
         compiled_cache_shard_size=shard_size,
         compiled_cache_max_shards=max_shards,
-        compiled_cache_workers=workers,
         model=load_model_config(resolved_path),
         config_path=resolved_path,
     )

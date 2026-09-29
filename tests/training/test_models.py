@@ -982,7 +982,7 @@ def test_job_model_config_loads_bounded_compiled_cache(tmp_path):
     assert config.compiled_cache_max_shards == 3
 
 
-def test_job_model_config_loads_compiled_cache_workers(tmp_path):
+def test_job_model_config_rejects_legacy_compiled_cache_workers(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         "raw_data_dir: data/human/job/black_mage/raw/FRU\n"
@@ -991,9 +991,8 @@ def test_job_model_config_loads_compiled_cache_workers(tmp_path):
         encoding="utf-8",
     )
 
-    config = load_run_config(config_path)
-
-    assert config.compiled_cache_workers == 4
+    with pytest.raises(ValueError, match="CONVERT_FFLOGS_WORKERS"):
+        load_run_config(config_path)
 
 
 def test_training_cache_dir_is_scoped_by_job(monkeypatch, tmp_path):
