@@ -85,6 +85,37 @@ def test_max_files_balances_buckets_and_keeps_fallback_within_bucket(tmp_path):
     assert all({path.parent.name for path in group.candidates} == {group.directory_name.split("/")[-1]} for group in groups)
 
 
+@pytest.mark.parametrize("input_root", ["annotated", "annotated/FRU"])
+def test_encounter_root_and_stage_root_balance_the_same_buckets(tmp_path, input_root):
+    stage_root = tmp_path / "annotated"
+    for bucket, count in (("90-100", 100), ("00-10", 10)):
+        directory = stage_root / "FRU" / bucket
+        directory.mkdir(parents=True)
+        for index in range(count):
+            (directory / f"fight-{index:03d}.json").write_text("{}", encoding="utf-8")
+
+    groups = select_training_raw_path_groups(tmp_path / input_root, max_files=10)
+    assert [(group.directory_name, group.target_count) for group in groups] == [
+        ("FRU/90-100", 5), ("FRU/00-10", 5),
+    ]
+    assert all(
+        {path.parent.name for path in group.candidates} == {group.directory_name.split("/")[-1]}
+        for group in groups
+    )
+
+
+def test_bucket_root_preserves_encounter_and_bucket(tmp_path):
+    bucket_root = tmp_path / "annotated" / "FRU" / "90-100"
+    bucket_root.mkdir(parents=True)
+    for index in range(4):
+        (bucket_root / f"fight-{index}.json").write_text("{}", encoding="utf-8")
+
+    groups = select_training_raw_path_groups(bucket_root, max_files=2)
+    assert [(group.directory_name, group.target_count) for group in groups] == [
+        ("FRU/90-100", 2),
+    ]
+
+
 def test_fru_quota_of_100_selects_ten_from_each_bucket(tmp_path):
     for bucket in PERCENTILE_BUCKETS:
         directory = tmp_path / "FRU" / bucket

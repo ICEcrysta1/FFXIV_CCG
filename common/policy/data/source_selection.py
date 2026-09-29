@@ -7,7 +7,7 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
-from common.dataset_layout import PERCENTILE_BUCKETS, find_dataset_json_files
+from common.dataset_layout import DATASET_STAGES, PERCENTILE_BUCKETS, find_dataset_json_files
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,10 @@ class RawTrainingPathGroup:
 
 def _encounter_and_bucket(root: Path, source: Path) -> tuple[str, str | None]:
     relative = source.relative_to(root).parts
+    if root.name in PERCENTILE_BUCKETS:
+        return root.parent.name, root.name
+    if root.name not in DATASET_STAGES and len(relative) >= 2 and relative[0] in PERCENTILE_BUCKETS:
+        return root.name, relative[0]
     if len(relative) == 1:
         return root.name or str(root), None
     encounter = relative[0]
