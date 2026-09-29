@@ -7,7 +7,6 @@ import json
 import os
 import re
 import subprocess
-import tempfile
 from pathlib import Path
 
 from common.dataset_layout import map_dataset_output_path
@@ -133,24 +132,22 @@ def annotate_file(
         raise ValueError("source_id must be a positive integer")
     job_tag = _selected_job(raw, selected)
     checksum = hashlib.sha256(content).hexdigest()
-    with tempfile.TemporaryDirectory(prefix="action-quality-") as temporary:
-        request_path = Path(temporary) / "request.json"
-        result_path = Path(temporary) / "analysis.json"
-        atomic_write_json(request_path, {
-            "source": str(source), "analyzer_root": str(config.analyzer_root),
-            "node_modules": str(config.node_modules), "source_id": selected,
-        })
-        process_env = dict(os.environ)
-        for key in ("FFLOGS_V2_CLIENT_ID", "FFLOGS_V2_CLIENT_SECRET"):
-            process_env.pop(key, None)
-        result = subprocess.run(
-            [config.node, str(RUNTIME), str(request_path), str(result_path)],
-            cwd=RUNTIME.parent, env=process_env, capture_output=True,
-            text=True, encoding="utf-8", errors="replace", timeout=config.timeout, check=False,
-        )
-        if result.returncode:
-            raise RuntimeError(f"analysis process failed:\n{result.stderr.strip()}")
-        analysis = json.loads(result_path.read_text(encoding="utf-8"))
+    request = {
+        "source": str(source), "analyzer_root": str(config.analyzer_root),
+        "node_modules": str(config.node_modules), "source_id": selected,
+    }
+    process_env = dict(os.environ)
+    for key in ("FFLOGS_V2_CLIENT_ID", "FFLOGS_V2_CLIENT_SECRET"):
+        process_env.pop(key, None)
+    result = subprocess.run(
+        [config.node, str(RUNTIME)],
+        input=json.dumps(request, ensure_ascii=False),
+        cwd=RUNTIME.parent, env=process_env, capture_output=True,
+        text=True, encoding="utf-8", errors="replace", timeout=config.timeout, check=False,
+    )
+    if result.returncode:
+        raise RuntimeError(f"analysis process failed:\n{result.stderr.strip()}")
+    analysis = json.loads(result.stdout)
     if not isinstance(analysis, dict):
         raise TypeError("analysis result must be a JSON object")
     for field in ("source", "time_basis", "actor"):

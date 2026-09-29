@@ -35,6 +35,7 @@
 
 ### Fixed
 
+- 修复离线动作质量标记时 Node 无法写入系统临时目录 `analysis.json` 而整批失败的问题：Python 与 Node 改用标准输入/输出传递请求和结果，Node 在输出完成后退出；正式 `annotated` JSON 仍由 Python 校验并原子保存。补充进程通信测试，并用真实 FRU 日志验证标注产物保留全部原始字段。
 - 转换 CLI 在输入目录为空或所有文件均未编译成功时返回非零，避免把无可用 PT 的运行报告为成功；补充 CLI 回归测试。
 - 修复 FFLogs 转换时真实技能样本未写入 `step`、`source_step`，导致 compiled PT 中真实技能全部显示为第 0 步的问题；现在与插入的 `ogcd_wait` 共用连续样本步号，并保留各真实技能的原始动作序号。`DEFAULT_CONVERSION_VERSION` 提升到 v14，使旧缓存重新编译；补充样本顺序与 PT 元数据回归测试。
 - FFLogs 批量下载排除 `Anonymous`、隐藏角色及 `a:` 匿名报告，避免匿名身份解析失败占用配额；没有 Lodestone ID 的公开具名角色通过报告中的姓名与服务器唯一匹配角色 ID 后查询历史。修正 `--bracket` 说明为补丁分组，并将非法下载参数校验提前到认证之前。

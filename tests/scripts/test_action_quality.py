@@ -43,7 +43,8 @@ def bridge_config(tmp_path):
 def fake_process(monkeypatch, *, error=False, wrong_source=False, schema=2,
                  origin="pull_start", mutate=None):
     def run(arguments, **kwargs):
-        request = json.loads(Path(arguments[-2]).read_text(encoding="utf-8"))
+        assert arguments[1:] == [str(runner.RUNTIME)]
+        request = json.loads(kwargs["input"])
         content = Path(request["source"]).read_bytes()
         assert "FFLOGS_V2_CLIENT_SECRET" not in kwargs["env"]
         analysis = {
@@ -62,8 +63,7 @@ def fake_process(monkeypatch, *, error=False, wrong_source=False, schema=2,
         }
         if mutate is not None:
             mutate(analysis)
-        atomic_write_json(arguments[-1], analysis)
-        return SimpleNamespace(returncode=0, stderr="")
+        return SimpleNamespace(returncode=0, stdout=json.dumps(analysis), stderr="")
     monkeypatch.setattr(runner.subprocess, "run", run)
 
 
