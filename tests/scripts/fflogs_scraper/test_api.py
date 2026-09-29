@@ -6,6 +6,87 @@ import pytest
 
 from scripts.fflogs_scraper import FFLogsV2Client
 from scripts.fflogs_scraper.api import client as api_client
+from scripts.fflogs_scraper.contracts.models import ReportMeta
+
+
+def test_report_metadata_fetches_fight_players_in_one_query(monkeypatch):
+    client = FFLogsV2Client("id", "secret")
+    queries = []
+
+    def fake_query(gql):
+        queries.append(gql)
+        return {"reportData": {"report": {"playerDetails": {
+            "data": {"playerDetails": {"dps": [{"id": 7, "name": "Player"}]}}
+        }}}}
+
+    monkeypatch.setattr(client, "query", fake_query)
+    monkeypatch.setattr(
+        api_client, "_adapt_report_metadata", lambda code, report: ReportMeta(code),
+    )
+    meta = client.get_report_fights("ABC123", player_fight_id=33)
+
+    assert len(queries) == 1
+    assert "playerDetails(fightIDs: [33])" in queries[0]
+    assert meta.players == [{"id": 7, "name": "Player"}]
+
+
+def test_report_metadata_without_player_fight_keeps_single_download_shape(monkeypatch):
+    client = FFLogsV2Client("id", "secret")
+    queries = []
+    monkeypatch.setattr(client, "query", lambda gql: queries.append(gql) or {
+        "reportData": {"report": {"playerDetails": {"data": {"dps": []}}}},
+    })
+    monkeypatch.setattr(
+        api_client, "_adapt_report_metadata", lambda code, report: ReportMeta(code),
+    )
+
+    assert client.get_report_fights("ABC123").players == []
+    assert "playerDetails" not in queries[0]
+
+
+def test_report_metadata_rejects_invalid_player_fight_id():
+    client = FFLogsV2Client("id", "secret")
+    with pytest.raises(ValueError, match="player_fight_id"):
+        client.get_report_fights("ABC123", player_fight_id="33) injected")
+
+
+def test_http_session_is_reused_and_closed(monkeypatch):
+    sessions = []
+
+    class FakeResponse:
+        def __init__(self, data):
+            self.data = data
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self.data
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = []
+            self.closed = False
+            sessions.append(self)
+
+        def post(self, url, **kwargs):
+            self.calls.append(url)
+            if url == FFLogsV2Client.TOKEN_URL:
+                return FakeResponse({"access_token": "token", "expires_in": 3600})
+            return FakeResponse({"data": {"ok": True}})
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(api_client.cf_requests, "Session", FakeSession)
+    client = FFLogsV2Client("id", "secret")
+    assert client.query("query { ok }") == {"ok": True}
+    assert client.query("query { ok }") == {"ok": True}
+    assert len(sessions) == 1
+    assert sessions[0].calls == [FFLogsV2Client.TOKEN_URL, FFLogsV2Client.GQL_URL,
+                                 FFLogsV2Client.GQL_URL]
+    client.close()
+    assert sessions[0].closed
 
 
 def test_get_report_events_stops_at_event_limit(monkeypatch, caplog):

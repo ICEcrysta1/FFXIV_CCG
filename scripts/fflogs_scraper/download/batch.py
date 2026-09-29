@@ -92,10 +92,10 @@ def _download_report(
             return "existing"
         logger.warning("  旧文件不符合本次分档或完整性要求，重新下载: %s", output_path)
 
-    sid = client.resolve_source_id(code, name, fid)
+    meta = client.get_report_fights(code, player_fight_id=fid)
+    sid = next((player.get("id") for player in meta.players if player.get("name") == name), None)
     if not sid:
         raise ValueError(f"未找到玩家 {name} 的 source ID")
-    meta = client.get_report_fights(code)
     fight = _find_fight(meta, fid)
     if not fight:
         raise ValueError(f"未找到 fight={fid}")

@@ -13,8 +13,12 @@ from scripts.fflogs_scraper.download.sampling import _allocate_percentile_quotas
 
 
 def _stub_report_download(monkeypatch, client, meta):
-    monkeypatch.setattr(client, "resolve_source_id", lambda *args: 1)
-    monkeypatch.setattr(client, "get_report_fights", lambda code: replace(meta, code=code))
+    monkeypatch.setattr(
+        client, "get_report_fights",
+        lambda code, *, player_fight_id=None: replace(
+            meta, code=code, players=[{"id": 1, "name": "Player"}],
+        ),
+    )
     monkeypatch.setattr(client, "get_damage_table", lambda *args: {"entries": []})
     monkeypatch.setattr(client, "get_fight_events", lambda *args, **kwargs: [])
 
@@ -26,8 +30,12 @@ def _record(code, percentile, name="Player"):
 @pytest.mark.parametrize("mode", ["events-only", "default", "damage-only"])
 def test_batch_download_saves_full_analysis_context(monkeypatch, tmp_path, analysis_meta, mode):
     client = FFLogsV2Client("id", "secret")
-    monkeypatch.setattr(client, "resolve_source_id", lambda *args: 1)
-    monkeypatch.setattr(client, "get_report_fights", lambda code: analysis_meta)
+    monkeypatch.setattr(
+        client, "get_report_fights",
+        lambda code, *, player_fight_id=None: replace(
+            analysis_meta, players=[{"id": 1, "name": "Player"}],
+        ),
+    )
     monkeypatch.setattr(client, "get_damage_table", lambda *args: {"entries": []})
     requests = []
     def get_events(code, fight, source_id=None, *, require_complete=False):
@@ -40,6 +48,28 @@ def test_batch_download_saves_full_analysis_context(monkeypatch, tmp_path, analy
     assert payload["lang"] == "cn"
     assert payload["events_complete"] is (mode != "damage-only")
     assert requests == ([] if mode == "damage-only" else [(None, True)])
+
+
+def test_batch_download_uses_combined_metadata_and_player_query(monkeypatch, tmp_path, analysis_meta):
+    client = FFLogsV2Client("id", "secret")
+    calls = []
+
+    def get_metadata(code, *, player_fight_id=None):
+        calls.append((code, player_fight_id))
+        return replace(analysis_meta, players=[{"id": 1, "name": "Player"}])
+
+    monkeypatch.setattr(client, "get_report_fights", get_metadata)
+    monkeypatch.setattr(
+        client, "resolve_source_id",
+        lambda *args: pytest.fail("不应再次单独查询玩家"),
+    )
+    monkeypatch.setattr(client, "get_fight_events", lambda *args, **kwargs: [])
+    batch._download_report(client, "ABC123", 33, "Player", 123, str(tmp_path), "events-only")
+
+    assert calls == [("ABC123", 33)]
+    payload = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
+    assert payload["source_id"] == 1
+    assert "playerDetails" not in payload
 
 
 @pytest.mark.parametrize("events_only", [True, False])
@@ -82,7 +112,13 @@ def test_incomplete_download_does_not_create_output(monkeypatch, tmp_path, analy
 def test_stratified_download_saves_bucket_metadata_and_replaces_failed_candidate(monkeypatch, tmp_path, analysis_meta):
     client = FFLogsV2Client("id", "secret")
     _stub_report_download(monkeypatch, client, analysis_meta)
-    monkeypatch.setattr(client, "resolve_source_id", lambda code, *args: None if code == "FAIL" else 1)
+    monkeypatch.setattr(
+        client, "get_report_fights",
+        lambda code, *, player_fight_id=None: replace(
+            analysis_meta, code=code,
+            players=[] if code == "FAIL" else [{"id": 1, "name": "Player"}],
+        ),
+    )
     records = [_record("FAIL", 95), _record("TOP", 100), _record("TOP", 100)]
     records += [_record(f"R{lower}", lower) for lower in range(80, -1, -10)]
     result = batch._stratified_batch_download(client, records, _allocate_percentile_quotas(10), str(tmp_path), "events-only")
@@ -134,7 +170,7 @@ def test_valid_existing_files_count_towards_target_without_redownloading(monkeyp
     assert first["success"] == 1
     def unexpected(*args):
         pytest.fail("已有有效文件不应再查询报告")
-    monkeypatch.setattr(client, "resolve_source_id", unexpected)
+    monkeypatch.setattr(client, "get_report_fights", unexpected)
     second = batch._stratified_batch_download(client, [record], {"90-100": 1}, str(tmp_path), mode)
     assert second["existing"] == 1
     assert second["success"] == 0
