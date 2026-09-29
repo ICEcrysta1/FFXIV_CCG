@@ -21,6 +21,7 @@ from scripts.convert_fflogs.extraction.action_quality import (
     attach_action_quality_labels,
 )
 from scripts.convert_fflogs.extraction.fight_payload import build_fight_payload
+from scripts.convert_fflogs.training.quality_supervision import source_ranking
 from training import TrainingDataset
 from training.data.collator import TrainingCollator
 
@@ -190,27 +191,41 @@ def test_label_reaches_real_decision_not_policy_wait(cs_backend, cs_skill_book):
                for sample in result["samples"] if sample["label"]["action_key"] == "ogcd_wait")
 
 
+@pytest.mark.parametrize("annotation_status, with_labels, expected_status", [
+    ("partial", True, "attributed_label"),
+    ("partial", False, "no_attributed_label"),
+    ("unannotated", False, "unannotated"),
+])
+@pytest.mark.parametrize("percentile, bucket", [
+    (7.5, "00-10"),
+    (97.77, "90-100"),
+])
 def test_compiled_pt_and_batch_keep_label_outside_model_inputs(
     cs_backend, cs_skill_book, tmp_path: Path, monkeypatch,
+    annotation_status, with_labels, expected_status, percentile, bucket,
 ):
     torch = pytest.importorskip("torch")
+    labels = ([
+        {"reason_id": REASON, "severity": "medium", "raw_event_index": 1},
+        {"reason_id": "second.error", "severity": "major", "raw_event_index": 1},
+    ] if with_labels else [])
     action = {
         "time_offset": 0.0, "request_time_offset": 0.0, "action_key": "fire_iii",
-        "raw_event_index": 1, "quality_labels": [{
-            "reason_id": REASON, "severity": "medium", "raw_event_index": 1,
-        }],
+        "raw_event_index": 1, "quality_labels": labels,
     }
     from tests.helpers import build_test_scene_context, targetable_window_token
 
     fight = {
         "fight_id": "quality_pt", "job_tag": "black_mage", "duration": 10.0,
+        "annotation_status": annotation_status,
+        "ranking": {"percentile": percentile, "percentile_bucket": bucket},
         "scene_context": build_test_scene_context(targetable_tokens=[
             targetable_window_token(0.0, 10.0, targetable=True, segment_kind="combat"),
         ]),
         "actions": [action],
     }
     training_payload = build_training_samples(cs_backend, cs_skill_book, fight)
-    source = tmp_path / "annotated" / "FRU" / "00-10" / "quality.json"
+    source = tmp_path / "annotated" / "FRU" / bucket / "quality.json"
     source.parent.mkdir(parents=True)
     source.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(cache_compile, "convert_raw_file", lambda *_args, **_kwargs: (training_payload, {}))
@@ -233,11 +248,29 @@ def test_compiled_pt_and_batch_keep_label_outside_model_inputs(
     assert saved["metadata"]["source_step"] == 1
     assert saved["raw_event_index"] == 1
     assert saved["quality_labels"] == action["quality_labels"]
+    assert saved["metadata"]["percentile"] == percentile
+    assert saved["metadata"]["percentile_bucket"] == bucket
+    assert saved["metadata"]["quality_label_status"] == expected_status
+    assert saved["quality_label_weights"].tolist() == ([0.5, 1.0] if with_labels else [])
     dataset = TrainingDataset(
         [source], job_tag="black_mage", normalizer=normalizer,
         int_dtype=torch.int32, float_dtype=torch.float32,
         cache_dir=cache_root, compiled_cache_shard_size=1,
     )
     batch = TrainingCollator()([dataset[0]])
-    assert batch["quality_labels"] == [action["quality_labels"]]
+    assert batch["quality_label_weights"].tolist() == ([[0.5, 1.0]] if with_labels else [[]])
+    assert batch["quality_label_mask"].tolist() == ([[True, True]] if with_labels else [[]])
+    assert batch["quality_annotation_available"].tolist() == [annotation_status == "partial"]
+    assert batch["source_quality"].tolist() == pytest.approx([percentile / 100.0])
+    assert "source_percentile" not in batch
+    assert "source_percentile_bucket_lower" not in batch
     assert isinstance(batch["candidate_skill_features"], torch.Tensor)
+
+
+def test_source_ranking_checks_directory_and_preserves_unknown_percentile(tmp_path):
+    source = tmp_path / "annotated" / "FRU" / "00-10" / "fight.json"
+    assert source_ranking(source, None) == {
+        "percentile": None, "percentile_bucket": "00-10",
+    }
+    with pytest.raises(ValueError, match="directory disagree"):
+        source_ranking(source, {"percentile": 95.0, "percentile_bucket": "90-100"})

@@ -13,6 +13,7 @@
 
 ### Changed
 
+- compiled PT 的每个决策样本保留 FFLogs 历史排名精确百分位和区间，校验排名与所在目录一致；将动作标注状态区分为已归因、未命中可归因标签、未标注和合成决策，空标签不再隐含“正确”。编译时按模型 `action_quality.yaml` 把轻微/中等/严重映射为逐标签数值权重，batch 只传权重张量、有效位与由精确百分位换算的 `source_quality`，原因和等级仍留在 PT 供追溯。等级权重读取统一到公共模型配置；compiled cache 格式升级为 v14、转换版本升级为 v15，旧缓存需重编译。训练损失尚未消费这些质量字段。
 - 将行为克隆主交叉熵从 `CandidateTransformerModel.forward()` 移到训练侧独立损失模块；模型带标签前向仍返回 logits 与 Top-1/Top-3 指标，但不再返回 `loss`。训练通过统一 `training/loop/loss.py` 装配主损失和可选的价值辅助损失，候选技能价值读取归入数据层；主损失以 FP32 计算以保持混合精度训练口径。当前损失权重和训练目标未改变，动作质量惩罚尚未接入。
 - 黑魔 Artzip 的 `raw_data_dir` 默认切换到 `annotated/`，无显式输入时转换、BC 训练和 GRPO 共用已评估 JSON；模型分析和自回归回放也跟随该目录，分别默认选取其中排序后的第一份 JSON。离线评分从该阶段定位同级 `raw/`，避免重复评估输出文件。命令行和文档说明先评分再转换、显式 raw 输入与 annotated 输入使用不同缓存身份；质量标签已进入 PT，但训练损失仍未消费标签。
 - 标注 JSON 转换为 compiled PT 时，按 `config/convert_fflogs/action_quality/<job>.yaml` 的职业开关筛选可归因的错误；仅接受身份、技能、时间和原始事件索引一致的唯一成功施法，将类别原因与严重程度写入对应真实动作样本，不按最近时间猜测，也不把标签传给模型输入。训练 batch 保留标签供后续损失使用；compiled cache 的 `CACHE_FORMAT` 升级到 v13，标签准入语义变化通过手动提升 `DEFAULT_CONVERSION_VERSION` 重编译，修改 YAML 注释不会使缓存失效。补充精确归因、PT 落盘和 batch 传递测试，并用真实 FRU 日志核对标签落点。

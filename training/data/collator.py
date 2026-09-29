@@ -64,6 +64,20 @@ class TrainingCollator:
             else [sample["history_action_keys"] for sample in samples]
         )
 
+        quality_weights = [
+            sample.get("quality_label_weights", torch.empty(0, dtype=torch.float32))
+            for sample in samples
+        ]
+        quality_lengths = [int(weights.numel()) for weights in quality_weights]
+        quality_width = max(quality_lengths)
+        padded_quality_weights = torch.zeros((len(samples), quality_width), dtype=torch.float32)
+        quality_label_mask = torch.zeros((len(samples), quality_width), dtype=torch.bool)
+        for index, weights in enumerate(quality_weights):
+            length = quality_lengths[index]
+            padded_quality_weights[index, :length] = weights
+            quality_label_mask[index, :length] = True
+        quality_statuses = [sample["metadata"].get("quality_label_status", "unannotated") for sample in samples]
+
         batch = {
             "metadata": [sample["metadata"] for sample in samples],
             "history_action_keys": history_action_batches,
@@ -72,7 +86,20 @@ class TrainingCollator:
                 sample.get("candidate_invalid_reasons", []) for sample in samples
             ],
             "label_action_key": [sample["label_action_key"] for sample in samples],
-            "quality_labels": [list(sample.get("quality_labels", [])) for sample in samples],
+            "quality_label_weights": padded_quality_weights,
+            "quality_label_mask": quality_label_mask,
+            "quality_annotation_available": torch.tensor(
+                [status in {"attributed_label", "no_attributed_label"} for status in quality_statuses],
+                dtype=torch.bool,
+            ),
+            "source_quality": torch.tensor(
+                [
+                    -1.0 if sample["metadata"].get("percentile") is None
+                    else float(sample["metadata"]["percentile"]) / 100.0
+                    for sample in samples
+                ],
+                dtype=torch.float32,
+            ),
             "label_index": torch.tensor(
                 [sample["label_index"] for sample in samples],
                 dtype=torch.int64,
