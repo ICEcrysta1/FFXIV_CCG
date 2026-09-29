@@ -7,7 +7,6 @@ import logging
 import multiprocessing
 from pathlib import Path
 
-from common.torch_dependencies import import_torch
 from common.policy.data.compiled_cache import (
     DEFAULT_CACHE_MAX_SHARDS,
     DEFAULT_CACHE_SHARD_SIZE,
@@ -16,7 +15,9 @@ from common.policy.data.compiled_cache import (
     cache_path_for_source,
 )
 from common.policy.data.normalizer import Normalizer
+from common.policy.data.source_selection import RawTrainingPathGroup, select_training_raw_path_groups
 from common.policy.data.skill_vocab import SkillVocab
+from common.torch_dependencies import import_torch
 
 from ..config.constants import DEFAULT_DOWNTIME_GAP_SECONDS
 from ..source.raw_source import convert_raw_file
@@ -25,7 +26,6 @@ from ..training.history_bank import build_history_bank
 from ..training.sample_builder import TrainingSampleBuilder
 from ..training.quality_supervision import source_ranking
 from .cache_load import RAW_CONVERSION_VERSION, _load_cache
-from .cache_paths import RawTrainingPathGroup, select_training_raw_path_groups
 from .cache_writer import write_compiled_cache_stream
 
 

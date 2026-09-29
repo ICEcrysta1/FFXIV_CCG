@@ -1,4 +1,4 @@
-"""训练 raw JSON 路径选择与副本配额分组。"""
+"""按副本比例选择训练数据来源，并保留失败文件的补位顺序。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class RawTrainingPathGroup:
-    """一个副本目录的目标有效文件数和有序 raw JSON 候选。"""
+    """一个副本目录的目标有效文件数和有序 JSON 候选。"""
 
     directory_name: str
     target_count: int
@@ -22,7 +22,7 @@ class RawTrainingPathGroup:
 
     @property
     def primary_paths(self) -> tuple[Path, ...]:
-        """返回按比例首轮尝试的文件，剩余候选用于失败补位。"""
+        """返回首轮文件，剩余候选用于失败补位。"""
         return self.candidates[: self.target_count]
 
 
@@ -30,7 +30,7 @@ def select_training_raw_path_groups(
     data_dir: Path,
     max_files: int | None = None,
 ) -> tuple[RawTrainingPathGroup, ...]:
-    """按副本比例选择目标配额，并为每个副本保留失败补位候选。"""
+    """按副本比例分配配额，并为每个副本保留失败补位候选。"""
     data_dir = Path(data_dir)
     directory_groups = []
     if data_dir.is_dir():
@@ -91,7 +91,7 @@ def select_training_raw_path_groups(
             )
         )
     logger.info(
-        "按副本比例选择 raw JSON: %s",
+        "按副本比例选择 JSON: %s",
         ", ".join(
             f"{directory_name}={allocation}"
             for (directory_name, _), allocation in zip(directory_groups, allocations)
@@ -101,7 +101,7 @@ def select_training_raw_path_groups(
 
 
 def select_training_raw_paths(data_dir: Path, max_files: int | None = None) -> list[Path]:
-    """按副本目录中的 raw JSON 文件数量比例选择首轮训练文件。"""
+    """按副本目录中的 JSON 文件数量比例选择首轮训练文件。"""
     return [
         path
         for group in select_training_raw_path_groups(data_dir, max_files)

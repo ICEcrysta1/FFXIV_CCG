@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
+from common.policy.data.source_selection import (
+    RawTrainingPathGroup,
+    select_training_raw_path_groups,
+    select_training_raw_paths,
+)
+
 from .cache_compile import (
     prepare_training_caches,
     precompile_raw_training_caches,
 )
 from .cache_load import load_raw_compiled_cache
-from .cache_paths import (
-    RawTrainingPathGroup,
-    select_training_raw_path_groups,
-    select_training_raw_paths,
-)
 
 
 __all__ = [

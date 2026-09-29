@@ -23,18 +23,18 @@ from common.policy.config import (
     resolve_policy_model_variant,
 )
 from common.config import load_precision_config
+from common.policy.data.prepared_sources import select_prepared_training_sources
 from training.config import load_run_config
 from training.loop import run_training
 
 
-def _prepare_training_caches(config, max_files: int | None) -> list[Path]:
-    """调用脚本层入口准备训练所需的 compiled cache。"""
+def _load_training_sources(config, max_files: int | None) -> list[Path]:
+    """只读选择已编译的训练文件；转换必须由独立入口先完成。"""
     if config.job_tag is None:
-        raise ValueError("training job_tag is required for raw JSON conversion")
-    from scripts.convert_fflogs.cache import prepare_training_caches
+        raise ValueError("training job_tag is required for compiled cache loading")
 
     precision = load_precision_config()
-    return prepare_training_caches(
+    return select_prepared_training_sources(
         config.raw_data_dir,
         max_files=max_files,
         job_tag=config.job_tag,
@@ -42,7 +42,6 @@ def _prepare_training_caches(config, max_files: int | None) -> list[Path]:
         float_dtype=precision.resolve_float_dtype(),
         cache_dir=resolve_policy_cache_dir(config.job_tag),
         shard_size=config.compiled_cache_shard_size,
-        max_workers=config.compiled_cache_workers,
         max_shards=config.compiled_cache_max_shards,
     )
 
@@ -120,7 +119,7 @@ def main() -> None:
         "全部有效文件" if max_files is None else max_files,
         "--max-files" if args.max_files is not None else "training.max_files",
     )
-    raw_paths = _prepare_training_caches(config, max_files)
+    raw_paths = _load_training_sources(config, max_files)
     training_kwargs = {
         "raw_paths": raw_paths,
         "output_dir": args.output_dir,

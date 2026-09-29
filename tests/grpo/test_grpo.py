@@ -659,7 +659,7 @@ def test_grpo_cli_forwards_max_files_and_overrides(monkeypatch, capsys, tmp_path
     monkeypatch.setattr(cli, "resolve_policy_checkpoint_path", lambda path: tmp_path / "best.pt")
     monkeypatch.setattr(
         cli,
-        "_prepare_grpo_scenes",
+        "_load_grpo_scenes",
         lambda config, max_files: calls.update(
             {"scene_config": config, "max_files": max_files}
         ) or [tmp_path / "scene.json"],
@@ -732,7 +732,7 @@ def test_grpo_cli_reuses_training_max_files_when_cli_is_absent(
     monkeypatch.setattr(cli, "resolve_policy_checkpoint_path", lambda path: tmp_path / "best.pt")
     monkeypatch.setattr(
         cli,
-        "_prepare_grpo_scenes",
+        "_load_grpo_scenes",
         lambda config, max_files: calls.update(max_files=max_files)
         or [tmp_path / "scene.json"],
     )

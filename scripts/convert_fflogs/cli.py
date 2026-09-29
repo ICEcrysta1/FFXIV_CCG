@@ -17,7 +17,7 @@ from common.policy.config import (
 from common.policy.data import Normalizer
 from training.config import load_run_config
 
-from .cache import precompile_raw_training_caches
+from .cache import prepare_training_caches, precompile_raw_training_caches
 from .config import (
     load_convert_fflogs_config,
     load_convert_fflogs_dotenv,
@@ -45,12 +45,23 @@ def main() -> None:
     parser.add_argument("--shard-size", type=int, default=None)
     parser.add_argument("--workers", type=int, default=None)
     parser.add_argument(
+        "--training-selection", action="store_true",
+        help="按 training.max_files 的配额选择并编译训练文件，失败时按副本补位",
+    )
+    parser.add_argument("--max-files", type=int, default=None, help="覆盖 training.max_files；仅用于 --training-selection")
+    parser.add_argument(
         "--downtime-gap",
         type=float,
         default=DEFAULT_DOWNTIME_GAP_SECONDS,
         help=f"downtime 判定的伤害间隔阈值，默认 {DEFAULT_DOWNTIME_GAP_SECONDS}",
     )
     args = parser.parse_args()
+    if args.max_files is not None and args.max_files < 1:
+        parser.error("--max-files must be >= 1")
+    if args.max_files is not None and not args.training_selection:
+        parser.error("--max-files requires --training-selection")
+    if args.training_selection and (args.inputs or args.source is not None or args.encounter is not None):
+        parser.error("--training-selection uses the configured input directory and source metadata")
 
     model_config_path = resolve_policy_model_config_path()
     run_config = load_run_config(model_config_path)
@@ -63,10 +74,6 @@ def main() -> None:
         )
 
     raw_root = run_config.raw_data_dir
-    input_paths = _resolve_input_files(args.inputs or [raw_root])
-    if not input_paths:
-        raise FileNotFoundError(f"没有找到 FFLogs JSON 输入文件: {raw_root}")
-
     cache_dir = (
         args.cache_root.resolve()
         if args.cache_root is not None
@@ -77,12 +84,34 @@ def main() -> None:
         if args.shard_size is None
         else int(args.shard_size)
     )
-    workers = (
-        load_convert_fflogs_config().default_worker_count
-        if args.workers is None
-        else int(args.workers)
+    default_workers = (
+        run_config.compiled_cache_workers
+        if args.training_selection
+        else load_convert_fflogs_config().default_worker_count
     )
+    workers = default_workers if args.workers is None else int(args.workers)
     precision = load_precision_config()
+    if args.training_selection:
+        valid_paths = prepare_training_caches(
+            raw_root,
+            max_files=run_config.max_files if args.max_files is None else args.max_files,
+            job_tag=resolved_job_tag,
+            int_dtype=precision.resolve_int_dtype(),
+            float_dtype=precision.resolve_float_dtype(),
+            cache_dir=cache_dir,
+            shard_size=shard_size,
+            max_workers=workers,
+            max_shards=run_config.compiled_cache_max_shards,
+            downtime_gap_seconds=float(args.downtime_gap),
+        )
+        if not valid_paths:
+            raise FileNotFoundError(f"没有找到可编译的训练 JSON：{raw_root}")
+        logger.info("训练文件转换完成: %d 个文件 -> %s", len(valid_paths), cache_dir)
+        return
+
+    input_paths = _resolve_input_files(args.inputs or [raw_root])
+    if not input_paths:
+        raise FileNotFoundError(f"没有找到 FFLogs JSON 输入文件: {raw_root}")
     valid_paths = precompile_raw_training_caches(
         input_paths,
         job_tag=resolved_job_tag,

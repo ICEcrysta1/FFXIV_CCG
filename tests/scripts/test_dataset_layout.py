@@ -10,7 +10,7 @@ from common.dataset_layout import (
     percentile_directory,
 )
 from common.policy.data.compiled_cache import cache_path_for_source
-from scripts.convert_fflogs.cache.cache_paths import select_training_raw_path_groups
+from common.policy.data.source_selection import select_training_raw_path_groups
 from scripts.convert_fflogs.cli import _resolve_input_files
 
 

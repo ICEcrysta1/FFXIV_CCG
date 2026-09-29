@@ -17,6 +17,7 @@ if __package__ in {None, ""}:
 import torch
 
 from common.config import load_precision_config
+from common.policy.data.prepared_sources import select_prepared_training_sources
 from common.policy.config import (
     PROJECT_ROOT,
     resolve_policy_cache_dir,
@@ -31,14 +32,13 @@ from grpo.config import load_grpo_config, load_grpo_run_config
 from grpo.trainer import run_grpo_training
 
 
-def _prepare_grpo_scenes(config, max_files: int | None) -> list[Path]:
-    """编译真实训练集场景 cache，并返回实际可用的 raw 场景文件。"""
+def _load_grpo_scenes(config, max_files: int | None) -> list[Path]:
+    """只读选择已有缓存的真实训练集场景。"""
     if config.job_tag is None:
         raise ValueError("GRPO job_tag is required for real training scenes")
-    from scripts.convert_fflogs.cache import prepare_training_caches
 
     precision = load_precision_config()
-    return prepare_training_caches(
+    return select_prepared_training_sources(
         config.raw_data_dir,
         max_files=max_files,
         job_tag=config.job_tag,
@@ -46,7 +46,6 @@ def _prepare_grpo_scenes(config, max_files: int | None) -> list[Path]:
         float_dtype=precision.resolve_float_dtype(),
         cache_dir=resolve_policy_cache_dir(config.job_tag),
         shard_size=config.compiled_cache_shard_size,
-        max_workers=config.compiled_cache_workers,
         max_shards=config.compiled_cache_max_shards,
     )
 
@@ -186,7 +185,7 @@ def main() -> None:
         if args.checkpoint is not None
         else resolve_policy_checkpoint_path(config_path)
     )
-    raw_paths = _prepare_grpo_scenes(config, max_files)
+    raw_paths = _load_grpo_scenes(config, max_files)
     if not raw_paths:
         raise FileNotFoundError("--max-files selected no valid real training scenes")
 

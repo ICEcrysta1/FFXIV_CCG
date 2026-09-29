@@ -39,7 +39,7 @@ from common.torch_serialization import safe_torch_load
 from common.training.tensorboard import TensorBoardConfig
 from scripts.convert_fflogs import cache as cache_module
 from scripts.convert_fflogs.cache import cache_compile as cache_compile_module
-from scripts.convert_fflogs.cache import cache_paths as cache_paths_module
+from common.policy.data import source_selection as cache_paths_module
 from training.config import RunConfig, ValuePreferenceConfig
 
 
