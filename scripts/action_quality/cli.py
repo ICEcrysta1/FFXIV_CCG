@@ -4,12 +4,13 @@ import argparse
 import logging
 import os
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from common.dataset_layout import find_dataset_json_files
 
 from .config import default_raw_root, load_bridge_config
-from .runner import annotate_file, output_path_for_source
+from .runner import analyzer_commit, annotation_is_current, annotate_file, output_path_for_source
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,7 @@ def main() -> int:
     parser.add_argument("--output-root", type=Path, help="评估输出根目录；默认 raw 同级 annotated")
     parser.add_argument("--source-root", type=Path, help="自定义输入阶段根目录，保留其下相对层级")
     parser.add_argument("--limit", type=int, help="只处理前 N 份，便于验证")
+    parser.add_argument("--force", action="store_true", help="忽略已有标注，重新分析所选文件")
     args = parser.parse_args()
     if args.limit is not None and args.limit < 1:
         parser.error("--limit must be positive")
@@ -45,18 +47,35 @@ def main() -> int:
     destinations = [output_path_for_source(path, args.output_root, args.source_root) for path in selected]
     if len(set(destinations)) != len(destinations):
         parser.error("multiple inputs map to the same output; use separate output roots")
-    failed = 0
-    for index, source in enumerate(selected, 1):
-        logger.info("分析 %d/%d: %s", index, len(selected), source)
+    commit = None if args.force else analyzer_commit(config)
+    if commit is None and not args.force:
+        logger.warning("无法确认分析器 commit，本次不跳过已有标注")
+
+    def process(source: Path, destination: Path):
         try:
+            if not args.force and annotation_is_current(source, destination, commit=commit):
+                return "skipped", destination, None
             output = annotate_file(
                 source, config=config, output_root=args.output_root,
                 source_root=args.source_root,
             )
         except (OSError, TypeError, ValueError, RuntimeError, UnicodeError, subprocess.TimeoutExpired) as error:
-            logger.error("分析失败 %s: %s", source, error)
-            failed += 1
-        else:
-            logger.info("已保存: %s", output)
-    logger.info("完成: 成功=%d 失败=%d", len(selected) - failed, failed)
-    return int(failed > 0)
+            return "failed", None, error
+        return "saved", output, None
+
+    counts = {"saved": 0, "skipped": 0, "failed": 0}
+    with ThreadPoolExecutor(max_workers=min(config.max_workers, len(selected))) as executor:
+        futures = {
+            executor.submit(process, source, destination): source
+            for source, destination in zip(selected, destinations, strict=True)
+        }
+        for index, future in enumerate(as_completed(futures), 1):
+            source = futures[future]
+            status, output, error = future.result()
+            counts[status] += 1
+            if error is not None:
+                logger.error("分析失败 %s: %s", source, error)
+            else:
+                logger.info("%d/%d %s: %s", index, len(selected), "跳过" if status == "skipped" else "已保存", output)
+    logger.info("完成: 新标注=%d 跳过=%d 失败=%d", counts["saved"], counts["skipped"], counts["failed"])
+    return int(counts["failed"] > 0)

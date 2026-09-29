@@ -27,6 +27,7 @@ class BridgeConfig:
     node_modules: Path
     node: str
     timeout: float
+    max_workers: int
 
 
 def load_bridge_config() -> BridgeConfig:
@@ -41,7 +42,13 @@ def load_bridge_config() -> BridgeConfig:
     timeout = float(raw["timeout_seconds"])
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("bridge.timeout_seconds must be positive and finite")
-    return BridgeConfig(analyzer, modules, os.environ.get("ACTION_QUALITY_NODE") or "node", timeout)
+    max_workers = raw["max_workers"]
+    if isinstance(max_workers, bool) or not isinstance(max_workers, int) or max_workers < 1:
+        raise ValueError("bridge.max_workers must be a positive integer")
+    return BridgeConfig(
+        analyzer, modules, os.environ.get("ACTION_QUALITY_NODE") or "node", timeout,
+        max_workers,
+    )
 
 
 def default_raw_root() -> Path:

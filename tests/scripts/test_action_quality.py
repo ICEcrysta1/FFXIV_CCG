@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+from threading import Barrier
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -36,7 +37,7 @@ def raw_file(tmp_path):
 
 @pytest.fixture
 def bridge_config(tmp_path):
-    return config.BridgeConfig(tmp_path / "engine", tmp_path / "deps", "node", 30)
+    return config.BridgeConfig(tmp_path / "engine", tmp_path / "deps", "node", 30, 2)
 
 
 def fake_process(monkeypatch, *, error=False, wrong_source=False, schema=2,
@@ -46,7 +47,13 @@ def fake_process(monkeypatch, *, error=False, wrong_source=False, schema=2,
         content = Path(request["source"]).read_bytes()
         assert "FFLOGS_V2_CLIENT_SECRET" not in kwargs["env"]
         analysis = {
-            "schema_version": schema, "source": {"sha256": "wrong" if wrong_source else hashlib.sha256(content).hexdigest()},
+            "schema_version": schema, "bridge_version": 2, "status": "annotated",
+            "training_ready": False,
+            "source": {
+                "sha256": "wrong" if wrong_source else hashlib.sha256(content).hexdigest(),
+                "fight_id": 5,
+            },
+            "engine": {"commit": "test-commit"},
             "time_basis": {"unit": "ms", "origin": origin, "report_offset_ms": 1000},
             "actor": {"id": str(request["source_id"])},
             "module_errors": ["failed"] if error else [],
@@ -72,6 +79,59 @@ def test_merge_preserves_raw_and_uses_shared_stage_layout(raw_file, bridge_confi
     assert payload == json.loads(original)
     assert raw_file.read_bytes() == original
     assert b"\r" not in output.read_bytes()
+
+
+def test_incremental_skip_requires_matching_source_engine_and_weights(raw_file, bridge_config, monkeypatch):
+    fake_process(monkeypatch)
+    output = runner.annotate_file(raw_file, config=bridge_config)
+    assert runner.annotation_is_current(raw_file, output, commit="test-commit")
+    assert not runner.annotation_is_current(raw_file, output, commit="other-commit")
+    monkeypatch.setattr(runner, "severity_weights", lambda _job: {"medium": 0.75})
+    assert not runner.annotation_is_current(raw_file, output, commit="test-commit")
+    monkeypatch.setattr(runner, "severity_weights", lambda _job: {"medium": 0.5})
+
+    monkeypatch.setattr(cli, "load_bridge_config", lambda: bridge_config)
+    monkeypatch.setattr(cli, "analyzer_commit", lambda _config: "test-commit")
+    monkeypatch.setattr(cli, "annotate_file", lambda *_args, **_kwargs: pytest.fail("valid output must skip Node"))
+    monkeypatch.setattr(sys, "argv", ["action_quality", str(raw_file)])
+    assert cli.main() == 0
+
+    raw = json.loads(raw_file.read_text(encoding="utf-8"))
+    raw["ranking"]["percentile"] = 4.0
+    atomic_write_json(raw_file, raw)
+    assert not runner.annotation_is_current(raw_file, output, commit="test-commit")
+    reruns = []
+    monkeypatch.setattr(cli, "annotate_file", lambda source, **_kwargs: reruns.append(source) or output)
+    assert cli.main() == 0
+    assert reruns == [raw_file]
+
+
+def test_dirty_analyzer_does_not_reuse_old_annotation(bridge_config, monkeypatch):
+    replies = iter([
+        SimpleNamespace(returncode=0, stdout="test-commit\n"),
+        SimpleNamespace(returncode=0, stdout=" M src/parser/core/Parser.ts\n"),
+    ])
+    monkeypatch.setattr(runner.subprocess, "run", lambda *_args, **_kwargs: next(replies))
+    assert runner.analyzer_commit(bridge_config) is None
+
+
+def test_cli_force_and_bounded_parallel_workers(raw_file, bridge_config, monkeypatch):
+    second = raw_file.with_name("second.json")
+    second.write_bytes(raw_file.read_bytes())
+    barrier = Barrier(2, timeout=5)
+    called = []
+
+    def annotate(source, **_kwargs):
+        called.append(source)
+        barrier.wait()
+        return source.with_suffix(".annotated.json")
+
+    monkeypatch.setattr(cli, "load_bridge_config", lambda: bridge_config)
+    monkeypatch.setattr(cli, "analyzer_commit", lambda _config: pytest.fail("--force must bypass reuse lookup"))
+    monkeypatch.setattr(cli, "annotate_file", annotate)
+    monkeypatch.setattr(sys, "argv", ["action_quality", str(raw_file.parent), "--force"])
+    assert cli.main() == 0
+    assert set(called) == {raw_file, second}
 
 
 @pytest.mark.parametrize("error,wrong_source", [(True, False), (False, True)])
@@ -134,7 +194,9 @@ def test_custom_root_keeps_encounter_and_bucket(tmp_path):
 
 
 def test_dotenv_reuses_loader_and_environment_wins(tmp_path, monkeypatch):
-    atomic_write_json(tmp_path / "config/action_quality.yaml", {"bridge": {"analyzer_root": "engine", "timeout_seconds": 9}})
+    atomic_write_json(tmp_path / "config/action_quality.yaml", {
+        "bridge": {"analyzer_root": "engine", "timeout_seconds": 9, "max_workers": 2},
+    })
     (tmp_path / ".env").write_text("ACTION_QUALITY_NODE=from-file\n", encoding="utf-8", newline="\n")
     monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
     monkeypatch.setenv("ACTION_QUALITY_NODE", "from-process")
@@ -143,6 +205,16 @@ def test_dotenv_reuses_loader_and_environment_wins(tmp_path, monkeypatch):
     assert settings.node == "from-process"
     assert settings.node_modules == tmp_path / "engine/node_modules"
     assert settings.timeout == 9
+    assert settings.max_workers == 2
+
+
+def test_invalid_parallel_worker_limit_is_rejected(tmp_path, monkeypatch):
+    atomic_write_json(tmp_path / "config/action_quality.yaml", {
+        "bridge": {"analyzer_root": "engine", "timeout_seconds": 9, "max_workers": 0},
+    })
+    monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
+    with pytest.raises(ValueError, match="max_workers"):
+        config.load_bridge_config()
 
 
 @pytest.mark.parametrize("input_stage,expected", [

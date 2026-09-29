@@ -18,6 +18,81 @@ from .config import BridgeConfig, severity_weights
 RUNTIME = Path(__file__).parent / "runtime" / "run.cjs"
 
 
+def analyzer_commit(config: BridgeConfig) -> str | None:
+    """仅复用可确认且工作树干净的分析器版本。"""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(config.analyzer_root), "rev-parse", "HEAD"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=10, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    commit = result.stdout.strip()
+    if not commit:
+        return None
+    try:
+        status = subprocess.run(
+            ["git", "-C", str(config.analyzer_root), "status", "--porcelain", "--untracked-files=no"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=10, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return commit if status.returncode == 0 and not status.stdout.strip() else None
+
+
+def annotation_is_current(source: Path, output: Path, *, commit: str | None) -> bool:
+    """仅当原始内容、分析器版本和等级权重均一致时复用已有产物。"""
+    if commit is None or not output.is_file():
+        return False
+    try:
+        content = source.read_bytes()
+        raw = json.loads(content)
+        annotated = json.loads(output.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict) or not isinstance(annotated, dict):
+            return False
+        analysis = annotated.pop("analysis", None)
+        if not isinstance(analysis, dict) or annotated != raw:
+            return False
+        if any(not isinstance(analysis.get(key), dict) for key in ("source", "actor", "engine", "time_basis")):
+            return False
+        selected = raw.get("source_id")
+        if isinstance(selected, bool) or not isinstance(selected, int) or selected <= 0:
+            return False
+        job_tag = _selected_job(raw, selected)
+        weights = severity_weights(job_tag)
+        labels = analysis.get("fight_labels")
+        if not isinstance(labels, list) or any(
+            not isinstance(label, dict)
+            or "severity" not in label
+            or label.get("severity_weight") != weights.get(label["severity"])
+            for label in labels
+        ):
+            return False
+        return (
+            raw.get("events_complete") is True
+            and bool(raw.get("events"))
+            and analysis.get("schema_version") == 2
+            and analysis.get("bridge_version") == 2
+            and analysis.get("status") == "annotated"
+            and analysis.get("training_ready") is False
+            and analysis.get("source", {}).get("sha256") == hashlib.sha256(content).hexdigest()
+            and analysis.get("source", {}).get("fight_id") == raw.get("fight_id")
+            and analysis.get("actor", {}).get("id") == str(selected)
+            and analysis.get("job_tag") == job_tag
+            and analysis.get("engine", {}).get("commit") == commit
+            and analysis.get("time_basis", {}).get("unit") == "ms"
+            and analysis.get("time_basis", {}).get("origin") == "pull_start"
+            and analysis.get("module_errors") == []
+            and analysis.get("severity_weights") == weights
+        )
+    except (OSError, TypeError, ValueError, UnicodeError, KeyError):
+        return False
+
+
 def _selected_job(raw: dict, source_id: int) -> str:
     actors = [actor for actor in raw.get("friendlies", []) if actor.get("id") == source_id]
     if len(actors) != 1 or not isinstance(actors[0].get("type"), str):
