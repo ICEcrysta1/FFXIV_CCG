@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import torch
 
-from common.config import load_project_config
+from common.config import load_precision_config, load_project_config
 from common.skills import SkillBook
 from scripts.common.inprocess_backend import InProcessBackend
 from scripts.convert_fflogs.cache import (
@@ -176,11 +176,12 @@ def _load_replay_cache(
 ) -> CompiledCacheReader:
     """读取 replay cache；缺失或过期时用 checkpoint 契约重建后重试。"""
     normalizer.ensure_job_resources(job_tag)
+    precision = load_precision_config()
     load_kwargs = {
         "cache_dir": config.cache_dir,
         "normalizer": normalizer,
-        "int_dtype": torch.int32,
-        "float_dtype": torch.float32,
+        "int_dtype": precision.resolve_int_dtype(),
+        "float_dtype": precision.resolve_float_dtype(),
         "shard_size": config.cache_shard_size,
         "max_shards": config.cache_max_shards,
     }
@@ -195,8 +196,8 @@ def _load_replay_cache(
         [config.scene_json_path],
         job_tag=job_tag,
         normalizer=normalizer,
-        int_dtype=torch.int32,
-        float_dtype=torch.float32,
+        int_dtype=load_kwargs["int_dtype"],
+        float_dtype=load_kwargs["float_dtype"],
         cache_dir=config.cache_dir,
         shard_size=config.cache_shard_size,
         max_workers=1,

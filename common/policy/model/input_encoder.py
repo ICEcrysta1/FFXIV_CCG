@@ -255,9 +255,7 @@ class CandidateInputEncoder(nn.Module):
             raise ValueError("compact history tensors must be moved to one device before model forward")
 
         history_width = batch["history_mask"].shape[1]
-        relative = torch.arange(history_width, device=device, dtype=torch.long)
-        lengths = lengths.to(dtype=torch.long)
-        ends = ends.to(dtype=torch.long)
+        relative = torch.arange(history_width, device=device, dtype=ends.dtype)
         valid = relative.unsqueeze(0) < lengths.unsqueeze(1)
         indices = ends.unsqueeze(1) - lengths.unsqueeze(1) + relative.unsqueeze(0)
         safe_indices = torch.where(valid, indices, torch.zeros_like(indices))

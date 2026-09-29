@@ -23,6 +23,7 @@ from ..source.raw_source import convert_raw_file
 from ..source.source_reader import TrainingSourceReader
 from ..training.history_bank import build_history_bank
 from ..training.sample_builder import TrainingSampleBuilder
+from ..training.quality_supervision import source_ranking
 from .cache_load import RAW_CONVERSION_VERSION, _load_cache
 from .cache_paths import RawTrainingPathGroup, select_training_raw_path_groups
 from .cache_writer import write_compiled_cache_stream
@@ -286,6 +287,7 @@ def _compile_raw_source_worker(task) -> tuple[str, int, int]:
         return str(source_path), 0, 0
 
     reader = TrainingSourceReader(training_payload)
+    ranking = source_ranking(source_path, reader.ranking)
     worker_normalizer = Normalizer.from_contract(normalizer_contract)
     worker_normalizer.ensure_job_resources(str(job_tag))
     worker_normalizer.register_schema(reader.schema)
@@ -309,6 +311,8 @@ def _compile_raw_source_worker(task) -> tuple[str, int, int]:
         float_dtype=float_dtype,
         num_candidates=reader.num_candidates,
         history_bank=history_bank,
+        ranking=ranking,
+        annotation_status=reader.annotation_status,
     )
 
     def sample_batches():

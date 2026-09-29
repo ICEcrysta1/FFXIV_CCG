@@ -74,6 +74,14 @@ class TrainingSourceReader:
         return self._fight_id
 
     @property
+    def ranking(self) -> dict[str, object] | None:
+        return self._payload.get("ranking")
+
+    @property
+    def annotation_status(self) -> str:
+        return str(self._payload.get("annotation_status", "unannotated"))
+
+    @property
     def num_samples(self) -> int:
         return self._num_samples
 

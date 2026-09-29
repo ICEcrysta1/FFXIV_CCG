@@ -49,6 +49,8 @@ def build_fight_payload(
     target_count_window_context: dict[str, object] | None = None,
     raw_events: list[dict[str, object]] | None = None,
     skill_book=None,
+    ranking: dict[str, object] | None = None,
+    annotation_status: str = "unannotated",
 ) -> dict[str, object]:
     """把一场完整战斗动作转成以最早请求为 0 的训练输入载荷。"""
     # 请求时刻可能因开怪预读落在首个 cast 之前。整场只做一次仿射平移，动作、
@@ -146,5 +148,7 @@ def build_fight_payload(
         "num_actions": len(annotated_actions),
         "gcd_time": _round_time(gcd_time),
         "scene_context": scene_context,
+        "ranking": ranking,
+        "annotation_status": annotation_status,
         "actions": annotated_actions,
     }

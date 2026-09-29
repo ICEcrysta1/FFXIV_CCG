@@ -66,6 +66,8 @@ def convert_report_payload(
         raid_buff_window_duration=project_config.system.raid_buff_window_duration,
         raw_events=report_payload.get("events", []),
         skill_book=skill_book,
+        ranking=report_payload.get("ranking"),
+        annotation_status="partial" if report_payload.get("analysis") is not None else "unannotated",
     )
     return fight_payload, ignored_skill_counts
 

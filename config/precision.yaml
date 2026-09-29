@@ -1,3 +1,4 @@
 precision:
   int_dtype: int32
+  index_dtype: int64
   float_dtype: float32

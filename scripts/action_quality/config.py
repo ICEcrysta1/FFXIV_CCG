@@ -7,10 +7,12 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from common.policy.config import load_policy_config, resolve_policy_model_config_path
+from common.policy.config import (
+    load_policy_config,
+    resolve_policy_model_config_path,
+)
 from common.project_config import (
     load_root_dotenv,
-    resolve_project_model_variant,
     resolve_project_path,
 )
 from common.yaml_config import load_yaml_mapping
@@ -24,6 +26,7 @@ class BridgeConfig:
     node_modules: Path
     node: str
     timeout: float
+    max_workers: int
 
 
 def load_bridge_config() -> BridgeConfig:
@@ -38,7 +41,13 @@ def load_bridge_config() -> BridgeConfig:
     timeout = float(raw["timeout_seconds"])
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("bridge.timeout_seconds must be positive and finite")
-    return BridgeConfig(analyzer, modules, os.environ.get("ACTION_QUALITY_NODE") or "node", timeout)
+    max_workers = raw["max_workers"]
+    if isinstance(max_workers, bool) or not isinstance(max_workers, int) or max_workers < 1:
+        raise ValueError("bridge.max_workers must be a positive integer")
+    return BridgeConfig(
+        analyzer, modules, os.environ.get("ACTION_QUALITY_NODE") or "node", timeout,
+        max_workers,
+    )
 
 
 def default_raw_root() -> Path:
@@ -49,26 +58,3 @@ def default_raw_root() -> Path:
     if annotated is None:
         return source
     return annotated.with_name("raw") / source.relative_to(annotated)
-
-
-def severity_weights(job_tag: str) -> dict[str, float]:
-    """按输入职业选择权重；没有配置时保留等级，不借用其他职业配置。"""
-    if not os.environ.get("FFXIV_MODEL_VARIANT", "").strip():
-        return {}
-    variant = resolve_project_model_variant(project_root=PROJECT_ROOT)
-    manifest = PROJECT_ROOT / "config/models" / job_tag / variant / "config.yaml"
-    if not manifest.is_file():
-        return {}
-    quality = load_policy_config(manifest).get("action_quality", {})
-    weights = quality.get("severity_weights", {})
-    if not weights:
-        return {}
-    result = {}
-    for level in ("minor", "medium", "major"):
-        value = weights.get(level)
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise TypeError(f"invalid action quality severity weight: {level}")
-        if not math.isfinite(value) or not 0 <= value <= 1:
-            raise ValueError(f"invalid action quality severity weight: {level}")
-        result[level] = float(value)
-    return result

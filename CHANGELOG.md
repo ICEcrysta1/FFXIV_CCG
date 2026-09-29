@@ -6,13 +6,16 @@
 
 ### Added
 
-- 新增 `scripts.action_quality` 离线动作质量桥接入口：复用根目录 `.env`、模型等级权重和公共数据集目录映射，调用独立 Node 解析进程，在 `annotated/<副本>/<百分位区间>/` 保存保留原始字段与事件的 JSON，并在顶层 `analysis` 输出整场建议、动作引用、插入窗口和黑魔循环证据。按输入职业选择解析模块，补充机工证据提取；支持归因的错误类别下列出具体技能，统一沿用该类别的整场最终严重程度和配置权重，未支持归因的类别明确标识，不将循环中的全部技能视为错误。产物明确标记 `training_ready: false`；训练损失和 PPG 权重尚未接入。
+- 新增 `scripts.action_quality` 离线动作质量桥接入口：复用根目录 `.env` 和公共数据集目录映射，调用独立 Node 解析进程，在 `annotated/<副本>/<百分位区间>/` 保存保留原始字段与事件的 JSON，并在顶层 `analysis` 输出整场建议、动作引用、插入窗口和黑魔循环证据。按输入职业选择解析模块，补充机工证据提取；支持归因的错误类别下列出具体技能，沿用该类别的整场最终严重程度，未支持归因的类别明确标识，不将循环中的全部技能视为错误。标注产物不保存模型专属权重，明确标记 `training_ready: false`；训练损失和 PPG 权重尚未接入。
 - 将外部分析依赖以固定版本 Git 子模块纳入 `third_party/xivanalysis/`，新增 `THIRD_PARTY_NOTICES.md` 保留完整 MIT 许可声明，并补充 Node 依赖安装、桥接命令、输出契约和项目结构说明；增加桥接、职业路由、事件关联与序列化回归测试。
 - 新增黑魔 `artzip` 的 `action_quality.yaml`，定义动作质量负监督等级权重：轻微 `0.25`、中等 `0.50`、严重 `1.00`；模型配置清单通过 `action_quality_config` 引用，公共加载器合并子配置并兼容未声明该引用的旧清单。同步补充配置加载测试与项目结构说明；本次仅提供配置和加载支持，尚未接入训练损失或 PPG 权重调整。
 - 将 UTF-8/LF JSON 原子写入抽离到 `scripts/common/json_io.py`，下载器和动作质量桥接共用；仅在完整序列化成功后替换目标文件，失败时保留已有产物，下载器原有保存行为保持不变。
 
 ### Changed
 
+- 动作质量批量标注支持增量复用与受控并行：已有产物的原始 JSON、来源哈希、分析器 commit 与输出契约一致时直接跳过；需要更新的文件按 `config/action_quality.yaml` 的 `bridge.max_workers` 并行分析，`--force` 可强制重跑。标注桥接版本升至 v3，旧版含模型等级权重的 JSON 不再复用或转换，须从 raw 重新标注；分析器版本无法确认或工作树有改动时也不复用旧产物。补充跳过、失效与并发回归测试。
+- compiled PT 的每个决策样本保留 FFLogs 历史排名精确百分位和区间，校验排名与所在目录一致；将动作标注状态区分为已归因、未命中可归因标签、未标注和合成决策，空标签不再隐含“正确”。轻微/中等/严重标签只编码为与模型配置无关的整数等级 `1/2/3`，batch 传等级张量、有效位与由精确百分位换算的 `source_quality`，原因和等级名称仍留在 PT 供追溯。模型 `action_quality.yaml` 的惩罚权重留待训练损失计算时映射，修改权重不再使标注或 compiled PT 失效；compiled cache 格式升级为 v15、转换版本升级为 v16，旧缓存需重编译。训练损失尚未消费这些质量字段。
+- `config/precision.yaml` 明确区分普通整数 `int_dtype`、交叉熵目标与 gather 索引用的 `index_dtype`（必须为 `int64`）及浮点 `float_dtype`；转换、BC、GRPO、回放、模型分析和 batch 统一读取该配置，布尔 mask 保持 `bool`，避免先存 `int32` 再为算子反复转成 `int64`。
 - 将行为克隆主交叉熵从 `CandidateTransformerModel.forward()` 移到训练侧独立损失模块；模型带标签前向仍返回 logits 与 Top-1/Top-3 指标，但不再返回 `loss`。训练通过统一 `training/loop/loss.py` 装配主损失和可选的价值辅助损失，候选技能价值读取归入数据层；主损失以 FP32 计算以保持混合精度训练口径。当前损失权重和训练目标未改变，动作质量惩罚尚未接入。
 - 黑魔 Artzip 的 `raw_data_dir` 默认切换到 `annotated/`，无显式输入时转换、BC 训练和 GRPO 共用已评估 JSON；模型分析和自回归回放也跟随该目录，分别默认选取其中排序后的第一份 JSON。离线评分从该阶段定位同级 `raw/`，避免重复评估输出文件。命令行和文档说明先评分再转换、显式 raw 输入与 annotated 输入使用不同缓存身份；质量标签已进入 PT，但训练损失仍未消费标签。
 - 标注 JSON 转换为 compiled PT 时，按 `config/convert_fflogs/action_quality/<job>.yaml` 的职业开关筛选可归因的错误；仅接受身份、技能、时间和原始事件索引一致的唯一成功施法，将类别原因与严重程度写入对应真实动作样本，不按最近时间猜测，也不把标签传给模型输入。训练 batch 保留标签供后续损失使用；compiled cache 的 `CACHE_FORMAT` 升级到 v13，标签准入语义变化通过手动提升 `DEFAULT_CONVERSION_VERSION` 重编译，修改 YAML 注释不会使缓存失效。补充精确归因、PT 落盘和 batch 传递测试，并用真实 FRU 日志核对标签落点。

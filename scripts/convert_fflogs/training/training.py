@@ -95,6 +95,8 @@ def build_training_samples(
         "fight_id": str(fight_payload.get("fight_id", "unknown_fight")),
         "player": fight_payload.get("player"),
         "encounter": fight_payload.get("encounter"),
+        "ranking": fight_payload.get("ranking"),
+        "annotation_status": fight_payload.get("annotation_status", "unannotated"),
         "fight_scene_context": scene_context,
         "num_samples": len(samples),
         "resolved_sequence": resolved_sequence,

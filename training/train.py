@@ -22,6 +22,7 @@ from common.policy.config import (
     resolve_policy_model_job_tag,
     resolve_policy_model_variant,
 )
+from common.config import load_precision_config
 from training.config import load_run_config
 from training.loop import run_training
 
@@ -30,16 +31,15 @@ def _prepare_training_caches(config, max_files: int | None) -> list[Path]:
     """调用脚本层入口准备训练所需的 compiled cache。"""
     if config.job_tag is None:
         raise ValueError("training job_tag is required for raw JSON conversion")
-    import torch
-
     from scripts.convert_fflogs.cache import prepare_training_caches
 
+    precision = load_precision_config()
     return prepare_training_caches(
         config.raw_data_dir,
         max_files=max_files,
         job_tag=config.job_tag,
-        int_dtype=torch.int32,
-        float_dtype=torch.float32,
+        int_dtype=precision.resolve_int_dtype(),
+        float_dtype=precision.resolve_float_dtype(),
         cache_dir=resolve_policy_cache_dir(config.job_tag),
         shard_size=config.compiled_cache_shard_size,
         max_workers=config.compiled_cache_workers,

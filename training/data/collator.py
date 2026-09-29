@@ -5,6 +5,7 @@ from __future__ import annotations
 import random
 from collections.abc import Mapping
 
+from common.config import load_precision_config
 from common.torch_dependencies import import_torch
 
 
@@ -20,6 +21,9 @@ class TrainingCollator:
         candidate_shuffle_enabled: bool = False,
         candidate_shuffle_probability: float = 0.0,
         skill_values: Mapping[str, float] | None = None,
+        int_dtype=None,
+        index_dtype=None,
+        float_dtype=None,
         rng=None,
     ):
         if not 0.0 <= history_truncation_probability <= 1.0:
@@ -39,6 +43,10 @@ class TrainingCollator:
             else {str(action_key): float(value) for action_key, value in skill_values.items()}
         )
         self._rng = rng or random
+        precision = load_precision_config() if (int_dtype is None or index_dtype is None or float_dtype is None) else None
+        self._int_dtype = int_dtype if int_dtype is not None else precision.resolve_int_dtype()
+        self._index_dtype = index_dtype if index_dtype is not None else precision.resolve_index_dtype()
+        self._float_dtype = float_dtype if float_dtype is not None else precision.resolve_float_dtype()
 
     def __call__(self, samples: list[dict[str, object]]) -> dict[str, object]:
         torch = import_torch()
@@ -64,6 +72,20 @@ class TrainingCollator:
             else [sample["history_action_keys"] for sample in samples]
         )
 
+        quality_levels = [
+            sample.get("quality_label_levels", torch.empty(0, dtype=self._int_dtype))
+            for sample in samples
+        ]
+        quality_lengths = [int(levels.numel()) for levels in quality_levels]
+        quality_width = max(quality_lengths)
+        padded_quality_levels = torch.zeros((len(samples), quality_width), dtype=self._int_dtype)
+        quality_label_mask = torch.zeros((len(samples), quality_width), dtype=torch.bool)
+        for index, levels in enumerate(quality_levels):
+            length = quality_lengths[index]
+            padded_quality_levels[index, :length] = levels
+            quality_label_mask[index, :length] = True
+        quality_statuses = [sample["metadata"].get("quality_label_status", "unannotated") for sample in samples]
+
         batch = {
             "metadata": [sample["metadata"] for sample in samples],
             "history_action_keys": history_action_batches,
@@ -72,10 +94,23 @@ class TrainingCollator:
                 sample.get("candidate_invalid_reasons", []) for sample in samples
             ],
             "label_action_key": [sample["label_action_key"] for sample in samples],
-            "quality_labels": [list(sample.get("quality_labels", [])) for sample in samples],
+            "quality_label_levels": padded_quality_levels,
+            "quality_label_mask": quality_label_mask,
+            "quality_annotation_available": torch.tensor(
+                [status in {"attributed_label", "no_attributed_label"} for status in quality_statuses],
+                dtype=torch.bool,
+            ),
+            "source_quality": torch.tensor(
+                [
+                    -1.0 if sample["metadata"].get("percentile") is None
+                    else float(sample["metadata"]["percentile"]) / 100.0
+                    for sample in samples
+                ],
+                dtype=self._float_dtype,
+            ),
             "label_index": torch.tensor(
                 [sample["label_index"] for sample in samples],
-                dtype=torch.int64,
+                dtype=self._index_dtype,
             ),
             "candidate_skill_ids": torch.stack([sample["candidate_skill_ids"] for sample in samples]),
             "candidate_skill_features": torch.stack(
@@ -112,9 +147,9 @@ class TrainingCollator:
             bank, history_ends = _merge_history_banks(samples, torch=torch)
             batch["history_lengths"] = torch.tensor(
                 history_lengths,
-                dtype=torch.int64,
+                dtype=self._index_dtype,
             )
-            batch["history_ends"] = torch.tensor(history_ends, dtype=torch.int64)
+            batch["history_ends"] = torch.tensor(history_ends, dtype=self._index_dtype)
             for key, value in bank.items():
                 batch[f"history_bank_{key}"] = value
         batch["history_mask"] = _build_length_mask(history_lengths, torch=torch)
@@ -194,7 +229,7 @@ class TrainingCollator:
 
         permutation = list(range(candidate_count))
         self._rng.shuffle(permutation)
-        permutation_tensor = torch.tensor(permutation, dtype=torch.int64)
+        permutation_tensor = torch.tensor(permutation, dtype=self._index_dtype)
         shuffled = dict(sample)
         for key in (
             "candidate_skill_ids",

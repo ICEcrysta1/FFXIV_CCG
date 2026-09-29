@@ -16,6 +16,7 @@ if __package__ in {None, ""}:
 
 import torch
 
+from common.config import load_precision_config
 from common.policy.config import (
     PROJECT_ROOT,
     resolve_policy_cache_dir,
@@ -36,12 +37,13 @@ def _prepare_grpo_scenes(config, max_files: int | None) -> list[Path]:
         raise ValueError("GRPO job_tag is required for real training scenes")
     from scripts.convert_fflogs.cache import prepare_training_caches
 
+    precision = load_precision_config()
     return prepare_training_caches(
         config.raw_data_dir,
         max_files=max_files,
         job_tag=config.job_tag,
-        int_dtype=torch.int32,
-        float_dtype=torch.float32,
+        int_dtype=precision.resolve_int_dtype(),
+        float_dtype=precision.resolve_float_dtype(),
         cache_dir=resolve_policy_cache_dir(config.job_tag),
         shard_size=config.compiled_cache_shard_size,
         max_workers=config.compiled_cache_workers,

@@ -11,6 +11,7 @@ from pathlib import Path
 
 import torch
 
+from common.config import load_precision_config
 from common.policy.config import PROJECT_ROOT, resolve_policy_cache_dir
 from common.policy.data import DataSpec, ModelInputContract, SkillVocab
 from common.policy.model import CandidateTransformerModel
@@ -108,11 +109,12 @@ def run_training(
     if model_variant != model_variant.strip():
         config = replace(config, model_variant=model_variant.strip())
 
+    precision = load_precision_config()
     train_loader, val_loader, train_dataset, val_dataset = build_dataloaders_fn(
         raw_paths,
         config,
-        int_dtype=torch.int32,
-        float_dtype=torch.float32,
+        int_dtype=precision.resolve_int_dtype(),
+        float_dtype=precision.resolve_float_dtype(),
         cache_dir=(resolve_cache_dir_fn(config.job_tag) if config.job_tag else None),
     )
     data_spec = DataSpec.from_dataset(train_dataset)

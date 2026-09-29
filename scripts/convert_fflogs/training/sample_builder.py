@@ -12,6 +12,9 @@ if TYPE_CHECKING:
     from common.policy.data.skill_vocab import SkillVocab
 
 
+QUALITY_SEVERITY_LEVELS = {"minor": 1, "medium": 2, "major": 3}
+
+
 class TrainingSampleBuilder:
     """集中处理词表编码、归一化和compiled cache 样本契约拼装。"""
 
@@ -26,6 +29,8 @@ class TrainingSampleBuilder:
         float_dtype,
         num_candidates: int,
         history_bank: dict[str, object] | None = None,
+        ranking: dict[str, object] | None = None,
+        annotation_status: str = "unannotated",
     ):
         self._torch = torch
         self._normalizer = normalizer
@@ -35,6 +40,8 @@ class TrainingSampleBuilder:
         self._float_dtype = float_dtype
         self._num_candidates = num_candidates
         self._history_bank = history_bank
+        self._ranking = ranking or {"percentile": None, "percentile_bucket": None}
+        self._annotation_status = annotation_status
 
     def build(self, reader, sample_idx: int) -> dict[str, object]:
         compact_history = self._history_bank is not None
@@ -135,8 +142,32 @@ class TrainingSampleBuilder:
                 f"candidate={candidate_action_keys[label_index]!r}"
             )
 
+        quality_labels = list(label.get("quality_labels", []))
+        if quality_labels and self._annotation_status != "partial":
+            raise ValueError("action quality labels require an annotated source")
+        severity_levels = []
+        for quality_label in quality_labels:
+            if not isinstance(quality_label, dict):
+                raise TypeError("action quality label must be a mapping")
+            severity = quality_label.get("severity")
+            if severity not in QUALITY_SEVERITY_LEVELS:
+                raise ValueError(f"unknown action quality severity: {severity!r}")
+            severity_levels.append(QUALITY_SEVERITY_LEVELS[severity])
+        if label.get("raw_event_index") is None:
+            quality_status = "synthetic"
+        elif quality_labels:
+            quality_status = "attributed_label"
+        elif self._annotation_status == "partial":
+            quality_status = "no_attributed_label"
+        else:
+            quality_status = "unannotated"
+
         sample = {
-            "metadata": reader.step_metadata(sample_idx),
+            "metadata": {
+                **reader.step_metadata(sample_idx),
+                **self._ranking,
+                "quality_label_status": quality_status,
+            },
             "candidate_action_keys": candidate_action_keys,
             "candidate_skill_ids": candidate_skill_ids,
             "candidate_invalid_reasons": candidate_invalid_reasons,
@@ -150,7 +181,8 @@ class TrainingSampleBuilder:
             "label_index": label_index,
             "label_action_key": str(label.get("action_key", "")),
             "raw_event_index": label.get("raw_event_index"),
-            "quality_labels": list(label.get("quality_labels", [])),
+            "quality_labels": quality_labels,
+            "quality_label_levels": self._torch.tensor(severity_levels, dtype=self._int_dtype),
         }
         if compact_history:
             sample.update(

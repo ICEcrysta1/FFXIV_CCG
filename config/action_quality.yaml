@@ -2,3 +2,4 @@
 bridge:
   analyzer_root: third_party/xivanalysis
   timeout_seconds: 180
+  max_workers: 2

@@ -28,6 +28,26 @@ from common.policy.data.compiled_cache import (
 )
 
 
+def test_precision_config_separates_value_and_operator_index_dtypes(tmp_path):
+    torch = pytest.importorskip("torch")
+    config_path = tmp_path / "precision.yaml"
+    config_path.write_text(
+        "precision:\n  int_dtype: int32\n  index_dtype: int64\n  float_dtype: float32\n",
+        encoding="utf-8", newline="\n",
+    )
+    precision = load_precision_config(config_path)
+    assert precision.resolve_int_dtype() == torch.int32
+    assert precision.resolve_index_dtype() == torch.int64
+    assert precision.resolve_float_dtype() == torch.float32
+
+    config_path.write_text(
+        "precision:\n  int_dtype: int32\n  index_dtype: int32\n  float_dtype: float32\n",
+        encoding="utf-8", newline="\n",
+    )
+    with pytest.raises(ValueError, match="index_dtype"):
+        load_precision_config(config_path)
+
+
 def test_training_dataset_accepts_single_and_multi_sample_pt_with_same_contract(tmp_path):
     pytest.importorskip("torch")
     single_pt = make_demo_pt(tmp_path, ["fire_iii"], fight_id="single_demo")
