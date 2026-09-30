@@ -14,6 +14,7 @@ def compute_value_preference_loss(
     logits: torch.Tensor,
     batch: Mapping[str, object],
     config: ValuePreferenceConfig,
+    sample_weights: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """只强化“人类已选择的高价值技能”相对低价值合法候选的排序。
 
@@ -49,4 +50,8 @@ def compute_value_preference_loss(
     logit_delta = chosen_logits - logits
     pair_margin = value_delta * config.margin_scale
     pair_loss = F.softplus(pair_margin - logit_delta.float())
+    if sample_weights is not None:
+        if sample_weights.shape != labels.shape:
+            raise ValueError("value preference sample weights must be [batch]")
+        pair_loss = pair_loss * sample_weights.float().unsqueeze(1)
     return pair_loss[pair_mask].mean().to(dtype=logits.dtype)

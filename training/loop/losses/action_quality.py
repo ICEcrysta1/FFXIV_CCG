@@ -1,0 +1,64 @@
+"""动作质量标签到逐样本正向学习权重的映射。"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+
+import torch
+
+from ...config import ActionQualityLossConfig
+
+
+def action_quality_sample_weights(
+    batch: Mapping[str, object],
+    config: ActionQualityLossConfig,
+) -> torch.Tensor:
+    """多个错误取最严重等级；仅削弱被明确归因的 target。"""
+    labels = batch["label_index"]
+    if not isinstance(labels, torch.Tensor) or labels.ndim != 1:
+        raise ValueError("label_index must be a [batch] tensor")
+    weights = torch.ones(labels.shape[0], device=labels.device, dtype=torch.float32)
+    if not config.enabled:
+        return weights
+
+    levels = batch.get("quality_label_levels")
+    mask = batch.get("quality_label_mask")
+    quality = batch.get("source_quality")
+    available = batch.get("quality_annotation_available")
+    if not all(isinstance(value, torch.Tensor) for value in (levels, mask, quality, available)):
+        raise ValueError("enabled action quality loss requires compiled quality supervision")
+    if levels.ndim != 2 or levels.shape[0] != labels.shape[0] or mask.shape != levels.shape:
+        raise ValueError("quality_label_levels and quality_label_mask must be [batch, labels]")
+    if quality.shape != labels.shape or available.shape != labels.shape:
+        raise ValueError("source_quality and quality_annotation_available must be [batch]")
+    if levels.device != labels.device or mask.device != labels.device or quality.device != labels.device:
+        raise ValueError("quality supervision must be on the same device as label_index")
+
+    if levels.shape[1] == 0:
+        return weights
+    invalid_levels = mask & ((levels < 1) | (levels > 3))
+    if bool(invalid_levels.any()):
+        raise ValueError("quality label levels must be 1, 2 or 3")
+    tagged = mask.any(dim=1)
+    if bool((tagged & ~available.bool()).any()):
+        raise ValueError("attributed quality labels require available annotation")
+    if not bool(tagged.any()):
+        return weights
+
+    normalized_quality = quality.float()
+    bad_quality = tagged & (
+        ~torch.isfinite(normalized_quality)
+        | (normalized_quality < 0.0)
+        | (normalized_quality > 1.0)
+    )
+    if bool(bad_quality.any()):
+        raise ValueError("attributed quality labels require a percentile within [0, 100]")
+    severity_lookup = torch.tensor(
+        (0.0, *config.severity_weights), device=labels.device, dtype=torch.float32
+    )
+    severity = severity_lookup[levels.masked_fill(~mask, 0).long()].max(dim=1).values
+    exponent = torch.pow(
+        normalized_quality.clamp_min(0.0) / config.scale, config.exponent
+    )
+    # (1 - s) + s * (1 - exp(-z)) 避免低排名时 1 - exp(-z) 的相消误差。
+    return (weights - severity) + severity * (-torch.expm1(-exponent))

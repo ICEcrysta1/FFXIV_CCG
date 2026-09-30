@@ -19,6 +19,7 @@ from common.project_config import (
 from common.training.tensorboard import TensorBoardConfig
 
 from ..runtime.runtime_debug import RuntimeDebugConfig
+from .action_quality import ActionQualityLossConfig, parse_action_quality_loss_config
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 VAL_PPG_USE_KV_CACHE_ENV = "TRAINING_VAL_PPG_USE_KV_CACHE"
@@ -88,6 +89,7 @@ class RunConfig:
     compiled_cache_shard_size: int = 512
     compiled_cache_max_shards: int = 8
     repetition: _RepetitionConfig = _RepetitionConfig()
+    action_quality_loss: ActionQualityLossConfig = field(default_factory=ActionQualityLossConfig)
     value_preference: ValuePreferenceConfig = ValuePreferenceConfig()
     ppg: PpgConfig = PpgConfig()
     tensorboard: TensorBoardConfig = field(default_factory=TensorBoardConfig)
@@ -292,6 +294,9 @@ def load_run_config(path: Path) -> RunConfig:
         compiled_cache_shard_size=compiled_cache_shard_size,
         compiled_cache_max_shards=compiled_cache_max_shards,
         repetition=_parse_repetition_config(training_raw.get("repetition", {})),
+        action_quality_loss=parse_action_quality_loss_config(
+            training_raw, raw.get("action_quality")
+        ),
         value_preference=value_preference,
         ppg=ppg,
         tensorboard=tensorboard,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import math
 from pathlib import Path
 
 import pytest
@@ -23,7 +24,9 @@ from scripts.convert_fflogs.extraction.action_quality import (
 from scripts.convert_fflogs.extraction.fight_payload import build_fight_payload
 from scripts.convert_fflogs.training.quality_supervision import source_ranking
 from training import TrainingDataset
+from training.config import load_run_config
 from training.data.collator import TrainingCollator
+from training.loop.losses.action_quality import action_quality_sample_weights
 
 REASON = "blm.rotation-watchdog.suggestions.coldf3.content"
 
@@ -286,6 +289,13 @@ def test_compiled_pt_and_batch_keep_label_outside_model_inputs(
     assert "source_percentile" not in batch
     assert "source_percentile_bucket_lower" not in batch
     assert isinstance(batch["candidate_skill_features"], torch.Tensor)
+    quality_config = load_run_config("config/models/black_mage/artzip/config.yaml").action_quality_loss
+    weight = action_quality_sample_weights(batch, quality_config).item()
+    expected_weight = (
+        1.0 - math.exp(-((percentile / 100.0 / 0.6) ** 4))
+        if with_labels else 1.0
+    )
+    assert weight == pytest.approx(expected_weight)
     if with_labels:
         empty_label_sample = {**dataset[0], "quality_label_levels": torch.empty(0, dtype=torch.int32)}
         mixed_batch = TrainingCollator()([dataset[0], empty_label_sample])
