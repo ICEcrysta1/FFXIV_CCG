@@ -51,14 +51,14 @@ def main():
     single.add_argument("--damage-only", action="store_true", help="只拉伤害表")
 
     # ---- 子命令: batch ----
-    batch_cmd = sub.add_parser("batch", help="按历史百分位十档均分下载")
+    batch_cmd = sub.add_parser("batch", help="国服十档训练下载，并自动补充美服高分验证数据")
     batch_cmd.add_argument("--encounter", "-e", type=int, default=None,
                            help="Encounter ID")
     batch_cmd.add_argument("--zone", "-z", type=int, help="Zone ID (用于列出 encounters)")
     batch_cmd.add_argument("--spec-name", default="BlackMage",
                            help="职业名 (默认 BlackMage)")
     batch_cmd.add_argument("--count", type=int, default=200,
-                           help="总目标份数，自动均分十档 (默认 200)")
+                            help="国服训练目标份数，自动均分十档；美服验证额外取 10%% (默认 200+20)")
     batch_cmd.add_argument("--partition", type=int, default=None,
                            help="API 排名分区 ID；不指定时使用 API 默认分区")
     batch_cmd.add_argument("--bracket", "-b", type=int, default=0,
@@ -71,8 +71,8 @@ def main():
     batch_cmd.add_argument("--mode", "-m",
                            choices=["default", "events-only", "damage-only"],
                            default="default", help="下载模式")
-    batch_cmd.add_argument("--output", "-o", default="data",
-                           help="副本输出目录；自动在其下建立 90-100 至 00-10 子目录")
+    batch_cmd.add_argument("--output", "-o",
+                            help="训练副本目录，必须指向 raw/<副本>；验证写入 raw/VAL/<副本>")
 
     # ---- 子命令: encounters ----
     enc_cmd = sub.add_parser("encounters", help="列出 zones 或 zone 下的 encounters")
@@ -88,6 +88,8 @@ def main():
                 _validate_integer(args.partition, "partition", minimum=1)
         except ValueError as error:
             parser.error(str(error))
+        if args.encounter is not None and args.output is None:
+            parser.error("batch 下载需要 --output raw/<副本>")
 
     _load_dotenv()
 

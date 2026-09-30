@@ -76,6 +76,20 @@ def test_dataset_discovery_ignores_plain_json(tmp_path):
     assert find_dataset_json_files(tmp_path) == []
 
 
+@pytest.mark.parametrize("stage", ["raw", "annotated"])
+def test_training_selection_excludes_val_from_stage_root_but_accepts_explicit_val_root(tmp_path, stage):
+    training = tmp_path / stage / "FRU/90-100/train.json.br"
+    validation = tmp_path / stage / "VAL/FRU/val.json.br"
+    for path in (training, validation):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}\n", encoding="utf-8", newline="\n")
+
+    stage_groups = select_training_raw_path_groups(tmp_path / stage)
+    assert [path for group in stage_groups for path in group.primary_paths] == [training]
+    val_groups = select_training_raw_path_groups(tmp_path / stage / "VAL")
+    assert [path for group in val_groups for path in group.primary_paths] == [validation]
+
+
 def test_max_files_balances_buckets_and_keeps_fallback_within_bucket(tmp_path):
     for bucket, count in (("90-100", 4), ("00-10", 4), ("40-50", 1)):
         directory = tmp_path / "FRU" / bucket

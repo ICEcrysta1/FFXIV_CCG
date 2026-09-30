@@ -87,6 +87,7 @@ def _adapt_report_metadata(report_code: str, report: dict) -> ReportMeta:
     }
     return ReportMeta(
         code=report_code,
+        region=(report.get("region") or {}).get("compactName"),
         fights=[FightInfo(
             id=f["id"], name=f["name"], start_time=f["start_time"], end_time=f["end_time"],
             difficulty=f["difficulty"], kill=f["kill"], size=f["size"], zone_name=f["zone_name"],

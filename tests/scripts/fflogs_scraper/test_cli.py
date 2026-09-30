@@ -57,7 +57,7 @@ def test_dotenv_resolves_project_root_after_move_and_preserves_environment(monke
      "single", {"url": "https://www.fflogs.com/reports/ABC123?fight=last&source=1"}),
     (["single", "--report", "ABC123", "--fight", "33", "--source", "1"],
      "single", {"report": "ABC123", "fight": 33, "source": 1}),
-    (["batch", "-e", "1079", "--mode", "events-only"],
+    (["batch", "-e", "1079", "--mode", "events-only", "--output", "raw/FRU"],
      "batch", {"encounter": 1079, "mode": "events-only", "metric": "rdps", "count": 200, "partition": None}),
     (["batch", "-e", "1079", "--count", "203", "--partition", "25", "--output", "raw/FRU"],
      "batch", {"count": 203, "partition": 25, "output": "raw/FRU"}),
@@ -90,7 +90,7 @@ def test_cli_dispatch_preserves_arguments(monkeypatch, arguments, command, expec
 
 
 def test_cli_closes_http_session_when_download_fails(monkeypatch):
-    monkeypatch.setattr(sys, "argv", ["fflogs_scraper", "batch", "-e", "98"])
+    monkeypatch.setattr(sys, "argv", ["fflogs_scraper", "batch", "-e", "98", "--output", "raw/FRU"])
     monkeypatch.setattr(cli, "_load_dotenv", lambda: None)
     monkeypatch.setenv("FFLOGS_V2_CLIENT_ID", "test-id")
     monkeypatch.setenv("FFLOGS_V2_CLIENT_SECRET", "test-secret")
@@ -120,6 +120,14 @@ def test_batch_invalid_limits_fail_before_authentication(monkeypatch, option, va
     def unexpected_auth():
         pytest.fail("无效参数不应读取凭证或请求 API")
     monkeypatch.setattr(cli, "_load_dotenv", unexpected_auth)
+    with pytest.raises(SystemExit) as error:
+        cli.main()
+    assert error.value.code == 2
+
+
+def test_batch_requires_output_before_authentication(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["fflogs_scraper", "batch", "-e", "1079"])
+    monkeypatch.setattr(cli, "_load_dotenv", lambda: pytest.fail("未提供输出目录不应读取凭证"))
     with pytest.raises(SystemExit) as error:
         cli.main()
     assert error.value.code == 2

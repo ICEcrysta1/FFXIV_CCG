@@ -7,6 +7,7 @@ from scripts.fflogs_scraper.contracts import report
 
 
 def test_analysis_payload_preserves_report_and_training_contract(analysis_meta):
+    assert analysis_meta.region == "CN"
     payload = report._build_download_payload(analysis_meta, analysis_meta.fights[0], 1)
     assert payload["start"] == 1778332651064
     assert payload["lang"] == "cn"

@@ -87,6 +87,11 @@ def select_training_raw_path_groups(
     """先按副本分配总额，再按其已有区间均分；失败只在同区间补位。"""
     data_dir = Path(data_dir)
     discovered = find_dataset_json_files(data_dir)
+    if data_dir.name in DATASET_STAGES:
+        discovered = [
+            source for source in discovered
+            if source.relative_to(data_dir).parts[0] != "VAL"
+        ]
     if not discovered:
         return ()
     by_encounter: dict[str, dict[str | None, list[Path]]] = {}

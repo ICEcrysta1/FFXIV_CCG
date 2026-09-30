@@ -91,11 +91,15 @@ def test_history_uses_non_best_records_and_excludes_anonymous_hidden_and_duplica
             ]},
         }
     client = SimpleNamespace(_cancelled=False, get_encounter_rankings=rankings, get_character_history=history)
-    records = list(_iter_historical_reports(client, 1079, spec_name="BlackMage", metric="rdps", partition=partition))
+    records = list(_iter_historical_reports(
+        client, 1079, spec_name="BlackMage", metric="rdps", partition=partition,
+        server_region="CN",
+    ))
     assert [(record.code, record.percentile) for record in records] == [("BEST", 100), ("LOW", 5)]
     assert [item[0] for item in history_calls] == [2, 3]
     assert all(item[1]["partition"] == partition for item in history_calls)
     assert [call["partition"] for call in calls] == [partition]
+    assert all(call["server_region"] == "CN" for call in calls)
     assert all(call["page"] == 1 for call in calls)
 
 

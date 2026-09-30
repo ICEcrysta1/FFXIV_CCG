@@ -27,6 +27,7 @@ def test_report_metadata_fetches_fight_players_in_one_query(monkeypatch):
 
     assert len(queries) == 1
     assert "playerDetails(fightIDs: [33])" in queries[0]
+    assert "region { compactName }" in queries[0]
     assert meta.players == [{"id": 7, "name": "Player"}]
 
 
@@ -160,6 +161,7 @@ def test_get_report_events_rejects_unsafe_fight_ids(fight_ids):
     [
         ("spec_name", 'BlackMage"'),
         ("class_name", r"Caster\Injected"),
+        ("server_region", 'US"'),
     ],
 )
 def test_get_encounter_rankings_rejects_unsafe_filter(field, value):
@@ -232,6 +234,20 @@ def test_get_encounter_rankings_keeps_valid_filters(monkeypatch):
     ) == {"rankings": []}
     assert 'specName: "BlackMage"' in queries[0]
     assert 'className: "Caster"' in queries[0]
+
+
+def test_ranking_query_filters_server_region_independently_of_partition(monkeypatch):
+    client = FFLogsV2Client("client-id", "client-secret")
+    queries = []
+    monkeypatch.setattr(client, "query", lambda gql: queries.append(gql) or {
+        "worldData": {"encounter": {"characterRankings": {"rankings": []}}},
+    })
+
+    client.get_encounter_rankings(1079, partition=25, server_region="CN")
+    client.get_encounter_rankings(1079, server_region="US")
+
+    assert 'serverRegion: "CN"' in queries[0] and "partition: 25" in queries[0]
+    assert 'serverRegion: "US"' in queries[1] and "partition:" not in queries[1]
 
 
 def test_ranking_query_uses_partition_and_surfaces_json_errors(monkeypatch):

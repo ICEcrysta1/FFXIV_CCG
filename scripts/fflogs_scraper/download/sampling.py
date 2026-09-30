@@ -34,6 +34,7 @@ def _iter_historical_reports(
     spec_name: str,
     metric: str,
     partition: int | None = None,
+    server_region: str | None = None,
     bracket: int = 0,
     max_pages: int = 10,
 ) -> Iterator[HistoricalReport]:
@@ -54,6 +55,7 @@ def _iter_historical_reports(
             result = client.get_encounter_rankings(
                 encounter_id, spec_name=spec_name, metric=metric,
                 bracket=bracket, partition=partition, page=page,
+                server_region=server_region,
             )
         except Exception as error:  # noqa: BLE001 -- 榜单失败时保留已完成的下载并报告配额缺口
             logger.warning("分区 %s 查询失败，停止发现: %s", partition, error)

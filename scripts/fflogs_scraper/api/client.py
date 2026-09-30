@@ -125,7 +125,7 @@ class FFLogsV2Client:
         query {{
           reportData {{
             report(code: "{report_code}") {{
-              title startTime endTime owner {{ name }} zone {{ id name }}
+              title startTime endTime owner {{ name }} zone {{ id name }} region {{ compactName }}
               masterData(translate: true) {{
                 lang actors {{ id gameID name type subType petOwner }}
               }}
@@ -327,6 +327,7 @@ class FFLogsV2Client:
         metric: str = "dps",
         *,
         partition: int | None = None,
+        server_region: str | None = None,
     ) -> dict:
         """获取 encounter 排行。"""
         encounter_id = _validate_integer(encounter_id, "encounter_id", minimum=1)
@@ -339,6 +340,8 @@ class FFLogsV2Client:
             class_name = _validate_alphanumeric(class_name, "class_name")
         if partition is not None:
             partition = _validate_integer(partition, "partition", minimum=1)
+        if server_region is not None:
+            server_region = _validate_alphanumeric(server_region, "server_region")
 
         filters = []
         if spec_name:
@@ -347,6 +350,8 @@ class FFLogsV2Client:
             filters.append(f'className: "{class_name}"')
         if partition is not None:
             filters.append(f'partition: {partition}')
+        if server_region is not None:
+            filters.append(f'serverRegion: "{server_region}"')
         filter_str = ", ".join(filters)
         gql = f"""
         query {{

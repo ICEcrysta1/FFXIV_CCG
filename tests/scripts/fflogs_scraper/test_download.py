@@ -1,6 +1,7 @@
 """FFLogs 下载器 download 职责回归测试。"""
 
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -235,10 +236,87 @@ def test_cmd_batch_uses_api_default_or_explicit_partition(monkeypatch, tmp_path,
     monkeypatch.setattr(batch, "_iter_historical_reports", discover)
     args = SimpleNamespace(zone=None, encounter=1079, count=200, partition=partition,
                            spec_name="BlackMage", metric="rdps", bracket=0, max_pages=10,
-                           output=str(tmp_path / "FRU"), mode="events-only")
+                            output=str(tmp_path / "raw/FRU"), mode="events-only")
     batch._cmd_batch(client, args)
     assert calls[0]["partition"] == partition
+    assert [call["server_region"] for call in calls] == ["CN", "US"]
     assert "partitions" not in calls[0]
     assert "history_partition" not in calls[0]
-    assert (tmp_path / "FRU/00-10").is_dir()
-    assert (tmp_path / "FRU/90-100").is_dir()
+    assert (tmp_path / "raw/FRU/00-10").is_dir()
+    assert (tmp_path / "raw/FRU/90-100").is_dir()
+    assert (tmp_path / "raw/VAL/FRU").is_dir()
+    assert not (tmp_path / "raw/VAL/FRU/90-100").exists()
+
+
+def test_cmd_batch_rejects_output_outside_raw_before_api_call(monkeypatch, tmp_path):
+    client = FFLogsV2Client("id", "secret")
+    monkeypatch.setattr(client, "get_encounter_details", lambda *args: pytest.fail("无效路径不应请求 API"))
+    with pytest.raises(ValueError, match="raw/<副本>"):
+        batch._cmd_batch(client, SimpleNamespace(
+            zone=None, encounter=1079, count=200, output=str(tmp_path / "FRU"),
+        ))
+
+
+def test_cmd_batch_allocates_ten_percent_to_us_validation(monkeypatch, tmp_path):
+    client = FFLogsV2Client("id", "secret")
+    monkeypatch.setattr(client, "get_encounter_details", lambda encounter: {"name": "FRU"})
+    calls = []
+    monkeypatch.setattr(batch, "_iter_historical_reports", lambda *args, **kwargs: [])
+
+    def download(_client, _reports, quotas, output, _mode, _metric, **kwargs):
+        calls.append((quotas, Path(output), kwargs))
+
+    monkeypatch.setattr(batch, "_stratified_batch_download", download)
+    for count, expected in ((200, 20), (203, 21)):
+        calls.clear()
+        batch._cmd_batch(client, SimpleNamespace(
+            zone=None, encounter=1079, count=count, partition=None,
+            spec_name="BlackMage", metric="rdps", bracket=0, max_pages=10,
+            output=str(tmp_path / "raw/FRU"), mode="events-only",
+        ))
+        assert sum(calls[0][0].values()) == count
+        assert calls[0][1] == tmp_path / "raw/FRU"
+        assert calls[0][2]["server_region"] == "CN"
+        assert calls[1] == (
+            {"90-100": expected}, tmp_path / "raw/VAL/FRU",
+            {"server_region": "US", "bucket_directories": False},
+        )
+
+
+def test_validation_download_is_flat_and_rejects_wrong_report_region(monkeypatch, tmp_path, analysis_meta):
+    client = FFLogsV2Client("id", "secret")
+    requested = []
+
+    def metadata(code, *, player_fight_id=None):
+        requested.append(code)
+        return replace(
+            analysis_meta, code=code, region="CN" if code == "WRONG" else "US",
+            players=[{"id": 1, "name": "Player"}],
+        )
+
+    monkeypatch.setattr(client, "get_report_fights", metadata)
+    monkeypatch.setattr(client, "get_fight_events", lambda *args, **kwargs: [])
+    output = tmp_path / "raw/VAL/FRU"
+    reports = [_record("LOW", 85), _record("WRONG", 95), _record("VALID", 97)]
+    result = batch._stratified_batch_download(
+        client, reports, {"90-100": 1}, output, "events-only",
+        server_region="US", bucket_directories=False,
+    )
+
+    assert result["counts"] == {"90-100": 1}
+    assert result["success"] == 1 and result["failed"] == 1
+    assert requested == ["WRONG", "VALID"]
+    files = list(output.glob("*.json.br"))
+    assert len(files) == 1
+    assert not (output / "90-100").exists()
+    payload = read_json(files[0])
+    assert payload["ranking"]["server_region"] == "US"
+    assert payload["ranking"]["percentile_bucket"] == "90-100"
+    assert payload["report_region"] == "US"
+
+    monkeypatch.setattr(client, "get_report_fights", lambda *args, **kwargs: pytest.fail("已有验证文件应复用"))
+    repeated = batch._stratified_batch_download(
+        client, [_record("VALID", 97)], {"90-100": 1}, output, "events-only",
+        server_region="US", bucket_directories=False,
+    )
+    assert repeated["existing"] == 1 and repeated["success"] == 0
