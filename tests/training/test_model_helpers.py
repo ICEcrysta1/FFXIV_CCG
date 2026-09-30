@@ -151,6 +151,9 @@ def _write_config(tmp_path: Path, payload: object) -> Path:
             {"training": {"max_files": "12"}},
             "max_files must be a positive integer or null",
         ),
+        ({"training": {"validation_files": 0}}, "validation_files must be a positive integer"),
+        ({"training": {"validation_files": True}}, "validation_files must be a positive integer"),
+        ({"training": {"validation_files": 1.5}}, "validation_files must be a positive integer"),
         ({"training": {"precision": "int8"}}, "precision must be one of"),
     ],
 )
@@ -160,7 +163,7 @@ def test_load_run_config_rejects_invalid_values(tmp_path, payload, message):
 
 
 def test_load_run_config_parses_max_files(tmp_path: Path):
-    """training.max_files 限制参与训练与验证的 raw JSON 文件数，null 表示不限制。"""
+    """training.max_files 只限制训练文件数，验证文件数单独配置。"""
     unlimited = config_module.load_run_config(
         _write_config(tmp_path, {"training": {"max_files": None}})
     )
@@ -170,6 +173,12 @@ def test_load_run_config_parses_max_files(tmp_path: Path):
         _write_config(tmp_path, {"training": {"max_files": 12}})
     )
     assert limited.max_files == 12
+    assert limited.validation_files == 100
+    fixed_validation = config_module.load_run_config(
+        _write_config(tmp_path, {"training": {"max_files": 12, "validation_files": 20}})
+    )
+    assert fixed_validation.max_files == 12
+    assert fixed_validation.validation_files == 20
 
 
 @pytest.mark.parametrize(
@@ -1277,6 +1286,7 @@ def test_build_dataloaders_covers_single_file_empty_shard_and_value_paths(
     train_loader, val_loader, train_dataset, val_dataset = training_module.build_dataloaders(
         [tmp_path / "one.json"],
         config,
+        validation_paths=[tmp_path / "val.json"],
         int_dtype=torch.int32,
         float_dtype=torch.float32,
     )
@@ -1414,7 +1424,19 @@ def test_build_dataloaders_rejects_empty_inputs_and_missing_skill_values(tmp_pat
     config = RunConfig(raw_data_dir=tmp_path, output_dir=tmp_path, job_tag="black_mage")
     with pytest.raises(ValueError, match="no raw JSON files found"):
         training_module.build_dataloaders(
-            [], config, int_dtype=torch.int32, float_dtype=torch.float32
+            [], config, validation_paths=[tmp_path / "val.json"],
+            int_dtype=torch.int32, float_dtype=torch.float32
+        )
+    with pytest.raises(ValueError, match="no VAL compiled caches found"):
+        training_module.build_dataloaders(
+            [tmp_path / "train.json"], config, validation_paths=[],
+            int_dtype=torch.int32, float_dtype=torch.float32,
+        )
+    with pytest.raises(ValueError, match="training and VAL sources must not overlap"):
+        training_module.build_dataloaders(
+            [tmp_path / "same.json"], config,
+            validation_paths=[tmp_path / "same.json"],
+            int_dtype=torch.int32, float_dtype=torch.float32,
         )
 
     dataset = _fake_training_dataset(actions=("a", "missing"))
@@ -1433,6 +1455,7 @@ def test_build_dataloaders_rejects_empty_inputs_and_missing_skill_values(tmp_pat
         training_module.build_dataloaders(
             [tmp_path / "one.json"],
             config,
+            validation_paths=[tmp_path / "val.json"],
             int_dtype=torch.int32,
             float_dtype=torch.float32,
         )
@@ -1478,7 +1501,7 @@ def test_run_training_rejects_device_and_data_contract_errors(tmp_path, monkeypa
     )
     monkeypatch.setattr(training_module.torch.cuda, "is_available", lambda: False)
     with pytest.raises(RuntimeError, match="CUDA is required"):
-        training_module.run_training(config, raw_paths=[tmp_path / "one.json"], device_name="cuda")
+        training_module.run_training(config, raw_paths=[tmp_path / "one.json"], validation_paths=[tmp_path / "val.json"], device_name="cuda")
 
     dataset = _fake_training_dataset(job_tag="machinist")
     monkeypatch.setattr(training_module.torch.cuda, "is_available", lambda: True)
@@ -1491,6 +1514,7 @@ def test_run_training_rejects_device_and_data_contract_errors(tmp_path, monkeypa
         training_module.run_training(
             config,
             raw_paths=[tmp_path / "one.json"],
+            validation_paths=[tmp_path / "val.json"],
             device_name="cpu",
         )
 
@@ -1505,6 +1529,7 @@ def test_run_training_rejects_device_and_data_contract_errors(tmp_path, monkeypa
         training_module.run_training(
             replace(config, job_tag=None),
             raw_paths=[tmp_path / "one.json"],
+            validation_paths=[tmp_path / "val.json"],
             device_name="cpu",
         )
 
@@ -1528,6 +1553,7 @@ def test_run_training_rejects_missing_model_variant_before_loading_data(
         training_module.run_training(
             config,
             raw_paths=[tmp_path / "prepared.json"],
+            validation_paths=[tmp_path / "val.json"],
             device_name="cpu",
         )
 
@@ -1681,6 +1707,7 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
     result = training_module.run_training(
         config,
         raw_paths=[Path("sample.json")],
+        validation_paths=[Path("val.json")],
         output_dir=tmp_path / "override-output",
         max_epochs=2,
         batch_size=4,
@@ -1739,7 +1766,7 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
         "model_variant": "artzip",
         "input_contract": resume_input_contract.to_dict(),
         "training_precision": config.precision,
-        "run_config": {"max_files": None},
+        "run_config": {"max_files": None, "validation_files": config.validation_files},
         "metrics": {
             "loss": 1.0,
             "cross_entropy_loss": 1.0,
@@ -1761,6 +1788,7 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
     resumed = training_module.run_training(
         config,
         raw_paths=[Path("sample.json")],
+        validation_paths=[Path("val.json")],
         output_dir=tmp_path / "override-output",
         max_epochs=2,
         batch_size=4,
@@ -1797,6 +1825,7 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
     forced = training_module.run_training(
         config,
         raw_paths=[Path("sample.json")],
+        validation_paths=[Path("val.json")],
         output_dir=tmp_path / "override-output",
         max_epochs=2,
         batch_size=4,
@@ -1904,6 +1933,7 @@ def test_run_training_closes_tensorboard_writer_when_validation_callback_raises(
         training_loop_impl.run_training(
             config,
             raw_paths=[tmp_path / "scene.json"],
+            validation_paths=[tmp_path / "val.json"],
             device_name="cpu",
             validation_metrics_callback=fail_validation_callback,
             _build_dataloaders=lambda *_args, **_kwargs: (
@@ -1947,7 +1977,7 @@ def test_run_training_rejects_empty_prepared_paths(tmp_path):
     config = RunConfig(raw_data_dir=tmp_path, output_dir=tmp_path, job_tag=None)
 
     with pytest.raises(FileNotFoundError, match="no prepared raw JSON"):
-        training_module.run_training(config, raw_paths=[], device_name="cpu")
+        training_module.run_training(config, raw_paths=[], validation_paths=[tmp_path / "val.json"], device_name="cpu")
 
 
 def _resume_validation_context(tmp_path: Path, *, max_epochs: int = 3):
@@ -2131,7 +2161,10 @@ def test_validate_resume_checkpoint_rejects_unknown_legacy_max_files(tmp_path):
 def test_validate_resume_checkpoint_accepts_explicit_unlimited_max_files(tmp_path):
     context = _resume_validation_context(tmp_path)
     checkpoint = dict(context.checkpoint)
-    checkpoint["run_config"] = {"max_files": None}
+    checkpoint["run_config"] = {
+        "max_files": None,
+        "validation_files": context.config.validation_files,
+    }
 
     training_module._validate_resume_checkpoint(
         checkpoint,
@@ -2140,6 +2173,23 @@ def test_validate_resume_checkpoint_accepts_explicit_unlimited_max_files(tmp_pat
         config=context.config,
         input_contract=context.input_contract,
     )
+
+
+def test_validate_resume_checkpoint_rejects_validation_count_mismatch(tmp_path):
+    context = _resume_validation_context(tmp_path)
+    checkpoint = dict(context.checkpoint)
+    checkpoint["run_config"] = {
+        **checkpoint["run_config"],
+        "validation_files": context.config.validation_files + 1,
+    }
+    with pytest.raises(ValueError, match="resume checkpoint validation_files mismatch"):
+        training_module._validate_resume_checkpoint(
+            checkpoint,
+            data_spec=context.data_spec,
+            dataset=context.dataset,
+            config=context.config,
+            input_contract=context.input_contract,
+        )
 
 
 def test_validate_resume_checkpoint_allows_max_files_mismatch_when_forced(
@@ -2265,6 +2315,7 @@ def test_run_training_rejects_resume_at_configured_epoch_limit(tmp_path, monkeyp
         training_module.run_training(
             context.config,
             raw_paths=[tmp_path / "prepared.json"],
+            validation_paths=[tmp_path / "val.json"],
             device_name="cpu",
             resume_path=checkpoint_path,
         )

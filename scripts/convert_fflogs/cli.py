@@ -8,7 +8,6 @@ from pathlib import Path
 
 from common.config import load_precision_config
 from common.dataset_layout import find_dataset_json_files
-from scripts.common.json_io import is_json_file
 from common.policy.config import (
     resolve_policy_cache_dir,
     resolve_policy_model_config_path,
@@ -17,9 +16,14 @@ from common.policy.config import (
 )
 from common.policy.data import Normalizer
 from common.project_config import resolve_positive_worker_count
+from scripts.common.json_io import is_json_file
 from training.config import load_run_config
 
-from .cache import prepare_training_caches, precompile_raw_training_caches
+from .cache import (
+    precompile_raw_training_caches,
+    prepare_training_caches,
+    prepare_validation_caches,
+)
 from .config import (
     load_convert_fflogs_dotenv,
     resolve_convert_fflogs_job_tag,
@@ -109,7 +113,20 @@ def main() -> None:
         )
         if not valid_paths:
             raise FileNotFoundError(f"没有找到可编译的训练 JSON：{raw_root}")
+        validation_paths = prepare_validation_caches(
+            raw_root,
+            max_files=run_config.validation_files,
+            job_tag=resolved_job_tag,
+            int_dtype=precision.resolve_int_dtype(),
+            float_dtype=precision.resolve_float_dtype(),
+            cache_dir=cache_dir,
+            shard_size=shard_size,
+            max_workers=workers,
+            max_shards=run_config.compiled_cache_max_shards,
+            downtime_gap_seconds=float(args.downtime_gap),
+        )
         logger.info("训练文件转换完成: %d 个文件 -> %s", len(valid_paths), cache_dir)
+        logger.info("验证文件转换完成: %d 个文件 -> %s", len(validation_paths), cache_dir / "VAL")
         return
 
     input_paths = _resolve_input_files(args.inputs or [raw_root])

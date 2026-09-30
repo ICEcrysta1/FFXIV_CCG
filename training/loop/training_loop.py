@@ -58,6 +58,7 @@ def run_training(
     config: RunConfig,
     *,
     raw_paths: list[Path],
+    validation_paths: list[Path] | None = None,
     output_dir: Path | None = None,
     max_epochs: int | None = None,
     batch_size: int | None = None,
@@ -108,11 +109,14 @@ def run_training(
         raise ValueError("training model_variant must be configured before initialization")
     if model_variant != model_variant.strip():
         config = replace(config, model_variant=model_variant.strip())
+    if not validation_paths:
+        raise FileNotFoundError("no prepared VAL compiled caches supplied for validation")
 
     precision = load_precision_config()
     train_loader, val_loader, train_dataset, val_dataset = build_dataloaders_fn(
         raw_paths,
         config,
+        validation_paths=validation_paths,
         int_dtype=precision.resolve_int_dtype(),
         float_dtype=precision.resolve_float_dtype(),
         cache_dir=(resolve_cache_dir_fn(config.job_tag) if config.job_tag else None),

@@ -7,7 +7,11 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
-from common.dataset_layout import DATASET_STAGES, PERCENTILE_BUCKETS, find_dataset_json_files
+from common.dataset_layout import (
+    DATASET_STAGES,
+    PERCENTILE_BUCKETS,
+    find_dataset_json_files,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -151,3 +155,45 @@ def select_training_raw_paths(data_dir: Path, max_files: int | None = None) -> l
         for group in select_training_raw_path_groups(data_dir, max_files)
         for path in group.primary_paths
     ]
+
+
+def select_validation_raw_path_groups(
+    data_dir: Path, max_files: int,
+) -> tuple[RawTrainingPathGroup, ...]:
+    """按验证副本固定均分配额；只从各自 VAL 目录补位，不跨副本。"""
+    if isinstance(max_files, bool) or not isinstance(max_files, int) or max_files < 1:
+        raise ValueError("validation max_files must be a positive integer")
+    data_dir = validation_stage_root(data_dir)
+    validation_root = data_dir / "VAL"
+    encounter_names = {path.name for path in validation_root.iterdir() if path.is_dir()} if validation_root.is_dir() else set()
+    if data_dir.name == "annotated":
+        raw_validation_root = data_dir.parent / "raw" / "VAL"
+        if raw_validation_root.is_dir():
+            encounter_names.update(path.name for path in raw_validation_root.iterdir() if path.is_dir())
+    if not encounter_names:
+        raise FileNotFoundError(f"没有验证副本目录：{validation_root}")
+    encounters = sorted(encounter_names)
+    if max_files < len(encounters):
+        raise ValueError(f"validation_files={max_files} 小于验证副本数 {len(encounters)}")
+    base, remainder = divmod(max_files, len(encounters))
+    return tuple(
+        RawTrainingPathGroup(
+            encounter,
+            base + (index < remainder),
+            tuple(sorted((validation_root / encounter).glob("*.json.br"))),
+        )
+        for index, encounter in enumerate(encounters)
+    )
+
+
+def validation_stage_root(data_dir: Path) -> Path:
+    """从阶段根或其副本/区间子目录定位独立 VAL 的同级阶段根。"""
+    source = Path(data_dir).resolve()
+    stage = next(
+        (parent for parent in (source, *source.parents)
+         if parent.name in {"raw", "annotated"}),
+        None,
+    )
+    if stage is None:
+        raise ValueError(f"validation source must be under raw or annotated: {source}")
+    return stage

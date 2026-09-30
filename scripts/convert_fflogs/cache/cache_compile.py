@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ProcessPoolExecutor, as_completed
 import logging
 import multiprocessing
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 from common.policy.data.compiled_cache import (
@@ -16,19 +16,22 @@ from common.policy.data.compiled_cache import (
 )
 from common.policy.data.normalizer import Normalizer
 from common.policy.data.prepared_sources import cached_candidates_for_group
-from common.policy.data.source_selection import RawTrainingPathGroup, select_training_raw_path_groups
 from common.policy.data.skill_vocab import SkillVocab
+from common.policy.data.source_selection import (
+    RawTrainingPathGroup,
+    select_training_raw_path_groups,
+    select_validation_raw_path_groups,
+)
 from common.torch_dependencies import import_torch
 
 from ..config.constants import DEFAULT_DOWNTIME_GAP_SECONDS
 from ..source.raw_source import convert_raw_file
 from ..source.source_reader import TrainingSourceReader
 from ..training.history_bank import build_history_bank
-from ..training.sample_builder import TrainingSampleBuilder
 from ..training.quality_supervision import source_ranking
+from ..training.sample_builder import TrainingSampleBuilder
 from .cache_load import RAW_CONVERSION_VERSION, _load_cache
 from .cache_writer import write_compiled_cache_stream
-
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +53,37 @@ def prepare_training_caches(
     groups = select_training_raw_path_groups(data_dir, max_files)
     if not groups:
         return []
+    normalizer = Normalizer()
+    normalizer.ensure_job_resources(job_tag)
+    return _compile_training_path_groups(
+        groups,
+        job_tag=job_tag,
+        downtime_gap_seconds=downtime_gap_seconds,
+        normalizer=normalizer,
+        int_dtype=int_dtype,
+        float_dtype=float_dtype,
+        cache_dir=cache_dir,
+        shard_size=shard_size,
+        max_workers=max_workers,
+        max_shards=max_shards,
+    )
+
+
+def prepare_validation_caches(
+    data_dir: Path,
+    *,
+    max_files: int,
+    job_tag: str,
+    int_dtype,
+    float_dtype,
+    cache_dir: Path | None,
+    shard_size: int = DEFAULT_CACHE_SHARD_SIZE,
+    max_workers: int = 1,
+    max_shards: int = DEFAULT_CACHE_MAX_SHARDS,
+    downtime_gap_seconds: float = DEFAULT_DOWNTIME_GAP_SECONDS,
+) -> list[Path]:
+    """按副本固定配额编译 VAL；已有 PT 优先，同副本候选补位，缺额报错。"""
+    groups = select_validation_raw_path_groups(data_dir, max_files)
     normalizer = Normalizer()
     normalizer.ensure_job_resources(job_tag)
     return _compile_training_path_groups(

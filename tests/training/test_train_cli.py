@@ -27,6 +27,7 @@ class StubRunConfig:
     job_tag: str | None
     model_variant: str | None = None
     max_files: int | None = None
+    validation_files: int = 100
 
 
 def _install_fake_training_modules(monkeypatch):
@@ -154,6 +155,7 @@ def test_train_main_forwards_cli_overrides(monkeypatch, caplog, tmp_path):
     monkeypatch.setattr(train_cli, "resolve_policy_device", resolve_device)
     monkeypatch.setattr(train_cli, "run_training", fake_run_training)
     monkeypatch.setattr(train_cli, "_load_training_sources", fake_load_training_sources)
+    monkeypatch.setattr(train_cli, "_load_validation_sources", lambda _config: [Path("val.json.br")])
     monkeypatch.setattr(
         sys,
         "argv",
@@ -195,6 +197,7 @@ def test_train_main_forwards_cli_overrides(monkeypatch, caplog, tmp_path):
     assert calls["config"].max_files == 7
     assert calls["training_kwargs"] == {
         "raw_paths": prepared_paths,
+        "validation_paths": [Path("val.json.br")],
         "output_dir": output_dir,
         "max_epochs": 3,
         "batch_size": 64,
@@ -259,6 +262,7 @@ def test_train_main_uses_config_and_environment_defaults(monkeypatch):
         lambda config, max_files: [Path("prepared.json")],
     )
     monkeypatch.setattr(train_cli, "run_training", fake_run_training)
+    monkeypatch.setattr(train_cli, "_load_validation_sources", lambda _config: [Path("val.json.br")])
     monkeypatch.setattr(sys, "argv", ["train.py"])
 
     train_cli.main()
@@ -269,6 +273,7 @@ def test_train_main_uses_config_and_environment_defaults(monkeypatch):
     assert calls["config"].job_tag == "machinist"
     assert calls["training_kwargs"] == {
         "raw_paths": [Path("prepared.json")],
+        "validation_paths": [Path("val.json.br")],
         "output_dir": None,
         "max_epochs": None,
         "batch_size": None,
@@ -324,6 +329,7 @@ def test_train_main_uses_config_max_files_when_cli_is_absent(monkeypatch, tmp_pa
         train_cli, "_load_training_sources", fake_load_training_sources
     )
     monkeypatch.setattr(train_cli, "run_training", fake_run_training)
+    monkeypatch.setattr(train_cli, "_load_validation_sources", lambda _config: [Path("val.json.br")])
     monkeypatch.setattr(sys, "argv", ["train.py"])
 
     train_cli.main()

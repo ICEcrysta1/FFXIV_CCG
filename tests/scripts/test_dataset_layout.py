@@ -29,6 +29,53 @@ def test_download_and_annotation_preserve_every_bucket(tmp_path):
     assert not annotated_root.exists()
 
 
+def test_validation_layout_is_identical_across_raw_annotated_and_cache(tmp_path):
+    source = tmp_path / "raw" / "VAL" / "FRU" / "fight.json.br"
+    annotated = map_dataset_output_path(source, output_root=tmp_path / "annotated")
+    compiled = cache_path_for_source(tmp_path / ".cache", annotated)
+    assert annotated == tmp_path / "annotated" / "VAL" / "FRU" / "fight.json.br"
+    assert compiled.parent == tmp_path / ".cache" / "VAL" / "FRU"
+
+
+def test_validation_groups_are_fixed_per_encounter_without_cross_fill(tmp_path):
+    from common.policy.data.source_selection import select_validation_raw_path_groups
+
+    for encounter, count in (("FRU", 3), ("M5S", 8)):
+        for index in range(count):
+            source = tmp_path / "annotated" / "VAL" / encounter / f"{index}.json.br"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text("{}", encoding="utf-8", newline="\n")
+    groups = select_validation_raw_path_groups(tmp_path / "annotated", 10)
+    assert [(group.directory_name, group.target_count) for group in groups] == [
+        ("FRU", 5), ("M5S", 5),
+    ]
+    assert [len(group.candidates) for group in groups] == [3, 8]
+    assert select_validation_raw_path_groups(tmp_path / "annotated" / "FRU", 10) == groups
+
+
+def test_validation_groups_include_raw_encounter_missing_annotation(tmp_path):
+    from common.policy.data.source_selection import select_validation_raw_path_groups
+
+    raw = tmp_path / "raw" / "VAL" / "FRU" / "fight.json.br"
+    raw.parent.mkdir(parents=True)
+    raw.write_text("{}", encoding="utf-8", newline="\n")
+    groups = select_validation_raw_path_groups(tmp_path / "annotated", 4)
+    assert [(group.directory_name, group.target_count, group.candidates) for group in groups] == [
+        ("FRU", 4, ()),
+    ]
+
+
+def test_validation_hundred_files_uses_fixed_remainder_order(tmp_path):
+    from common.policy.data.source_selection import select_validation_raw_path_groups
+
+    for encounter in ("FRU", "M5S", "P12S"):
+        (tmp_path / "raw" / "VAL" / encounter).mkdir(parents=True)
+    groups = select_validation_raw_path_groups(tmp_path / "annotated", 100)
+    assert [(group.directory_name, group.target_count) for group in groups] == [
+        ("FRU", 34), ("M5S", 33), ("P12S", 33),
+    ]
+
+
 @pytest.mark.parametrize("bucket", ["0-10", "40-60", "../FRU", "/90-100", ""])
 def test_invalid_bucket_cannot_change_output_directory(tmp_path, bucket):
     with pytest.raises(ValueError, match="invalid percentile bucket"):
