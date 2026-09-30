@@ -118,12 +118,15 @@ def main():
     signal.signal(signal.SIGINT, _on_interrupt)
 
     # 子命令分发
-    if args.command == "batch":
-        _cmd_batch(client, args)
-    elif args.command == "encounters":
-        _cmd_encounters(client, args)
-    elif args.command == "single" or args.command is None:
-        _cmd_single(client, args)
-    else:
-        parser.print_help()
-        sys.exit(1)
+    try:
+        if args.command == "batch":
+            _cmd_batch(client, args)
+        elif args.command == "encounters":
+            _cmd_encounters(client, args)
+        elif args.command == "single" or args.command is None:
+            _cmd_single(client, args)
+        else:
+            parser.print_help()
+            sys.exit(1)
+    finally:
+        client.close()

@@ -4,6 +4,7 @@ __pycache__/
 *.egg-info/
 
 # Test and local temp output
+.ruff_cache/
 .pytest_cache/
 .tmp/
 .coverage
@@ -23,6 +24,7 @@ venv/
 .codex/
 .claude/
 .zcode/
+.dsh-acl-reports/
 
 # Editor settings
 .idea/

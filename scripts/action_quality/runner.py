@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -10,11 +9,17 @@ import subprocess
 from pathlib import Path
 
 from common.dataset_layout import map_dataset_output_path
-from scripts.common.json_io import atomic_write_json
+from scripts.common.json_io import atomic_write_json, read_json, read_json_bytes
 
 from .config import BridgeConfig
 
 RUNTIME = Path(__file__).parent / "runtime" / "run.cjs"
+
+
+def _report_code(raw: dict) -> object:
+    """与 Node 的 nullish fallback 保持相同的报告身份语义。"""
+    code = raw.get("report_code")
+    return code if code is not None else raw.get("code")
 
 
 def analyzer_commit(config: BridgeConfig) -> str | None:
@@ -48,9 +53,8 @@ def annotation_is_current(source: Path, output: Path, *, commit: str | None) -> 
     if commit is None or not output.is_file():
         return False
     try:
-        content = source.read_bytes()
-        raw = json.loads(content)
-        annotated = json.loads(output.read_text(encoding="utf-8"))
+        raw = read_json(source)
+        annotated = read_json(output)
         if not isinstance(raw, dict) or not isinstance(annotated, dict):
             return False
         analysis = annotated.pop("analysis", None)
@@ -74,11 +78,11 @@ def annotation_is_current(source: Path, output: Path, *, commit: str | None) -> 
             raw.get("events_complete") is True
             and bool(raw.get("events"))
             and analysis.get("schema_version") == 2
-            and analysis.get("bridge_version") == 3
+            and analysis.get("bridge_version") == 4
             and analysis.get("status") == "annotated"
             and analysis.get("training_ready") is False
-            and analysis.get("source", {}).get("sha256") == hashlib.sha256(content).hexdigest()
             and analysis.get("source", {}).get("fight_id") == raw.get("fight_id")
+            and analysis.get("source", {}).get("report_code") == _report_code(raw)
             and analysis.get("actor", {}).get("id") == str(selected)
             and analysis.get("job_tag") == job_tag
             and analysis.get("engine", {}).get("commit") == commit
@@ -121,7 +125,7 @@ def annotate_file(
     """成功后新增 analysis，原始字段与 events 保持不变；失败不覆盖旧结果。"""
     source = source.resolve()
     output = output_path_for_source(source, output_root, source_root)
-    content = source.read_bytes()
+    content = read_json_bytes(source)
     raw = json.loads(content)
     if not isinstance(raw, dict) or not raw.get("events") or raw.get("events_complete") is not True:
         raise ValueError("analysis requires a complete raw report with events")
@@ -131,7 +135,6 @@ def annotate_file(
     if isinstance(selected, bool) or not isinstance(selected, int) or selected <= 0:
         raise ValueError("source_id must be a positive integer")
     job_tag = _selected_job(raw, selected)
-    checksum = hashlib.sha256(content).hexdigest()
     request = {
         "source": str(source), "analyzer_root": str(config.analyzer_root),
         "node_modules": str(config.node_modules), "source_id": selected,
@@ -163,8 +166,9 @@ def annotate_file(
             raise ValueError("analysis fight label lacks severity")
     if (
         analysis.get("schema_version") != 2
-        or analysis.get("bridge_version") != 3
-        or analysis.get("source", {}).get("sha256") != checksum
+        or analysis.get("bridge_version") != 4
+        or analysis.get("source", {}).get("fight_id") != raw.get("fight_id")
+        or analysis.get("source", {}).get("report_code") != _report_code(raw)
     ):
         raise ValueError("analysis source or schema mismatch")
     if "severity_weights" in analysis or any("severity_weight" in label for label in suggestions):
@@ -174,7 +178,7 @@ def annotate_file(
         raise ValueError("analysis time basis mismatch")
     if analysis.get("actor", {}).get("id") != str(selected) or analysis.get("module_errors"):
         raise ValueError("analysis actor mismatch or failed modules")
-    if hashlib.sha256(source.read_bytes()).hexdigest() != checksum:
+    if read_json_bytes(source) != content:
         raise ValueError("raw input changed during analysis")
     analysis["job_tag"] = job_tag
     atomic_write_json(output, {**raw, "analysis": analysis})

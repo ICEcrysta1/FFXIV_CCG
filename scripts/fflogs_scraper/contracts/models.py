@@ -24,3 +24,5 @@ class ReportMeta:
     fights: list[FightInfo] = field(default_factory=list)
     # FFLogs V1 报告元数据，训练选定玩家另存于下载包装字段。
     report: dict = field(default_factory=dict)
+    # 批量下载可随报告元数据一次获取所选战斗玩家，不写入离线 JSON。
+    players: list[dict] = field(default_factory=list)

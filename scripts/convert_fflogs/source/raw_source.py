@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
+
+from scripts.common.json_io import read_json
 
 from ..config.constants import DEFAULT_DOWNTIME_GAP_SECONDS
 from ..pipeline import convert_report_to_training_payload
@@ -22,7 +23,7 @@ def convert_raw_file(
 ) -> tuple[dict[str, object] | None, Counter[tuple[int, str]]]:
     """读取一份 raw JSON，并直接返回内存训练 payload。"""
     input_path = Path(input_path)
-    payload = json.loads(input_path.read_text(encoding="utf-8"))
+    payload = read_json(input_path)
     if not isinstance(payload, dict):
         raise ValueError(f"raw FFLogs payload must be a mapping: {input_path}")
 
@@ -34,7 +35,7 @@ def convert_raw_file(
         if isinstance(first_fight, dict):
             encounter_name = first_fight.get("name")
 
-    report_code = str(payload.get("report_code", input_path.stem))
+    report_code = str(payload.get("report_code", input_path.name.removesuffix(".json.br")))
     player_name = str(payload.get("player_name", "?"))
     project_config = load_job_project_config(job_tag)
     backend = build_backend(job_tag=job_tag)

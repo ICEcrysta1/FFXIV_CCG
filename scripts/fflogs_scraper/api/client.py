@@ -20,6 +20,25 @@ from ..contracts.report import _adapt_report_metadata
 logger = logging.getLogger(__name__)
 
 
+def _extract_report_players(details: object) -> list[dict]:
+    """兼容 FFLogs playerDetails 的角色分组与列表两种结构。"""
+    if not isinstance(details, dict):
+        return []
+    inner = details.get("data", details)
+    if not isinstance(inner, dict):
+        return []
+    players_by_role = inner.get("playerDetails", inner)
+    if isinstance(players_by_role, list):
+        return players_by_role
+    if not isinstance(players_by_role, dict):
+        return []
+    return [
+        player
+        for role in ("dps", "tanks", "healers", "tank", "healer")
+        for player in players_by_role.get(role, [])
+    ]
+
+
 class FFLogsV2Client:
     """FFLogs V2 GraphQL API 客户端 (OAuth Client Credentials)。"""
 
@@ -31,6 +50,19 @@ class FFLogsV2Client:
         self._client_secret = client_secret
         self._token: Optional[str] = None
         self._cancelled = False
+        self._session: cf_requests.Session | None = None
+
+    def _http_session(self) -> cf_requests.Session:
+        """单客户端复用 HTTP 连接，避免每个分页请求重新建立连接。"""
+        if self._session is None:
+            self._session = cf_requests.Session()
+        return self._session
+
+    def close(self) -> None:
+        """释放下载期间复用的 HTTP 连接。"""
+        if self._session is not None:
+            self._session.close()
+            self._session = None
 
     def cancel(self):
         self._cancelled = True
@@ -38,7 +70,7 @@ class FFLogsV2Client:
     def _ensure_token(self) -> str:
         if self._token:
             return self._token
-        resp = cf_requests.post(
+        resp = self._http_session().post(
             self.TOKEN_URL,
             json={
                 "grant_type": "client_credentials",
@@ -60,7 +92,7 @@ class FFLogsV2Client:
         payload: dict = {"query": gql}
         if variables:
             payload["variables"] = variables
-        resp = cf_requests.post(
+        resp = self._http_session().post(
             self.GQL_URL,
             json=payload,
             headers={"Authorization": f"Bearer {token}"},
@@ -78,9 +110,17 @@ class FFLogsV2Client:
 
     # ---- 报告查询 ----
 
-    def get_report_fights(self, report_code: str) -> ReportMeta:
+    def get_report_fights(
+        self, report_code: str, *, player_fight_id: int | None = None,
+    ) -> ReportMeta:
         """获取报告、战斗及角色元数据，生成离线分析报告上下文。"""
         report_code = _validate_report_code(report_code)
+        if player_fight_id is not None:
+            player_fight_id = _validate_integer(player_fight_id, "player_fight_id", minimum=1)
+        player_details_field = (
+            f"playerDetails(fightIDs: [{player_fight_id}])"
+            if player_fight_id is not None else ""
+        )
         gql = f"""
         query {{
           reportData {{
@@ -89,6 +129,7 @@ class FFLogsV2Client:
               masterData(translate: true) {{
                 lang actors {{ id gameID name type subType petOwner }}
               }}
+              {player_details_field}
               fights {{
                 id name encounterID startTime endTime combatTime difficulty kill size
                 bossPercentage fightPercentage standardComposition gameZone {{ id name }}
@@ -106,7 +147,10 @@ class FFLogsV2Client:
         report = data.get("reportData", {}).get("report", {})
         if not report:
             raise ValueError(f"报告不存在或无权读取: {report_code}")
-        return _adapt_report_metadata(report_code, report)
+        meta = _adapt_report_metadata(report_code, report)
+        if player_fight_id is not None:
+            meta.players = _extract_report_players(report.get("playerDetails"))
+        return meta
 
     def get_report_players(self, report_code: str, fight_id: int) -> list[dict]:
         """获取报告中某场战斗的玩家列表。"""
@@ -121,20 +165,7 @@ class FFLogsV2Client:
         """
         data = self.query(gql)
         report = data.get("reportData", {}).get("report", {})
-        details = report.get("playerDetails", {}) if report else {}
-
-        result = []
-        if isinstance(details, dict):
-            inner = details.get("data", details)
-            if isinstance(inner, dict):
-                players_by_role = inner.get("playerDetails", inner)
-                if isinstance(players_by_role, dict):
-                    for role in ("dps", "tanks", "healers", "tank", "healer"):
-                        for p in players_by_role.get(role, []):
-                            result.append(p)
-                elif isinstance(players_by_role, list):
-                    result = players_by_role
-        return result
+        return _extract_report_players(report.get("playerDetails") if report else None)
 
     def resolve_source_id(self, report_code: str, player_name: str, fight_id: int) -> Optional[int]:
         """根据玩家名查找 source ID。"""

@@ -18,15 +18,39 @@ from scripts.convert_fflogs import cli as convert_cli
 from scripts.convert_fflogs.cache import cache_compile as cache_compile_module
 from scripts.convert_fflogs.cache import prepare_training_caches, precompile_raw_training_caches
 from scripts.convert_fflogs.cache.cache_load import load_raw_compiled_cache
+from scripts.convert_fflogs.source import raw_source
+from scripts.common.json_io import atomic_write_json
 from tests.helpers import build_test_scene_context, targetable_window_token
 from training import TrainingDataset
+
+
+def test_convert_raw_file_reads_brotli_json(tmp_path, monkeypatch):
+    source = tmp_path / "raw" / "FRU" / "00-10" / "fight.json.br"
+    atomic_write_json(source, {
+        "source_id": 2, "fight_id": 5, "report_code": "REPORT",
+        "fights": [{"id": 5, "name": "FRU"}], "player_name": "Tester",
+    })
+    backend = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr(raw_source, "build_backend", lambda **_kwargs: backend)
+    monkeypatch.setattr(raw_source, "load_job_project_config", lambda _job: object())
+    monkeypatch.setattr(raw_source, "build_skill_book", lambda _config: object())
+    seen = {}
+
+    def convert(payload, **kwargs):
+        seen.update(payload=payload, kwargs=kwargs)
+        return {"converted": True}, {}
+
+    monkeypatch.setattr(raw_source, "convert_report_to_training_payload", convert)
+    assert raw_source.convert_raw_file(source, job_tag="black_mage") == ({"converted": True}, {})
+    assert seen["payload"]["fight_id"] == 5
+    assert seen["kwargs"]["encounter_name"] == "FRU"
 
 
 def test_training_source_selection_requires_precompiled_cache(tmp_path, monkeypatch):
     """训练侧只读取有效缓存，并按转换侧相同顺序从后备文件补位。"""
     source_root = tmp_path / "annotated" / "FRU" / "00-10"
     source_root.mkdir(parents=True)
-    sources = [source_root / f"{index}.json" for index in range(3)]
+    sources = [source_root / f"{index}.json.br" for index in range(3)]
     for source in sources:
         source.write_text("{}", encoding="utf-8", newline="\n")
 
@@ -72,7 +96,7 @@ def test_cli_training_selection_uses_model_quota(tmp_path, monkeypatch):
     monkeypatch.setattr(convert_cli, "resolve_policy_model_variant", lambda _path: "artzip")
     monkeypatch.setattr(convert_cli, "resolve_convert_fflogs_job_tag", lambda _tag: "black_mage")
     monkeypatch.setattr(convert_cli, "resolve_policy_cache_dir", lambda _tag: tmp_path / ".cache")
-    monkeypatch.setattr(convert_cli, "prepare_training_caches", lambda path, **kwargs: calls.update(path=path, **kwargs) or [tmp_path / "done.json"])
+    monkeypatch.setattr(convert_cli, "prepare_training_caches", lambda path, **kwargs: calls.update(path=path, **kwargs) or [tmp_path / "done.json.br"])
     convert_cli.main()
     assert calls["path"] == run_config.raw_data_dir
     assert calls["max_files"] == 8
@@ -80,7 +104,7 @@ def test_cli_training_selection_uses_model_quota(tmp_path, monkeypatch):
 
 
 def test_cli_fails_when_annotated_inputs_produce_no_compiled_cache(tmp_path, monkeypatch):
-    source = tmp_path / "annotated" / "FRU" / "00-10" / "old_schema.json"
+    source = tmp_path / "annotated" / "FRU" / "00-10" / "old_schema.json.br"
     source.parent.mkdir(parents=True)
     source.write_text("{}", encoding="utf-8")
     run_config = SimpleNamespace(
@@ -140,7 +164,7 @@ def test_raw_cache_compiler_only_writes_compiled_cache(
         ],
     }
     training_payload = build_training_samples(cs_backend, cs_skill_book, fight_payload)
-    raw_path = tmp_path / source_stage / "FRU" / "00-10" / "demo.json"
+    raw_path = tmp_path / source_stage / "FRU" / "00-10" / "demo.json.br"
     raw_path.parent.mkdir(parents=True)
     raw_path.write_text("{}", encoding="utf-8", newline="\n")
     raw_before = raw_path.read_bytes()
@@ -180,8 +204,8 @@ def test_raw_cache_compiler_only_writes_compiled_cache(
         int_dtype=torch.int32, float_dtype=torch.float32,
         cache_dir=cache_dir, shard_size=1, max_workers=1,
     ) == [raw_path]
-    # primary 候选 z.json 没有缓存；现有 demo PT 已满足配额，不应编译 z.json。
-    (raw_path.parent / "z.json").write_text("{}", encoding="utf-8", newline="\n")
+    # primary 候选 z.json.br 没有缓存；现有 demo PT 已满足配额，不应编译 z.json.br。
+    (raw_path.parent / "z.json.br").write_text("{}", encoding="utf-8", newline="\n")
     assert prepare_training_caches(
         tmp_path / source_stage, max_files=1, job_tag="black_mage",
         int_dtype=torch.int32, float_dtype=torch.float32,
@@ -216,8 +240,8 @@ def test_raw_cache_compiler_only_writes_compiled_cache(
 
 def test_parallel_cache_compile_skips_failed_source_and_reports_it(tmp_path, monkeypatch, caplog):
     torch = pytest.importorskip("torch")
-    bad_path = tmp_path / "bad.json"
-    good_path = tmp_path / "good.json"
+    bad_path = tmp_path / "bad.json.br"
+    good_path = tmp_path / "good.json.br"
     bad_path.write_text("{}", encoding="utf-8")
     good_path.write_text("{}", encoding="utf-8")
 
@@ -241,7 +265,7 @@ def test_parallel_cache_compile_skips_failed_source_and_reports_it(tmp_path, mon
 
     def fake_worker(task):
         source_path = Path(task[0])
-        if source_path.name == "bad.json":
+        if source_path.name == "bad.json.br":
             raise ValueError("invalid raw JSON fixture")
         return str(source_path), 1, 1
 
@@ -259,5 +283,5 @@ def test_parallel_cache_compile_skips_failed_source_and_reports_it(tmp_path, mon
         )
 
     assert valid_paths == [good_path]
-    assert "bad.json" in caplog.text
+    assert "bad.json.br" in caplog.text
     assert "跳过并继续" in caplog.text

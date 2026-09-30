@@ -47,5 +47,5 @@ def map_dataset_output_path(
 
 
 def find_dataset_json_files(directory: str | Path) -> list[Path]:
-    """递归发现副本和区间下的 JSON，兼容尚未分档的旧数据目录。"""
-    return sorted(Path(directory).rglob("*.json"))
+    """递归发现副本和区间下的 Brotli JSON。"""
+    return sorted(Path(directory).rglob("*.json.br"))

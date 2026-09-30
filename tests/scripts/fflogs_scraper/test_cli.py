@@ -68,7 +68,8 @@ def test_cli_dispatch_preserves_arguments(monkeypatch, arguments, command, expec
     monkeypatch.setattr(cli, "_load_dotenv", lambda: None)
     monkeypatch.setenv("FFLOGS_V2_CLIENT_ID", "test-id")
     monkeypatch.setenv("FFLOGS_V2_CLIENT_SECRET", "test-secret")
-    client = SimpleNamespace(cancel=lambda: None)
+    closed = []
+    client = SimpleNamespace(cancel=lambda: None, close=lambda: closed.append(True))
     credentials = []
     monkeypatch.setattr(cli, "FFLogsV2Client", lambda *args: credentials.append(args) or client)
     monkeypatch.setattr(cli.signal, "signal", lambda *args: None)
@@ -84,7 +85,30 @@ def test_cli_dispatch_preserves_arguments(monkeypatch, arguments, command, expec
     actual_command, actual_client, args = calls[0]
     assert actual_command == command
     assert actual_client is client
+    assert closed == [True]
     assert all(getattr(args, key) == value for key, value in expected.items())
+
+
+def test_cli_closes_http_session_when_download_fails(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["fflogs_scraper", "batch", "-e", "98"])
+    monkeypatch.setattr(cli, "_load_dotenv", lambda: None)
+    monkeypatch.setenv("FFLOGS_V2_CLIENT_ID", "test-id")
+    monkeypatch.setenv("FFLOGS_V2_CLIENT_SECRET", "test-secret")
+    closed = []
+    monkeypatch.setattr(
+        cli, "FFLogsV2Client",
+        lambda *args: SimpleNamespace(cancel=lambda: None, close=lambda: closed.append(True)),
+    )
+    monkeypatch.setattr(cli.signal, "signal", lambda *args: None)
+
+    def fail_download(*args):
+        raise RuntimeError("下载失败")
+
+    monkeypatch.setattr(cli, "_cmd_batch", fail_download)
+
+    with pytest.raises(RuntimeError, match="下载失败"):
+        cli.main()
+    assert closed == [True]
 
 
 @pytest.mark.parametrize("option,value", [

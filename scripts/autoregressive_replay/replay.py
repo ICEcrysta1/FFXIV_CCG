@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, is_dataclass, replace
-import json
 import logging
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +12,7 @@ import torch
 from common.config import load_precision_config, load_project_config
 from common.skills import SkillBook
 from scripts.common.inprocess_backend import InProcessBackend
+from scripts.common.json_io import read_json
 from scripts.convert_fflogs.cache import (
     load_raw_compiled_cache,
     precompile_raw_training_caches,
@@ -47,9 +47,8 @@ logger = logging.getLogger(__name__)
 def _load_scene_duration_seconds(scene_json_path: Path) -> float | None:
     """从 raw scene 的 fights 元数据读取以 0 为起点的战斗时长。"""
     try:
-        with Path(scene_json_path).open("r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except (OSError, json.JSONDecodeError):
+        payload = read_json(scene_json_path)
+    except (OSError, ValueError):
         return None
     if not isinstance(payload, dict):
         return None

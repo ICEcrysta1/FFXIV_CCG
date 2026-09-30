@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from common.dataset_layout import find_dataset_json_files
+from scripts.common.json_io import is_json_file
 
 from .config import default_raw_root, load_bridge_config
 from .runner import analyzer_commit, annotation_is_current, annotate_file, output_path_for_source
@@ -31,7 +32,7 @@ def main() -> int:
     for path in inputs:
         if path.is_dir():
             files.update(find_dataset_json_files(path))
-        elif path.is_file() and path.suffix.lower() == ".json":
+        elif path.is_file() and is_json_file(path):
             files.add(path.resolve())
         else:
             parser.error(f"JSON input not found: {path}")

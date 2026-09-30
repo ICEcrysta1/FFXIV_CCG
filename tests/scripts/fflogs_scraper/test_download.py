@@ -1,10 +1,11 @@
 """FFLogs 下载器 download 职责回归测试。"""
 
-import json
 from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
+
+from scripts.common.json_io import read_json
 
 from scripts.fflogs_scraper import FFLogsV2Client
 from scripts.fflogs_scraper.contracts.rankings import HistoricalReport
@@ -13,8 +14,12 @@ from scripts.fflogs_scraper.download.sampling import _allocate_percentile_quotas
 
 
 def _stub_report_download(monkeypatch, client, meta):
-    monkeypatch.setattr(client, "resolve_source_id", lambda *args: 1)
-    monkeypatch.setattr(client, "get_report_fights", lambda code: replace(meta, code=code))
+    monkeypatch.setattr(
+        client, "get_report_fights",
+        lambda code, *, player_fight_id=None: replace(
+            meta, code=code, players=[{"id": 1, "name": "Player"}],
+        ),
+    )
     monkeypatch.setattr(client, "get_damage_table", lambda *args: {"entries": []})
     monkeypatch.setattr(client, "get_fight_events", lambda *args, **kwargs: [])
 
@@ -26,8 +31,12 @@ def _record(code, percentile, name="Player"):
 @pytest.mark.parametrize("mode", ["events-only", "default", "damage-only"])
 def test_batch_download_saves_full_analysis_context(monkeypatch, tmp_path, analysis_meta, mode):
     client = FFLogsV2Client("id", "secret")
-    monkeypatch.setattr(client, "resolve_source_id", lambda *args: 1)
-    monkeypatch.setattr(client, "get_report_fights", lambda code: analysis_meta)
+    monkeypatch.setattr(
+        client, "get_report_fights",
+        lambda code, *, player_fight_id=None: replace(
+            analysis_meta, players=[{"id": 1, "name": "Player"}],
+        ),
+    )
     monkeypatch.setattr(client, "get_damage_table", lambda *args: {"entries": []})
     requests = []
     def get_events(code, fight, source_id=None, *, require_complete=False):
@@ -35,11 +44,33 @@ def test_batch_download_saves_full_analysis_context(monkeypatch, tmp_path, analy
         return []
     monkeypatch.setattr(client, "get_fight_events", get_events)
     batch._batch_download(client, [("ABC123", 33, "Player", 123)], str(tmp_path), mode)
-    payload = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
+    payload = read_json(next(tmp_path.glob("*.json.br")))
     assert payload["source_id"] == 1
     assert payload["lang"] == "cn"
     assert payload["events_complete"] is (mode != "damage-only")
     assert requests == ([] if mode == "damage-only" else [(None, True)])
+
+
+def test_batch_download_uses_combined_metadata_and_player_query(monkeypatch, tmp_path, analysis_meta):
+    client = FFLogsV2Client("id", "secret")
+    calls = []
+
+    def get_metadata(code, *, player_fight_id=None):
+        calls.append((code, player_fight_id))
+        return replace(analysis_meta, players=[{"id": 1, "name": "Player"}])
+
+    monkeypatch.setattr(client, "get_report_fights", get_metadata)
+    monkeypatch.setattr(
+        client, "resolve_source_id",
+        lambda *args: pytest.fail("不应再次单独查询玩家"),
+    )
+    monkeypatch.setattr(client, "get_fight_events", lambda *args, **kwargs: [])
+    batch._download_report(client, "ABC123", 33, "Player", 123, str(tmp_path), "events-only")
+
+    assert calls == [("ABC123", 33)]
+    payload = read_json(next(tmp_path.glob("*.json.br")))
+    assert payload["source_id"] == 1
+    assert "playerDetails" not in payload
 
 
 @pytest.mark.parametrize("events_only", [True, False])
@@ -52,12 +83,12 @@ def test_single_download_resolves_last_fight_and_fetches_full_events(monkeypatch
         return []
     monkeypatch.setattr(client, "get_fight_events", get_events)
     monkeypatch.setattr(client, "get_damage_table", lambda *args: {"entries": []})
-    output = tmp_path / "single.json"
+    output = tmp_path / "single.json.br"
     args = SimpleNamespace(url="https://www.fflogs.com/reports/ABC123?fight=last&source=1",
                            report=None, fight=None, source=None, events_only=events_only,
                            damage_only=False, output=str(output), output_dir=None)
     single._cmd_single(client, args)
-    payload = json.loads(output.read_text(encoding="utf-8"))
+    payload = read_json(output)
     assert payload["fight_id"] == 33
     assert payload["source_id"] == 1
     assert payload["events_complete"] is True
@@ -71,7 +102,7 @@ def test_incomplete_download_does_not_create_output(monkeypatch, tmp_path, analy
     def fail(*args, **kwargs):
         raise RuntimeError("不完整事件")
     monkeypatch.setattr(client, "get_fight_events", fail)
-    output = tmp_path / "report.json"
+    output = tmp_path / "report.json.br"
     args = SimpleNamespace(url=None, report="ABC123", fight=33, source=1,
                            events_only=True, damage_only=False, output=str(output), output_dir=None)
     with pytest.raises(RuntimeError, match="不完整事件"):
@@ -79,19 +110,36 @@ def test_incomplete_download_does_not_create_output(monkeypatch, tmp_path, analy
     assert not output.exists()
 
 
+def test_single_download_rejects_plain_json_before_api_request(monkeypatch, tmp_path):
+    client = FFLogsV2Client("id", "secret")
+    monkeypatch.setattr(client, "get_report_fights", lambda *_args: pytest.fail("must reject before API request"))
+    args = SimpleNamespace(
+        url=None, report="ABC123", fight=33, source=1,
+        output=str(tmp_path / "report.json"),
+    )
+    with pytest.raises(ValueError, match=".json.br"):
+        single._cmd_single(client, args)
+
+
 def test_stratified_download_saves_bucket_metadata_and_replaces_failed_candidate(monkeypatch, tmp_path, analysis_meta):
     client = FFLogsV2Client("id", "secret")
     _stub_report_download(monkeypatch, client, analysis_meta)
-    monkeypatch.setattr(client, "resolve_source_id", lambda code, *args: None if code == "FAIL" else 1)
+    monkeypatch.setattr(
+        client, "get_report_fights",
+        lambda code, *, player_fight_id=None: replace(
+            analysis_meta, code=code,
+            players=[] if code == "FAIL" else [{"id": 1, "name": "Player"}],
+        ),
+    )
     records = [_record("FAIL", 95), _record("TOP", 100), _record("TOP", 100)]
     records += [_record(f"R{lower}", lower) for lower in range(80, -1, -10)]
     result = batch._stratified_batch_download(client, records, _allocate_percentile_quotas(10), str(tmp_path), "events-only")
     assert result["success"] == 10
     assert result["failed"] == 1
     assert set(result["counts"].values()) == {1}
-    assert len(list(tmp_path.rglob("*.json"))) == 10
-    for path in tmp_path.rglob("*.json"):
-        payload = json.loads(path.read_text(encoding="utf-8"))
+    assert len(list(tmp_path.rglob("*.json.br"))) == 10
+    for path in tmp_path.rglob("*.json.br"):
+        payload = read_json(path)
         assert payload["ranking"]["percentile_bucket"] == path.parent.name
         assert payload["ranking"]["metric"] == "rdps"
         assert payload["ranking"]["timeframe"] == "historical"
@@ -122,7 +170,7 @@ def test_anonymous_and_duplicate_records_do_not_fill_quota(monkeypatch, tmp_path
     result = batch._stratified_batch_download(client, records, {"90-100": 2}, str(tmp_path))
     assert result["counts"] == {"90-100": 1}
     assert result["anonymous"] == 2
-    assert len(list(tmp_path.rglob("*.json"))) == 1
+    assert len(list(tmp_path.rglob("*.json.br"))) == 1
 
 
 @pytest.mark.parametrize("mode", ["events-only", "default", "damage-only"])
@@ -134,7 +182,7 @@ def test_valid_existing_files_count_towards_target_without_redownloading(monkeyp
     assert first["success"] == 1
     def unexpected(*args):
         pytest.fail("已有有效文件不应再查询报告")
-    monkeypatch.setattr(client, "resolve_source_id", unexpected)
+    monkeypatch.setattr(client, "get_report_fights", unexpected)
     second = batch._stratified_batch_download(client, [record], {"90-100": 1}, str(tmp_path), mode)
     assert second["existing"] == 1
     assert second["success"] == 0
@@ -146,7 +194,7 @@ def test_incomplete_existing_file_does_not_count_and_survives_failed_replacement
     _stub_report_download(monkeypatch, client, analysis_meta)
     directory = tmp_path / "90-100"
     directory.mkdir()
-    output = directory / "fflogs_ABC123_f33_Player.json"
+    output = directory / "fflogs_ABC123_f33_Player.json.br"
     original = '{"events_complete": false}\n'
     output.write_text(original, encoding="utf-8")
     def fail(*args, **kwargs):

@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from scripts.autoregressive_replay import config as replay_config_module
+from scripts.common.json_io import atomic_write_json
 
 
 @pytest.fixture(autouse=True)
@@ -21,7 +22,7 @@ def _isolate_replay_dotenv(monkeypatch):
 def prepare_replay_files(monkeypatch, tmp_path):
     """构造最小 checkpoint/scene，并注入 replay 配置环境变量。"""
     checkpoint = tmp_path / "model.pt"
-    scene = tmp_path / "scene.json"
+    scene = tmp_path / "scene.json.br"
     torch.save(
         {
             "job_tag": "black_mage",
@@ -30,7 +31,7 @@ def prepare_replay_files(monkeypatch, tmp_path):
         },
         checkpoint,
     )
-    scene.write_text("{}", encoding="utf-8", newline="\n")
+    atomic_write_json(scene, {})
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_BACKEND", "pytorch")
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_CHECKPOINT", str(checkpoint))
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_SCENE_JSON", str(scene))

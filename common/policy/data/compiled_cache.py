@@ -284,7 +284,8 @@ def _cache_filename_for_source(source_path: Path) -> str:
     """保留现有缓存文件身份，目录布局不参与编译签名。"""
     source_key = str(source_path.resolve()).lower().encode("utf-8")
     digest = hashlib.sha1(source_key).hexdigest()[:12]
-    return f"{source_path.stem}.{digest}.compiled.pt"
+    source_name = source_path.name.removesuffix(".json.br")
+    return f"{source_name}.{digest}.compiled.pt"
 
 
 def load_compiled_cache_for_source(
@@ -326,7 +327,7 @@ def build_cache_signature(
         "float_dtype": str(float_dtype),
         "normalizer": normalizer_signature,
         "shard_size": int(shard_size),
-        "source_format": "raw_json",
+        "source_format": "json_brotli",
         "conversion_version": str(conversion_version),
     }
 

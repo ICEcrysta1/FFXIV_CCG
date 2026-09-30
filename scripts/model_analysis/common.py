@@ -18,6 +18,7 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
 from common.config import PROJECT_ROOT, load_precision_config, load_project_config
+from common.dataset_layout import find_dataset_json_files
 from common.cache_compilation import compile_raw_training_cache
 from common.project_config import resolve_project_job_tag
 from common.torch_runtime import autocast_context, model_dtype, move_batch
@@ -484,7 +485,7 @@ def save_figure(fig: Figure, path: Path, *, dpi: int | None = None) -> None:
 
 def _find_default_raw(raw_root: Path) -> Path:
     root = Path(raw_root)
-    candidates = sorted(root.rglob("*.json"))
+    candidates = find_dataset_json_files(root)
     if not candidates:
         raise FileNotFoundError(f"no raw JSON dataset found: {root}")
     return candidates[0]

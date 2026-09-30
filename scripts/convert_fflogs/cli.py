@@ -8,6 +8,7 @@ from pathlib import Path
 
 from common.config import load_precision_config
 from common.dataset_layout import find_dataset_json_files
+from scripts.common.json_io import is_json_file
 from common.policy.config import (
     resolve_policy_cache_dir,
     resolve_policy_model_config_path,
@@ -138,7 +139,7 @@ def _resolve_input_files(inputs: list[str | Path]) -> list[Path]:
     for raw_input in inputs:
         path = Path(raw_input).resolve()
         if path.is_file():
-            if path.suffix.lower() == ".json":
+            if is_json_file(path):
                 files.append(path)
             continue
         if path.is_dir():

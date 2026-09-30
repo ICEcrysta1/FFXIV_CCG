@@ -1,7 +1,7 @@
 // 使用上游职业/副本注册表动态路由；只导出结构化结果，不抓取网页。
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
+const zlib = require('zlib');
 const {execFileSync} = require('child_process');
 const {toJson} = require('./serialize.cjs');
 const {createReferences} = require('./references.cjs');
@@ -28,7 +28,8 @@ async function analyze(request) {
   const {AVAILABLE_MODULES} = load('parser/AVAILABLE_MODULES');
   const {patchSupported, contentSupported, getPatch} = load('data/PATCHES');
   const {SEVERITY} = load('parser/core/modules/Suggestions');
-  const content = fs.readFileSync(request.source);
+  if (!request.source.toLowerCase().endsWith('.json.br')) throw new Error('分析输入必须是 .json.br 文件');
+  const content = zlib.brotliDecompressSync(fs.readFileSync(request.source));
   const raw = JSON.parse(content.toString('utf8'));
   const report = adaptReport(raw);
   const pull = report.pulls.find(candidate => candidate.id === String(raw.fight_id));
@@ -78,9 +79,9 @@ async function analyze(request) {
   const specific = extractors[actor.job]?.() ?? {actionLabels: [], windowLabels: [], cycleLabels: [], cycles: [], observations: {}};
   const commit = readCommit(request.analyzer_root);
   return {
-    schema_version: 2, bridge_version: 3, status: 'annotated', training_ready: false,
+    schema_version: 2, bridge_version: 4, status: 'annotated', training_ready: false,
     time_basis: {unit: 'ms', origin: 'pull_start', report_offset_ms: pull.timestamp - raw.start},
-    source: {sha256: crypto.createHash('sha256').update(content).digest('hex'), report_code: raw.report_code ?? raw.code, fight_id: raw.fight_id},
+    source: {report_code: raw.report_code ?? raw.code, fight_id: raw.fight_id},
     engine: {commit, runtime: process.version, encounter_module: encounterMeta ? pull.encounter.key : null,
       job_module: actor.job, modules: Object.keys(parser.container)},
     actor: {id: actor.id, name: actor.name, job: actor.job},
