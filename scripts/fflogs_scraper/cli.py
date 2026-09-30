@@ -7,6 +7,7 @@ import signal
 import sys
 
 from .api.client import FFLogsV2Client
+from .config.encounters import resolve_download_encounter
 from .config.environment import _load_dotenv
 from .config.validation import _validate_integer
 from .download.batch import _cmd_batch
@@ -24,6 +25,8 @@ def main():
 示例:
   %(prog)s single "https://www.fflogs.com/reports/JFLCXcQjBd9zgWR1?fight=6&type=damage-done&source=10"
   %(prog)s single --report JFLCXcQjBd9zgWR1 --fight 6 --source 10
+  %(prog)s batch FRU --count 200
+  %(prog)s batch 65 --count 200
   %(prog)s batch -e 1079 --spec-name BlackMage --count 200 --output data/human/job/black_mage/raw/FRU
   %(prog)s encounters -z 39
 
@@ -51,14 +54,15 @@ def main():
     single.add_argument("--damage-only", action="store_true", help="只拉伤害表")
 
     # ---- 子命令: batch ----
-    batch_cmd = sub.add_parser("batch", help="按历史百分位十档均分下载")
+    batch_cmd = sub.add_parser("batch", help="国服十档训练下载，并自动补充美服高分验证数据")
+    batch_cmd.add_argument("target", nargs="?", help="配置中的副本代号；单战斗 Zone 也可输入 Zone ID")
     batch_cmd.add_argument("--encounter", "-e", type=int, default=None,
                            help="Encounter ID")
     batch_cmd.add_argument("--zone", "-z", type=int, help="Zone ID (用于列出 encounters)")
-    batch_cmd.add_argument("--spec-name", default="BlackMage",
-                           help="职业名 (默认 BlackMage)")
+    batch_cmd.add_argument("--spec-name", default=None,
+                           help="职业名；副本代号模式默认采用当前模型职业，旧 -e 模式默认 BlackMage")
     batch_cmd.add_argument("--count", type=int, default=200,
-                           help="总目标份数，自动均分十档 (默认 200)")
+                            help="国服训练目标份数，自动均分十档；美服验证目标按 config/fflogs_scraper/batch.yaml 比例计算")
     batch_cmd.add_argument("--partition", type=int, default=None,
                            help="API 排名分区 ID；不指定时使用 API 默认分区")
     batch_cmd.add_argument("--bracket", "-b", type=int, default=0,
@@ -71,8 +75,8 @@ def main():
     batch_cmd.add_argument("--mode", "-m",
                            choices=["default", "events-only", "damage-only"],
                            default="default", help="下载模式")
-    batch_cmd.add_argument("--output", "-o", default="data",
-                           help="副本输出目录；自动在其下建立 90-100 至 00-10 子目录")
+    batch_cmd.add_argument("--output", "-o",
+                            help="训练副本目录，必须指向 raw/<副本>；验证写入 raw/VAL/<副本>")
 
     # ---- 子命令: encounters ----
     enc_cmd = sub.add_parser("encounters", help="列出 zones 或 zone 下的 encounters")
@@ -88,6 +92,15 @@ def main():
                 _validate_integer(args.partition, "partition", minimum=1)
         except ValueError as error:
             parser.error(str(error))
+        if args.target is not None:
+            if args.encounter is not None or args.output is not None or args.zone is not None:
+                parser.error("副本代号不能与 --encounter、--zone 或 --output 同时使用")
+            try:
+                resolve_download_encounter(args.target)
+            except ValueError as error:
+                parser.error(str(error))
+        elif args.encounter is not None and args.output is None:
+            parser.error("batch 下载需要 --output raw/<副本>")
 
     _load_dotenv()
 
@@ -109,24 +122,30 @@ def main():
         )
         sys.exit(1)
 
-    client = FFLogsV2Client(client_id, client_secret)
+    clients = (
+        (FFLogsV2Client(client_id, client_secret, server_region="CN"),
+         FFLogsV2Client(client_id, client_secret, server_region="NA"))
+        if args.command == "batch" else (FFLogsV2Client(client_id, client_secret),)
+    )
 
     def _on_interrupt(signum, frame):
         logger.info("收到 Ctrl+C，正在停止...")
-        client.cancel()
+        for client in clients:
+            client.cancel()
 
     signal.signal(signal.SIGINT, _on_interrupt)
 
     # 子命令分发
     try:
         if args.command == "batch":
-            _cmd_batch(client, args)
+            _cmd_batch(clients[0], clients[1], args)
         elif args.command == "encounters":
-            _cmd_encounters(client, args)
+            _cmd_encounters(clients[0], args)
         elif args.command == "single" or args.command is None:
-            _cmd_single(client, args)
+            _cmd_single(clients[0], args)
         else:
             parser.print_help()
             sys.exit(1)
     finally:
-        client.close()
+        for client in clients:
+            client.close()

@@ -1,0 +1,67 @@
+# FFLogs zone 与 encounter 是不同 ID；目录代号是本项目的数据集路径名称。
+# 光暗未来 https://www.fflogs.com/zone/rankings/65?boss=1079
+# 官方 Zone：轻量级 https://www.fflogs.com/zone/rankings/62
+# 中量级 https://www.fflogs.com/zone/rankings/68
+# 重量级 https://www.fflogs.com/zone/rankings/73
+# 妖星乱舞 https://www.fflogs.com/zone/statistics/76?boss=1085
+encounters:
+  FRU:
+    zone_id: 65
+    encounter_id: 1079
+    group: 光暗未来绝境战
+  M1s:
+    zone_id: 62
+    encounter_id: 93
+    group: 阿卡迪亚登天斗技场·轻量级
+  M2s:
+    zone_id: 62
+    encounter_id: 94
+    group: 阿卡迪亚登天斗技场·轻量级
+  M3s:
+    zone_id: 62
+    encounter_id: 95
+    group: 阿卡迪亚登天斗技场·轻量级
+  M4s:
+    zone_id: 62
+    encounter_id: 96
+    group: 阿卡迪亚登天斗技场·轻量级
+  M5s:
+    zone_id: 68
+    encounter_id: 97
+    group: 阿卡迪亚登天斗技场·中量级
+  M6s:
+    zone_id: 68
+    encounter_id: 98
+    group: 阿卡迪亚登天斗技场·中量级
+  M7s:
+    zone_id: 68
+    encounter_id: 99
+    group: 阿卡迪亚登天斗技场·中量级
+  M8s:
+    zone_id: 68
+    encounter_id: 100
+    group: 阿卡迪亚登天斗技场·中量级
+  M9s:
+    zone_id: 73
+    encounter_id: 101
+    group: 阿卡迪亚登天斗技场·重量级
+  M10s:
+    zone_id: 73
+    encounter_id: 102
+    group: 阿卡迪亚登天斗技场·重量级
+  M11s:
+    zone_id: 73
+    encounter_id: 103
+    group: 阿卡迪亚登天斗技场·重量级
+  M12sI:
+    zone_id: 73
+    encounter_id: 104
+    group: 阿卡迪亚登天斗技场·重量级
+  M12sII:
+    zone_id: 73
+    encounter_id: 105
+    group: 阿卡迪亚登天斗技场·重量级
+  DancingMad:
+    zone_id: 76
+    encounter_id: 1085
+    group: 妖星乱舞绝境战

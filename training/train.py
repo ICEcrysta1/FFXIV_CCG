@@ -23,7 +23,10 @@ from common.policy.config import (
     resolve_policy_model_variant,
 )
 from common.config import load_precision_config
-from common.policy.data.prepared_sources import select_prepared_training_sources
+from common.policy.data.prepared_sources import (
+    select_prepared_training_sources,
+    select_prepared_validation_sources,
+)
 from training.config import load_run_config
 from training.loop import run_training
 
@@ -41,6 +44,23 @@ def _load_training_sources(config, max_files: int | None) -> list[Path]:
         int_dtype=precision.resolve_int_dtype(),
         float_dtype=precision.resolve_float_dtype(),
         cache_dir=resolve_policy_cache_dir(config.job_tag),
+        shard_size=config.compiled_cache_shard_size,
+        max_shards=config.compiled_cache_max_shards,
+    )
+
+
+def _load_validation_sources(config) -> list[Path]:
+    """只从职业 compiled cache 的 VAL 目录选择固定数量的验证文件。"""
+    if config.job_tag is None:
+        raise ValueError("training job_tag is required for validation cache loading")
+    precision = load_precision_config()
+    return select_prepared_validation_sources(
+        resolve_policy_cache_dir(config.job_tag),
+        data_dir=config.raw_data_dir,
+        max_files=config.validation_files,
+        job_tag=config.job_tag,
+        int_dtype=precision.resolve_int_dtype(),
+        float_dtype=precision.resolve_float_dtype(),
         shard_size=config.compiled_cache_shard_size,
         max_shards=config.compiled_cache_max_shards,
     )
@@ -95,7 +115,7 @@ def main() -> None:
     parser.add_argument(
         "--force-resume-data-mismatch",
         action="store_true",
-        help="确认后允许 checkpoint.run_config.max_files 与当前配置不一致时继续续训",
+        help="确认后允许 checkpoint.run_config.max_files 或 validation_files 与当前配置不一致时继续续训",
     )
     args = parser.parse_args()
 
@@ -120,8 +140,10 @@ def main() -> None:
         "--max-files" if args.max_files is not None else "training.max_files",
     )
     raw_paths = _load_training_sources(config, max_files)
+    validation_paths = _load_validation_sources(config)
     training_kwargs = {
         "raw_paths": raw_paths,
+        "validation_paths": validation_paths,
         "output_dir": args.output_dir,
         "max_epochs": args.epochs,
         "batch_size": args.batch_size,

@@ -1,0 +1,4 @@
+# 下载阶段：每个副本准备多少份 raw/VAL，由该副本训练目标乘此比例并向上取整。
+# 例如下载 200 份 FRU 训练数据时，额外准备 20 份 FRU 验证数据。
+# 这里不控制训练时消费的 VAL 总数；后者由模型 training.yaml 的 validation_files 决定。
+validation_ratio: 0.10

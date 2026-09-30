@@ -5,8 +5,8 @@ import os
 import shutil
 import subprocess
 import sys
-from threading import Barrier
 from pathlib import Path
+from threading import Barrier
 from types import SimpleNamespace
 
 import pytest
@@ -200,6 +200,13 @@ def test_custom_root_keeps_encounter_and_bucket(tmp_path):
     assert runner.output_path_for_source(source, tmp_path / "evaluated", tmp_path / "custom") == tmp_path / "evaluated/FRU/00-10/a.json.br"
     with pytest.raises(ValueError, match="replace"):
         runner.output_path_for_source(source, tmp_path / "custom", tmp_path / "custom")
+
+
+def test_validation_annotation_keeps_val_encounter_layout(tmp_path):
+    source = tmp_path / "raw" / "VAL" / "FRU" / "a.json.br"
+    assert runner.output_path_for_source(source, None, None) == (
+        tmp_path / "annotated" / "VAL" / "FRU" / "a.json.br"
+    )
 
 
 def test_dotenv_reuses_loader_and_environment_wins(tmp_path, monkeypatch):

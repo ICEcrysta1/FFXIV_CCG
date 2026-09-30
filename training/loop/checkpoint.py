@@ -88,11 +88,12 @@ UNKNOWN_MAX_FILES = UnknownMaxFiles()
 
 @dataclass(frozen=True)
 class CheckpointCandidate:
-    """恢复训练候选项：文件、真实 epoch 与保存时的数据上限。"""
+    """恢复训练候选项：文件、真实 epoch 与保存时的训练/验证份数。"""
 
     path: Path
     epoch: int
     max_files: int | None | UnknownMaxFiles
+    validation_files: int | None
 
 
 @dataclass(frozen=True)
@@ -133,8 +134,22 @@ def _checkpoint_max_files(checkpoint: Mapping[str, object]) -> int | None | Unkn
 
 
 def _has_resume_data_mismatch(checkpoint: Mapping[str, object], config: RunConfig) -> bool:
-    """判断 checkpoint 记录的数据上限是否不同于当前训练配置。"""
-    return _checkpoint_max_files(checkpoint) != config.max_files
+    """判断 checkpoint 的训练上限或验证份数是否不同于当前配置。"""
+    return (
+        _checkpoint_max_files(checkpoint) != config.max_files
+        or _checkpoint_validation_files(checkpoint) != config.validation_files
+    )
+
+
+def _checkpoint_validation_files(checkpoint: Mapping[str, object]) -> int | None:
+    """旧 checkpoint 没有独立验证数量时返回 None，避免静默复用。"""
+    run_config = checkpoint.get("run_config")
+    if not isinstance(run_config, Mapping) or "validation_files" not in run_config:
+        return None
+    value = run_config["validation_files"]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError("resume checkpoint run_config.validation_files must be positive")
+    return value
 
 
 def read_checkpoint_epoch(path: Path) -> int:
@@ -165,6 +180,7 @@ def collect_checkpoint_candidates(
                 path=path,
                 epoch=_normalized_checkpoint_epoch(payload),
                 max_files=_checkpoint_max_files(payload),
+                validation_files=_checkpoint_validation_files(payload),
             )
         except Exception as exc:  # 单个损坏/非法 `.pt` 不应让整个清单不可用。
             logger.warning("跳过无法读取的 checkpoint: %s (%s)", path, exc)
@@ -230,6 +246,17 @@ def _validate_resume_checkpoint(
             "%s; force_resume_data_mismatch=True，继续使用当前 YAML/CLI 数据上限。",
             mismatch_message,
         )
+
+    checkpoint_validation_files = _checkpoint_validation_files(checkpoint)
+    if checkpoint_validation_files != config.validation_files:
+        mismatch_message = (
+            "resume checkpoint validation_files mismatch: "
+            f"checkpoint={checkpoint_validation_files!r} "
+            f"!= current={config.validation_files!r}"
+        )
+        if not force_resume_data_mismatch:
+            raise ValueError(mismatch_message)
+        logger.warning("%s; force_resume_data_mismatch=True，使用当前验证份数。", mismatch_message)
 
     checkpoint_precision = checkpoint.get("training_precision")
     if checkpoint_precision is not None and str(checkpoint_precision) != config.precision:

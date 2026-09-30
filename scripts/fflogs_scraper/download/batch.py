@@ -1,14 +1,25 @@
 """按历史百分位配额编排批量下载，复用单份报告保存流程。"""
 
 import logging
+import math
 import os
 import sys
+from pathlib import Path
 
 from common.dataset_layout import percentile_directory
+from common.policy.config import (
+    PROJECT_ROOT,
+    load_policy_config,
+    resolve_policy_model_config_path,
+    resolve_policy_model_job_tag,
+)
+from common.project_config import resolve_project_path
 from scripts.common.json_io import atomic_write_json, read_json
 
 from ..api.client import FFLogsV2Client
+from ..config.batch import load_validation_ratio
 from ..config.constants import DOWNLOAD_SCHEMA_VERSION
+from ..config.encounters import resolve_download_encounter
 from ..contracts.events import _attach_analysis_events
 from ..contracts.rankings import _is_anonymous_name, _is_anonymous_report
 from ..contracts.report import _build_download_payload, _find_fight
@@ -18,10 +29,34 @@ from .sampling import _allocate_percentile_quotas, _iter_historical_reports
 logger = logging.getLogger(__name__)
 
 
-def _cmd_batch(client: FFLogsV2Client, args) -> None:
-    """把总量均分到十个历史百分位区间，失败时继续同档补位。"""
+def _cmd_batch(training_client: FFLogsV2Client, validation_client: FFLogsV2Client, args) -> None:
+    """国服训练均分十档，另取美服高分验证数据；失败只在同档补位。"""
+    if training_client.server_region != "CN" or validation_client.server_region != "NA":
+        raise ValueError("批量下载需要分别绑定 CN 训练与 NA 验证数据源")
+    if getattr(args, "target", None) is not None:
+        target = resolve_download_encounter(args.target)
+        model_path = resolve_policy_model_config_path()
+        job_tag = resolve_policy_model_job_tag(model_path)
+        model_config = load_policy_config(model_path)
+        configured_source = resolve_project_path(
+            model_config["raw_data_dir"], project_root=PROJECT_ROOT,
+        )
+        stage = next(
+            (part for part in (configured_source, *configured_source.parents)
+             if part.name in {"raw", "annotated"}), None,
+        )
+        if stage is None:
+            raise ValueError(f"模型输入目录不属于 raw/annotated 阶段：{configured_source}")
+        args.encounter = target.encounter_id
+        args.output = str(stage.with_name("raw") / target.alias)
+        if getattr(args, "spec_name", None) is None:
+            args.spec_name = "".join(part.capitalize() for part in job_tag.split("_"))
+        logger.info("副本 %s：Zone %d / Encounter %d / %s，职业 %s",
+                    target.alias, target.zone_id, target.encounter_id, target.group, args.spec_name)
+    elif getattr(args, "spec_name", None) is None:
+        args.spec_name = "BlackMage"
     if args.zone and not args.encounter:
-        encounters = client.get_zone_encounters(args.zone)
+        encounters = training_client.get_zone_encounters(args.zone)
         print(f"Zone {args.zone} encounters:")
         for encounter in encounters:
             print(f"  id={encounter['id']:<5} {encounter['name']}")
@@ -32,16 +67,36 @@ def _cmd_batch(client: FFLogsV2Client, args) -> None:
         sys.exit(1)
 
     quotas = _allocate_percentile_quotas(args.count)
-    details = client.get_encounter_details(args.encounter)
-    print(f"\n{details['name']}：总目标 {args.count} 份，按历史百分位分配：")
+    validation_ratio = load_validation_ratio()
+    validation_count = math.ceil(args.count * validation_ratio)
+    training_dir = Path(args.output)
+    if training_dir.parent.name != "raw" or training_dir.name == "VAL":
+        raise ValueError("--output 必须指向 raw/<副本> 目录")
+    validation_dir = training_dir.parent / "VAL" / training_dir.name
+    details = training_client.get_encounter_details(args.encounter)
+    print(f"\n{details['name']}：国服训练目标 {args.count} 份，按历史百分位分配：")
     for bucket, target in quotas.items():
         print(f"  {bucket}: {target}")
     reports = _iter_historical_reports(
-        client, args.encounter, spec_name=args.spec_name, metric=args.metric,
+        training_client, args.encounter, spec_name=args.spec_name, metric=args.metric,
         partition=args.partition,
         bracket=args.bracket, max_pages=args.max_pages,
     )
-    _stratified_batch_download(client, reports, quotas, args.output, args.mode, args.metric)
+    _stratified_batch_download(
+        training_client, reports, quotas, training_dir, args.mode, args.metric,
+    )
+    if training_client._cancelled:
+        return
+    print(f"\n美服验证目标 {validation_count} 份，仅取 90-100，保存到 {validation_dir}")
+    validation_reports = _iter_historical_reports(
+        validation_client, args.encounter, spec_name=args.spec_name, metric=args.metric,
+        partition=args.partition,
+        bracket=args.bracket, max_pages=args.max_pages,
+    )
+    _stratified_batch_download(
+        validation_client, validation_reports, {"90-100": validation_count}, validation_dir,
+        args.mode, args.metric, bucket_directories=False,
+    )
 
 
 def _existing_download_matches(path, code, fight_id, name, mode, ranking_metadata) -> bool:
@@ -56,6 +111,8 @@ def _existing_download_matches(path, code, fight_id, name, mode, ranking_metadat
             or payload.get("fight_id") != fight_id
             or payload.get("player_name") != name
             or payload.get("ranking") != ranking_metadata
+            or (ranking_metadata.get("server_region") is not None
+                and payload.get("report_region") != ranking_metadata["server_region"])
             or type(payload.get("source_id")) is not int
             or payload["source_id"] <= 0
         ):
@@ -76,6 +133,7 @@ def _existing_download_matches(path, code, fight_id, name, mode, ranking_metadat
 def _download_report(
     client: FFLogsV2Client, code: str, fid: int, name: str, amount: float,
     output_dir: str, mode: str, *, ranking_metadata: dict | None = None,
+    expected_region: str | None = None,
 ) -> str:
     """下载一名玩家的一场报告，返回成功、已有或匿名状态；失败交给编排层。"""
     if _is_anonymous_name(name) or _is_anonymous_report(code):
@@ -91,6 +149,8 @@ def _download_report(
         logger.warning("  旧文件不符合本次分档或完整性要求，重新下载: %s", output_path)
 
     meta = client.get_report_fights(code, player_fight_id=fid)
+    if expected_region is not None and meta.region != expected_region:
+        raise ValueError(f"报告地区 {meta.region!r} 与目标 {expected_region!r} 不符")
     sid = next((player.get("id") for player in meta.players if player.get("name") == name), None)
     if not sid:
         raise ValueError(f"未找到玩家 {name} 的 source ID")
@@ -101,6 +161,8 @@ def _download_report(
     result.update(player_name=name, player_dps=amount)
     if ranking_metadata is not None:
         result["ranking"] = ranking_metadata
+    if expected_region is not None:
+        result["report_region"] = meta.region
     if mode == "damage-only":
         result["damage_table"] = client.get_damage_table(code, fight, sid)
     else:
@@ -116,19 +178,82 @@ def _download_report(
     return "success"
 
 
-def _stratified_batch_download(client, reports, quotas, output_dir, mode="default", metric="rdps"):
-    """分档下载；失败不占配额，不挪用其他区间填补缺额。"""
+def _existing_local_inventory(
+    output_dir: Path, quotas: dict[str, int], *, mode: str, metric: str,
+    server_region: str | None, bucket_directories: bool,
+) -> tuple[dict[str, int], set[tuple[str, int, str]]]:
+    """只把身份、地区、分档及下载完整性可信的本地文件计入配额。"""
     counts = dict.fromkeys(quotas, 0)
-    statistics = {"success": 0, "existing": 0, "failed": 0, "anonymous": 0}
-    seen = set()
+    seen: set[tuple[str, int, str]] = set()
     for bucket in quotas:
-        percentile_directory(output_dir, bucket).mkdir(parents=True, exist_ok=True)
+        directory = percentile_directory(output_dir, bucket) if bucket_directories else output_dir
+        for path in sorted(directory.glob("*.json.br")):
+            try:
+                payload = read_json(path)
+                if not isinstance(payload, dict):
+                    continue
+                ranking = payload.get("ranking")
+                code = payload.get("report_code")
+                fight_id = payload.get("fight_id")
+                name = payload.get("player_name")
+                if (payload.get("download_schema_version") != DOWNLOAD_SCHEMA_VERSION
+                        or not isinstance(ranking, dict)
+                        or ranking.get("percentile_bucket") != bucket
+                        or ranking.get("metric") != metric
+                        or (server_region is not None and (
+                            ranking.get("server_region") != server_region
+                            or payload.get("report_region") != server_region))
+                        or not isinstance(code, str) or not code
+                        or type(fight_id) is not int or fight_id < 1
+                        or not isinstance(name, str) or _is_anonymous_name(name)
+                        or type(payload.get("source_id")) is not int
+                        or payload["source_id"] < 1):
+                    continue
+                if mode == "damage-only":
+                    if not isinstance(payload.get("damage_table"), dict):
+                        continue
+                else:
+                    events = payload.get("events")
+                    if (payload.get("events_complete") is not True
+                            or payload.get("event_scope") != "fight"
+                            or not isinstance(events, list)
+                            or payload.get("event_count") != len(events)):
+                        continue
+                key = (code, fight_id, name)
+                if key in seen:
+                    logger.warning("本地已有跨档重复报告，忽略额外副本：%s", path)
+                    continue
+                seen.add(key)
+                counts[bucket] = min(quotas[bucket], counts[bucket] + 1)
+            except (OSError, ValueError, TypeError) as error:
+                logger.warning("跳过无法复用的本地报告 %s: %s", path, error)
+    return counts, seen
+
+
+def _stratified_batch_download(
+    client, reports, quotas, output_dir, mode="default", metric="rdps", *,
+    bucket_directories=True,
+):
+    """分档下载；失败不占配额，不挪用其他区间填补缺额。"""
+    statistics = {"success": 0, "existing": 0, "failed": 0, "anonymous": 0}
+    output_dir = Path(output_dir)
+    for bucket in quotas:
+        (percentile_directory(output_dir, bucket) if bucket_directories else output_dir).mkdir(
+            parents=True, exist_ok=True,
+        )
+    counts, seen = _existing_local_inventory(
+        output_dir, quotas, mode=mode, metric=metric,
+        server_region=client.server_region, bucket_directories=bucket_directories,
+    )
+    statistics["existing"] = sum(counts.values())
+    if all(counts[bucket] >= quota for bucket, quota in quotas.items()):
+        reports = ()
     for record in reports:
         if client._cancelled or all(counts[bucket] >= quota for bucket, quota in quotas.items()):
             break
         bucket = record.bucket
         key = (record.code, record.fight_id, record.player_name)
-        if counts[bucket] >= quotas[bucket] or key in seen:
+        if bucket not in quotas or counts[bucket] >= quotas[bucket] or key in seen:
             continue
         seen.add(key)
         logger.info("[%s %d/%d] %s f=%d name=%s historical=%.2f",
@@ -137,8 +262,10 @@ def _stratified_batch_download(client, reports, quotas, output_dir, mode="defaul
         try:
             status = _download_report(
                 client, record.code, record.fight_id, record.player_name, record.amount,
-                str(percentile_directory(output_dir, bucket)), mode,
-                ranking_metadata=record.ranking_metadata(metric),
+                str(percentile_directory(output_dir, bucket) if bucket_directories else output_dir), mode,
+                ranking_metadata={**record.ranking_metadata(metric), "server_region": client.server_region}
+                if client.server_region is not None else record.ranking_metadata(metric),
+                expected_region=client.server_region,
             )
             statistics[status] += 1
             if status in ("success", "existing"):
@@ -148,7 +275,7 @@ def _stratified_batch_download(client, reports, quotas, output_dir, mode="defaul
             logger.warning("  下载失败，继续同档补位: %s", error)
         if all(counts[bucket] >= quota for bucket, quota in quotas.items()):
             break
-    print("\n历史分档下载结果：")
+    print("\n历史分档下载结果：" if bucket_directories else "\n验证集下载结果：")
     for bucket, target in quotas.items():
         missing = target - counts[bucket]
         print(f"  {bucket}: {counts[bucket]}/{target}" + (f"，缺 {missing} 份" if missing else ""))

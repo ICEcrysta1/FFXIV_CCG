@@ -71,9 +71,10 @@ class RunConfig:
     learning_rate: float = 1e-4
     weight_decay: float = 0.01
     warmup_steps: int = 500
-    # 参与训练与验证的 raw JSON 文件数上限；None 表示使用 raw 目录下全部有效文件。
+    # 训练源文件上限；None 表示使用输入目录下全部有效文件。
     max_files: int | None = None
-    train_split: float = 0.9
+    # 从 .cache/VAL 独立读取的固定验证文件数。
+    validation_files: int = 100
     seed: int = 42
     precision: str = "float32"
     activation_checkpoint_ffn: bool = False
@@ -154,6 +155,13 @@ def load_run_config(path: Path) -> RunConfig:
         )
     else:
         max_files = max_files_raw
+
+    validation_files = training_raw.get("validation_files", 100)
+    if (isinstance(validation_files, bool) or not isinstance(validation_files, int)
+            or validation_files < 1):
+        raise ValueError(
+            f"training.validation_files must be a positive integer, got {validation_files!r}"
+        )
     history_truncation_raw = training_raw.get("history_truncation", {}) or {}
     if not isinstance(history_truncation_raw, dict):
         raise ValueError("training.history_truncation must be a mapping")
@@ -261,7 +269,7 @@ def load_run_config(path: Path) -> RunConfig:
         weight_decay=float(training_raw.get("weight_decay", 0.01)),
         warmup_steps=int(training_raw.get("warmup_steps", 500)),
         max_files=max_files,
-        train_split=float(training_raw.get("train_split", 0.9)),
+        validation_files=validation_files,
         seed=int(training_raw.get("seed", 42)),
         # 精度属于模型运行契约；旧单文件仍兼容 training.precision。
         precision=_normalize_training_precision(

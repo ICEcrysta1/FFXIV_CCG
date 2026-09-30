@@ -44,13 +44,23 @@ class FFLogsV2Client:
 
     TOKEN_URL = "https://www.fflogs.com/oauth/token"
     GQL_URL = "https://www.fflogs.com/api/v2/client"
+    CN_GQL_URL = "https://cn.fflogs.com/api/v2/client"
 
-    def __init__(self, client_id: str, client_secret: str):
+    def __init__(self, client_id: str, client_secret: str, *, server_region: str | None = None):
+        if server_region not in (None, "CN", "NA"):
+            raise ValueError(f"不支持的 FFLogs 数据源地区: {server_region!r}")
         self._client_id = client_id
         self._client_secret = client_secret
+        self._server_region = server_region
+        self._gql_url = self.CN_GQL_URL if server_region == "CN" else self.GQL_URL
         self._token: Optional[str] = None
         self._cancelled = False
         self._session: cf_requests.Session | None = None
+
+    @property
+    def server_region(self) -> str | None:
+        """当前客户端固定的数据源地区。"""
+        return self._server_region
 
     def _http_session(self) -> cf_requests.Session:
         """单客户端复用 HTTP 连接，避免每个分页请求重新建立连接。"""
@@ -87,13 +97,13 @@ class FFLogsV2Client:
         return self._token
 
     def query(self, gql: str, variables: dict = None) -> dict:
-        """执行 GraphQL 查询。"""
+        """向当前数据源地区的固定端点执行 GraphQL 查询。"""
         token = self._ensure_token()
         payload: dict = {"query": gql}
         if variables:
             payload["variables"] = variables
         resp = self._http_session().post(
-            self.GQL_URL,
+            self._gql_url,
             json=payload,
             headers={"Authorization": f"Bearer {token}"},
             impersonate=BROWSER_FINGERPRINT,
@@ -125,7 +135,7 @@ class FFLogsV2Client:
         query {{
           reportData {{
             report(code: "{report_code}") {{
-              title startTime endTime owner {{ name }} zone {{ id name }}
+              title startTime endTime owner {{ name }} zone {{ id name }} region {{ compactName }}
               masterData(translate: true) {{
                 lang actors {{ id gameID name type subType petOwner }}
               }}
@@ -339,7 +349,6 @@ class FFLogsV2Client:
             class_name = _validate_alphanumeric(class_name, "class_name")
         if partition is not None:
             partition = _validate_integer(partition, "partition", minimum=1)
-
         filters = []
         if spec_name:
             filters.append(f'specName: "{spec_name}"')
@@ -347,6 +356,8 @@ class FFLogsV2Client:
             filters.append(f'className: "{class_name}"')
         if partition is not None:
             filters.append(f'partition: {partition}')
+        if self.server_region is not None:
+            filters.append(f'serverRegion: "{self.server_region}"')
         filter_str = ", ".join(filters)
         gql = f"""
         query {{

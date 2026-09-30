@@ -6,7 +6,7 @@ import pytest
 
 from scripts.fflogs_scraper import FFLogsV2Client
 from scripts.fflogs_scraper.api import client as api_client
-from scripts.fflogs_scraper.contracts.models import ReportMeta
+from scripts.fflogs_scraper.contracts.models import FightInfo, ReportMeta
 
 
 def test_report_metadata_fetches_fight_players_in_one_query(monkeypatch):
@@ -27,6 +27,7 @@ def test_report_metadata_fetches_fight_players_in_one_query(monkeypatch):
 
     assert len(queries) == 1
     assert "playerDetails(fightIDs: [33])" in queries[0]
+    assert "region { compactName }" in queries[0]
     assert meta.players == [{"id": 7, "name": "Player"}]
 
 
@@ -232,6 +233,79 @@ def test_get_encounter_rankings_keeps_valid_filters(monkeypatch):
     ) == {"rankings": []}
     assert 'specName: "BlackMage"' in queries[0]
     assert 'className: "Caster"' in queries[0]
+
+
+def test_ranking_query_uses_bound_region_independently_of_partition(monkeypatch):
+    cn_client = FFLogsV2Client("client-id", "client-secret", server_region="CN")
+    na_client = FFLogsV2Client("client-id", "client-secret", server_region="NA")
+    queries = []
+    for client in (cn_client, na_client):
+        monkeypatch.setattr(client, "query", lambda gql: queries.append(gql) or {
+            "worldData": {"encounter": {"characterRankings": {"rankings": []}}},
+        })
+
+    cn_client.get_encounter_rankings(1079, partition=25)
+    na_client.get_encounter_rankings(1079)
+
+    assert 'serverRegion: "CN"' in queries[0] and "partition: 25" in queries[0]
+    assert 'serverRegion: "NA"' in queries[1] and "partition:" not in queries[1]
+
+
+def test_region_context_routes_every_query_to_one_endpoint(monkeypatch):
+    class FakeResponse:
+        def __init__(self, data):
+            self.data = data
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"data": self.data}
+
+    calls = []
+    class FakeSession:
+        def post(self, url, **kwargs):
+            calls.append(url)
+            gql = kwargs["json"]["query"]
+            if "worldData" in gql:
+                data = {"worldData": {"encounter": {"characterRankings": {"rankings": []}}}}
+            elif "rankedCharacters" in gql:
+                data = {"reportData": {"report": {"rankedCharacters": []}}}
+            elif "characterData" in gql:
+                data = {"characterData": {"character": {"encounterRankings": {"ranks": []}}}}
+            elif "events(" in gql:
+                data = {"reportData": {"report": {
+                    "events": {"data": [], "nextPageTimestamp": None},
+                }}}
+            elif "table(" in gql:
+                data = {"reportData": {"report": {"table": {"entries": []}}}}
+            else:
+                data = {"reportData": {"report": {"title": "Report"}}}
+            return FakeResponse(data)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(api_client, "_adapt_report_metadata", lambda code, _report: ReportMeta(code))
+    for region, endpoint in (("CN", FFLogsV2Client.CN_GQL_URL),
+                             ("NA", FFLogsV2Client.GQL_URL)):
+        client = FFLogsV2Client("id", "secret", server_region=region)
+        client._token = "test-token"
+        monkeypatch.setattr(client, "_http_session", FakeSession)
+        client.get_encounter_rankings(1079)
+        client.resolve_ranking_character_id("ABC123", "Player", 81)
+        client.get_character_history(1, 1079, spec_name="BlackMage")
+        client.get_report_fights("ABC123")
+        fight = FightInfo(id=1, name="FRU", start_time=0, end_time=10)
+        client.get_report_events("ABC123", fight_ids=[fight.id], end_time=10)
+        client.get_damage_table("ABC123", fight, 1)
+        assert calls[-6:] == [endpoint] * 6
+
+
+@pytest.mark.parametrize("region", ["US", "cn", 'CN"'])
+def test_region_context_rejects_unsupported_values(region):
+    with pytest.raises(ValueError, match="数据源地区"):
+        FFLogsV2Client("id", "secret", server_region=region)
 
 
 def test_ranking_query_uses_partition_and_surfaces_json_errors(monkeypatch):

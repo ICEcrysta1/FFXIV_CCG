@@ -90,12 +90,16 @@ def test_history_uses_non_best_records_and_excludes_anonymous_hidden_and_duplica
                 _rank("PRIVATE", 30, hidden=True),
             ]},
         }
-    client = SimpleNamespace(_cancelled=False, get_encounter_rankings=rankings, get_character_history=history)
-    records = list(_iter_historical_reports(client, 1079, spec_name="BlackMage", metric="rdps", partition=partition))
+    client = SimpleNamespace(_cancelled=False, server_region="CN",
+                             get_encounter_rankings=rankings, get_character_history=history)
+    records = list(_iter_historical_reports(
+        client, 1079, spec_name="BlackMage", metric="rdps", partition=partition,
+    ))
     assert [(record.code, record.percentile) for record in records] == [("BEST", 100), ("LOW", 5)]
     assert [item[0] for item in history_calls] == [2, 3]
     assert all(item[1]["partition"] == partition for item in history_calls)
     assert [call["partition"] for call in calls] == [partition]
+    assert all("server_region" not in call for call in calls)
     assert all(call["page"] == 1 for call in calls)
 
 
@@ -112,9 +116,67 @@ def test_history_discovery_honors_explicit_pagination_and_page_limit():
     assert calls == [1, 2]
 
 
+def test_character_histories_are_diversified_before_same_bucket_fallback():
+    histories = {
+        1: [_rank("AHIGH1", 95), _rank("AHIGH2", 96),
+            _rank("AMID1", 55), _rank("AMID2", 52)],
+        2: [_rank("BHIGH", 97), _rank("BMID", 58)],
+    }
+
+    def rankings(*args, **kwargs):
+        return {"rankings": [
+            {"name": "Player A", "lodestoneID": 1},
+            {"name": "Player B", "lodestoneID": 2},
+        ], "hasMorePages": False}
+
+    def history(lodestone_id, *args, **kwargs):
+        return {"id": lodestone_id, "name": f"Player {lodestone_id}",
+                "encounterRankings": {"ranks": histories[lodestone_id]}}
+
+    client = SimpleNamespace(
+        _cancelled=False, get_encounter_rankings=rankings,
+        get_character_history=history,
+    )
+    records = list(_iter_historical_reports(
+        client, 1079, spec_name="BlackMage", metric="rdps",
+    ))
+    assert [record.code for record in records] == [
+        "AHIGH1", "AMID1", "BHIGH", "BMID", "AHIGH2", "AMID2",
+    ]
+    assert [record.lodestone_id for record in records[:4]] == [1, 1, 2, 2]
+
+
+def test_single_character_can_fill_quota_after_other_characters_are_exhausted():
+    client = SimpleNamespace(
+        _cancelled=False,
+        get_encounter_rankings=lambda *args, **kwargs: {
+            "rankings": [{"name": "Player", "lodestoneID": 1}],
+            "hasMorePages": False,
+        },
+        get_character_history=lambda *args, **kwargs: {
+            "id": 1, "name": "Player",
+            "encounterRankings": {"ranks": [_rank("FIRST", 95), _rank("SECOND", 96)]},
+        },
+    )
+    assert [record.code for record in _iter_historical_reports(
+        client, 1079, spec_name="BlackMage", metric="rdps",
+    )] == ["FIRST", "SECOND"]
+
+
 def test_cancelled_discovery_does_not_query_api():
     client = SimpleNamespace(_cancelled=True)
     assert list(_iter_historical_reports(client, 1079, spec_name="BlackMage", metric="rdps", partition=1)) == []
+
+
+def test_ranking_api_failure_is_not_reported_as_empty_candidate_pool():
+    def fail(*args, **kwargs):
+        raise RuntimeError("Invalid region specified.")
+
+    client = SimpleNamespace(_cancelled=False, server_region="NA", get_encounter_rankings=fail)
+    with pytest.raises(RuntimeError, match="地区 NA.*Invalid region specified"):
+        list(_iter_historical_reports(
+            client, 1079, spec_name="BlackMage", metric="rdps",
+        ))
 
 
 def test_unlinked_public_character_is_preserved_but_anonymous_report_is_excluded():

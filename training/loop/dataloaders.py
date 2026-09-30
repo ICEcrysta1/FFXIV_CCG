@@ -3,15 +3,11 @@
 from __future__ import annotations
 
 import logging
-import random
 from pathlib import Path
 
 from torch.utils.data import DataLoader
 
-from common.policy.data import (
-    Normalizer,
-    SkillVocab,
-)
+from common.policy.data import DataSpec, Normalizer
 from training.data import (
     ShardBatchSampler,
     TrainingCollator,
@@ -22,9 +18,7 @@ from training.data import (
 )
 from training.data.skill_values import load_skill_values
 
-from common.policy.data import DataSpec
 from ..config import RunConfig
-
 
 logger = logging.getLogger(__name__)
 
@@ -33,27 +27,24 @@ def build_dataloaders(
     raw_paths: list[Path],
     config: RunConfig,
     *,
+    validation_paths: list[Path],
     int_dtype,
     float_dtype,
     cache_dir: Path | None = None,
 ) -> tuple[DataLoader, DataLoader, TrainingDataset, TrainingDataset]:
-    """读取已准备好的 compiled cache，再按战斗文件拆分训练集和验证集。"""
+    """分别读取训练与 VAL 的 compiled cache，保持两套文件独立。"""
     if not raw_paths:
         raise ValueError("no raw JSON files found")
+    if not validation_paths:
+        raise ValueError("no VAL compiled caches found")
 
     normalizer = Normalizer()
     if config.job_tag is not None:
         normalizer.configure_job_resources(config.job_tag)
-    valid_raw_paths = [Path(path) for path in raw_paths]
-
-    shuffled = list(valid_raw_paths)
-    random.Random(config.seed).shuffle(shuffled)
-    if len(shuffled) == 1:
-        train_paths = val_paths = shuffled
-    else:
-        split = min(len(shuffled) - 1, max(1, int(len(shuffled) * config.train_split)))
-        train_paths = shuffled[:split]
-        val_paths = shuffled[split:]
+    train_paths = [Path(path) for path in raw_paths]
+    val_paths = [Path(path) for path in validation_paths]
+    if set(train_paths) & set(val_paths):
+        raise ValueError("training and VAL sources must not overlap")
 
     train_dataset = _build_dataset(train_paths, config, normalizer, int_dtype, float_dtype, cache_dir)
     val_dataset = _build_dataset(val_paths, config, normalizer, int_dtype, float_dtype, cache_dir)

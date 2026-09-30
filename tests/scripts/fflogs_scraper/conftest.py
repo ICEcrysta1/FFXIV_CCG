@@ -11,6 +11,7 @@ def analysis_meta():
     return report._adapt_report_metadata("ABC123", {
         "title": "中文报告", "startTime": 1778332651064, "endTime": 1778332661064,
         "owner": {"name": "Uploader"}, "zone": {"id": 66, "name": "Ranking zone"},
+        "region": {"compactName": "CN"},
         "masterData": {"lang": "cn", "actors": [
             {"id": 1, "gameID": 1000001, "name": "黑魔", "type": "Player", "subType": "BlackMage"},
             {"id": 2, "gameID": 17839, "name": "Boss", "type": "NPC", "subType": "Boss"},

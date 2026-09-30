@@ -10,6 +10,7 @@ from scripts.convert_fflogs.training.sample_builder import TrainingSampleBuilder
 from scripts.convert_fflogs.utils import build_skill_book, load_job_project_config
 from common.policy.config import ModelConfig
 from common.policy.data import CompiledCacheReader, DataSpec, Normalizer
+from common.policy.data.prepared_sources import select_prepared_validation_sources
 from training import ShardBatchSampler, TrainingCollator, WeightedShardBatchSampler
 from training.config import RunConfig
 from common.policy.model.input_encoder import CandidateInputEncoder
@@ -363,8 +364,9 @@ def test_training_dataloader_uses_shard_batch_sampler_after_precompile(tmp_path,
             },
         )
     train_loader, val_loader, _, _ = build_dataloaders(
-        [first_pt, second_pt],
+        [first_pt],
         config,
+        validation_paths=[second_pt],
         int_dtype=precision.resolve_int_dtype(),
         float_dtype=precision.resolve_float_dtype(),
         cache_dir=cache_dir,
@@ -375,6 +377,29 @@ def test_training_dataloader_uses_shard_batch_sampler_after_precompile(tmp_path,
     assert all(reader.shard_size == config.compiled_cache_shard_size for reader in train_loader.dataset._readers)
     assert all(reader.shard_size == config.compiled_cache_shard_size for reader in val_loader.dataset._readers)
     assert next(iter(train_loader))["label_index"].shape == (1,)
+
+
+def test_validation_selector_reads_real_compiled_pt_from_val_layout(tmp_path):
+    """真实 manifest、签名和分片只会从指定阶段的 VAL 副本被选中。"""
+    source = make_demo_pt(tmp_path, ["fire_iii", "fire_iv"], fight_id="val_fru")
+    from tests.training._common_fixtures import _TEST_TRAINING_PAYLOADS
+
+    validation = tmp_path / "annotated" / "VAL" / "FRU" / "val_fru.json.br"
+    validation.parent.mkdir(parents=True)
+    validation.write_text("{}", encoding="utf-8", newline="\n")
+    cache_dir = tmp_path / ".cache"
+    precision = load_precision_config()
+    write_test_compiled_cache(
+        validation, _TEST_TRAINING_PAYLOADS[source.resolve()], cache_dir,
+        {"normalizer": Normalizer(),
+         "int_dtype": precision.resolve_int_dtype(),
+         "float_dtype": precision.resolve_float_dtype()},
+    )
+    assert select_prepared_validation_sources(
+        cache_dir, data_dir=tmp_path / "annotated", max_files=1,
+        job_tag="black_mage", int_dtype=precision.resolve_int_dtype(),
+        float_dtype=precision.resolve_float_dtype(),
+    ) == [validation]
 
 
 def test_training_dataset_cache_loads_shards_lazily_with_global_bound(tmp_path):

@@ -9,17 +9,19 @@ from types import SimpleNamespace
 
 import pytest
 
-from common.policy.data import Normalizer
-from common.policy.data.compiled_cache import cache_path_for_source
-from common.policy.data import prepared_sources
+from common.policy.data import Normalizer, prepared_sources
+from common.policy.data.compiled_cache import CACHE_FORMAT, cache_path_for_source
 from common.policy.data.prepared_sources import select_prepared_training_sources
+from scripts.common.json_io import atomic_write_json
 from scripts.convert_fflogs import build_training_samples
 from scripts.convert_fflogs import cli as convert_cli
 from scripts.convert_fflogs.cache import cache_compile as cache_compile_module
-from scripts.convert_fflogs.cache import prepare_training_caches, precompile_raw_training_caches
+from scripts.convert_fflogs.cache import (
+    precompile_raw_training_caches,
+    prepare_training_caches,
+)
 from scripts.convert_fflogs.cache.cache_load import load_raw_compiled_cache
 from scripts.convert_fflogs.source import raw_source
-from scripts.common.json_io import atomic_write_json
 from tests.helpers import build_test_scene_context, targetable_window_token
 from training import TrainingDataset
 
@@ -78,11 +80,95 @@ def test_training_source_selection_requires_precompiled_cache(tmp_path, monkeypa
         )
 
 
+def test_validation_source_selection_requires_each_encounter_quota(tmp_path, monkeypatch):
+    """验证只读 VAL 的 PT；一个副本缺额时，即使另一副本富余也拒绝。"""
+    cache_dir = tmp_path / ".cache"
+    source_root = tmp_path / "annotated"
+    manifests = {}
+    for encounter, count in (("FRU", 3), ("M5S", 3)):
+        for index in range(count):
+            source = source_root / "VAL" / encounter / f"{index}.json.br"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text("{}", encoding="utf-8", newline="\n")
+            manifest = cache_path_for_source(cache_dir, source)
+            manifest.parent.mkdir(parents=True, exist_ok=True)
+            manifest.touch()
+            manifests[manifest] = source
+    raw_source = tmp_path / "raw" / "VAL" / "FRU" / "raw_only.json.br"
+    raw_source.parent.mkdir(parents=True)
+    raw_source.write_text("{}", encoding="utf-8", newline="\n")
+    raw_manifest = cache_path_for_source(cache_dir, raw_source)
+    raw_manifest.touch()
+    manifests[raw_manifest] = raw_source
+    monkeypatch.setattr(
+        prepared_sources, "safe_torch_load",
+        lambda path, **_kwargs: {"cache_format": CACHE_FORMAT, "source_path": str(manifests[path])},
+    )
+    monkeypatch.setattr(prepared_sources, "build_cache_signature", lambda path, **_kwargs: path)
+    valid = set(manifests.values())
+    monkeypatch.setattr(
+        prepared_sources, "load_compiled_cache_for_source",
+        lambda _cache_dir, source, **_kwargs: (
+            SimpleNamespace(num_samples=3, job_tag="black_mage") if source in valid else None
+        ),
+    )
+    selected = prepared_sources.select_prepared_validation_sources(
+        cache_dir, data_dir=source_root, max_files=4, job_tag="black_mage",
+        int_dtype="int32", float_dtype="float32",
+    )
+    assert len(selected) == 4
+    assert [sum(path.parent.name == name for path in selected) for name in ("FRU", "M5S")] == [2, 2]
+    assert all(path.parent.parent.parent == source_root for path in selected)
+
+    valid.remove(source_root / "VAL" / "FRU" / "0.json.br")
+    valid.remove(source_root / "VAL" / "FRU" / "1.json.br")
+    with pytest.raises(FileNotFoundError, match="FRU: 1/2"):
+        prepared_sources.select_prepared_validation_sources(
+            cache_dir, data_dir=source_root, max_files=4, job_tag="black_mage",
+            int_dtype="int32", float_dtype="float32",
+        )
+
+
+def test_validation_conversion_reuses_same_encounter_fallback(tmp_path, monkeypatch):
+    """转换入口把固定副本配额交给现有编译/同组补位器。"""
+    root = tmp_path / "annotated"
+    for encounter in ("FRU", "M5S"):
+        source = root / "VAL" / encounter / "one.json.br"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("{}", encoding="utf-8", newline="\n")
+    captured = {}
+    def compile_groups(groups, **kwargs):
+        captured["groups"] = groups
+        captured["kwargs"] = kwargs
+        return []
+    monkeypatch.setattr(cache_compile_module, "_compile_training_path_groups", compile_groups)
+    cache_compile_module.prepare_validation_caches(
+        root, max_files=10, job_tag="black_mage",
+        int_dtype="int32", float_dtype="float32", cache_dir=tmp_path / ".cache",
+    )
+    assert [(group.directory_name, group.target_count) for group in captured["groups"]] == [
+        ("FRU", 5), ("M5S", 5),
+    ]
+    assert all(
+        all(source.parent.name == group.directory_name for source in group.candidates)
+        for group in captured["groups"]
+    )
+
+
+def test_training_selector_rejects_explicit_val_root(tmp_path):
+    with pytest.raises(ValueError, match="训练输入不能指向验证目录"):
+        select_prepared_training_sources(
+            tmp_path / "annotated" / "VAL", max_files=1, job_tag="black_mage",
+            int_dtype="int32", float_dtype="float32", cache_dir=tmp_path / ".cache",
+        )
+
+
 def test_cli_training_selection_uses_model_quota(tmp_path, monkeypatch):
     """独立转换入口按训练配置选择文件，训练入口不参与编译。"""
     run_config = SimpleNamespace(
         raw_data_dir=tmp_path / "annotated",
         max_files=8,
+        validation_files=4,
         compiled_cache_shard_size=16,
         compiled_cache_max_shards=4,
     )
@@ -97,10 +183,16 @@ def test_cli_training_selection_uses_model_quota(tmp_path, monkeypatch):
     monkeypatch.setattr(convert_cli, "resolve_convert_fflogs_job_tag", lambda _tag: "black_mage")
     monkeypatch.setattr(convert_cli, "resolve_policy_cache_dir", lambda _tag: tmp_path / ".cache")
     monkeypatch.setattr(convert_cli, "prepare_training_caches", lambda path, **kwargs: calls.update(path=path, **kwargs) or [tmp_path / "done.json.br"])
+    def prepare_validation(path, **kwargs):
+        calls["validation"] = (path, kwargs)
+        return [tmp_path / "VAL" / "FRU" / "val.json.br"]
+    monkeypatch.setattr(convert_cli, "prepare_validation_caches", prepare_validation)
     convert_cli.main()
     assert calls["path"] == run_config.raw_data_dir
     assert calls["max_files"] == 8
     assert calls["max_workers"] == 2
+    assert calls["validation"][0] == run_config.raw_data_dir
+    assert calls["validation"][1]["max_files"] == 4
 
 
 def test_cli_fails_when_annotated_inputs_produce_no_compiled_cache(tmp_path, monkeypatch):

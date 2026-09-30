@@ -48,6 +48,7 @@ def run_training(
     config: RunConfig,
     *,
     raw_paths: list[Path],
+    validation_paths: list[Path],
     output_dir: Path | None = None,
     max_epochs: int | None = None,
     batch_size: int | None = None,
@@ -61,6 +62,7 @@ def run_training(
     return _run_training(
         config,
         raw_paths=raw_paths,
+        validation_paths=validation_paths,
         output_dir=output_dir,
         max_epochs=max_epochs,
         batch_size=batch_size,

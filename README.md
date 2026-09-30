@@ -52,7 +52,7 @@ if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 # 3) 构建 Python.NET 可加载的状态机程序集、依赖和运行时配置
 dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj --configuration Debug
 
-# 4) 启动工具菜单：输入 1～9 执行对应工具，0 退出
+# 4) 启动工具菜单：输入 1～9 执行对应工具，10 退出
 .\ffxiv_ccg.ps1
 ```
 

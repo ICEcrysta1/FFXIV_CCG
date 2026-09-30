@@ -7,6 +7,7 @@ from scripts.fflogs_scraper.contracts import report
 
 
 def test_analysis_payload_preserves_report_and_training_contract(analysis_meta):
+    assert analysis_meta.region == "CN"
     payload = report._build_download_payload(analysis_meta, analysis_meta.fights[0], 1)
     assert payload["start"] == 1778332651064
     assert payload["lang"] == "cn"
@@ -33,6 +34,16 @@ def test_analysis_payload_preserves_report_and_training_contract(analysis_meta):
     assert "abilityGameID" not in event
     from scripts.convert_fflogs.extraction.extraction import _get_ability_id
     assert _get_ability_id(saved) == 3577
+
+
+def test_cn_report_region_is_normalized_for_download_contract(analysis_meta):
+    raw = {**analysis_meta.report, "region": {"compactName": "国服"},
+           "startTime": analysis_meta.report["start"],
+           "endTime": analysis_meta.report["end"],
+           "owner": {"name": "Owner"},
+           "masterData": {"lang": "cn", "actors": []},
+           "zone": {"id": 1, "name": "Zone"}, "fights": []}
+    assert report._adapt_report_metadata("ABC123", raw).region == "CN"
 
 
 def test_metadata_rejects_missing_date_language_and_actor(analysis_meta):
