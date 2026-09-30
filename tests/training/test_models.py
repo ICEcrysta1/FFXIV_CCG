@@ -40,7 +40,7 @@ def test_select_training_raw_paths_uses_directory_proportions(tmp_path):
         directory = tmp_path / directory_name
         directory.mkdir()
         for index in range(count):
-            (directory / f"sample_{index:03d}.json").touch()
+            (directory / f"sample_{index:03d}.json.br").touch()
 
     selected = select_training_raw_paths(tmp_path, max_files=14)
 

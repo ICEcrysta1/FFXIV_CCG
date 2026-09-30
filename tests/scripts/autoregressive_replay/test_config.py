@@ -9,6 +9,7 @@ import torch
 
 from scripts.autoregressive_replay import config as replay_config_module
 from scripts.autoregressive_replay.config import load_replay_config
+from scripts.common.json_io import atomic_write_json
 
 
 def test_replay_config_loads_dotenv_before_resolving_backend(monkeypatch, tmp_path):
@@ -18,8 +19,8 @@ def test_replay_config_loads_dotenv_before_resolving_backend(monkeypatch, tmp_pa
         '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":384}},"model":{"model_variant":"artzip"}}',
         encoding="utf-8",
     )
-    scene = tmp_path / "scene.json"
-    scene.write_text("{}", encoding="utf-8")
+    scene = tmp_path / "scene.json.br"
+    atomic_write_json(scene, {})
 
     for name in (
         "AUTOREGRESSIVE_REPLAY_BACKEND",
@@ -47,7 +48,7 @@ def test_replay_config_loads_dotenv_before_resolving_backend(monkeypatch, tmp_pa
 def test_replay_config_reads_env_overrides(monkeypatch, tmp_path):
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_CHECKPOINT", str(tmp_path / "model.pt"))
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_OUTPUT", str(tmp_path / "rollout.md"))
-    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_SCENE_JSON", str(tmp_path / "scene.json"))
+    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_SCENE_JSON", str(tmp_path / "scene.json.br"))
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_SCENE_MODE", "empty")
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_SCENE_SAMPLE", "3")
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_MAX_STEPS", "42")
@@ -63,7 +64,7 @@ def test_replay_config_reads_env_overrides(monkeypatch, tmp_path):
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_USE_KV_CACHE", "false")
 
     checkpoint = tmp_path / "model.pt"
-    scene = tmp_path / "scene.json"
+    scene = tmp_path / "scene.json.br"
     torch.save(
         {
             "job_tag": "black_mage",
@@ -72,7 +73,7 @@ def test_replay_config_reads_env_overrides(monkeypatch, tmp_path):
         },
         checkpoint,
     )
-    scene.write_text("{}", encoding="utf-8", newline="\n")
+    atomic_write_json(scene, {})
     config = load_replay_config()
 
     assert config.checkpoint_path == checkpoint.resolve()
@@ -132,8 +133,8 @@ def test_replay_config_routes_onnx_job_from_manifest(monkeypatch, tmp_path):
         '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":384}},"model":{"model_variant":"artzip"}}',
         encoding="utf-8",
     )
-    scene = tmp_path / "scene.json"
-    scene.write_text("{}", encoding="utf-8")
+    scene = tmp_path / "scene.json.br"
+    atomic_write_json(scene, {})
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_BACKEND", "onnxruntime")
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_SCENE_JSON", str(scene))
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_SCENE_MODE", "empty")
@@ -173,8 +174,8 @@ def test_replay_config_derives_onnx_package_from_explicit_checkpoint(monkeypatch
         encoding="utf-8",
     )
     default_package = tmp_path / "artifacts" / "exports" / "black_mage" / "artzip_bc"
-    scene = tmp_path / "scene.json"
-    scene.write_text("{}", encoding="utf-8")
+    scene = tmp_path / "scene.json.br"
+    atomic_write_json(scene, {})
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_BACKEND", "onnxruntime")
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_SCENE_JSON", str(scene))
     monkeypatch.setenv("FFXIV_JOB_TAG", "black_mage")

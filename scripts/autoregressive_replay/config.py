@@ -5,6 +5,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from common.dataset_layout import find_dataset_json_files
+from scripts.common.json_io import is_json_file
+
 from common.project_config import (
     PROJECT_JOB_TAG_ENV,
     load_root_dotenv,
@@ -352,11 +355,11 @@ def _resolve_scene_json(explicit: Path | None, *, raw_root: Path) -> Path:
     if raw:
         path = resolve_project_path(raw, project_root=PROJECT_ROOT)
     else:
-        candidates = sorted(Path(raw_root).rglob("*.json"))
+        candidates = find_dataset_json_files(raw_root)
         if not candidates:
             raise FileNotFoundError(f"no scene raw JSON found: {raw_root}")
         path = candidates[0]
-    if not path.is_file():
+    if not is_json_file(path) or not path.is_file():
         raise FileNotFoundError(f"autoregressive scene raw JSON not found: {path}")
     return path
 

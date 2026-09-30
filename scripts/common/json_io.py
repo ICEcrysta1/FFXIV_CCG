@@ -1,9 +1,35 @@
-"""脚本共用的 UTF-8/LF 原子 JSON 写入。"""
+"""脚本共用的 Brotli JSON 读取与原子写入。"""
 
 import json
 import os
 import tempfile
 from pathlib import Path
+
+import brotli
+
+
+JSON_BROTLI_SUFFIX = ".json.br"
+
+
+def is_json_file(path: str | Path) -> bool:
+    """识别训练数据使用的 Brotli JSON 文件。"""
+    return Path(path).name.lower().endswith(JSON_BROTLI_SUFFIX)
+
+
+def read_json_bytes(path: str | Path) -> bytes:
+    """读取并解压训练数据 JSON 的 UTF-8 字节。"""
+    source = Path(path)
+    if not is_json_file(source):
+        raise ValueError(f"expected {JSON_BROTLI_SUFFIX} dataset file: {source}")
+    try:
+        return brotli.decompress(source.read_bytes())
+    except brotli.error as error:
+        raise ValueError(f"invalid Brotli JSON: {source}") from error
+
+
+def read_json(path: str | Path) -> object:
+    """读取 Brotli JSON，保留标准 JSON 解析语义。"""
+    return json.loads(read_json_bytes(path))
 
 
 def atomic_write_json(output_path: str | Path, payload: object) -> None:
@@ -13,12 +39,15 @@ def atomic_write_json(output_path: str | Path, payload: object) -> None:
     temporary_path = None
     try:
         with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", newline="\n",
-            dir=path.parent, suffix=".tmp", delete=False,
+            mode="wb", dir=path.parent, suffix=".tmp", delete=False,
         ) as output:
             temporary_path = Path(output.name)
-            json.dump(payload, output, ensure_ascii=False, indent=2, allow_nan=False)
-            output.write("\n")
+            if path.name.lower().endswith(JSON_BROTLI_SUFFIX):
+                content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+                output.write(brotli.compress(content, quality=3))
+            else:
+                content = (json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + "\n").encode("utf-8")
+                output.write(content)
         os.replace(temporary_path, path)
     finally:
         if temporary_path is not None:

@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from scripts.common.json_io import atomic_write_json
+from scripts.common.json_io import atomic_write_json, read_json, read_json_bytes
 from scripts.fflogs_scraper import parse_fflogs_url
 from scripts.fflogs_scraper.io.filenames import (
     _build_batch_output_filename,
@@ -37,7 +37,7 @@ def test_batch_output_filename_rejects_path_like_report_codes(report_code: str):
 def test_batch_output_filename_sanitizes_windows_path_separator():
     filename = _build_batch_output_filename("ABC123", 1, r"Player\Name / Test")
 
-    assert filename == "fflogs_ABC123_f1_Player-Name_-_Test.json"
+    assert filename == "fflogs_ABC123_f1_Player-Name_-_Test.json.br"
 
 
 def test_parse_fflogs_url_ignores_non_numeric_source_id():
@@ -57,4 +57,20 @@ def test_write_json_preserves_existing_file_on_failure_and_uses_utf8_lf(tmp_path
     with pytest.raises(TypeError):
         atomic_write_json(path, {"invalid": object()})
     assert path.read_bytes() == data
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_brotli_json_roundtrip_and_rejects_plain_dataset_input(tmp_path):
+    path = tmp_path / "report.json.br"
+    payload = {"title": "中文报告", "events": [{"timestamp": 123, "type": "cast"}]}
+    atomic_write_json(path, payload)
+    assert read_json(path) == payload
+    assert read_json_bytes(path).startswith(b'{"title":')
+    with pytest.raises(ValueError, match="expected .json.br"):
+        read_json(tmp_path / "report.json")
+
+    original = path.read_bytes()
+    with pytest.raises(ValueError):
+        atomic_write_json(path, {"invalid": float("nan")})
+    assert path.read_bytes() == original
     assert list(tmp_path.glob("*.tmp")) == []

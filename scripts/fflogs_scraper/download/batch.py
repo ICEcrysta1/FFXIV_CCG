@@ -1,12 +1,11 @@
 """按历史百分位配额编排批量下载，复用单份报告保存流程。"""
 
-import json
 import logging
 import os
 import sys
 
 from common.dataset_layout import percentile_directory
-from scripts.common.json_io import atomic_write_json
+from scripts.common.json_io import atomic_write_json, read_json
 
 from ..api.client import FFLogsV2Client
 from ..config.constants import DOWNLOAD_SCHEMA_VERSION
@@ -48,8 +47,7 @@ def _cmd_batch(client: FFLogsV2Client, args) -> None:
 def _existing_download_matches(path, code, fight_id, name, mode, ranking_metadata) -> bool:
     """只有身份、分档口径和当前下载模式完整的旧文件才计入配额。"""
     try:
-        with open(path, encoding="utf-8") as handle:
-            payload = json.load(handle)
+        payload = read_json(path)
         if not isinstance(payload, dict):
             return False
         if (

@@ -22,9 +22,9 @@ def attach_action_quality_labels(
     if (
         not isinstance(analysis, dict)
         or analysis.get("schema_version") != 2
-        or analysis.get("bridge_version") != 3
+        or analysis.get("bridge_version") != 4
     ):
-        raise ValueError("annotated input requires action quality schema version 2, bridge version 3")
+        raise ValueError("annotated input requires action quality schema version 2, bridge version 4")
     labels = analysis.get("fight_labels")
     if "severity_weights" in analysis or not isinstance(labels, list) or any(
         not isinstance(label, dict) or "severity_weight" in label for label in labels

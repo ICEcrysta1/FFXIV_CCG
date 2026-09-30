@@ -10,7 +10,7 @@ def _build_output_filename(report_code: str, fight_id: int, source_id: Optional[
     report_code = _validate_report_code(report_code)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     suffix = f"_source{source_id}" if source_id else ""
-    return f"fflogs_{report_code}_f{fight_id}{suffix}_{ts}.json"
+    return f"fflogs_{report_code}_f{fight_id}{suffix}_{ts}.json.br"
 
 
 def _build_batch_output_filename(
@@ -26,4 +26,4 @@ def _build_batch_output_filename(
         .replace("\\", "-")
         .replace(" ", "_")
     )
-    return f"fflogs_{report_code}_f{fight_id}_{safe_name}.json"
+    return f"fflogs_{report_code}_f{fight_id}_{safe_name}.json.br"

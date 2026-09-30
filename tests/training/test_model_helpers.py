@@ -1020,7 +1020,7 @@ class _TinyModel(nn.Module):
 
 
 def test_training_helpers_and_epoch_metrics(tmp_path, monkeypatch):
-    direct_raw = tmp_path / "direct.json"
+    direct_raw = tmp_path / "direct.json.br"
     direct_raw.touch()
     assert cache_module.select_training_raw_paths(tmp_path, max_files=1) == [direct_raw]
     assert cache_module.select_training_raw_paths(tmp_path) == [direct_raw]
@@ -1209,8 +1209,8 @@ def test_select_training_raw_paths_covers_grouped_selection_branches(tmp_path):
     first.mkdir()
     second.mkdir()
     for index in range(3):
-        (first / f"fight-{index}.json").touch()
-    (second / "fight-0.json").touch()
+        (first / f"fight-{index}.json.br").touch()
+    (second / "fight-0.json.br").touch()
 
     assert len(cache_module.select_training_raw_paths(tmp_path, max_files=None)) == 4
     selected = cache_module.select_training_raw_paths(tmp_path, max_files=3)
@@ -1224,8 +1224,8 @@ def test_select_training_raw_paths_reports_internal_allocation_mismatch(tmp_path
     other_group = tmp_path / "M12s"
     group.mkdir()
     other_group.mkdir()
-    (group / "fight.json").touch()
-    (other_group / "fight.json").touch()
+    (group / "fight.json.br").touch()
+    (other_group / "fight.json.br").touch()
     monkeypatch.setattr(cache_paths_module, "zip", lambda *_args: iter(()), raising=False)
 
     with pytest.raises(RuntimeError, match="proportional raw selection mismatch"):
@@ -1368,7 +1368,7 @@ def test_training_quota_does_not_fill_failed_bucket_from_another_bucket(tmp_path
         directory = tmp_path / "FRU" / bucket
         directory.mkdir(parents=True)
         for index in range(3):
-            (directory / f"fight-{index}.json").write_text("{}", encoding="utf-8")
+            (directory / f"fight-{index}.json.br").write_text("{}", encoding="utf-8")
 
     calls = []
     monkeypatch.setattr(cache_compile_module, "cached_candidates_for_group", lambda *_args, **_kwargs: [])

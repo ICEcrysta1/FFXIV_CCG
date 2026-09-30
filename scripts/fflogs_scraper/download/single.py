@@ -4,7 +4,7 @@ import logging
 import os
 import sys
 
-from scripts.common.json_io import atomic_write_json
+from scripts.common.json_io import atomic_write_json, is_json_file
 
 from ..api.client import FFLogsV2Client
 from ..config.validation import _validate_report_code
@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 
 def _cmd_single(client: FFLogsV2Client, args) -> None:
     """单报告下载。"""
+    if args.output and not is_json_file(args.output):
+        raise ValueError("FFLogs 输出文件必须以 .json.br 结尾")
     if args.url:
         parsed = parse_fflogs_url(args.url)
         report_code = parsed["report_code"]

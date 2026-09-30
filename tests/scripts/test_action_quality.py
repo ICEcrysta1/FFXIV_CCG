@@ -1,6 +1,5 @@
 """离线标注契约、目录映射与失败保护测试。"""
 
-import hashlib
 import json
 import os
 import shutil
@@ -13,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from scripts.action_quality import cli, config, runner
-from scripts.common.json_io import atomic_write_json
+from scripts.common.json_io import atomic_write_json, read_json
 from scripts.convert_fflogs import (
     build_skill_book,
     convert_report_payload,
@@ -25,7 +24,7 @@ from training.config import load_run_config
 
 @pytest.fixture
 def raw_file(tmp_path):
-    source = tmp_path / "black_mage/raw/FRU/00-10/fight.json"
+    source = tmp_path / "black_mage/raw/FRU/00-10/fight.json.br"
     atomic_write_json(source, {
         "source_id": 2, "fight_id": 5, "events_complete": True,
         "friendlies": [{"id": 2, "type": "BlackMage"}],
@@ -45,13 +44,12 @@ def fake_process(monkeypatch, *, error=False, wrong_source=False, schema=2,
     def run(arguments, **kwargs):
         assert arguments[1:] == [str(runner.RUNTIME)]
         request = json.loads(kwargs["input"])
-        content = Path(request["source"]).read_bytes()
         assert "FFLOGS_V2_CLIENT_SECRET" not in kwargs["env"]
         analysis = {
-            "schema_version": schema, "bridge_version": 3, "status": "annotated",
+            "schema_version": schema, "bridge_version": 4, "status": "annotated",
             "training_ready": False,
             "source": {
-                "sha256": "wrong" if wrong_source else hashlib.sha256(content).hexdigest(),
+                "report_code": "wrong" if wrong_source else None,
                 "fight_id": 5,
             },
             "engine": {"commit": "test-commit"},
@@ -72,15 +70,16 @@ def test_merge_preserves_raw_and_uses_shared_stage_layout(raw_file, bridge_confi
     monkeypatch.setenv("FFLOGS_V2_CLIENT_SECRET", "not-forwarded")
     fake_process(monkeypatch)
     output = runner.annotate_file(raw_file, config=bridge_config)
-    assert output == raw_file.parents[3] / "annotated/FRU/00-10/fight.json"
-    payload = json.loads(output.read_bytes())
+    assert output == raw_file.parents[3] / "annotated/FRU/00-10/fight.json.br"
+    payload = read_json(output)
     analysis = payload.pop("analysis")
+    assert "sha256" not in analysis["source"]
     assert analysis["fight_labels"][0]["severity"] == "medium"
     assert "severity_weight" not in analysis["fight_labels"][0]
     assert "severity_weights" not in analysis
-    assert payload == json.loads(original)
+    assert payload == read_json(raw_file)
     assert raw_file.read_bytes() == original
-    assert b"\r" not in output.read_bytes()
+    assert output.read_bytes() != original
 
 
 def test_incremental_skip_requires_matching_source_and_engine(raw_file, bridge_config, monkeypatch):
@@ -88,14 +87,14 @@ def test_incremental_skip_requires_matching_source_and_engine(raw_file, bridge_c
     output = runner.annotate_file(raw_file, config=bridge_config)
     assert runner.annotation_is_current(raw_file, output, commit="test-commit")
     assert not runner.annotation_is_current(raw_file, output, commit="other-commit")
-    legacy = json.loads(output.read_text(encoding="utf-8"))
+    legacy = read_json(output)
     legacy["analysis"]["bridge_version"] = 2
     legacy["analysis"]["severity_weights"] = {"medium": 0.5}
     legacy["analysis"]["fight_labels"][0]["severity_weight"] = 0.5
     atomic_write_json(output, legacy)
     assert not runner.annotation_is_current(raw_file, output, commit="test-commit")
-    atomic_write_json(output, {**json.loads(raw_file.read_text(encoding="utf-8")),
-                              "analysis": {**legacy["analysis"], "bridge_version": 3}})
+    atomic_write_json(output, {**read_json(raw_file),
+                              "analysis": {**legacy["analysis"], "bridge_version": 4}})
     assert not runner.annotation_is_current(raw_file, output, commit="test-commit")
     output = runner.annotate_file(raw_file, config=bridge_config)
     assert runner.annotation_is_current(raw_file, output, commit="test-commit")
@@ -106,7 +105,7 @@ def test_incremental_skip_requires_matching_source_and_engine(raw_file, bridge_c
     monkeypatch.setattr(sys, "argv", ["action_quality", str(raw_file)])
     assert cli.main() == 0
 
-    raw = json.loads(raw_file.read_text(encoding="utf-8"))
+    raw = read_json(raw_file)
     raw["ranking"]["percentile"] = 4.0
     atomic_write_json(raw_file, raw)
     assert not runner.annotation_is_current(raw_file, output, commit="test-commit")
@@ -126,7 +125,7 @@ def test_dirty_analyzer_does_not_reuse_old_annotation(bridge_config, monkeypatch
 
 
 def test_cli_force_and_bounded_parallel_workers(raw_file, bridge_config, monkeypatch):
-    second = raw_file.with_name("second.json")
+    second = raw_file.with_name("second.json.br")
     second.write_bytes(raw_file.read_bytes())
     barrier = Barrier(2, timeout=5)
     called = []
@@ -134,7 +133,7 @@ def test_cli_force_and_bounded_parallel_workers(raw_file, bridge_config, monkeyp
     def annotate(source, **_kwargs):
         called.append(source)
         barrier.wait()
-        return source.with_suffix(".annotated.json")
+        return source.with_name(source.name + ".annotated")
 
     monkeypatch.setattr(cli, "load_bridge_config", lambda: bridge_config)
     monkeypatch.setattr(cli, "analyzer_commit", lambda _config: pytest.fail("--force must bypass reuse lookup"))
@@ -186,7 +185,7 @@ def test_old_schema_or_wrong_time_origin_is_rejected(raw_file, bridge_config, mo
 
 @pytest.mark.parametrize("field,value", [("events_complete", False), ("source_id", True), ("source_id", 99)])
 def test_invalid_raw_fails_before_starting_node(raw_file, bridge_config, monkeypatch, field, value):
-    raw = json.loads(raw_file.read_bytes())
+    raw = read_json(raw_file)
     raw[field] = value
     atomic_write_json(raw_file, raw)
     def unexpected(*args, **kwargs):
@@ -197,8 +196,8 @@ def test_invalid_raw_fails_before_starting_node(raw_file, bridge_config, monkeyp
 
 
 def test_custom_root_keeps_encounter_and_bucket(tmp_path):
-    source = tmp_path / "custom/FRU/00-10/a.json"
-    assert runner.output_path_for_source(source, tmp_path / "evaluated", tmp_path / "custom") == tmp_path / "evaluated/FRU/00-10/a.json"
+    source = tmp_path / "custom/FRU/00-10/a.json.br"
+    assert runner.output_path_for_source(source, tmp_path / "evaluated", tmp_path / "custom") == tmp_path / "evaluated/FRU/00-10/a.json.br"
     with pytest.raises(ValueError, match="replace"):
         runner.output_path_for_source(source, tmp_path / "custom", tmp_path / "custom")
 
@@ -293,7 +292,7 @@ def test_real_node_output_can_attach_exact_cast_labels(tmp_path):
         pytest.skip("set ACTION_QUALITY_E2E_SOURCE to a complete raw report for this integration test")
     source = Path(source_name)
     output = runner.annotate_file(source, config=config.load_bridge_config(), output_root=tmp_path / "annotated")
-    report = json.loads(output.read_text(encoding="utf-8"))
+    report = read_json(output)
     analysis = report["analysis"]
     project = load_job_project_config(analysis["job_tag"])
     fight, _ = convert_report_payload(

@@ -45,7 +45,7 @@ def test_machinist_annotated_report_converts_with_skill_labels_disabled():
     report = {
         "fight_id": 3, "events": events,
         "analysis": {
-            "schema_version": 2, "bridge_version": 3,
+            "schema_version": 2, "bridge_version": 4,
             "actor": {"id": "7"},
             "job_tag": "machinist",
             "source": {"fight_id": 3},
@@ -89,7 +89,7 @@ def _annotated_report() -> dict[str, object]:
         "fight_id": 3,
         "events": events,
         "analysis": {
-            "schema_version": 2, "bridge_version": 3,
+            "schema_version": 2, "bridge_version": 4,
             "actor": {"id": "7"},
             "job_tag": "black_mage",
             "source": {"fight_id": 3},
@@ -174,10 +174,10 @@ def test_legacy_weighted_annotation_must_be_regenerated():
     report["analysis"]["bridge_version"] = 2
     report["analysis"]["severity_weights"] = {"medium": 0.5}
     report["analysis"]["fight_labels"][0]["severity_weight"] = 0.5
-    with pytest.raises(ValueError, match="bridge version 3"):
+    with pytest.raises(ValueError, match="bridge version 4"):
         attach_action_quality_labels(report, [{"raw_event_index": 1, "skill_id": 152}],
                                      job_tag="black_mage", source_id=7)
-    report["analysis"]["bridge_version"] = 3
+    report["analysis"]["bridge_version"] = 4
     with pytest.raises(ValueError, match="regenerate annotation"):
         attach_action_quality_labels(report, [{"raw_event_index": 1, "skill_id": 152}],
                                      job_tag="black_mage", source_id=7)
