@@ -30,7 +30,7 @@ function Resolve-FfxivCcgAction {
     if ($normalizedAction -eq "menu") {
         return "menu"
     }
-    if ($AllowMenuNumber -and $normalizedAction -eq "0") {
+    if ($AllowMenuNumber -and $normalizedAction -eq "10") {
         return "exit"
     }
     $entry = @(
@@ -53,7 +53,7 @@ function Show-FfxivCcgMenu {
     foreach ($entry in $script:ToolMenuEntries) {
         Write-Host ("  {0}. {1}" -f $entry.Number, $entry.Label)
     }
-    Write-Host "  0. 退出"
+    Write-Host "  10. 退出"
     Write-Host ""
     $choice = Read-Host "请输入选项编号"
     return Resolve-FfxivCcgAction -RequestedAction $choice -AllowMenuNumber

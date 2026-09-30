@@ -239,15 +239,17 @@ def test_get_encounter_rankings_keeps_valid_filters(monkeypatch):
 def test_ranking_query_filters_server_region_independently_of_partition(monkeypatch):
     client = FFLogsV2Client("client-id", "client-secret")
     queries = []
-    monkeypatch.setattr(client, "query", lambda gql: queries.append(gql) or {
+    monkeypatch.setattr(client, "query", lambda gql, **kwargs: queries.append((gql, kwargs)) or {
         "worldData": {"encounter": {"characterRankings": {"rankings": []}}},
     })
 
     client.get_encounter_rankings(1079, partition=25, server_region="CN")
-    client.get_encounter_rankings(1079, server_region="US")
+    client.get_encounter_rankings(1079, server_region="NA")
 
-    assert 'serverRegion: "CN"' in queries[0] and "partition: 25" in queries[0]
-    assert 'serverRegion: "US"' in queries[1] and "partition:" not in queries[1]
+    assert 'serverRegion: "CN"' in queries[0][0] and "partition: 25" in queries[0][0]
+    assert queries[0][1] == {"endpoint": client.CN_GQL_URL}
+    assert 'serverRegion: "NA"' in queries[1][0] and "partition:" not in queries[1][0]
+    assert queries[1][1] == {}
 
 
 def test_ranking_query_uses_partition_and_surfaces_json_errors(monkeypatch):

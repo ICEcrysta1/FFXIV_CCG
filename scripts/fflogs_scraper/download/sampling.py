@@ -57,9 +57,10 @@ def _iter_historical_reports(
                 bracket=bracket, partition=partition, page=page,
                 server_region=server_region,
             )
-        except Exception as error:  # noqa: BLE001 -- 榜单失败时保留已完成的下载并报告配额缺口
-            logger.warning("分区 %s 查询失败，停止发现: %s", partition, error)
-            return
+        except Exception as error:  # noqa: BLE001 -- 榜单失败必须暴露真实错误，不能伪装成配额不足
+            raise RuntimeError(
+                f"地区 {server_region or '全部'}、分区 {partition} 的榜单查询失败: {error}"
+            ) from error
         entries = result.get("rankings", [])
         has_more = bool(entries) and (
             result.get("hasMorePages") is True

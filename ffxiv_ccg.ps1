@@ -139,18 +139,22 @@ print(json.dumps({"source": "grpo" if payload.get("grpo_checkpoint") else "bc"})
 
 function Invoke-FFLogsDownload {
     Write-Host ""
-    Write-Host "可粘贴 FFLogs 报告 URL（含 ?fight=..&source=.. 时效果最完整），或只填报告码。"
-    $target = (Read-Host "请输入 FFLogs 报告 URL 或报告码（直接回车取消）").Trim()
+    Write-Host "按副本代号下载国服十档训练集，并额外下载 10% 美服高分验证集。"
+    $target = ([string](Read-Host "请输入副本代号（如 FRU、M1s、M12sI）或单战斗 Zone ID（直接回车取消）")).Trim()
     if ([string]::IsNullOrWhiteSpace($target)) {
         Write-Host "已取消 FFLogs 数据下载。"
         return 0
     }
-    if ($target -match "^https?://") {
-        & $ProjectPython -m scripts.fflogs_scraper single $target
+    $countInput = ([string](Read-Host "请输入训练集目标份数（如 200；验证集自动取 20）")).Trim()
+    if ([string]::IsNullOrWhiteSpace($countInput)) {
+        Write-Host "已取消 FFLogs 数据下载。"
+        return 0
     }
-    else {
-        & $ProjectPython -m scripts.fflogs_scraper single --report $target
+    $count = 0
+    if (-not [int]::TryParse($countInput, [ref]$count) -or $count -lt 1) {
+        throw "训练集目标份数必须是正整数：$countInput"
     }
+    & $ProjectPython -m scripts.fflogs_scraper batch $target --count $count | Out-Host
     return $LASTEXITCODE
 }
 

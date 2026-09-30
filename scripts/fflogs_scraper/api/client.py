@@ -44,6 +44,7 @@ class FFLogsV2Client:
 
     TOKEN_URL = "https://www.fflogs.com/oauth/token"
     GQL_URL = "https://www.fflogs.com/api/v2/client"
+    CN_GQL_URL = "https://cn.fflogs.com/api/v2/client"
 
     def __init__(self, client_id: str, client_secret: str):
         self._client_id = client_id
@@ -86,14 +87,14 @@ class FFLogsV2Client:
         logger.info("V2 token 已获取，有效期 %ds", data.get("expires_in", 0))
         return self._token
 
-    def query(self, gql: str, variables: dict = None) -> dict:
+    def query(self, gql: str, variables: dict = None, *, endpoint: str | None = None) -> dict:
         """执行 GraphQL 查询。"""
         token = self._ensure_token()
         payload: dict = {"query": gql}
         if variables:
             payload["variables"] = variables
         resp = self._http_session().post(
-            self.GQL_URL,
+            endpoint or self.GQL_URL,
             json=payload,
             headers={"Authorization": f"Bearer {token}"},
             impersonate=BROWSER_FINGERPRINT,
@@ -367,7 +368,8 @@ class FFLogsV2Client:
           }}
         }}
         """
-        data = self.query(gql)
+        # 国服排行在中国站维护；全球站即使传 CN 也会返回空榜单。
+        data = self.query(gql, endpoint=self.CN_GQL_URL) if server_region == "CN" else self.query(gql)
         enc = data.get("worldData", {}).get("encounter", {})
         rankings = enc.get("characterRankings", {}) if enc else {}
         if isinstance(rankings, dict) and rankings.get("error"):

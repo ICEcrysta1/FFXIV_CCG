@@ -6,10 +6,18 @@ import sys
 from pathlib import Path
 
 from common.dataset_layout import percentile_directory
+from common.policy.config import (
+    PROJECT_ROOT,
+    load_policy_config,
+    resolve_policy_model_config_path,
+    resolve_policy_model_job_tag,
+)
+from common.project_config import resolve_project_path
 from scripts.common.json_io import atomic_write_json, read_json
 
 from ..api.client import FFLogsV2Client
 from ..config.constants import DOWNLOAD_SCHEMA_VERSION
+from ..config.encounters import resolve_download_encounter
 from ..contracts.events import _attach_analysis_events
 from ..contracts.rankings import _is_anonymous_name, _is_anonymous_report
 from ..contracts.report import _build_download_payload, _find_fight
@@ -21,6 +29,28 @@ logger = logging.getLogger(__name__)
 
 def _cmd_batch(client: FFLogsV2Client, args) -> None:
     """国服训练均分十档，另取美服高分验证数据；失败只在同档补位。"""
+    if getattr(args, "target", None) is not None:
+        target = resolve_download_encounter(args.target)
+        model_path = resolve_policy_model_config_path()
+        job_tag = resolve_policy_model_job_tag(model_path)
+        model_config = load_policy_config(model_path)
+        configured_source = resolve_project_path(
+            model_config["raw_data_dir"], project_root=PROJECT_ROOT,
+        )
+        stage = next(
+            (part for part in (configured_source, *configured_source.parents)
+             if part.name in {"raw", "annotated"}), None,
+        )
+        if stage is None:
+            raise ValueError(f"模型输入目录不属于 raw/annotated 阶段：{configured_source}")
+        args.encounter = target.encounter_id
+        args.output = str(stage.with_name("raw") / target.alias)
+        if getattr(args, "spec_name", None) is None:
+            args.spec_name = "".join(part.capitalize() for part in job_tag.split("_"))
+        logger.info("副本 %s：Zone %d / Encounter %d / %s，职业 %s",
+                    target.alias, target.zone_id, target.encounter_id, target.group, args.spec_name)
+    elif getattr(args, "spec_name", None) is None:
+        args.spec_name = "BlackMage"
     if args.zone and not args.encounter:
         encounters = client.get_zone_encounters(args.zone)
         print(f"Zone {args.zone} encounters:")
@@ -56,12 +86,12 @@ def _cmd_batch(client: FFLogsV2Client, args) -> None:
     print(f"\n美服验证目标 {validation_count} 份，仅取 90-100，保存到 {validation_dir}")
     validation_reports = _iter_historical_reports(
         client, args.encounter, spec_name=args.spec_name, metric=args.metric,
-        partition=args.partition, server_region="US",
+        partition=args.partition, server_region="NA",
         bracket=args.bracket, max_pages=args.max_pages,
     )
     _stratified_batch_download(
         client, validation_reports, {"90-100": validation_count}, validation_dir,
-        args.mode, args.metric, server_region="US", bucket_directories=False,
+        args.mode, args.metric, server_region="NA", bucket_directories=False,
     )
 
 
@@ -144,19 +174,76 @@ def _download_report(
     return "success"
 
 
+def _existing_local_inventory(
+    output_dir: Path, quotas: dict[str, int], *, mode: str, metric: str,
+    server_region: str | None, bucket_directories: bool,
+) -> tuple[dict[str, int], set[tuple[str, int, str]]]:
+    """只把身份、地区、分档及下载完整性可信的本地文件计入配额。"""
+    counts = dict.fromkeys(quotas, 0)
+    seen: set[tuple[str, int, str]] = set()
+    for bucket in quotas:
+        directory = percentile_directory(output_dir, bucket) if bucket_directories else output_dir
+        for path in sorted(directory.glob("*.json.br")):
+            try:
+                payload = read_json(path)
+                if not isinstance(payload, dict):
+                    continue
+                ranking = payload.get("ranking")
+                code = payload.get("report_code")
+                fight_id = payload.get("fight_id")
+                name = payload.get("player_name")
+                if (payload.get("download_schema_version") != DOWNLOAD_SCHEMA_VERSION
+                        or not isinstance(ranking, dict)
+                        or ranking.get("percentile_bucket") != bucket
+                        or ranking.get("metric") != metric
+                        or (server_region is not None and (
+                            ranking.get("server_region") != server_region
+                            or payload.get("report_region") != server_region))
+                        or not isinstance(code, str) or not code
+                        or type(fight_id) is not int or fight_id < 1
+                        or not isinstance(name, str) or _is_anonymous_name(name)
+                        or type(payload.get("source_id")) is not int
+                        or payload["source_id"] < 1):
+                    continue
+                if mode == "damage-only":
+                    if not isinstance(payload.get("damage_table"), dict):
+                        continue
+                else:
+                    events = payload.get("events")
+                    if (payload.get("events_complete") is not True
+                            or payload.get("event_scope") != "fight"
+                            or not isinstance(events, list)
+                            or payload.get("event_count") != len(events)):
+                        continue
+                key = (code, fight_id, name)
+                if key in seen:
+                    logger.warning("本地已有跨档重复报告，忽略额外副本：%s", path)
+                    continue
+                seen.add(key)
+                counts[bucket] = min(quotas[bucket], counts[bucket] + 1)
+            except (OSError, ValueError, TypeError) as error:
+                logger.warning("跳过无法复用的本地报告 %s: %s", path, error)
+    return counts, seen
+
+
 def _stratified_batch_download(
     client, reports, quotas, output_dir, mode="default", metric="rdps", *,
     server_region=None, bucket_directories=True,
 ):
     """分档下载；失败不占配额，不挪用其他区间填补缺额。"""
-    counts = dict.fromkeys(quotas, 0)
     statistics = {"success": 0, "existing": 0, "failed": 0, "anonymous": 0}
-    seen = set()
     output_dir = Path(output_dir)
     for bucket in quotas:
         (percentile_directory(output_dir, bucket) if bucket_directories else output_dir).mkdir(
             parents=True, exist_ok=True,
         )
+    counts, seen = _existing_local_inventory(
+        output_dir, quotas, mode=mode, metric=metric,
+        server_region=server_region, bucket_directories=bucket_directories,
+    )
+    statistics["existing"] = sum(counts.values())
+    if all(counts[bucket] >= quota for bucket, quota in quotas.items()):
+        reports = ()
     for record in reports:
         if client._cancelled or all(counts[bucket] >= quota for bucket, quota in quotas.items()):
             break

@@ -121,6 +121,17 @@ def test_cancelled_discovery_does_not_query_api():
     assert list(_iter_historical_reports(client, 1079, spec_name="BlackMage", metric="rdps", partition=1)) == []
 
 
+def test_ranking_api_failure_is_not_reported_as_empty_candidate_pool():
+    def fail(*args, **kwargs):
+        raise RuntimeError("Invalid region specified.")
+
+    client = SimpleNamespace(_cancelled=False, get_encounter_rankings=fail)
+    with pytest.raises(RuntimeError, match="地区 NA.*Invalid region specified"):
+        list(_iter_historical_reports(
+            client, 1079, spec_name="BlackMage", metric="rdps", server_region="NA",
+        ))
+
+
 def test_unlinked_public_character_is_preserved_but_anonymous_report_is_excluded():
     calls = []
     histories = []

@@ -61,6 +61,10 @@ def test_dotenv_resolves_project_root_after_move_and_preserves_environment(monke
      "batch", {"encounter": 1079, "mode": "events-only", "metric": "rdps", "count": 200, "partition": None}),
     (["batch", "-e", "1079", "--count", "203", "--partition", "25", "--output", "raw/FRU"],
      "batch", {"count": 203, "partition": 25, "output": "raw/FRU"}),
+    (["batch", "FRU", "--count", "200"],
+     "batch", {"target": "FRU", "count": 200, "output": None}),
+    (["batch", "65", "--count", "200"],
+     "batch", {"target": "65", "count": 200, "output": None}),
     (["encounters", "-z", "39"], "encounters", {"zone": 39}),
 ])
 def test_cli_dispatch_preserves_arguments(monkeypatch, arguments, command, expected):
