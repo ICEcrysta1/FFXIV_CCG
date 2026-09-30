@@ -116,6 +116,53 @@ def test_history_discovery_honors_explicit_pagination_and_page_limit():
     assert calls == [1, 2]
 
 
+def test_character_histories_are_diversified_before_same_bucket_fallback():
+    histories = {
+        1: [_rank("AHIGH1", 95), _rank("AHIGH2", 96),
+            _rank("AMID1", 55), _rank("AMID2", 52)],
+        2: [_rank("BHIGH", 97), _rank("BMID", 58)],
+    }
+
+    def rankings(*args, **kwargs):
+        return {"rankings": [
+            {"name": "Player A", "lodestoneID": 1},
+            {"name": "Player B", "lodestoneID": 2},
+        ], "hasMorePages": False}
+
+    def history(lodestone_id, *args, **kwargs):
+        return {"id": lodestone_id, "name": f"Player {lodestone_id}",
+                "encounterRankings": {"ranks": histories[lodestone_id]}}
+
+    client = SimpleNamespace(
+        _cancelled=False, get_encounter_rankings=rankings,
+        get_character_history=history,
+    )
+    records = list(_iter_historical_reports(
+        client, 1079, spec_name="BlackMage", metric="rdps",
+    ))
+    assert [record.code for record in records] == [
+        "AHIGH1", "AMID1", "BHIGH", "BMID", "AHIGH2", "AMID2",
+    ]
+    assert [record.lodestone_id for record in records[:4]] == [1, 1, 2, 2]
+
+
+def test_single_character_can_fill_quota_after_other_characters_are_exhausted():
+    client = SimpleNamespace(
+        _cancelled=False,
+        get_encounter_rankings=lambda *args, **kwargs: {
+            "rankings": [{"name": "Player", "lodestoneID": 1}],
+            "hasMorePages": False,
+        },
+        get_character_history=lambda *args, **kwargs: {
+            "id": 1, "name": "Player",
+            "encounterRankings": {"ranks": [_rank("FIRST", 95), _rank("SECOND", 96)]},
+        },
+    )
+    assert [record.code for record in _iter_historical_reports(
+        client, 1079, spec_name="BlackMage", metric="rdps",
+    )] == ["FIRST", "SECOND"]
+
+
 def test_cancelled_discovery_does_not_query_api():
     client = SimpleNamespace(_cancelled=True)
     assert list(_iter_historical_reports(client, 1079, spec_name="BlackMage", metric="rdps", partition=1)) == []

@@ -1,6 +1,7 @@
 """历史记录发现与十档百分位配额，不负责报告文件下载。"""
 
 import logging
+from collections import deque
 from collections.abc import Iterator
 
 from common.dataset_layout import PERCENTILE_BUCKETS
@@ -41,12 +42,14 @@ def _iter_historical_reports(
     """在 API 默认或指定分区发现公开角色，再读取同分区的历史击杀。
 
     页数上限作用于角色发现榜单，不限制某个角色的历史记录数量。
+    每名角色每档先提供一份；同角色的其余历史记录留到跨角色候选用尽后补位。
     调用方配额完成即可停止，不提前收集所有报告。
     """
     max_pages = _validate_integer(max_pages, "max_pages", minimum=1)
     seen_characters = set()
     seen_character_ids = set()
     seen_reports = set()
+    deferred_by_character: deque[deque[HistoricalReport]] = deque()
     for page in range(1, max_pages + 1):
         if client._cancelled:
             return
@@ -57,7 +60,8 @@ def _iter_historical_reports(
                 bracket=bracket, partition=partition, page=page,
                 server_region=server_region,
             )
-        except Exception as error:  # noqa: BLE001 -- 榜单失败必须暴露真实错误，不能伪装成配额不足
+        except Exception as error:
+            # 榜单失败必须暴露真实错误，不能伪装成配额不足。
             raise RuntimeError(
                 f"地区 {server_region or '全部'}、分区 {partition} 的榜单查询失败: {error}"
             ) from error
@@ -113,6 +117,8 @@ def _iter_historical_reports(
             name = character.get("name") or entry["name"]
             if character.get("hidden") or _is_anonymous_name(name):
                 continue
+            used_buckets: set[str] = set()
+            deferred_records: deque[HistoricalReport] = deque()
             for rank in character.get("encounterRankings", {}).get("ranks", []):
                 record = _historical_report_from_rank(
                     rank, player_name=name, lodestone_id=lodestone_id, spec_name=spec_name,
@@ -124,7 +130,23 @@ def _iter_historical_reports(
                 if key in seen_reports:
                     continue
                 seen_reports.add(key)
-                yield record
+                if record.bucket in used_buckets:
+                    deferred_records.append(record)
+                else:
+                    used_buckets.add(record.bucket)
+                    yield record
+            if deferred_records:
+                deferred_by_character.append(deferred_records)
         if not has_more:
+            break
+    else:
+        logger.warning("角色发现达到 %d 页上限；不足档位可提高 --max-pages", max_pages)
+
+    # 公开角色不足时再轮流取同角色的剩余记录，避免某个人独占缺额。
+    while deferred_by_character:
+        if client._cancelled:
             return
-    logger.warning("角色发现达到 %d 页上限；不足档位可提高 --max-pages", max_pages)
+        records = deferred_by_character.popleft()
+        yield records.popleft()
+        if records:
+            deferred_by_character.append(records)

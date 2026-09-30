@@ -7,11 +7,13 @@ from types import SimpleNamespace
 import pytest
 
 from scripts.common.json_io import read_json
-
 from scripts.fflogs_scraper import FFLogsV2Client
 from scripts.fflogs_scraper.contracts.rankings import HistoricalReport
 from scripts.fflogs_scraper.download import batch, single
-from scripts.fflogs_scraper.download.sampling import _allocate_percentile_quotas
+from scripts.fflogs_scraper.download.sampling import (
+    _allocate_percentile_quotas,
+    _iter_historical_reports,
+)
 
 
 def _stub_report_download(monkeypatch, client, meta):
@@ -161,6 +163,46 @@ def test_complete_quotas_stop_before_requesting_another_candidate(monkeypatch, t
     result = batch._stratified_batch_download(client, candidates(), {"90-100": 1}, str(tmp_path))
     assert result["counts"] == {"90-100": 1}
     assert requested == ["FIRST"]
+
+
+def test_batch_uses_distinct_characters_before_repeating_one_bucket(monkeypatch, tmp_path):
+    def rank(code):
+        return {"report": {"code": code, "fightID": 1}, "spec": "BlackMage",
+                "historicalPercent": 95, "amount": 100}
+
+    client = SimpleNamespace(
+        _cancelled=False,
+        get_encounter_rankings=lambda *args, **kwargs: {
+            "rankings": [
+                {"name": "First", "lodestoneID": 1},
+                {"name": "Second", "lodestoneID": 2},
+            ],
+            "hasMorePages": False,
+        },
+        get_character_history=lambda lodestone_id, *args, **kwargs: {
+            "id": lodestone_id,
+            "name": "First" if lodestone_id == 1 else "Second",
+            "encounterRankings": {"ranks": (
+                [rank("FIRST1"), rank("FIRST2"), rank("FIRST3")]
+                if lodestone_id == 1 else [rank("SECOND1")]
+            )},
+        },
+    )
+    selected = []
+
+    def download(_client, code, _fight_id, name, *args, **kwargs):
+        selected.append((code, name))
+        return "success"
+
+    monkeypatch.setattr(batch, "_download_report", download)
+    reports = _iter_historical_reports(
+        client, 1079, spec_name="BlackMage", metric="rdps",
+    )
+    result = batch._stratified_batch_download(
+        client, reports, {"90-100": 2}, tmp_path,
+    )
+    assert result["counts"] == {"90-100": 2}
+    assert selected == [("FIRST1", "First"), ("SECOND1", "Second")]
 
 
 def test_anonymous_and_duplicate_records_do_not_fill_quota(monkeypatch, tmp_path, analysis_meta):
