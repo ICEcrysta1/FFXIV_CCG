@@ -1,6 +1,7 @@
 """按历史百分位配额编排批量下载，复用单份报告保存流程。"""
 
 import logging
+import math
 import os
 import sys
 from pathlib import Path
@@ -16,6 +17,7 @@ from common.project_config import resolve_project_path
 from scripts.common.json_io import atomic_write_json, read_json
 
 from ..api.client import FFLogsV2Client
+from ..config.batch import load_validation_ratio
 from ..config.constants import DOWNLOAD_SCHEMA_VERSION
 from ..config.encounters import resolve_download_encounter
 from ..contracts.events import _attach_analysis_events
@@ -63,7 +65,8 @@ def _cmd_batch(client: FFLogsV2Client, args) -> None:
         sys.exit(1)
 
     quotas = _allocate_percentile_quotas(args.count)
-    validation_count = (args.count + 9) // 10
+    validation_ratio = load_validation_ratio()
+    validation_count = math.ceil(args.count * validation_ratio)
     training_dir = Path(args.output)
     if training_dir.parent.name != "raw" or training_dir.name == "VAL":
         raise ValueError("--output 必须指向 raw/<副本> 目录")

@@ -1,6 +1,7 @@
 """FFLogs 下载器 download 职责回归测试。"""
 
 from dataclasses import replace
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -299,7 +300,7 @@ def test_cmd_batch_rejects_output_outside_raw_before_api_call(monkeypatch, tmp_p
         ))
 
 
-def test_cmd_batch_allocates_ten_percent_to_us_validation(monkeypatch, tmp_path):
+def test_cmd_batch_uses_configured_validation_ratio(monkeypatch, tmp_path):
     client = FFLogsV2Client("id", "secret")
     monkeypatch.setattr(client, "get_encounter_details", lambda encounter: {"name": "FRU"})
     calls = []
@@ -309,7 +310,9 @@ def test_cmd_batch_allocates_ten_percent_to_us_validation(monkeypatch, tmp_path)
         calls.append((quotas, Path(output), kwargs))
 
     monkeypatch.setattr(batch, "_stratified_batch_download", download)
-    for count, expected in ((200, 20), (203, 21)):
+    for ratio, count, expected in (("0.10", 200, 20), ("0.10", 203, 21),
+                                   ("0.07", 100, 7), ("0.20", 203, 41)):
+        monkeypatch.setattr(batch, "load_validation_ratio", lambda ratio=ratio: Decimal(ratio))
         calls.clear()
         batch._cmd_batch(client, SimpleNamespace(
             zone=None, encounter=1079, count=count, partition=None,

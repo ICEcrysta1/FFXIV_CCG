@@ -139,13 +139,13 @@ print(json.dumps({"source": "grpo" if payload.get("grpo_checkpoint") else "bc"})
 
 function Invoke-FFLogsDownload {
     Write-Host ""
-    Write-Host "按副本代号下载国服十档训练集，并额外下载 10% 美服高分验证集。"
+    Write-Host "按副本代号下载国服十档训练集，并按下载器配置补充美服高分验证集。"
     $target = ([string](Read-Host "请输入副本代号（如 FRU、M1s、M12sI）或单战斗 Zone ID（直接回车取消）")).Trim()
     if ([string]::IsNullOrWhiteSpace($target)) {
         Write-Host "已取消 FFLogs 数据下载。"
         return 0
     }
-    $countInput = ([string](Read-Host "请输入训练集目标份数（如 200；验证集自动取 20）")).Trim()
+    $countInput = ([string](Read-Host "请输入训练集目标份数（如 200；验证集按下载器配置计算）")).Trim()
     if ([string]::IsNullOrWhiteSpace($countInput)) {
         Write-Host "已取消 FFLogs 数据下载。"
         return 0

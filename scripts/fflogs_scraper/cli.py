@@ -7,8 +7,8 @@ import signal
 import sys
 
 from .api.client import FFLogsV2Client
-from .config.environment import _load_dotenv
 from .config.encounters import resolve_download_encounter
+from .config.environment import _load_dotenv
 from .config.validation import _validate_integer
 from .download.batch import _cmd_batch
 from .download.encounters import _cmd_encounters
@@ -62,7 +62,7 @@ def main():
     batch_cmd.add_argument("--spec-name", default=None,
                            help="职业名；副本代号模式默认采用当前模型职业，旧 -e 模式默认 BlackMage")
     batch_cmd.add_argument("--count", type=int, default=200,
-                            help="国服训练目标份数，自动均分十档；美服验证额外取 10%% (默认 200+20)")
+                            help="国服训练目标份数，自动均分十档；美服验证目标按 config/fflogs_scraper/batch.yaml 比例计算")
     batch_cmd.add_argument("--partition", type=int, default=None,
                            help="API 排名分区 ID；不指定时使用 API 默认分区")
     batch_cmd.add_argument("--bracket", "-b", type=int, default=0,
