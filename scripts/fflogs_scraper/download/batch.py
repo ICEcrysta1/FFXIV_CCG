@@ -29,8 +29,10 @@ from .sampling import _allocate_percentile_quotas, _iter_historical_reports
 logger = logging.getLogger(__name__)
 
 
-def _cmd_batch(client: FFLogsV2Client, args) -> None:
+def _cmd_batch(training_client: FFLogsV2Client, validation_client: FFLogsV2Client, args) -> None:
     """国服训练均分十档，另取美服高分验证数据；失败只在同档补位。"""
+    if training_client.server_region != "CN" or validation_client.server_region != "NA":
+        raise ValueError("批量下载需要分别绑定 CN 训练与 NA 验证数据源")
     if getattr(args, "target", None) is not None:
         target = resolve_download_encounter(args.target)
         model_path = resolve_policy_model_config_path()
@@ -54,7 +56,7 @@ def _cmd_batch(client: FFLogsV2Client, args) -> None:
     elif getattr(args, "spec_name", None) is None:
         args.spec_name = "BlackMage"
     if args.zone and not args.encounter:
-        encounters = client.get_zone_encounters(args.zone)
+        encounters = training_client.get_zone_encounters(args.zone)
         print(f"Zone {args.zone} encounters:")
         for encounter in encounters:
             print(f"  id={encounter['id']:<5} {encounter['name']}")
@@ -71,30 +73,29 @@ def _cmd_batch(client: FFLogsV2Client, args) -> None:
     if training_dir.parent.name != "raw" or training_dir.name == "VAL":
         raise ValueError("--output 必须指向 raw/<副本> 目录")
     validation_dir = training_dir.parent / "VAL" / training_dir.name
-    details = client.get_encounter_details(args.encounter)
+    details = training_client.get_encounter_details(args.encounter)
     print(f"\n{details['name']}：国服训练目标 {args.count} 份，按历史百分位分配：")
     for bucket, target in quotas.items():
         print(f"  {bucket}: {target}")
     reports = _iter_historical_reports(
-        client, args.encounter, spec_name=args.spec_name, metric=args.metric,
-        partition=args.partition, server_region="CN",
+        training_client, args.encounter, spec_name=args.spec_name, metric=args.metric,
+        partition=args.partition,
         bracket=args.bracket, max_pages=args.max_pages,
     )
     _stratified_batch_download(
-        client, reports, quotas, training_dir, args.mode, args.metric,
-        server_region="CN",
+        training_client, reports, quotas, training_dir, args.mode, args.metric,
     )
-    if client._cancelled:
+    if training_client._cancelled:
         return
     print(f"\n美服验证目标 {validation_count} 份，仅取 90-100，保存到 {validation_dir}")
     validation_reports = _iter_historical_reports(
-        client, args.encounter, spec_name=args.spec_name, metric=args.metric,
-        partition=args.partition, server_region="NA",
+        validation_client, args.encounter, spec_name=args.spec_name, metric=args.metric,
+        partition=args.partition,
         bracket=args.bracket, max_pages=args.max_pages,
     )
     _stratified_batch_download(
-        client, validation_reports, {"90-100": validation_count}, validation_dir,
-        args.mode, args.metric, server_region="NA", bucket_directories=False,
+        validation_client, validation_reports, {"90-100": validation_count}, validation_dir,
+        args.mode, args.metric, bucket_directories=False,
     )
 
 
@@ -231,7 +232,7 @@ def _existing_local_inventory(
 
 def _stratified_batch_download(
     client, reports, quotas, output_dir, mode="default", metric="rdps", *,
-    server_region=None, bucket_directories=True,
+    bucket_directories=True,
 ):
     """分档下载；失败不占配额，不挪用其他区间填补缺额。"""
     statistics = {"success": 0, "existing": 0, "failed": 0, "anonymous": 0}
@@ -242,7 +243,7 @@ def _stratified_batch_download(
         )
     counts, seen = _existing_local_inventory(
         output_dir, quotas, mode=mode, metric=metric,
-        server_region=server_region, bucket_directories=bucket_directories,
+        server_region=client.server_region, bucket_directories=bucket_directories,
     )
     statistics["existing"] = sum(counts.values())
     if all(counts[bucket] >= quota for bucket, quota in quotas.items()):
@@ -262,9 +263,9 @@ def _stratified_batch_download(
             status = _download_report(
                 client, record.code, record.fight_id, record.player_name, record.amount,
                 str(percentile_directory(output_dir, bucket) if bucket_directories else output_dir), mode,
-                ranking_metadata={**record.ranking_metadata(metric), "server_region": server_region}
-                if server_region is not None else record.ranking_metadata(metric),
-                expected_region=server_region,
+                ranking_metadata={**record.ranking_metadata(metric), "server_region": client.server_region}
+                if client.server_region is not None else record.ranking_metadata(metric),
+                expected_region=client.server_region,
             )
             statistics[status] += 1
             if status in ("success", "existing"):

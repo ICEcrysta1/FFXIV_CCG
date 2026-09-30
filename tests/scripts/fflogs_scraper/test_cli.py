@@ -73,23 +73,43 @@ def test_cli_dispatch_preserves_arguments(monkeypatch, arguments, command, expec
     monkeypatch.setenv("FFLOGS_V2_CLIENT_ID", "test-id")
     monkeypatch.setenv("FFLOGS_V2_CLIENT_SECRET", "test-secret")
     closed = []
-    client = SimpleNamespace(cancel=lambda: None, close=lambda: closed.append(True))
     credentials = []
-    monkeypatch.setattr(cli, "FFLogsV2Client", lambda *args: credentials.append(args) or client)
+    clients = []
+    def make_client(*args, **kwargs):
+        credentials.append((args, kwargs))
+        client = SimpleNamespace(
+            server_region=kwargs.get("server_region"), cancel=lambda: None,
+            close=lambda: closed.append(True),
+        )
+        clients.append(client)
+        return client
+    monkeypatch.setattr(cli, "FFLogsV2Client", make_client)
     monkeypatch.setattr(cli.signal, "signal", lambda *args: None)
     calls = []
-    for name in ("single", "batch", "encounters"):
+    for name in ("single", "encounters"):
         monkeypatch.setattr(
             cli, f"_cmd_{name}",
             lambda actual_client, args, name=name: calls.append((name, actual_client, args)),
         )
+    monkeypatch.setattr(
+        cli, "_cmd_batch",
+        lambda training_client, validation_client, args: calls.append(
+            ("batch", training_client, args, validation_client),
+        ),
+    )
     cli.main()
-    assert credentials == [("test-id", "test-secret")]
+    expected_regions = ("CN", "NA") if command == "batch" else (None,)
+    assert credentials == [
+        (("test-id", "test-secret"), {"server_region": region} if region else {})
+        for region in expected_regions
+    ]
     assert len(calls) == 1
-    actual_command, actual_client, args = calls[0]
+    actual_command, actual_client, args = calls[0][:3]
     assert actual_command == command
-    assert actual_client is client
-    assert closed == [True]
+    assert actual_client is clients[0]
+    if command == "batch":
+        assert calls[0][3] is clients[1]
+    assert closed == [True] * len(clients)
     assert all(getattr(args, key) == value for key, value in expected.items())
 
 
@@ -101,7 +121,7 @@ def test_cli_closes_http_session_when_download_fails(monkeypatch):
     closed = []
     monkeypatch.setattr(
         cli, "FFLogsV2Client",
-        lambda *args: SimpleNamespace(cancel=lambda: None, close=lambda: closed.append(True)),
+        lambda *args, **kwargs: SimpleNamespace(cancel=lambda: None, close=lambda: closed.append(True)),
     )
     monkeypatch.setattr(cli.signal, "signal", lambda *args: None)
 
@@ -112,7 +132,33 @@ def test_cli_closes_http_session_when_download_fails(monkeypatch):
 
     with pytest.raises(RuntimeError, match="下载失败"):
         cli.main()
-    assert closed == [True]
+    assert closed == [True, True]
+
+
+def test_batch_interrupt_cancels_both_region_clients(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["fflogs_scraper", "batch", "-e", "1079", "--output", "raw/FRU"])
+    monkeypatch.setattr(cli, "_load_dotenv", lambda: None)
+    monkeypatch.setenv("FFLOGS_V2_CLIENT_ID", "test-id")
+    monkeypatch.setenv("FFLOGS_V2_CLIENT_SECRET", "test-secret")
+    cancelled = []
+    clients = []
+    callbacks = []
+
+    def make_client(*_args, server_region):
+        client = SimpleNamespace(
+            server_region=server_region,
+            cancel=lambda region=server_region: cancelled.append(region),
+            close=lambda: None,
+        )
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(cli, "FFLogsV2Client", make_client)
+    monkeypatch.setattr(cli.signal, "signal", lambda _signal, callback: callbacks.append(callback))
+    monkeypatch.setattr(cli, "_cmd_batch", lambda *_args: callbacks[0](None, None))
+    cli.main()
+    assert [client.server_region for client in clients] == ["CN", "NA"]
+    assert cancelled == ["CN", "NA"]
 
 
 @pytest.mark.parametrize("option,value", [

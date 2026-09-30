@@ -85,9 +85,11 @@ def _adapt_report_metadata(report_code: str, report: dict) -> ReportMeta:
         # V2 没有 V1 的阶段名称表，当前报告解析只依赖战斗和角色元数据。
         "phases": [], **{key: list(value.values()) for key, value in groups.items()},
     }
+    region_name = (report.get("region") or {}).get("compactName")
     return ReportMeta(
         code=report_code,
-        region=(report.get("region") or {}).get("compactName"),
+        # 中国站返回“国服”，全球站返回 CN；下载契约统一保存 CN。
+        region={"国服": "CN"}.get(region_name, region_name),
         fights=[FightInfo(
             id=f["id"], name=f["name"], start_time=f["start_time"], end_time=f["end_time"],
             difficulty=f["difficulty"], kill=f["kill"], size=f["size"], zone_name=f["zone_name"],

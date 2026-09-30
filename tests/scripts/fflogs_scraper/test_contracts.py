@@ -36,6 +36,16 @@ def test_analysis_payload_preserves_report_and_training_contract(analysis_meta):
     assert _get_ability_id(saved) == 3577
 
 
+def test_cn_report_region_is_normalized_for_download_contract(analysis_meta):
+    raw = {**analysis_meta.report, "region": {"compactName": "国服"},
+           "startTime": analysis_meta.report["start"],
+           "endTime": analysis_meta.report["end"],
+           "owner": {"name": "Owner"},
+           "masterData": {"lang": "cn", "actors": []},
+           "zone": {"id": 1, "name": "Zone"}, "fights": []}
+    assert report._adapt_report_metadata("ABC123", raw).region == "CN"
+
+
 def test_metadata_rejects_missing_date_language_and_actor(analysis_meta):
     # 数据缺失必须失败，不能用下载日期或默认地区填补。
     raw = {"startTime": None, "masterData": {"lang": "en"}}

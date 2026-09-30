@@ -90,16 +90,16 @@ def test_history_uses_non_best_records_and_excludes_anonymous_hidden_and_duplica
                 _rank("PRIVATE", 30, hidden=True),
             ]},
         }
-    client = SimpleNamespace(_cancelled=False, get_encounter_rankings=rankings, get_character_history=history)
+    client = SimpleNamespace(_cancelled=False, server_region="CN",
+                             get_encounter_rankings=rankings, get_character_history=history)
     records = list(_iter_historical_reports(
         client, 1079, spec_name="BlackMage", metric="rdps", partition=partition,
-        server_region="CN",
     ))
     assert [(record.code, record.percentile) for record in records] == [("BEST", 100), ("LOW", 5)]
     assert [item[0] for item in history_calls] == [2, 3]
     assert all(item[1]["partition"] == partition for item in history_calls)
     assert [call["partition"] for call in calls] == [partition]
-    assert all(call["server_region"] == "CN" for call in calls)
+    assert all("server_region" not in call for call in calls)
     assert all(call["page"] == 1 for call in calls)
 
 
@@ -172,10 +172,10 @@ def test_ranking_api_failure_is_not_reported_as_empty_candidate_pool():
     def fail(*args, **kwargs):
         raise RuntimeError("Invalid region specified.")
 
-    client = SimpleNamespace(_cancelled=False, get_encounter_rankings=fail)
+    client = SimpleNamespace(_cancelled=False, server_region="NA", get_encounter_rankings=fail)
     with pytest.raises(RuntimeError, match="地区 NA.*Invalid region specified"):
         list(_iter_historical_reports(
-            client, 1079, spec_name="BlackMage", metric="rdps", server_region="NA",
+            client, 1079, spec_name="BlackMage", metric="rdps",
         ))
 
 

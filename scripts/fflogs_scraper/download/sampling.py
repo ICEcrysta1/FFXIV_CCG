@@ -35,7 +35,6 @@ def _iter_historical_reports(
     spec_name: str,
     metric: str,
     partition: int | None = None,
-    server_region: str | None = None,
     bracket: int = 0,
     max_pages: int = 10,
 ) -> Iterator[HistoricalReport]:
@@ -58,12 +57,11 @@ def _iter_historical_reports(
             result = client.get_encounter_rankings(
                 encounter_id, spec_name=spec_name, metric=metric,
                 bracket=bracket, partition=partition, page=page,
-                server_region=server_region,
             )
         except Exception as error:
             # 榜单失败必须暴露真实错误，不能伪装成配额不足。
             raise RuntimeError(
-                f"地区 {server_region or '全部'}、分区 {partition} 的榜单查询失败: {error}"
+                f"地区 {client.server_region or '全部'}、分区 {partition} 的榜单查询失败: {error}"
             ) from error
         entries = result.get("rankings", [])
         has_more = bool(entries) and (

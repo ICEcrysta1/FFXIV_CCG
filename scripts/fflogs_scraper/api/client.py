@@ -46,12 +46,21 @@ class FFLogsV2Client:
     GQL_URL = "https://www.fflogs.com/api/v2/client"
     CN_GQL_URL = "https://cn.fflogs.com/api/v2/client"
 
-    def __init__(self, client_id: str, client_secret: str):
+    def __init__(self, client_id: str, client_secret: str, *, server_region: str | None = None):
+        if server_region not in (None, "CN", "NA"):
+            raise ValueError(f"不支持的 FFLogs 数据源地区: {server_region!r}")
         self._client_id = client_id
         self._client_secret = client_secret
+        self._server_region = server_region
+        self._gql_url = self.CN_GQL_URL if server_region == "CN" else self.GQL_URL
         self._token: Optional[str] = None
         self._cancelled = False
         self._session: cf_requests.Session | None = None
+
+    @property
+    def server_region(self) -> str | None:
+        """当前客户端固定的数据源地区。"""
+        return self._server_region
 
     def _http_session(self) -> cf_requests.Session:
         """单客户端复用 HTTP 连接，避免每个分页请求重新建立连接。"""
@@ -87,14 +96,14 @@ class FFLogsV2Client:
         logger.info("V2 token 已获取，有效期 %ds", data.get("expires_in", 0))
         return self._token
 
-    def query(self, gql: str, variables: dict = None, *, endpoint: str | None = None) -> dict:
-        """执行 GraphQL 查询。"""
+    def query(self, gql: str, variables: dict = None) -> dict:
+        """向当前数据源地区的固定端点执行 GraphQL 查询。"""
         token = self._ensure_token()
         payload: dict = {"query": gql}
         if variables:
             payload["variables"] = variables
         resp = self._http_session().post(
-            endpoint or self.GQL_URL,
+            self._gql_url,
             json=payload,
             headers={"Authorization": f"Bearer {token}"},
             impersonate=BROWSER_FINGERPRINT,
@@ -328,7 +337,6 @@ class FFLogsV2Client:
         metric: str = "dps",
         *,
         partition: int | None = None,
-        server_region: str | None = None,
     ) -> dict:
         """获取 encounter 排行。"""
         encounter_id = _validate_integer(encounter_id, "encounter_id", minimum=1)
@@ -341,9 +349,6 @@ class FFLogsV2Client:
             class_name = _validate_alphanumeric(class_name, "class_name")
         if partition is not None:
             partition = _validate_integer(partition, "partition", minimum=1)
-        if server_region is not None:
-            server_region = _validate_alphanumeric(server_region, "server_region")
-
         filters = []
         if spec_name:
             filters.append(f'specName: "{spec_name}"')
@@ -351,8 +356,8 @@ class FFLogsV2Client:
             filters.append(f'className: "{class_name}"')
         if partition is not None:
             filters.append(f'partition: {partition}')
-        if server_region is not None:
-            filters.append(f'serverRegion: "{server_region}"')
+        if self.server_region is not None:
+            filters.append(f'serverRegion: "{self.server_region}"')
         filter_str = ", ".join(filters)
         gql = f"""
         query {{
@@ -368,8 +373,7 @@ class FFLogsV2Client:
           }}
         }}
         """
-        # 国服排行在中国站维护；全球站即使传 CN 也会返回空榜单。
-        data = self.query(gql, endpoint=self.CN_GQL_URL) if server_region == "CN" else self.query(gql)
+        data = self.query(gql)
         enc = data.get("worldData", {}).get("encounter", {})
         rankings = enc.get("characterRankings", {}) if enc else {}
         if isinstance(rankings, dict) and rankings.get("error"):

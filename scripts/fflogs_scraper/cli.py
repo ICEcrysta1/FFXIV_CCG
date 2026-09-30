@@ -122,24 +122,30 @@ def main():
         )
         sys.exit(1)
 
-    client = FFLogsV2Client(client_id, client_secret)
+    clients = (
+        (FFLogsV2Client(client_id, client_secret, server_region="CN"),
+         FFLogsV2Client(client_id, client_secret, server_region="NA"))
+        if args.command == "batch" else (FFLogsV2Client(client_id, client_secret),)
+    )
 
     def _on_interrupt(signum, frame):
         logger.info("收到 Ctrl+C，正在停止...")
-        client.cancel()
+        for client in clients:
+            client.cancel()
 
     signal.signal(signal.SIGINT, _on_interrupt)
 
     # 子命令分发
     try:
         if args.command == "batch":
-            _cmd_batch(client, args)
+            _cmd_batch(clients[0], clients[1], args)
         elif args.command == "encounters":
-            _cmd_encounters(client, args)
+            _cmd_encounters(clients[0], args)
         elif args.command == "single" or args.command is None:
-            _cmd_single(client, args)
+            _cmd_single(clients[0], args)
         else:
             parser.print_help()
             sys.exit(1)
     finally:
-        client.close()
+        for client in clients:
+            client.close()

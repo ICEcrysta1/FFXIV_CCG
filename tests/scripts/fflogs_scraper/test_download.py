@@ -173,6 +173,7 @@ def test_batch_uses_distinct_characters_before_repeating_one_bucket(monkeypatch,
 
     client = SimpleNamespace(
         _cancelled=False,
+        server_region=None,
         get_encounter_rankings=lambda *args, **kwargs: {
             "rankings": [
                 {"name": "First", "lodestoneID": 1},
@@ -268,7 +269,8 @@ def test_missing_bucket_does_not_borrow_surplus_from_another(monkeypatch, tmp_pa
 
 @pytest.mark.parametrize("partition", [None, 25])
 def test_cmd_batch_uses_api_default_or_explicit_partition(monkeypatch, tmp_path, partition):
-    client = FFLogsV2Client("id", "secret")
+    client = FFLogsV2Client("id", "secret", server_region="CN")
+    validation_client = FFLogsV2Client("id", "secret", server_region="NA")
     monkeypatch.setattr(client, "get_encounter_details", lambda encounter: {
         "name": "Futures Rewritten", "zone": {"partitions": [{"id": 1}, {"id": 25}]},
     })
@@ -280,9 +282,9 @@ def test_cmd_batch_uses_api_default_or_explicit_partition(monkeypatch, tmp_path,
     args = SimpleNamespace(zone=None, encounter=1079, count=200, partition=partition,
                            spec_name="BlackMage", metric="rdps", bracket=0, max_pages=10,
                             output=str(tmp_path / "raw/FRU"), mode="events-only")
-    batch._cmd_batch(client, args)
+    batch._cmd_batch(client, validation_client, args)
     assert calls[0]["partition"] == partition
-    assert [call["server_region"] for call in calls] == ["CN", "NA"]
+    assert all("server_region" not in call for call in calls)
     assert "partitions" not in calls[0]
     assert "history_partition" not in calls[0]
     assert (tmp_path / "raw/FRU/00-10").is_dir()
@@ -292,39 +294,49 @@ def test_cmd_batch_uses_api_default_or_explicit_partition(monkeypatch, tmp_path,
 
 
 def test_cmd_batch_rejects_output_outside_raw_before_api_call(monkeypatch, tmp_path):
-    client = FFLogsV2Client("id", "secret")
+    client = FFLogsV2Client("id", "secret", server_region="CN")
     monkeypatch.setattr(client, "get_encounter_details", lambda *args: pytest.fail("无效路径不应请求 API"))
     with pytest.raises(ValueError, match="raw/<副本>"):
-        batch._cmd_batch(client, SimpleNamespace(
+        batch._cmd_batch(client, FFLogsV2Client("id", "secret", server_region="NA"), SimpleNamespace(
             zone=None, encounter=1079, count=200, output=str(tmp_path / "FRU"),
         ))
 
 
+def test_cmd_batch_rejects_mismatched_data_sources():
+    with pytest.raises(ValueError, match="CN 训练与 NA 验证"):
+        batch._cmd_batch(
+            FFLogsV2Client("id", "secret", server_region="NA"),
+            FFLogsV2Client("id", "secret", server_region="CN"),
+            SimpleNamespace(),
+        )
+
+
 def test_cmd_batch_uses_configured_validation_ratio(monkeypatch, tmp_path):
-    client = FFLogsV2Client("id", "secret")
+    client = FFLogsV2Client("id", "secret", server_region="CN")
+    validation_client = FFLogsV2Client("id", "secret", server_region="NA")
     monkeypatch.setattr(client, "get_encounter_details", lambda encounter: {"name": "FRU"})
     calls = []
     monkeypatch.setattr(batch, "_iter_historical_reports", lambda *args, **kwargs: [])
 
     def download(_client, _reports, quotas, output, _mode, _metric, **kwargs):
-        calls.append((quotas, Path(output), kwargs))
+        calls.append((_client.server_region, quotas, Path(output), kwargs))
 
     monkeypatch.setattr(batch, "_stratified_batch_download", download)
     for ratio, count, expected in (("0.10", 200, 20), ("0.10", 203, 21),
                                    ("0.07", 100, 7), ("0.20", 203, 41)):
         monkeypatch.setattr(batch, "load_validation_ratio", lambda ratio=ratio: Decimal(ratio))
         calls.clear()
-        batch._cmd_batch(client, SimpleNamespace(
+        batch._cmd_batch(client, validation_client, SimpleNamespace(
             zone=None, encounter=1079, count=count, partition=None,
             spec_name="BlackMage", metric="rdps", bracket=0, max_pages=10,
             output=str(tmp_path / "raw/FRU"), mode="events-only",
         ))
-        assert sum(calls[0][0].values()) == count
-        assert calls[0][1] == tmp_path / "raw/FRU"
-        assert calls[0][2]["server_region"] == "CN"
+        assert calls[0][0] == "CN"
+        assert sum(calls[0][1].values()) == count
+        assert calls[0][2] == tmp_path / "raw/FRU"
         assert calls[1] == (
-            {"90-100": expected}, tmp_path / "raw/VAL/FRU",
-            {"server_region": "NA", "bucket_directories": False},
+            "NA", {"90-100": expected}, tmp_path / "raw/VAL/FRU",
+            {"bucket_directories": False},
         )
 
 
@@ -332,7 +344,8 @@ def test_cmd_batch_uses_configured_validation_ratio(monkeypatch, tmp_path):
     ("FRU", 1079), ("65", 1079), ("M1s", 93), ("M12sI", 104), ("M12sII", 105),
 ])
 def test_named_batch_resolves_model_job_and_output_directory(monkeypatch, tmp_path, alias, encounter_id):
-    client = FFLogsV2Client("id", "secret")
+    client = FFLogsV2Client("id", "secret", server_region="CN")
+    validation_client = FFLogsV2Client("id", "secret", server_region="NA")
     monkeypatch.setattr(batch, "resolve_policy_model_config_path", lambda: tmp_path / "config.yaml")
     monkeypatch.setattr(batch, "resolve_policy_model_job_tag", lambda _path: "black_mage")
     monkeypatch.setattr(batch, "load_policy_config", lambda _path: {
@@ -346,7 +359,7 @@ def test_named_batch_resolves_model_job_and_output_directory(monkeypatch, tmp_pa
         target=alias, zone=None, encounter=None, output=None, spec_name=None,
         count=200, partition=None, metric="rdps", bracket=0, max_pages=10, mode="default",
     )
-    batch._cmd_batch(client, args)
+    batch._cmd_batch(client, validation_client, args)
     assert args.encounter == encounter_id
     assert args.spec_name == "BlackMage"
     assert Path(args.output) == tmp_path / "raw" / ("FRU" if alias == "65" else alias)
@@ -355,12 +368,11 @@ def test_named_batch_resolves_model_job_and_output_directory(monkeypatch, tmp_pa
 
 
 def test_existing_valid_inventory_fills_quota_without_querying_reports(monkeypatch, tmp_path, analysis_meta):
-    client = FFLogsV2Client("id", "secret")
+    client = FFLogsV2Client("id", "secret", server_region="CN")
     _stub_report_download(monkeypatch, client, analysis_meta)
     record = _record("EXISTING", 95)
     first = batch._stratified_batch_download(
         client, [record], {"90-100": 1}, tmp_path, "events-only",
-        server_region="CN",
     )
     assert first["success"] == 1
 
@@ -371,7 +383,6 @@ def test_existing_valid_inventory_fills_quota_without_querying_reports(monkeypat
     monkeypatch.setattr(client, "get_report_fights", lambda *args, **kwargs: pytest.fail("不应重新下载"))
     second = batch._stratified_batch_download(
         client, UnexpectedReports(), {"90-100": 1}, tmp_path, "events-only",
-        server_region="CN",
     )
     assert second["counts"] == {"90-100": 1}
     assert second["existing"] == 1 and second["success"] == 0
@@ -380,17 +391,17 @@ def test_existing_valid_inventory_fills_quota_without_querying_reports(monkeypat
 def test_percentile_drift_does_not_download_same_report_into_another_bucket(
     monkeypatch, tmp_path, analysis_meta,
 ):
-    client = FFLogsV2Client("id", "secret")
+    client = FFLogsV2Client("id", "secret", server_region="CN")
     _stub_report_download(monkeypatch, client, analysis_meta)
     first = batch._stratified_batch_download(
         client, [_record("SAME", 35)], {"30-40": 1}, tmp_path,
-        "events-only", server_region="CN",
+        "events-only",
     )
     assert first["success"] == 1
     second = batch._stratified_batch_download(
         client, [_record("SAME", 45), _record("OTHER", 45)],
         {"30-40": 1, "40-50": 1}, tmp_path,
-        "events-only", server_region="CN",
+        "events-only",
     )
     assert second["counts"] == {"30-40": 1, "40-50": 1}
     assert second["existing"] == 1 and second["success"] == 1
@@ -398,7 +409,7 @@ def test_percentile_drift_does_not_download_same_report_into_another_bucket(
 
 
 def test_validation_download_is_flat_and_rejects_wrong_report_region(monkeypatch, tmp_path, analysis_meta):
-    client = FFLogsV2Client("id", "secret")
+    client = FFLogsV2Client("id", "secret", server_region="NA")
     requested = []
 
     def metadata(code, *, player_fight_id=None):
@@ -414,7 +425,7 @@ def test_validation_download_is_flat_and_rejects_wrong_report_region(monkeypatch
     reports = [_record("LOW", 85), _record("WRONG", 95), _record("VALID", 97)]
     result = batch._stratified_batch_download(
         client, reports, {"90-100": 1}, output, "events-only",
-        server_region="NA", bucket_directories=False,
+        bucket_directories=False,
     )
 
     assert result["counts"] == {"90-100": 1}
@@ -431,6 +442,6 @@ def test_validation_download_is_flat_and_rejects_wrong_report_region(monkeypatch
     monkeypatch.setattr(client, "get_report_fights", lambda *args, **kwargs: pytest.fail("已有验证文件应复用"))
     repeated = batch._stratified_batch_download(
         client, [_record("VALID", 97)], {"90-100": 1}, output, "events-only",
-        server_region="NA", bucket_directories=False,
+        bucket_directories=False,
     )
     assert repeated["existing"] == 1 and repeated["success"] == 0
