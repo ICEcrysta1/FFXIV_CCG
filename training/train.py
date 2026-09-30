@@ -115,7 +115,7 @@ def main() -> None:
     parser.add_argument(
         "--force-resume-data-mismatch",
         action="store_true",
-        help="确认后允许 checkpoint.run_config.max_files 与当前配置不一致时继续续训",
+        help="确认后允许 checkpoint.run_config.max_files 或 validation_files 与当前配置不一致时继续续训",
     )
     args = parser.parse_args()
 

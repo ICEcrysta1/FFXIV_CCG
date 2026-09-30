@@ -2352,13 +2352,14 @@ def test_collect_checkpoint_candidates_uses_payload_epoch(tmp_path):
         item.max_files is checkpoint_module.UNKNOWN_MAX_FILES
         for item in (*resumable, *rejected)
     )
+    assert all(item.validation_files is None for item in (*resumable, *rejected))
 
 
-def test_collect_checkpoint_candidates_exposes_saved_max_files(tmp_path):
+def test_collect_checkpoint_candidates_exposes_saved_data_counts(tmp_path):
     output_dir = tmp_path / "output"
     output_dir.mkdir()
     torch.save(
-        {"epoch": 2, "run_config": {"max_files": 1280}},
+        {"epoch": 2, "run_config": {"max_files": 1280, "validation_files": 100}},
         output_dir / "epoch_002.pt",
     )
 
@@ -2370,6 +2371,7 @@ def test_collect_checkpoint_candidates_exposes_saved_max_files(tmp_path):
     assert skipped == ()
     assert len(rejected) == 0
     assert resumable[0].max_files == 1280
+    assert resumable[0].validation_files == 100
 
 
 def test_collect_checkpoint_candidates_distinguishes_unknown_and_explicit_unlimited(
@@ -2392,6 +2394,8 @@ def test_collect_checkpoint_candidates_distinguishes_unknown_and_explicit_unlimi
     assert len(rejected) == 0
     assert resumable[0].max_files is checkpoint_module.UNKNOWN_MAX_FILES
     assert resumable[1].max_files is None
+    assert resumable[0].validation_files is None
+    assert resumable[1].validation_files is None
 
 
 def test_read_checkpoint_epoch_uses_mmap_without_loading_storages(tmp_path, monkeypatch):

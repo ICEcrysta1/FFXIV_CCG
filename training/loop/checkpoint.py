@@ -88,11 +88,12 @@ UNKNOWN_MAX_FILES = UnknownMaxFiles()
 
 @dataclass(frozen=True)
 class CheckpointCandidate:
-    """恢复训练候选项：文件、真实 epoch 与保存时的数据上限。"""
+    """恢复训练候选项：文件、真实 epoch 与保存时的训练/验证份数。"""
 
     path: Path
     epoch: int
     max_files: int | None | UnknownMaxFiles
+    validation_files: int | None
 
 
 @dataclass(frozen=True)
@@ -179,6 +180,7 @@ def collect_checkpoint_candidates(
                 path=path,
                 epoch=_normalized_checkpoint_epoch(payload),
                 max_files=_checkpoint_max_files(payload),
+                validation_files=_checkpoint_validation_files(payload),
             )
         except Exception as exc:  # 单个损坏/非法 `.pt` 不应让整个清单不可用。
             logger.warning("跳过无法读取的 checkpoint: %s (%s)", path, exc)

@@ -78,6 +78,7 @@ def serialize_candidates(items, source):
             "source": source,
             "output_dir": str(item.path.parent),
             "max_files": "unknown" if item.max_files is UNKNOWN_MAX_FILES else item.max_files,
+            "validation_files": item.validation_files,
         }
         for item in items
     ]
@@ -105,6 +106,7 @@ print(
                 else None
             ),
             "max_files": run_config.max_files,
+            "validation_files": run_config.validation_files,
             "max_epochs": run_config.max_epochs,
             "resumable": serialize_candidates(bc_resumable, "bc"),
             "rejected": serialize_candidates(bc_rejected, "bc"),
@@ -289,6 +291,7 @@ function Show-CheckpointTargetSummary {
     }
     $maxFiles = if ($null -eq $Target.max_files) { "全部有效文件" } else { [string]$Target.max_files }
     Write-Host ("训练数据上限：{0}（来自模型 YAML 的 training.max_files，BC 预训练与 GRPO 后训练共用）" -f $maxFiles)
+    Write-Host ("验证数据份数：{0}（来自模型 YAML 的 training.validation_files，仅供 BC 训练验证使用）" -f $Target.validation_files)
     $skipped = @($Target.skipped)
     if ($skipped.Count -gt 0) {
         Write-Host ""
@@ -383,10 +386,18 @@ function Invoke-Tool {
             else {
                 $forceSelectedDataMismatch = $ForceDataMismatch
                 if ($InteractiveCheckpointSelection) {
-                    if ($selectedCheckpoint.max_files -ne $checkpointTarget.max_files -and -not $ForceDataMismatch) {
-                        $checkpointMaxFiles = if ([string]$selectedCheckpoint.max_files -eq "unknown") { "未知（旧 checkpoint 未记录）" } elseif ($null -eq $selectedCheckpoint.max_files) { "全部有效文件" } else { [string]$selectedCheckpoint.max_files }
-                        $currentMaxFiles = if ($null -eq $checkpointTarget.max_files) { "全部有效文件" } else { [string]$checkpointTarget.max_files }
-                        Write-Warning ("checkpoint {0} 保存时的 training.max_files={1}，当前 YAML/CLI 为 {2}。两者会改变训练/验证数据集。" -f $selectedCheckpoint.name, $checkpointMaxFiles, $currentMaxFiles)
+                    $maxFilesMismatch = $selectedCheckpoint.max_files -ne $checkpointTarget.max_files
+                    $validationFilesMismatch = $null -eq $selectedCheckpoint.validation_files -or $selectedCheckpoint.validation_files -ne $checkpointTarget.validation_files
+                    if (($maxFilesMismatch -or $validationFilesMismatch) -and -not $ForceDataMismatch) {
+                        if ($maxFilesMismatch) {
+                            $checkpointMaxFiles = if ([string]$selectedCheckpoint.max_files -eq "unknown") { "未知（旧 checkpoint 未记录）" } elseif ($null -eq $selectedCheckpoint.max_files) { "全部有效文件" } else { [string]$selectedCheckpoint.max_files }
+                            $currentMaxFiles = if ($null -eq $checkpointTarget.max_files) { "全部有效文件" } else { [string]$checkpointTarget.max_files }
+                            Write-Warning ("checkpoint {0} 保存时的 training.max_files={1}，当前 YAML/CLI 为 {2}；训练数据选择可能变化。" -f $selectedCheckpoint.name, $checkpointMaxFiles, $currentMaxFiles)
+                        }
+                        if ($validationFilesMismatch) {
+                            $checkpointValidationFiles = if ($null -eq $selectedCheckpoint.validation_files) { "未知（旧 checkpoint 未记录）" } else { [string]$selectedCheckpoint.validation_files }
+                            Write-Warning ("checkpoint {0} 保存时的 training.validation_files={1}，当前 YAML 为 {2}；验证数据选择可能变化。" -f $selectedCheckpoint.name, $checkpointValidationFiles, $checkpointTarget.validation_files)
+                        }
                         $confirmation = (Read-Host "仍要强制继续吗？输入 Y 确认，直接回车或输入 N 取消").Trim()
                         if ($confirmation -notmatch "^y$") {
                             Write-Host "已取消恢复训练。"
@@ -403,7 +414,7 @@ function Invoke-Tool {
                 $trainingArguments = @("-m", "training.train", "--resume", $selectedCheckpoint.path)
                 if ($forceSelectedDataMismatch) {
                     $trainingArguments += "--force-resume-data-mismatch"
-                    Write-Host "已启用强制续训：允许 checkpoint 与当前 training.max_files 不一致。" -ForegroundColor Yellow
+                    Write-Host "已启用强制续训：允许 checkpoint 与当前 training.max_files / training.validation_files 不一致。" -ForegroundColor Yellow
                 }
                 & $ProjectPython @trainingArguments
                 $exitCode = $LASTEXITCODE
