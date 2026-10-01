@@ -13,7 +13,7 @@ def action_quality_sample_weights(
     batch: Mapping[str, object],
     config: ActionQualityLossConfig,
 ) -> torch.Tensor:
-    """多个错误取最严重等级；仅削弱被明确归因的 target。"""
+    """消费 collator 已校验的监督字段；仅削弱被明确归因的 target。"""
     labels = batch["label_index"]
     if not isinstance(labels, torch.Tensor) or labels.ndim != 1:
         raise ValueError("label_index must be a [batch] tensor")
@@ -31,28 +31,14 @@ def action_quality_sample_weights(
         raise ValueError("quality_label_levels and quality_label_mask must be [batch, labels]")
     if quality.shape != labels.shape or available.shape != labels.shape:
         raise ValueError("source_quality and quality_annotation_available must be [batch]")
-    if levels.device != labels.device or mask.device != labels.device or quality.device != labels.device:
+    if any(value.device != labels.device for value in (levels, mask, quality, available)):
         raise ValueError("quality supervision must be on the same device as label_index")
 
     if levels.shape[1] == 0:
         return weights
-    invalid_levels = mask & ((levels < 1) | (levels > 3))
-    if bool(invalid_levels.any()):
-        raise ValueError("quality label levels must be 1, 2 or 3")
     tagged = mask.any(dim=1)
-    if bool((tagged & ~available.bool()).any()):
-        raise ValueError("attributed quality labels require available annotation")
-    if not bool(tagged.any()):
-        return weights
-
-    normalized_quality = quality.float()
-    bad_quality = tagged & (
-        ~torch.isfinite(normalized_quality)
-        | (normalized_quality < 0.0)
-        | (normalized_quality > 1.0)
-    )
-    if bool(bad_quality.any()):
-        raise ValueError("attributed quality labels require a percentile within [0, 100]")
+    # 无标签样本的排名可以缺失或非有限，先隔离它们，避免零严重度乘出 NaN。
+    normalized_quality = quality.float().masked_fill(~tagged, 0.0)
     severity_lookup = torch.tensor(
         (0.0, *config.severity_weights), device=labels.device, dtype=torch.float32
     )

@@ -126,6 +126,7 @@ class TrainingCollator:
                 [sample["candidate_legal_mask"] for sample in samples]
             ),
         }
+        _validate_quality_supervision(batch, torch=torch)
         if self._skill_values is not None:
             runtime_values = []
             for sample in samples:
@@ -250,6 +251,26 @@ class TrainingCollator:
             ]
         shuffled["label_index"] = permutation.index(int(sample["label_index"]))
         return shuffled
+
+
+def _validate_quality_supervision(batch: Mapping[str, object], *, torch) -> None:
+    """在 CPU 数据入口校验静态监督字段，损失计算不再读取设备标量。"""
+    levels = batch["quality_label_levels"]
+    mask = batch["quality_label_mask"]
+    available = batch["quality_annotation_available"]
+    quality = batch["source_quality"]
+    if any(value.device.type != "cpu" for value in (levels, mask, available, quality)):
+        raise ValueError("quality supervision must be collated on CPU")
+    if bool((mask & ((levels < 1) | (levels > 3))).any()):
+        raise ValueError("quality label levels must be 1, 2 or 3")
+    tagged = mask.any(dim=1)
+    if bool((tagged & ~available).any()):
+        raise ValueError("attributed quality labels require available annotation")
+    bad_quality = tagged & (
+        ~torch.isfinite(quality) | (quality < 0.0) | (quality > 1.0)
+    )
+    if bool(bad_quality.any()):
+        raise ValueError("attributed quality labels require a percentile within [0, 100]")
 
 
 def _build_length_mask(lengths: list[int], *, torch):

@@ -502,6 +502,52 @@ def test_training_collator_pads_history_and_scene_lengths(tmp_path):
     assert batch["candidate_state_vectors"].shape == batch["candidate_state_null_mask"].shape
 
 
+@pytest.mark.parametrize("levels, status, percentile, error", [
+    ([0], "attributed_label", 50.0, "levels"),
+    ([4], "attributed_label", 50.0, "levels"),
+    ([3], "unannotated", 50.0, "available annotation"),
+    ([3], "attributed_label", None, "percentile"),
+    ([3], "attributed_label", -1.0, "percentile"),
+    ([3], "attributed_label", 101.0, "percentile"),
+    ([3], "attributed_label", float("nan"), "percentile"),
+    ([3], "attributed_label", float("inf"), "percentile"),
+    ([3], "attributed_label", -float("inf"), "percentile"),
+])
+def test_training_collator_rejects_invalid_quality_supervision_on_cpu(
+    tmp_path, levels, status, percentile, error,
+):
+    torch = pytest.importorskip("torch")
+    pt_path = make_demo_pt(tmp_path, ["fire_iii"], fight_id="invalid_quality")
+    sample = make_dataset([pt_path])[0]
+    sample = {
+        **sample,
+        "quality_label_levels": torch.tensor(levels, dtype=torch.int32),
+        "metadata": {
+            **sample["metadata"], "quality_label_status": status, "percentile": percentile,
+        },
+    }
+    with pytest.raises(ValueError, match=error):
+        TrainingCollator()([sample])
+
+
+def test_training_collator_allows_unknown_percentile_for_untagged_samples(tmp_path):
+    torch = pytest.importorskip("torch")
+    pt_path = make_demo_pt(tmp_path, ["fire_iii"], fight_id="unknown_quality")
+    sample = make_dataset([pt_path])[0]
+    samples = [
+        {
+            **sample,
+            "quality_label_levels": torch.empty(0, dtype=torch.int32),
+            "metadata": {**sample["metadata"], "percentile": percentile},
+        }
+        for percentile in (None, float("nan"))
+    ]
+    batch = TrainingCollator()(samples)
+    assert batch["quality_label_levels"].shape == (2, 0)
+    assert batch["source_quality"][0].item() == -1.0
+    assert torch.isnan(batch["source_quality"][1])
+
+
 def test_compact_history_materialization_matches_legacy_dense_builder(tmp_path):
     torch = pytest.importorskip("torch")
     pt_path = make_demo_pt(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 import torch.nn.functional as F
+from torch.utils._python_dispatch import TorchDispatchMode
 
 from training.config import (
     ActionQualityLossConfig,
@@ -182,13 +183,50 @@ def test_quality_loss_gates_ce_and_value_preference_together():
     assert not torch.equal(logits.grad[1], torch.zeros(2))
 
 
-def test_quality_loss_rejects_missing_percentile_for_tagged_target():
+@pytest.mark.parametrize("unknown_quality", [-1.0, float("nan"), float("inf"), -float("inf")])
+def test_quality_weights_ignore_unknown_percentile_for_untagged_target(unknown_quality):
     batch = {
-        "label_index": torch.tensor([0]),
-        "quality_label_levels": torch.tensor([[3]]),
-        "quality_label_mask": torch.tensor([[True]]),
-        "quality_annotation_available": torch.tensor([True]),
-        "source_quality": torch.tensor([-1.0]),
+        "label_index": torch.tensor([0, 0]),
+        "quality_label_levels": torch.tensor([[3], [0]]),
+        "quality_label_mask": torch.tensor([[True], [False]]),
+        "quality_annotation_available": torch.tensor([True, False]),
+        "source_quality": torch.tensor([0.5, unknown_quality]),
     }
-    with pytest.raises(ValueError, match="percentile"):
-        action_quality_sample_weights(batch, ActionQualityLossConfig(enabled=True))
+    weights = action_quality_sample_weights(batch, ActionQualityLossConfig(enabled=True))
+    expected = -torch.expm1(-torch.tensor((0.5 / 0.6) ** 4))
+    assert weights.tolist() == pytest.approx([expected.item(), 1.0])
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("layout", ["empty", "untagged", "mixed"])
+def test_quality_weights_do_not_read_device_scalars(device, dtype, layout):
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is not available")
+    levels = torch.tensor([[1, 2], [3, 0], [0, 0]], device=device)
+    mask = torch.tensor([[True, True], [True, False], [False, False]], device=device)
+    if layout == "empty":
+        levels, mask = levels[:, :0], mask[:, :0]
+    elif layout == "untagged":
+        mask.zero_()
+    batch = {
+        "label_index": torch.zeros(3, dtype=torch.long, device=device),
+        "quality_label_levels": levels,
+        "quality_label_mask": mask,
+        "quality_annotation_available": torch.tensor([True, True, False], device=device),
+        "source_quality": torch.tensor([0.0, 0.0, float("nan")], dtype=dtype, device=device),
+    }
+
+    class RejectScalarReads(TorchDispatchMode):
+        """阻止 bool/item 等设备标量读取，覆盖 CPU 与 CUDA 的同一计算路径。"""
+
+        def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+            if func == torch.ops.aten._local_scalar_dense.default:
+                pytest.fail("quality weighting must not read tensor scalars on the host")
+            return func(*args, **(kwargs or {}))
+
+    with RejectScalarReads():
+        weights = action_quality_sample_weights(batch, ActionQualityLossConfig(enabled=True))
+    assert weights.dtype == torch.float32
+    expected = [0.5, 0.0, 1.0] if layout == "mixed" else [1.0, 1.0, 1.0]
+    assert weights.tolist() == pytest.approx(expected)
