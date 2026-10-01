@@ -7,8 +7,9 @@ from dataclasses import dataclass
 
 import torch
 
-from training.config import ValuePreferenceConfig
+from training.config import ActionQualityLossConfig, ValuePreferenceConfig
 
+from .losses.action_quality import action_quality_sample_weights
 from .losses.primary import primary_loss
 from .losses.value_preference import compute_value_preference_loss
 
@@ -19,7 +20,9 @@ class AuxiliaryLoss:
 
     metric_name: str
     weight: float
-    compute: Callable[[Mapping[str, torch.Tensor], Mapping[str, object]], torch.Tensor]
+    compute: Callable[
+        [Mapping[str, torch.Tensor], Mapping[str, object], torch.Tensor], torch.Tensor
+    ]
 
 
 @dataclass(frozen=True)
@@ -40,8 +43,8 @@ def configured_auxiliary_losses(
         AuxiliaryLoss(
             metric_name="value_preference_loss",
             weight=config.loss_weight if config.enabled else 0.0,
-            compute=lambda output, batch: compute_value_preference_loss(
-                output["logits"], batch, config,
+            compute=lambda output, batch, sample_weights: compute_value_preference_loss(
+                output["logits"], batch, config, sample_weights,
             ),
         ),
     )
@@ -51,9 +54,14 @@ def compose_training_loss(
     output: Mapping[str, torch.Tensor],
     batch: Mapping[str, object],
     auxiliary_losses: Sequence[AuxiliaryLoss] = (),
+    *,
+    action_quality: ActionQualityLossConfig | None = None,
 ) -> LossBreakdown:
     """主交叉熵固定存在；辅助项仅由显式配置列表决定。"""
-    primary = primary_loss(output, batch)
+    sample_weights = action_quality_sample_weights(
+        batch, action_quality or ActionQualityLossConfig()
+    )
+    primary = primary_loss(output, batch, sample_weights)
     total = primary
     auxiliary: dict[str, torch.Tensor] = {}
     for term in auxiliary_losses:
@@ -64,7 +72,7 @@ def compose_training_loss(
                 f"auxiliary loss weight must be non-negative: {term.metric_name}"
             )
         if term.weight > 0:
-            value = term.compute(output, batch)
+            value = term.compute(output, batch, sample_weights)
             total = total + term.weight * value
         else:
             value = primary.new_zeros(())

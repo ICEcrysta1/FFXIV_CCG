@@ -155,6 +155,89 @@ def test_validation_conversion_reuses_same_encounter_fallback(tmp_path, monkeypa
     )
 
 
+def test_training_shortage_does_not_stop_validation_conversion(tmp_path, monkeypatch):
+    """训练档位缺额时仍尝试 VAL 同副本的后备文件，再统一报缺额。"""
+    root = tmp_path / "annotated"
+    train_sources = [root / "FRU" / "00-10" / f"train_{index}.json.br" for index in range(2)]
+    val_sources = [root / "VAL" / "FRU" / f"val_{index}.json.br" for index in range(2)]
+    for source in train_sources + val_sources:
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.touch()
+
+    monkeypatch.setattr(
+        cache_compile_module, "cached_candidates_for_group", lambda *_args, **_kwargs: [],
+    )
+    attempted = []
+
+    def compile_round(paths, **_kwargs):
+        attempted.extend(paths)
+        return [path for path in paths if path == val_sources[1]]
+
+    monkeypatch.setattr(cache_compile_module, "precompile_raw_training_caches", compile_round)
+    with pytest.raises(ValueError, match=r"FRU/00-10: required=1 valid=0 missing=1") as error:
+        cache_compile_module.prepare_training_and_validation_caches(
+            root, max_files=1, validation_files=1, job_tag="black_mage",
+            int_dtype="int32", float_dtype="float32", cache_dir=tmp_path / ".cache",
+        )
+
+    assert "VAL/FRU" not in str(error.value)
+    assert set(attempted) == set(train_sources + val_sources)
+
+
+def test_joint_conversion_reports_training_and_validation_shortages(tmp_path, monkeypatch):
+    """两个数据集都缺额时，报告列出各自的组，不用另一组补位。"""
+    root = tmp_path / "annotated"
+    for source in (
+        root / "FRU" / "00-10" / "train.json.br",
+        root / "VAL" / "FRU" / "val.json.br",
+    ):
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.touch()
+    monkeypatch.setattr(
+        cache_compile_module, "cached_candidates_for_group", lambda *_args, **_kwargs: [],
+    )
+    attempted = []
+
+    def compile_round(paths, **_kwargs):
+        attempted.extend(paths)
+        return []
+
+    monkeypatch.setattr(cache_compile_module, "precompile_raw_training_caches", compile_round)
+    with pytest.raises(ValueError) as error:
+        cache_compile_module.prepare_training_and_validation_caches(
+            root, max_files=1, validation_files=1, job_tag="black_mage",
+            int_dtype="int32", float_dtype="float32", cache_dir=tmp_path / ".cache",
+        )
+
+    assert "FRU/00-10: required=1 valid=0 missing=1" in str(error.value)
+    assert "VAL/FRU: required=1 valid=0 missing=1" in str(error.value)
+    assert len(attempted) == 2
+
+
+def test_missing_validation_directory_is_reported_after_training_conversion(tmp_path, monkeypatch):
+    """尚无 VAL 目录时也先编译训练文件，然后报告验证缺额。"""
+    root = tmp_path / "annotated"
+    source = root / "FRU" / "00-10" / "train.json.br"
+    source.parent.mkdir(parents=True)
+    source.touch()
+    monkeypatch.setattr(
+        cache_compile_module, "cached_candidates_for_group", lambda *_args, **_kwargs: [],
+    )
+    attempted = []
+
+    def compile_round(paths, **_kwargs):
+        attempted.extend(paths)
+        return paths
+
+    monkeypatch.setattr(cache_compile_module, "precompile_raw_training_caches", compile_round)
+    with pytest.raises(ValueError, match=r"VAL: required=1 valid=0 missing=1"):
+        cache_compile_module.prepare_training_and_validation_caches(
+            root, max_files=1, validation_files=1, job_tag="black_mage",
+            int_dtype="int32", float_dtype="float32", cache_dir=tmp_path / ".cache",
+        )
+    assert attempted == [source]
+
+
 def test_training_selector_rejects_explicit_val_root(tmp_path):
     with pytest.raises(ValueError, match="训练输入不能指向验证目录"):
         select_prepared_training_sources(
@@ -182,17 +265,15 @@ def test_cli_training_selection_uses_model_quota(tmp_path, monkeypatch):
     monkeypatch.setattr(convert_cli, "resolve_policy_model_variant", lambda _path: "artzip")
     monkeypatch.setattr(convert_cli, "resolve_convert_fflogs_job_tag", lambda _tag: "black_mage")
     monkeypatch.setattr(convert_cli, "resolve_policy_cache_dir", lambda _tag: tmp_path / ".cache")
-    monkeypatch.setattr(convert_cli, "prepare_training_caches", lambda path, **kwargs: calls.update(path=path, **kwargs) or [tmp_path / "done.json.br"])
-    def prepare_validation(path, **kwargs):
-        calls["validation"] = (path, kwargs)
-        return [tmp_path / "VAL" / "FRU" / "val.json.br"]
-    monkeypatch.setattr(convert_cli, "prepare_validation_caches", prepare_validation)
+    def prepare_both(path, **kwargs):
+        calls.update(path=path, **kwargs)
+        return [tmp_path / "done.json.br"], [tmp_path / "VAL" / "FRU" / "val.json.br"]
+    monkeypatch.setattr(convert_cli, "prepare_training_and_validation_caches", prepare_both)
     convert_cli.main()
     assert calls["path"] == run_config.raw_data_dir
     assert calls["max_files"] == 8
     assert calls["max_workers"] == 2
-    assert calls["validation"][0] == run_config.raw_data_dir
-    assert calls["validation"][1]["max_files"] == 4
+    assert calls["validation_files"] == 4
 
 
 def test_cli_fails_when_annotated_inputs_produce_no_compiled_cache(tmp_path, monkeypatch):

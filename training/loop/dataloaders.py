@@ -68,11 +68,13 @@ def build_dataloaders(
         history_min_recent=config.history_min_recent,
         candidate_shuffle_enabled=config.candidate_shuffle_enabled,
         candidate_shuffle_probability=config.candidate_shuffle_probability,
+        require_quality_percentile=config.action_quality_loss.enabled,
         skill_values=skill_values,
         int_dtype=int_dtype,
         float_dtype=float_dtype,
     )
     val_collator = TrainingCollator(
+        require_quality_percentile=False,
         skill_values=skill_values,
         int_dtype=int_dtype,
         float_dtype=float_dtype,

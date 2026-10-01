@@ -25,7 +25,7 @@ from common.training.tensorboard import (
     write_scalar_metrics,
 )
 
-from ..config import RunConfig, ValuePreferenceConfig
+from ..config import ActionQualityLossConfig, RunConfig, ValuePreferenceConfig
 from ..runtime.runtime_debug import RuntimeDebugRecorder
 from .checkpoint import (
     _best_metric_key,
@@ -256,6 +256,7 @@ def run_training(
 
         for epoch in range(start_epoch, config.max_epochs + 1):
             train_epoch_kwargs = {
+                "action_quality": config.action_quality_loss,
                 "value_preference": config.value_preference,
                 "runtime_debug": debug_recorder,
                 "epoch": epoch,
@@ -412,6 +413,7 @@ def train_epoch(
     device,
     precision: str = "float32",
     *,
+    action_quality: ActionQualityLossConfig | None = None,
     value_preference: ValuePreferenceConfig | None = None,
     runtime_debug: RuntimeDebugRecorder | None = None,
     epoch: int = 0,
@@ -442,6 +444,7 @@ def train_epoch(
                     output,
                     batch,
                     auxiliary_losses,
+                    action_quality=action_quality,
                 )
             with _debug_stage(runtime_debug, "backward"):
                 losses.total.backward()

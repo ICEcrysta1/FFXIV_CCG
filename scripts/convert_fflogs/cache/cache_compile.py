@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import multiprocessing
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import replace
 from pathlib import Path
 
 from common.policy.data.compiled_cache import (
@@ -100,6 +101,58 @@ def prepare_validation_caches(
     )
 
 
+def prepare_training_and_validation_caches(
+    data_dir: Path,
+    *,
+    max_files: int | None,
+    validation_files: int,
+    job_tag: str,
+    int_dtype,
+    float_dtype,
+    cache_dir: Path | None,
+    shard_size: int = DEFAULT_CACHE_SHARD_SIZE,
+    max_workers: int = 1,
+    max_shards: int = DEFAULT_CACHE_MAX_SHARDS,
+    downtime_gap_seconds: float = DEFAULT_DOWNTIME_GAP_SECONDS,
+) -> tuple[list[Path], list[Path]]:
+    """训练档位与 VAL 副本共同编译，所有组补位结束后统一检查缺额。"""
+    training_groups = select_training_raw_path_groups(data_dir, max_files)
+    try:
+        validation_groups = select_validation_raw_path_groups(data_dir, validation_files)
+    except FileNotFoundError:
+        # 尚无 VAL 副本目录时，也要先完成训练档位的转换与缺额统计。
+        validation_groups = ()
+    # 只为缺额报告加前缀；候选文件和 VAL 原有的同副本补位范围不变。
+    named_validation_groups = tuple(
+        replace(group, directory_name=f"VAL/{group.directory_name}")
+        for group in validation_groups
+    )
+    if not validation_groups:
+        named_validation_groups = (RawTrainingPathGroup("VAL", validation_files, ()),)
+    normalizer = Normalizer()
+    normalizer.ensure_job_resources(job_tag)
+    valid_paths = _compile_training_path_groups(
+        training_groups + named_validation_groups,
+        job_tag=job_tag,
+        downtime_gap_seconds=downtime_gap_seconds,
+        normalizer=normalizer,
+        int_dtype=int_dtype,
+        float_dtype=float_dtype,
+        cache_dir=cache_dir,
+        shard_size=shard_size,
+        max_workers=max_workers,
+        max_shards=max_shards,
+    )
+    validation_candidates = {
+        path.resolve()
+        for group in validation_groups
+        for path in group.candidates
+    }
+    training_paths = [path for path in valid_paths if path.resolve() not in validation_candidates]
+    validation_paths = [path for path in valid_paths if path.resolve() in validation_candidates]
+    return training_paths, validation_paths
+
+
 def _compile_training_path_groups(
     groups: tuple[RawTrainingPathGroup, ...],
     *,
@@ -189,13 +242,13 @@ def _compile_training_path_groups(
                 f"valid={len(group_valid_paths)} missing={shortage}"
             )
             logger.error(
-                "副本有效训练文件不足，无法补齐配额: %s",
+                "有效转换文件不足，无法补齐配额: %s",
                 shortages[-1],
             )
 
     if shortages:
         raise ValueError(
-            "raw JSON training file quotas could not be filled: "
+            "JSON compiled cache quotas could not be filled: "
             + "; ".join(shortages)
         )
     return valid_paths

@@ -81,6 +81,17 @@ training:
   # 训练增强
   # ----------------------------
 
+  # 动作质量监督的整场排名衰减曲线；仅对明确归因的目标动作降低正向学习权重。
+  # x = FFLogs 历史排名百分位 / 100，例如 97.77 -> 0.9777。
+  # p = exp(-((x / scale) ^ exponent))；最终错误不学习率 r = p * s。
+  # s 由 action_quality.yaml 的 severity_weights 按错误等级提供。
+  action_quality_loss:
+    enabled: true
+    percentile_decay:
+      function: exp_negative_power
+      scale: 0.6
+      exponent: 4
+
   # 仅训练集随机移除早期历史，保留最近 min_recent 条；scene 和候选始终完整。
   history_truncation:
     enabled: true
