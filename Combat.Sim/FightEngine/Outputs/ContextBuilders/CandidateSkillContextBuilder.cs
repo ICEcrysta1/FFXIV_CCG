@@ -36,7 +36,6 @@ public sealed class CandidateSkillContextBuilder
             availableCharges: preview.AvailableCharges,
             maxCharges: preview.MaxCharges,
             jobResourcesConsumed: entry.JobResourcesConsumed,
-            timeSeconds: preview.PreviousState.Time,
-            gcdIndex: preview.GcdIndex);
+            timeSeconds: preview.PreviousState.Time);
     }
 }

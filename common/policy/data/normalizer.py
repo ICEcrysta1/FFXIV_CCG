@@ -433,7 +433,7 @@ def _apply_skill_normalize_inplace(
 ) -> None:
     """把 compiled cache 中的动态 skill 数值压到模型可比较的尺度。"""
     leaf_name = feature_name.split(".")[-1]
-    if leaf_name in {"is_legal", "max_charges", "available_charges", "gcd_index"}:
+    if leaf_name in {"is_legal", "max_charges", "available_charges"}:
         return
     if leaf_name == "potency":
         values.clamp_(min=0.0, max=config.current_potency_max).div_(config.current_potency_max)
@@ -482,13 +482,13 @@ def _infer_rule_type(
         return "keep"
     if leaf_name.endswith("_ready"):
         return "keep"
-    if leaf_name in ("ogcds_weaved", "max_ogcd_per_window", "gcd_index", "mp_ratio"):
+    if leaf_name in ("ogcds_weaved", "max_ogcd_per_window", "mp_ratio"):
         return "keep"
     if leaf_name == "mp":
         return "divide_mp_max"
     if leaf_name == "max_mp":
         return "divide_max_mp"
-    if leaf_name in ("time_seconds", "fight_remaining_seconds"):
+    if leaf_name == "time_seconds":
         return "clip_divide_fight_time_max"
     if leaf_name in resource_limits:
         return "clip_divide_resource_max"

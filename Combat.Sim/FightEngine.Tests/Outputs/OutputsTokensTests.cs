@@ -167,7 +167,7 @@ public class OutputsTokensTests
     public void SkillTokenBuilderIsSingleReusableFunction()
     {
         // 技能历史与候选技能共用同一个 build 函数：相同输入产出相同 token，
-        // 可选属性（time_seconds / gcd_index）按来源注入后才会出现。
+        // 可选的秒制时间按来源注入；累计 GCD 索引不进入模型 token。
         var token1 = SkillTokenBuilder.Build(
             skillId: 152, skillKey: "fire_iii", skillName: "爆炎", potency: 290,
             value: 1.0, kind: "gcd",
@@ -189,13 +189,13 @@ public class OutputsTokensTests
             isLegal: true, invalidReason: "", nextCooldownSeconds: 0.0,
             availableCharges: 1, maxCharges: 1,
             jobResourcesConsumed: new Dictionary<string, object>(),
-            timeSeconds: 1.0, gcdIndex: 2);
+            timeSeconds: 1.0);
 
         Assert.Equal(JsonSerializer.Serialize(token1), JsonSerializer.Serialize(tokenSame));
         Assert.DoesNotContain("time_seconds", token1.Keys);
         Assert.Equal(152, token1["skill_id"]);
         Assert.Equal(3.5, (double)((Dictionary<string, object?>)token1["cast_time"])["seconds"]!, 5);
-        Assert.Equal(2, tokenWithTiming["gcd_index"]);
+        Assert.DoesNotContain("gcd_index", tokenWithTiming.Keys);
         Assert.Equal(1.0, (double)tokenWithTiming["time_seconds"]!, 5);
     }
 

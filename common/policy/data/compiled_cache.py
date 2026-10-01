@@ -19,7 +19,8 @@ from .schema import SceneWindowSchema, TrainingSchema
 # v13：样本增加动作质量标签和原始事件索引；旧缓存没有该监督信息，必须重编译。
 # v12：黑魔候选集合移除 retrace、manaward、surecast，compiled cache 的候选布局
 # 不再与旧缓存兼容；同时保留 v11 的提前效果结算语义。
-CACHE_FORMAT = "raw_json_compiled_samples_v15_quality_levels"
+# v16：技能和状态 bank 移除累计 GCD 索引、精确战斗剩余时间及冗余 GCD 窗口。
+CACHE_FORMAT = "raw_json_compiled_samples_v16_seconds_windows"
 # v11：C# 状态机把硬读条的服务器效果结算与完整读条锁结束拆开；转换请求时刻
 # 仍按统一滑步窗口恢复，日志抖动只由容量一动作队列吸收。旧缓存的效果状态时序不可复用。
 # v10：硬读条请求时刻改由 `cast − 实际读条时长 + 0.5 秒滑步窗口` 解析，
@@ -32,7 +33,8 @@ CACHE_FORMAT = "raw_json_compiled_samples_v15_quality_levels"
 # v16：移除编译时模型等级权重依赖，输出稳定等级代码；旧结果不能复用。
 # v15：数值权重和来源档位进入 compiled 样本；旧 v14 转换结果不能复用。
 # v14：真实技能样本补齐 step/source_step；旧 v13 缓存中的零步号不能复用。
-DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v16_quality_levels"
+# v17：按新的模型 token 契约重建完整 history bank；读取窗口仍不影响缓存身份。
+DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v17_seconds_windows"
 # `weights_only=True` 的安全 unpickler 对 protocol 2 支持最稳定；compiled
 # cache 的样本数据只需要普通 mapping 和 tensor，不需要更高协议。
 CACHE_PICKLE_PROTOCOL = 2

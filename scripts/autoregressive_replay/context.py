@@ -769,7 +769,6 @@ class LiveBatchBuilder:
         """用稳定的事件字段定位历史行；完整 token 仍会用于缓存命中校验。"""
         return (
             skill_token.get("time_seconds"),
-            skill_token.get("gcd_index"),
             skill_token.get("skill_key"),
             skill_token.get("skill_id"),
         )

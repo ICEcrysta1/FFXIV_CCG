@@ -41,7 +41,7 @@ public class OutputsSchemaTests
         Assert.Equal(0.0, OutputsTestKit.HistoryVectorValue(historyState, "player_state", "before.time_seconds"), 5);
         Assert.Equal(3.0, OutputsTestKit.HistoryVectorValue(historyState, "player_state", "after.time_seconds"), 5);
         Assert.Equal(2.5, OutputsTestKit.HistoryVectorValue(historyState, "player_state", "after.current_gcd_seconds"), 5);
-        Assert.Equal(597.0, OutputsTestKit.HistoryVectorValue(historyState, "player_state", "after.fight_remaining_seconds"), 5);
+        Assert.Equal(597.0, state.FightRemaining, 5);
         Assert.Equal(0.0, OutputsTestKit.HistoryVectorValue(historyState, "player_state", "after.gcd_remaining_seconds"), 5);
         Assert.Equal(1.0, OutputsTestKit.HistoryVectorValue(historyState, "player_state", "after.boss_targetable"), 5);
         Assert.Equal(1.0, OutputsTestKit.HistoryVectorValue(historyState, "buff_state", "after.resource.thundercloud_ready"), 5);
@@ -65,6 +65,40 @@ public class OutputsSchemaTests
             "after.target.current_gcd_dot_potency",
         }, historyState["target_buff_state_feature_keys"]);
         Assert.Equal(3.0, OutputsTestKit.HistoryVectorValue(historyState, "resource_state", "after.astral_fire"), 5);
+    }
+
+    [Fact]
+    public void ModelTokensExcludeProgressCountersAndRedundantGcdWindows()
+    {
+        var machine = OutputsTestKit.BuildMachine();
+        var state = TimelineTestDriver.Execute(machine, machine.InitialState(), "fire_iii").NextState;
+        var payload = TimelineTestDriver.FormatVectorState(machine, state);
+        var removedFields = new[]
+        {
+            "gcd_index", "fight_remaining_seconds", "gcd_remaining_gcds",
+            "weave_window_gcds", "ogcd_window_gcds", "downtime_remaining_gcds",
+        };
+
+        // 模拟器继续计数和推进结束边界，历史与候选向量只输出部署需要的字段。
+        Assert.Equal(1, state.GcdIndex);
+        foreach (var contextKey in new[] { "state_history_context", "candidate_state_context" })
+        {
+            var context = (Dictionary<string, object?>)payload[contextKey];
+            var featureKeys = (List<string>)context["player_state_feature_keys"];
+            Assert.Equal(30, featureKeys.Count);
+            foreach (var field in removedFields)
+            {
+                Assert.DoesNotContain($"before.{field}", featureKeys);
+                Assert.DoesNotContain($"after.{field}", featureKeys);
+            }
+            Assert.Contains("before.gcd_remaining_seconds", featureKeys);
+            Assert.Contains("after.downtime_remaining_seconds", featureKeys);
+        }
+        foreach (var contextKey in new[] { "skill_history_context", "candidate_skill_context" })
+        {
+            var tokens = (List<Dictionary<string, object?>>)payload[contextKey];
+            Assert.All(tokens, token => Assert.DoesNotContain("gcd_index", token.Keys));
+        }
     }
 
     [Fact]

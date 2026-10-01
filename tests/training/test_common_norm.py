@@ -26,18 +26,18 @@ def test_normalizer_uses_fight_time_max_for_player_time_seconds():
     normalizer = Normalizer()
     normalizer.register_feature_keys(
         "player_state",
-        ["before.time_seconds", "before.fight_remaining_seconds"],
+        ["before.time_seconds", "after.time_seconds"],
     )
 
     assert normalizer.normalize_value("player_state", "before.time_seconds", 900.0) == pytest.approx(0.5)
     assert normalizer.normalize_value(
         "player_state",
-        "before.fight_remaining_seconds",
+        "after.time_seconds",
         900.0,
     ) == pytest.approx(0.5)
     assert normalizer.normalize_value(
         "player_state",
-        "before.fight_remaining_seconds",
+        "after.time_seconds",
         1800.0,
     ) == pytest.approx(1.0)
 

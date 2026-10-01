@@ -26,6 +26,7 @@ from scripts.onnx_export import TENSOR_INPUT_NAMES, CapacityContract, Deployment
 from scripts.onnx_export import export as export_module
 from scripts.onnx_export.contracts.contract import make_inputs, slice_dynamic_inputs
 from scripts.onnx_export.contracts.deployment_profile import DeploymentProfile
+from scripts.onnx_export.contracts.deployment_contract import DEPLOYMENT_CONTRACT_VERSION
 from scripts.onnx_export.export import environment as environment_module
 from scripts.onnx_export.export import export_package
 from scripts.onnx_export.export import publish as publish_module
@@ -897,7 +898,7 @@ def test_small_bf16_model_exports_and_runs_on_strict_cuda(tmp_path, activation):
 
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["manifest_version"] == 7
-    assert manifest["contract"]["contract_version"] == 9
+    assert manifest["contract"]["contract_version"] == DEPLOYMENT_CONTRACT_VERSION
     assert manifest["contract"]["precision"] == "bf16"
     assert manifest["model"]["compute_precision"] == "float32"
     assert manifest["exporter"]["onnxscript"] == BF16_TARGET_ONNXSCRIPT_VERSION

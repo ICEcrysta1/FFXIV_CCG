@@ -15,7 +15,8 @@ contracts:
   #    状态机接受技能提交与场景外部事实（可选中/移动/目标数/团辅）；
   #    回放调用方把移动事实提交给状态机，训练样本转换仍可在输出层合成移动字段。
   # 8：移除动画锁状态与输出；秒制观测提供完整 cast_remaining_seconds 供调用方调度。
-  sidecar_contract_version: 8
+  # 9：模型 token 移除累计 GCD 索引、精确战斗剩余时间和冗余 GCD 窗口字段。
+  sidecar_contract_version: 9
   scene_context_absolute_mode: "absolute_from_fight_scene_context"
   scene_context_keys:
     targetable: "targetable_window_context"
@@ -44,7 +45,7 @@ scene_context:
       - "target_count"
 
 canonical_output:
-  schema_version: 7
+  schema_version: 8
   token_key: "tokens"
   top_level_keys:
     - "job_tag"
@@ -77,19 +78,13 @@ state_vector_fields:
     - "mp_ratio"
     - "time_seconds"
     - "current_gcd_seconds"
-    - "gcd_index"
-    - "fight_remaining_seconds"
     - "gcd_remaining_seconds"
-    - "gcd_remaining_gcds"
     - "weave_window_seconds"
-    - "weave_window_gcds"
     - "ogcd_window_seconds"
-    - "ogcd_window_gcds"
     - "boss_targetable"
     - "next_untargetable_in_seconds"
     - "next_untargetable_in_gcds"
     - "downtime_remaining_seconds"
-    - "downtime_remaining_gcds"
     - "is_moving"
     - "ogcds_weaved"
     - "max_ogcd_per_window"

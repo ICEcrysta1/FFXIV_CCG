@@ -78,3 +78,33 @@ def test_inprocess_backend_returns_native_python_context():
     assert isinstance(context["skill_history_context"], list)
     assert isinstance(context["state_history_context"]["tokens"], list)
     assert isinstance(context["candidate_skill_context"], list)
+
+
+@pytest.mark.parametrize(
+    ("job_tag", "action_key"),
+    [("black_mage", "fire_iii"), ("machinist", "heated_split_shot")],
+)
+def test_model_vectors_exclude_progress_counters_but_runtime_keeps_them(job_tag, action_key):
+    """两个职业的真实桥接输出都不把运行时步号和结束边界传入模型。"""
+    _require_inprocess_backend()
+    with InProcessBackend(job_tag, fight_remaining=60.0, max_history=32) as backend:
+        assert backend.submit_action(0.0, action_key).accepted
+        backend.advance_to(4.0)
+        scalar = backend.observe_at(4.0, format="seconds").context
+        canonical = backend.observe_at(4.0, format="vector", next_observation_timestamp=4.5).context
+
+    assert scalar["gcd_index"] == 1
+    assert scalar["fight_remaining_seconds"] == pytest.approx(56.0)
+    removed_fields = {
+        "gcd_index", "fight_remaining_seconds", "gcd_remaining_gcds",
+        "weave_window_gcds", "ogcd_window_gcds", "downtime_remaining_gcds",
+    }
+    for context_key in ("state_history_context", "candidate_state_context"):
+        keys = canonical[context_key]["player_state_feature_keys"]
+        assert len(keys) == 30
+        assert not any(key.rsplit(".", 1)[-1] in removed_fields for key in keys)
+        assert "before.gcd_remaining_seconds" in keys
+        assert "after.downtime_remaining_seconds" in keys
+    for context_key in ("skill_history_context", "candidate_skill_context"):
+        assert canonical[context_key]
+        assert all("gcd_index" not in token for token in canonical[context_key])

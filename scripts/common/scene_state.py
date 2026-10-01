@@ -46,7 +46,6 @@ _PLAYER_SCENE_FIELDS = (
     "next_untargetable_in_seconds",
     "next_untargetable_in_gcds",
     "downtime_remaining_seconds",
-    "downtime_remaining_gcds",
 )
 
 
@@ -160,8 +159,8 @@ def rewrite_scene_player_state(
     """按场景上下文原地改写 canonical context 的 player 场景字段。
 
     改写 `state_history_context.tokens` 与 `candidate_state_context.tokens` 的
-    player_state 段（before ‖ after）：移动位、下次停手 ETA、停手剩余秒数及其
-    GCD 版本。非法候选的 after 段是 null，逐位置跳过；Boss 可选中不再改写，
+    player_state 段（before ‖ after）：移动位、下次停手 ETA（秒/GCD 数）及
+    停手剩余秒数。非法候选的 after 段是 null，逐位置跳过；Boss 可选中不再改写，
     由状态机自己维护。
 
     时刻取值：历史条目 before = 生效时刻 − 实际读条时长、after = 生效时刻；
@@ -230,7 +229,6 @@ def _rewrite_state_token(
             "next_untargetable_in_seconds": state.next_downtime_eta,
             "next_untargetable_in_gcds": to_gcd_units(state.next_downtime_eta, gcd_seconds),
             "downtime_remaining_seconds": state.downtime_remaining,
-            "downtime_remaining_gcds": to_gcd_units(state.downtime_remaining, gcd_seconds),
         }
         for field, value in values.items():
             position = segment_start + _player_field_index(field)

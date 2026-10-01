@@ -7,6 +7,7 @@ import pytest
 from common.policy.data import ModelInputContract, Normalizer
 from common.policy.data.schema import SceneWindowSchema, TrainingSchema
 from common.policy.data.spec import DataSpec
+from common.policy.data.input_contract import INPUT_CONTRACT_VERSION
 
 
 def _build_contract() -> ModelInputContract:
@@ -80,7 +81,7 @@ def test_model_input_contract_rejects_checkpoint_without_contract():
 
 def test_model_input_contract_rejects_previous_state_semantics():
     payload = _build_contract().to_dict()
-    payload["version"] = 1
+    payload["version"] = INPUT_CONTRACT_VERSION - 1
 
     with pytest.raises(ValueError, match="unsupported input contract version"):
         ModelInputContract.from_dict(payload)

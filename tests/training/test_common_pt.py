@@ -115,6 +115,58 @@ def test_training_dataset_compiles_and_reuses_disk_cache(tmp_path):
     assert restored[1]["candidate_state_vectors"].equal(first_sample["candidate_state_vectors"])
 
 
+def test_compiled_history_and_candidates_use_seconds_window_contract(tmp_path):
+    """真实 C# 转换生成的候选和完整历史 bank 必须同时采用新输入维度。"""
+    pytest.importorskip("torch")
+    source_path = make_demo_pt(tmp_path, ["fire_iii", "fire_iv"], fight_id="seconds_contract")
+    dataset = make_dataset([source_path])
+    sample = dataset[1]
+    removed_fields = {
+        "gcd_index", "fight_remaining_seconds", "gcd_remaining_gcds",
+        "weave_window_gcds", "ogcd_window_gcds", "downtime_remaining_gcds",
+    }
+
+    assert "gcd_index" not in dataset.skill_feature_names
+    assert len(dataset.skill_feature_names) == 19
+    assert dataset.schema.state_vector_dim() == 135
+    player_keys = dataset.schema.state_group_feature_keys["player_state"]
+    assert len(player_keys) == 30
+    assert "before.gcd_remaining_seconds" in player_keys
+    assert "after.downtime_remaining_seconds" in player_keys
+    assert not any(
+        key.rsplit(".", 1)[-1] in removed_fields
+        for keys in dataset.schema.state_group_feature_keys.values()
+        for key in keys
+    )
+    for prefix in ("history_bank", "candidate"):
+        assert sample[f"{prefix}_skill_features"].shape[-1] == 19
+        assert sample[f"{prefix}_state_vectors"].shape[-1] == 135
+        assert sample[f"{prefix}_state_null_mask"].shape == sample[f"{prefix}_state_vectors"].shape
+
+
+@pytest.mark.parametrize("old_contract", ["cache_format", "conversion_version"])
+def test_previous_progress_feature_cache_is_rejected(tmp_path, old_contract):
+    """旧输入字段缓存不可复用，即使 raw 文件身份和其余编译参数一致。"""
+    torch = pytest.importorskip("torch")
+    from common.policy.data.compiled_cache import cache_path_for_source
+    from common.policy.data.schema import SceneWindowSchema, TrainingSchema
+    from common.torch_serialization import safe_torch_load
+
+    source_path = make_demo_pt(tmp_path, ["fire_iii", "fire_iv"], fight_id="old_progress_cache")
+    cache_path = cache_path_for_source(tmp_path / ".cache", source_path)
+    payload = safe_torch_load(cache_path, safe_globals=(SceneWindowSchema, TrainingSchema))
+    signature = dict(payload["cache_signature"])
+    if old_contract == "cache_format":
+        payload["cache_format"] = "raw_json_compiled_samples_v15_quality_levels"
+    else:
+        payload["cache_signature"]["conversion_version"] = "raw_json_to_compiled_v16_quality_levels"
+    torch.save(payload, cache_path)
+
+    assert load_compiled_cache(
+        cache_path, source_path, signature=signature, shard_cache=CompiledShardCache(),
+    ) is None
+
+
 def test_training_dataset_history_window_reuses_full_cache(tmp_path):
     pytest.importorskip("torch")
     pt_path = make_demo_pt(

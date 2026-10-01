@@ -49,7 +49,6 @@ public sealed class PolicyContextBuilder
             candidateSkills.Insert(0, BuildSkillToken(
                 action,
                 state.Time,
-                state.GcdIndex,
                 consumed));
             candidateStates.Insert(0, router.BuildStateTransitionToken(state, after, consumed));
         }
@@ -84,7 +83,7 @@ public sealed class PolicyContextBuilder
             merged.Add((
                 decision.Timestamp,
                 order++,
-                BuildSkillToken(decision.Action, decision.Timestamp, decision.GcdIndex, consumed),
+                BuildSkillToken(decision.Action, decision.Timestamp, consumed),
                 router.BuildStateTransitionToken(decision.StateBefore, decision.StateAfter, consumed)));
         }
 
@@ -102,7 +101,6 @@ public sealed class PolicyContextBuilder
     private static Dictionary<string, object?> BuildSkillToken(
         PolicyActionDefinition action,
         double timestamp,
-        int gcdIndex,
         IReadOnlyDictionary<string, object> consumed) =>
         SkillTokenBuilder.Build(
             skillId: action.RawId,
@@ -120,6 +118,5 @@ public sealed class PolicyContextBuilder
             availableCharges: 1,
             maxCharges: 1,
             jobResourcesConsumed: consumed,
-            timeSeconds: timestamp,
-            gcdIndex: gcdIndex);
+            timeSeconds: timestamp);
 }
