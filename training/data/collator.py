@@ -20,6 +20,7 @@ class TrainingCollator:
         history_min_recent: int = 1,
         candidate_shuffle_enabled: bool = False,
         candidate_shuffle_probability: float = 0.0,
+        require_quality_percentile: bool = False,
         skill_values: Mapping[str, float] | None = None,
         int_dtype=None,
         index_dtype=None,
@@ -37,6 +38,7 @@ class TrainingCollator:
         self.history_min_recent = int(history_min_recent)
         self.candidate_shuffle_enabled = bool(candidate_shuffle_enabled)
         self.candidate_shuffle_probability = float(candidate_shuffle_probability)
+        self._require_quality_percentile = bool(require_quality_percentile)
         self._skill_values = (
             None
             if skill_values is None
@@ -126,7 +128,9 @@ class TrainingCollator:
                 [sample["candidate_legal_mask"] for sample in samples]
             ),
         }
-        _validate_quality_supervision(batch, torch=torch)
+        _validate_quality_supervision(
+            batch, torch=torch, require_percentile=self._require_quality_percentile,
+        )
         if self._skill_values is not None:
             runtime_values = []
             for sample in samples:
@@ -253,7 +257,9 @@ class TrainingCollator:
         return shuffled
 
 
-def _validate_quality_supervision(batch: Mapping[str, object], *, torch) -> None:
+def _validate_quality_supervision(
+    batch: Mapping[str, object], *, torch, require_percentile: bool,
+) -> None:
     """在 CPU 数据入口校验静态监督字段，损失计算不再读取设备标量。"""
     levels = batch["quality_label_levels"]
     mask = batch["quality_label_mask"]
@@ -266,6 +272,9 @@ def _validate_quality_supervision(batch: Mapping[str, object], *, torch) -> None
     tagged = mask.any(dim=1)
     if bool((tagged & ~available).any()):
         raise ValueError("attributed quality labels require available annotation")
+    # 精确排名只用于质量加权；验证或关闭质量损失时允许旧数据缺少排名。
+    if not require_percentile:
+        return
     bad_quality = tagged & (
         ~torch.isfinite(quality) | (quality < 0.0) | (quality > 1.0)
     )

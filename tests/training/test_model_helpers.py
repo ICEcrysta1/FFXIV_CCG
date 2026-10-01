@@ -40,7 +40,7 @@ from common.training.tensorboard import TensorBoardConfig
 from scripts.convert_fflogs import cache as cache_module
 from scripts.convert_fflogs.cache import cache_compile as cache_compile_module
 from common.policy.data import source_selection as cache_paths_module
-from training.config import RunConfig, ValuePreferenceConfig
+from training.config import ActionQualityLossConfig, RunConfig, ValuePreferenceConfig
 
 
 def _attach_rope(encoder):
@@ -1261,8 +1261,9 @@ def _fake_training_dataset(job_tag: str = "black_mage", *, actions=("a", "b")):
     return FakeDataset()
 
 
+@pytest.mark.parametrize("quality_enabled", [False, True])
 def test_build_dataloaders_covers_single_file_empty_shard_and_value_paths(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, quality_enabled,
 ):
     dataset = _fake_training_dataset()
     collators = []
@@ -1281,6 +1282,7 @@ def test_build_dataloaders_covers_single_file_empty_shard_and_value_paths(
         raw_data_dir=tmp_path,
         output_dir=tmp_path,
         job_tag="black_mage",
+        action_quality_loss=ActionQualityLossConfig(enabled=quality_enabled),
         value_preference=ValuePreferenceConfig(enabled=True, loss_weight=0.1),
     )
     train_loader, val_loader, train_dataset, val_dataset = training_module.build_dataloaders(
@@ -1297,6 +1299,8 @@ def test_build_dataloaders_covers_single_file_empty_shard_and_value_paths(
     assert val_dataset is dataset
     assert collators[0]["skill_values"] == {"a": 1.0, "b": 2.0}
     assert collators[1]["skill_values"] == {"a": 1.0, "b": 2.0}
+    assert collators[0]["require_quality_percentile"] is quality_enabled
+    assert collators[1]["require_quality_percentile"] is False
 
 
 def test_training_raw_quota_fills_failed_paths_with_same_directory_candidates(

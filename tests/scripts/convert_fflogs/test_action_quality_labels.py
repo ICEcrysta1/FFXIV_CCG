@@ -214,6 +214,7 @@ def test_label_reaches_real_decision_not_policy_wait(cs_backend, cs_skill_book):
     ("unannotated", False, "unannotated"),
 ])
 @pytest.mark.parametrize("percentile, bucket", [
+    (None, "00-10"),
     (7.5, "00-10"),
     (97.77, "90-100"),
 ])
@@ -242,6 +243,8 @@ def test_compiled_pt_and_batch_keep_label_outside_model_inputs(
         ]),
         "actions": [action],
     }
+    if percentile is None:
+        fight.pop("ranking")
     training_payload = build_training_samples(cs_backend, cs_skill_book, fight)
     source = tmp_path / "annotated" / "FRU" / bucket / "quality.json"
     source.parent.mkdir(parents=True)
@@ -285,15 +288,21 @@ def test_compiled_pt_and_batch_keep_label_outside_model_inputs(
     assert batch["quality_label_mask"].tolist() == ([[True, True, True]] if with_labels else [[]])
     assert "quality_label_weights" not in batch
     assert batch["quality_annotation_available"].tolist() == [annotation_status == "partial"]
-    assert batch["source_quality"].tolist() == pytest.approx([percentile / 100.0])
+    normalized_quality = -1.0 if percentile is None else percentile / 100.0
+    assert batch["source_quality"].tolist() == pytest.approx([normalized_quality])
     assert "source_percentile" not in batch
     assert "source_percentile_bucket_lower" not in batch
     assert isinstance(batch["candidate_skill_features"], torch.Tensor)
     quality_config = load_run_config("config/models/black_mage/artzip/config.yaml").action_quality_loss
+    if percentile is None:
+        if with_labels:
+            with pytest.raises(ValueError, match="percentile"):
+                TrainingCollator(require_quality_percentile=True)([dataset[0]])
+        quality_config = type(quality_config)(enabled=False)
     weight = action_quality_sample_weights(batch, quality_config).item()
     expected_weight = (
         1.0 - math.exp(-((percentile / 100.0 / 0.6) ** 4))
-        if with_labels else 1.0
+        if with_labels and percentile is not None else 1.0
     )
     assert weight == pytest.approx(expected_weight)
     if with_labels:

@@ -527,7 +527,56 @@ def test_training_collator_rejects_invalid_quality_supervision_on_cpu(
         },
     }
     with pytest.raises(ValueError, match=error):
-        TrainingCollator()([sample])
+        TrainingCollator(require_quality_percentile=True)([sample])
+
+
+@pytest.mark.parametrize("collator_options", [{}, {"require_quality_percentile": False}])
+def test_unweighted_dataloader_accepts_tagged_sample_without_percentile(
+    tmp_path, collator_options,
+):
+    torch = pytest.importorskip("torch")
+    from training.loop.loss import compose_training_loss
+
+    pt_path = make_demo_pt(tmp_path, ["fire_iii"], fight_id="legacy_tagged_quality")
+    sample = make_dataset([pt_path])[0]
+    sample = {
+        **sample,
+        "quality_label_levels": torch.tensor([3], dtype=torch.int32),
+        "metadata": {
+            **sample["metadata"], "quality_label_status": "attributed_label", "percentile": None,
+        },
+    }
+    loader = torch.utils.data.DataLoader(
+        [sample], batch_size=1, collate_fn=TrainingCollator(**collator_options),
+    )
+    batch = next(iter(loader))
+    assert batch["quality_label_levels"].tolist() == [[3]]
+    assert batch["quality_annotation_available"].tolist() == [True]
+    assert batch["source_quality"].tolist() == [-1.0]
+    logits = torch.zeros_like(batch["candidate_legal_mask"], dtype=torch.float32)
+    loss = compose_training_loss({"logits": logits}, batch)
+    expected = torch.nn.functional.cross_entropy(logits, batch["label_index"])
+    torch.testing.assert_close(loss.primary, expected)
+
+
+@pytest.mark.parametrize("levels, status, error", [
+    ([0], "attributed_label", "levels"),
+    ([4], "attributed_label", "levels"),
+    ([3], "unannotated", "available annotation"),
+])
+def test_unweighted_collator_still_rejects_invalid_quality_labels(tmp_path, levels, status, error):
+    torch = pytest.importorskip("torch")
+    pt_path = make_demo_pt(tmp_path, ["fire_iii"], fight_id="invalid_unweighted_quality")
+    sample = make_dataset([pt_path])[0]
+    sample = {
+        **sample,
+        "quality_label_levels": torch.tensor(levels, dtype=torch.int32),
+        "metadata": {
+            **sample["metadata"], "quality_label_status": status, "percentile": None,
+        },
+    }
+    with pytest.raises(ValueError, match=error):
+        TrainingCollator(require_quality_percentile=False)([sample])
 
 
 def test_training_collator_allows_unknown_percentile_for_untagged_samples(tmp_path):
@@ -542,7 +591,7 @@ def test_training_collator_allows_unknown_percentile_for_untagged_samples(tmp_pa
         }
         for percentile in (None, float("nan"))
     ]
-    batch = TrainingCollator()(samples)
+    batch = TrainingCollator(require_quality_percentile=True)(samples)
     assert batch["quality_label_levels"].shape == (2, 0)
     assert batch["source_quality"][0].item() == -1.0
     assert torch.isnan(batch["source_quality"][1])
