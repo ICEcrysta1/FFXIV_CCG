@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
-from common.dataset_layout import find_dataset_json_files
 from scripts.common.json_io import is_json_file
+from scripts.common.scene_source import find_prepared_scene_source
 
 from common.project_config import (
     PROJECT_JOB_TAG_ENV,
@@ -26,6 +27,7 @@ from common.policy.config import (
     validate_policy_model_variant,
 )
 from common.policy.replay import AutoregressiveReplayConfig
+from common.policy.data import ModelInputContract
 from common.torch_serialization import safe_torch_load
 from scripts.onnx_export.config.config import (
     AUTOREGRESSIVE_REPLAY_CHECKPOINT_ENV,
@@ -102,6 +104,7 @@ def load_replay_config(
     if backend_name == "onnxruntime":
         onnx_package_path = _resolve_onnx_package(onnx_package, checkpoint=checkpoint)
         onnx_metadata = _load_onnx_metadata(onnx_package_path)
+        input_contract_payload = onnx_metadata["input_contract"]
         job_tag = str(onnx_metadata["job_tag"])
         onnx_model_variant = str(onnx_metadata["model_variant"])
         if configured_job_tag and configured_job_tag != job_tag:
@@ -130,6 +133,7 @@ def load_replay_config(
         onnx_package_path = None
         checkpoint_path = _resolve_checkpoint(model_config_path, checkpoint)
         checkpoint_payload = _load_checkpoint_metadata(checkpoint_path)
+        input_contract_payload = checkpoint_payload.get("input_contract")
         checkpoint_job_tag = checkpoint_payload.get("job_tag") or checkpoint_payload[
             "data_spec"
         ].get("job_tag")
@@ -152,7 +156,11 @@ def load_replay_config(
             )
         job_tag = model_job_tag
 
-    resolved_scene_json = _resolve_scene_json(scene_json, raw_root=raw_root)
+    resolved_scene_json = _resolve_scene_json(
+        scene_json, raw_root=raw_root, cache_dir=resolve_policy_cache_dir(job_tag),
+        job_tag=job_tag, cache_shard_size=cache_shard_size,
+        input_contract_payload=input_contract_payload,
+    )
     resolved_scene_mode = (
         scene_mode
         or os.environ.get(AUTOREGRESSIVE_REPLAY_SCENE_MODE_ENV, "cache")
@@ -309,7 +317,7 @@ def _resolve_onnx_package(explicit: Path | None, *, checkpoint: Path | None = No
 
 
 def _load_onnx_metadata(package_path: Path) -> dict[str, object]:
-    """只解析路由字段；backend 会在建 session 前执行完整 manifest 验证。"""
+    """读取路由字段和场景筛选契约；backend 建 session 前执行完整 manifest 验证。"""
     import json
 
     package_dir = package_path if package_path.is_dir() else package_path.parent
@@ -321,6 +329,7 @@ def _load_onnx_metadata(package_path: Path) -> dict[str, object]:
             "job_tag": str(contract["job_tag"]),
             "model_variant": str(model["model_variant"]),
             "history_capacity": int(contract["capacity"]["history_capacity"]),
+            "input_contract": contract.get("model_input_contract"),
         }
     except KeyError as exc:
         missing = str(exc.args[0]) if exc.args else "?"
@@ -350,15 +359,22 @@ def _resolve_checkpoint(model_config_path: Path, explicit: Path | None) -> Path:
     return path
 
 
-def _resolve_scene_json(explicit: Path | None, *, raw_root: Path) -> Path:
-    raw = explicit or os.environ.get(AUTOREGRESSIVE_REPLAY_SCENE_JSON_ENV)
+def _resolve_scene_json(
+    explicit: Path | None, *, raw_root: Path, cache_dir: Path,
+    job_tag: str, cache_shard_size: int,
+    input_contract_payload: Mapping[str, object] | None,
+) -> Path:
+    raw = explicit or _optional_text(os.environ.get(AUTOREGRESSIVE_REPLAY_SCENE_JSON_ENV))
     if raw:
         path = resolve_project_path(raw, project_root=PROJECT_ROOT)
     else:
-        candidates = find_dataset_json_files(raw_root)
-        if not candidates:
-            raise FileNotFoundError(f"no scene raw JSON found: {raw_root}")
-        path = candidates[0]
+        # 与实际回放使用同一份模型契约，不能由当前 YAML 重建归一化签名。
+        input_contract = ModelInputContract.from_dict(input_contract_payload)
+        path = find_prepared_scene_source(
+            raw_root, cache_dir=cache_dir, job_tag=job_tag,
+            cache_shard_size=cache_shard_size,
+            normalizer=input_contract.create_normalizer(),
+        )
     if not is_json_file(path) or not path.is_file():
         raise FileNotFoundError(f"autoregressive scene raw JSON not found: {path}")
     return path
