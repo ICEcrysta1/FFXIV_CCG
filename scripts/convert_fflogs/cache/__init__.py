@@ -9,6 +9,7 @@ from common.policy.data.source_selection import (
 )
 
 from .cache_compile import (
+    prepare_training_and_validation_caches,
     prepare_training_caches,
     prepare_validation_caches,
     precompile_raw_training_caches,
@@ -19,6 +20,7 @@ from .cache_load import load_raw_compiled_cache
 __all__ = [
     "RawTrainingPathGroup",
     "load_raw_compiled_cache",
+    "prepare_training_and_validation_caches",
     "prepare_training_caches",
     "prepare_validation_caches",
     "precompile_raw_training_caches",

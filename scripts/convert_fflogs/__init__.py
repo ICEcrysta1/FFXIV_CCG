@@ -32,6 +32,7 @@ from .config.constants import (
 )
 from .cache import (
     load_raw_compiled_cache,
+    prepare_training_and_validation_caches,
     prepare_training_caches,
     precompile_raw_training_caches,
 )
@@ -119,5 +120,6 @@ __all__ = [
     "convert_raw_file",
     "load_raw_compiled_cache",
     "precompile_raw_training_caches",
+    "prepare_training_and_validation_caches",
     "prepare_training_caches",
 ]

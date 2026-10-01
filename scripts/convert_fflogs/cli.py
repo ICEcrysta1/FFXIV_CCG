@@ -21,8 +21,7 @@ from training.config import load_run_config
 
 from .cache import (
     precompile_raw_training_caches,
-    prepare_training_caches,
-    prepare_validation_caches,
+    prepare_training_and_validation_caches,
 )
 from .config import (
     load_convert_fflogs_dotenv,
@@ -99,9 +98,10 @@ def main() -> None:
         parser.error("--workers must be >= 1")
     precision = load_precision_config()
     if args.training_selection:
-        valid_paths = prepare_training_caches(
+        valid_paths, validation_paths = prepare_training_and_validation_caches(
             raw_root,
             max_files=run_config.max_files if args.max_files is None else args.max_files,
+            validation_files=run_config.validation_files,
             job_tag=resolved_job_tag,
             int_dtype=precision.resolve_int_dtype(),
             float_dtype=precision.resolve_float_dtype(),
@@ -113,18 +113,6 @@ def main() -> None:
         )
         if not valid_paths:
             raise FileNotFoundError(f"没有找到可编译的训练 JSON：{raw_root}")
-        validation_paths = prepare_validation_caches(
-            raw_root,
-            max_files=run_config.validation_files,
-            job_tag=resolved_job_tag,
-            int_dtype=precision.resolve_int_dtype(),
-            float_dtype=precision.resolve_float_dtype(),
-            cache_dir=cache_dir,
-            shard_size=shard_size,
-            max_workers=workers,
-            max_shards=run_config.compiled_cache_max_shards,
-            downtime_gap_seconds=float(args.downtime_gap),
-        )
         logger.info("训练文件转换完成: %d 个文件 -> %s", len(valid_paths), cache_dir)
         logger.info("验证文件转换完成: %d 个文件 -> %s", len(validation_paths), cache_dir / "VAL")
         return
