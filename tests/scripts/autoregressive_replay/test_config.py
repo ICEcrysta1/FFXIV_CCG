@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -24,11 +25,17 @@ def test_replay_scene_defaults_to_prepared_cache(monkeypatch, tmp_path):
         return scene
 
     monkeypatch.setattr(replay_config_module, "find_prepared_scene_source", select)
+    normalizer = object()
+    monkeypatch.setattr(
+        replay_config_module.ModelInputContract, "from_dict",
+        lambda _payload: SimpleNamespace(create_normalizer=lambda: normalizer),
+    )
     kwargs = dict(raw_root=tmp_path, cache_dir=tmp_path / ".cache",
-                  job_tag="black_mage", cache_shard_size=768)
+                  job_tag="black_mage", cache_shard_size=768, input_contract_payload={})
     assert replay_config_module._resolve_scene_json(None, **kwargs) == scene
     assert calls == [(tmp_path, dict(cache_dir=tmp_path / ".cache",
-                                   job_tag="black_mage", cache_shard_size=768))]
+                                   job_tag="black_mage", cache_shard_size=768,
+                                   normalizer=normalizer))]
 
     explicit = tmp_path / "explicit.json.br"
     atomic_write_json(explicit, {})

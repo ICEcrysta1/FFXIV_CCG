@@ -23,6 +23,7 @@ def find_prepared_scene_source(
     cache_dir: Path,
     job_tag: str,
     cache_shard_size: int,
+    normalizer: Normalizer | None = None,
 ) -> Path:
     """优先从高百分位选择有效缓存对应的源文件，不触发编译。"""
     bucket_order = {bucket: index for index, bucket in enumerate(PERCENTILE_BUCKETS)}
@@ -30,7 +31,8 @@ def find_prepared_scene_source(
         find_dataset_json_files(raw_root),
         key=lambda path: (bucket_order.get(path.parent.name, len(bucket_order)), str(path)),
     )
-    normalizer = Normalizer()
+    if normalizer is None:
+        normalizer = Normalizer()
     normalizer.ensure_job_resources(job_tag)
     precision = load_precision_config()
     shard_cache = CompiledShardCache(1)

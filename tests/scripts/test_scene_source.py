@@ -1,12 +1,14 @@
 """参考场景只读选择与缓存有效性回归测试。"""
 
 from pathlib import Path
+import json
 
 import pytest
 import torch
 
 from common.config import load_precision_config
-from common.policy.data import Normalizer
+from common.policy.data import ModelInputContract, Normalizer
+from common.policy.data.schema import TrainingSchema
 from common.policy.data.compiled_cache import (
     CACHE_FORMAT,
     build_cache_signature,
@@ -25,7 +27,7 @@ def scene_cache(tmp_path):
     normalizer.ensure_job_resources("black_mage")
     precision = load_precision_config()
 
-    def create(relative, *, invalid=None, legacy=False):
+    def create(relative, *, invalid=None, legacy=False, cache_normalizer=None):
         source = root / relative
         atomic_write_json(source, {})
         if invalid == "missing":
@@ -37,7 +39,7 @@ def scene_cache(tmp_path):
         shard = manifest.with_suffix(".shard.pt")
         torch.save({"cache_format": CACHE_FORMAT, "samples": [{}]}, shard)
         signature = build_cache_signature(
-            source, normalizer=normalizer,
+            source, normalizer=normalizer if cache_normalizer is None else cache_normalizer,
             int_dtype=precision.resolve_int_dtype(),
             float_dtype=precision.resolve_float_dtype(), shard_size=768,
         )
@@ -176,3 +178,87 @@ def test_scene_source_does_not_hide_memory_error(scene_cache, monkeypatch):
     monkeypatch.setattr(CompiledCacheReader, "samples", fail)
     with pytest.raises(MemoryError, match="test allocation failure"):
         _select(root, cache_dir)
+
+
+@pytest.mark.parametrize("backend", ["pytorch", "onnxruntime"])
+@pytest.mark.parametrize("current_cache_exists", [False, True])
+def test_default_replay_uses_saved_contract_without_recompiling(
+    scene_cache, monkeypatch, tmp_path, backend, current_cache_exists,
+):
+    from scripts.autoregressive_replay import config as config_module
+    from scripts.autoregressive_replay import replay as replay_module
+
+    root, cache_dir, create = scene_cache
+    normalizer = Normalizer()
+    normalizer.ensure_job_resources("black_mage")
+    saved_normalizer = normalizer.normalization_contract
+    saved_normalizer["config"]["mp_max"] *= 2
+    saved_normalizer["resource_limits"] = {
+        key: value * 2 for key, value in saved_normalizer["resource_limits"].items()
+    }
+    contract = ModelInputContract(
+        job_tag="black_mage", data_spec={"job_tag": "black_mage"},
+        schema=TrainingSchema(
+            serialization_format="test", sample_schema_version=1,
+            context_schema_version=1, scene_context_mode="absolute", scene_windows=(),
+            state_group_feature_keys={"player_state": ("before.time_seconds",)},
+            candidate_skill_fields=("potency",), skill_history_fields=("skill_key",),
+        ),
+        normalizer_contract=saved_normalizer,
+    )
+    if current_cache_exists:
+        create("AAA/90-100/current.json.br")
+    expected = create(
+        "ZZZ/80-90/saved.json.br", cache_normalizer=contract.create_normalizer(),
+    )
+    checkpoint = tmp_path / "model.pt"
+    torch.save({"data_spec": {"job_tag": "black_mage"}, "model_variant": "artzip",
+                "input_contract": contract.to_dict()}, checkpoint)
+    package = tmp_path / "deployment"
+    package.mkdir()
+    (package / "manifest.json").write_text(json.dumps({
+        "model": {"model_variant": "artzip"},
+        "contract": {"job_tag": "black_mage", "capacity": {"history_capacity": 384},
+                     "model_input_contract": contract.to_dict()},
+    }), encoding="utf-8", newline="\n")
+
+    monkeypatch.setattr(config_module, "load_root_dotenv", lambda _root: None)
+    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_SCENE_JSON", "")
+    monkeypatch.setenv("FFXIV_JOB_TAG", "black_mage")
+    monkeypatch.setenv("FFXIV_MODEL_VARIANT", "artzip")
+    original_load = config_module.load_policy_config
+
+    def load_config(path):
+        payload = original_load(path)
+        return {**payload, "raw_data_dir": str(root),
+                "training": {**payload["training"], "compiled_cache_shard_size": 768}}
+
+    monkeypatch.setattr(config_module, "load_policy_config", load_config)
+    monkeypatch.setattr(config_module, "resolve_policy_cache_dir", lambda _job: cache_dir)
+    monkeypatch.setattr(
+        replay_module, "precompile_raw_training_caches",
+        lambda *_args, **_kwargs: pytest.fail("默认场景必须直接复用模型兼容缓存"),
+    )
+    config = config_module.load_replay_config(
+        checkpoint=checkpoint, backend=backend, onnx_package=package,
+        scene_mode="cache", device="cpu", use_kv_cache=False,
+    )
+    assert config.scene_json_path == expected
+    reader = replay_module._load_replay_cache(
+        config, "black_mage", contract.create_normalizer(),
+    )
+    assert reader.sample(0) == {}
+
+
+@pytest.mark.parametrize("payload", [None, {"version": 1}])
+def test_default_replay_rejects_missing_or_old_contract(scene_cache, monkeypatch, payload):
+    from scripts.autoregressive_replay.config import _resolve_scene_json
+
+    root, cache_dir, create = scene_cache
+    create("FRU/90-100/current.json.br")
+    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_SCENE_JSON", "")
+    with pytest.raises(ValueError, match="input contract"):
+        _resolve_scene_json(
+            None, raw_root=root, cache_dir=cache_dir, job_tag="black_mage",
+            cache_shard_size=768, input_contract_payload=payload,
+        )
