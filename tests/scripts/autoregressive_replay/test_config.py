@@ -12,6 +12,31 @@ from scripts.autoregressive_replay.config import load_replay_config
 from scripts.common.json_io import atomic_write_json
 
 
+def test_replay_scene_defaults_to_prepared_cache(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_SCENE_JSON", " ")
+    monkeypatch.setenv("MODEL_ANALYSIS_SCENE_JSON", "analysis.json.br")
+    scene = tmp_path / "90-100" / "scene.json.br"
+    atomic_write_json(scene, {})
+    calls = []
+
+    def select(root, **kwargs):
+        calls.append((root, kwargs))
+        return scene
+
+    monkeypatch.setattr(replay_config_module, "find_prepared_scene_source", select)
+    kwargs = dict(raw_root=tmp_path, cache_dir=tmp_path / ".cache",
+                  job_tag="black_mage", cache_shard_size=768)
+    assert replay_config_module._resolve_scene_json(None, **kwargs) == scene
+    assert calls == [(tmp_path, dict(cache_dir=tmp_path / ".cache",
+                                   job_tag="black_mage", cache_shard_size=768))]
+
+    explicit = tmp_path / "explicit.json.br"
+    atomic_write_json(explicit, {})
+    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_SCENE_JSON", str(scene))
+    assert replay_config_module._resolve_scene_json(explicit, **kwargs) == explicit
+    assert len(calls) == 1
+
+
 def test_replay_config_loads_dotenv_before_resolving_backend(monkeypatch, tmp_path):
     package = tmp_path / "deployment"
     package.mkdir()

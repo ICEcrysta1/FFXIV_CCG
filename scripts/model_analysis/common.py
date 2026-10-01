@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
+import os
 from pathlib import Path
 
 import matplotlib
@@ -18,9 +19,9 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
 from common.config import PROJECT_ROOT, load_precision_config, load_project_config
-from common.dataset_layout import find_dataset_json_files
 from common.cache_compilation import compile_raw_training_cache
-from common.project_config import resolve_project_job_tag
+from common.project_config import resolve_project_job_tag, resolve_project_path
+from scripts.common.scene_source import find_prepared_scene_source
 from common.torch_runtime import autocast_context, model_dtype, move_batch
 from common.torch_serialization import safe_torch_load
 from common.policy.data import Normalizer, SkillVocab
@@ -35,6 +36,7 @@ from .token_metadata import ANALYSIS_FEATURES, build_token_metadata
 
 
 logger = logging.getLogger(__name__)
+MODEL_ANALYSIS_SCENE_JSON_ENV = "MODEL_ANALYSIS_SCENE_JSON"
 
 ROLE_NAMES = {
     0: "scene",
@@ -314,9 +316,10 @@ def _load_model_analysis_context(
             f"configured job_tag {job_tag!r} does not match checkpoint job_tag {data_spec.job_tag!r}"
         )
     vocab = SkillVocab.build_from_job_tag(job_tag)
-    if source_path is None:
-        source_path = _find_default_raw(raw_root)
-    source_path = Path(source_path)
+    source_path = _resolve_analysis_source(
+        source_path, raw_root=raw_root, cache_dir=cache_dir,
+        job_tag=job_tag, cache_shard_size=cache_shard_size,
+    )
     model_config = CandidateTransformerModel.checkpoint_model_config(checkpoint)
     repetition_config = repetition_config_from_checkpoint(checkpoint)
     model = CandidateTransformerModel(
@@ -483,12 +486,18 @@ def save_figure(fig: Figure, path: Path, *, dpi: int | None = None) -> None:
     plt.close(fig)
 
 
-def _find_default_raw(raw_root: Path) -> Path:
-    root = Path(raw_root)
-    candidates = find_dataset_json_files(root)
-    if not candidates:
-        raise FileNotFoundError(f"no raw JSON dataset found: {root}")
-    return candidates[0]
+def _resolve_analysis_source(
+    explicit: Path | None, *, raw_root: Path, cache_dir: Path,
+    job_tag: str, cache_shard_size: int,
+) -> Path:
+    """显式参数优先，其次分析专用环境变量，最后选择已有缓存。"""
+    raw = explicit or os.environ.get(MODEL_ANALYSIS_SCENE_JSON_ENV, "").strip()
+    if raw:
+        return resolve_project_path(raw, project_root=PROJECT_ROOT)
+    return find_prepared_scene_source(
+        raw_root, cache_dir=cache_dir, job_tag=job_tag,
+        cache_shard_size=cache_shard_size,
+    )
 
 
 def _load_analysis_dataset(

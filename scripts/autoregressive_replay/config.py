@@ -5,8 +5,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from common.dataset_layout import find_dataset_json_files
 from scripts.common.json_io import is_json_file
+from scripts.common.scene_source import find_prepared_scene_source
 
 from common.project_config import (
     PROJECT_JOB_TAG_ENV,
@@ -152,7 +152,10 @@ def load_replay_config(
             )
         job_tag = model_job_tag
 
-    resolved_scene_json = _resolve_scene_json(scene_json, raw_root=raw_root)
+    resolved_scene_json = _resolve_scene_json(
+        scene_json, raw_root=raw_root, cache_dir=resolve_policy_cache_dir(job_tag),
+        job_tag=job_tag, cache_shard_size=cache_shard_size,
+    )
     resolved_scene_mode = (
         scene_mode
         or os.environ.get(AUTOREGRESSIVE_REPLAY_SCENE_MODE_ENV, "cache")
@@ -350,15 +353,18 @@ def _resolve_checkpoint(model_config_path: Path, explicit: Path | None) -> Path:
     return path
 
 
-def _resolve_scene_json(explicit: Path | None, *, raw_root: Path) -> Path:
-    raw = explicit or os.environ.get(AUTOREGRESSIVE_REPLAY_SCENE_JSON_ENV)
+def _resolve_scene_json(
+    explicit: Path | None, *, raw_root: Path, cache_dir: Path,
+    job_tag: str, cache_shard_size: int,
+) -> Path:
+    raw = explicit or _optional_text(os.environ.get(AUTOREGRESSIVE_REPLAY_SCENE_JSON_ENV))
     if raw:
         path = resolve_project_path(raw, project_root=PROJECT_ROOT)
     else:
-        candidates = find_dataset_json_files(raw_root)
-        if not candidates:
-            raise FileNotFoundError(f"no scene raw JSON found: {raw_root}")
-        path = candidates[0]
+        path = find_prepared_scene_source(
+            raw_root, cache_dir=cache_dir, job_tag=job_tag,
+            cache_shard_size=cache_shard_size,
+        )
     if not is_json_file(path) or not path.is_file():
         raise FileNotFoundError(f"autoregressive scene raw JSON not found: {path}")
     return path

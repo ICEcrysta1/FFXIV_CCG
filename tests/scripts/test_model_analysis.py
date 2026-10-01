@@ -43,6 +43,35 @@ from common.policy.data.schema import TrainingSchema
 from training.loop import _save_checkpoint
 
 
+def test_analysis_scene_uses_independent_env_and_cli_override(monkeypatch, tmp_path):
+    monkeypatch.setattr(analysis_common, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setenv("MODEL_ANALYSIS_SCENE_JSON", "analysis.json.br")
+    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_SCENE_JSON", "replay.json.br")
+    kwargs = dict(raw_root=tmp_path, cache_dir=tmp_path / ".cache",
+                  job_tag="black_mage", cache_shard_size=768)
+    assert analysis_common._resolve_analysis_source(None, **kwargs) == tmp_path / "analysis.json.br"
+    assert analysis_common._resolve_analysis_source(Path("cli.json.br"), **kwargs) == tmp_path / "cli.json.br"
+
+
+def test_analysis_scene_defaults_to_prepared_cache(monkeypatch, tmp_path):
+    monkeypatch.setenv("MODEL_ANALYSIS_SCENE_JSON", " ")
+    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_SCENE_JSON", "replay.json.br")
+    expected = tmp_path / "90-100" / "scene.json.br"
+    calls = []
+
+    def select(root, **kwargs):
+        calls.append((root, kwargs))
+        return expected
+
+    monkeypatch.setattr(analysis_common, "find_prepared_scene_source", select)
+    assert analysis_common._resolve_analysis_source(
+        None, raw_root=tmp_path, cache_dir=tmp_path / ".cache",
+        job_tag="black_mage", cache_shard_size=768,
+    ) == expected
+    assert calls == [(tmp_path, dict(cache_dir=tmp_path / ".cache",
+                                   job_tag="black_mage", cache_shard_size=768))]
+
+
 def test_pca_projection_returns_coordinates_and_explained_variance():
     values = np.array(
         [
@@ -438,8 +467,6 @@ def test_model_analysis_common_helpers_and_context_loading(monkeypatch, tmp_path
     assert analysis_common._resolve_device("cpu") == torch.device("cpu")
     monkeypatch.setattr(analysis_common.torch.cuda, "is_available", lambda: False)
     assert analysis_common._resolve_device("cuda") == torch.device("cpu")
-    with pytest.raises(FileNotFoundError, match="no raw JSON"):
-        analysis_common._find_default_raw(tmp_path / "missing")
     with pytest.raises(ValueError, match="at least 3 rows"):
         pca_projection(np.zeros((2, 3)), 3)
 

@@ -48,7 +48,7 @@ def main() -> None:
         help="模型 checkpoint；默认读取模型 YAML 输出目录中的 .env checkpoint",
     )
     parser.add_argument("--model-config", type=Path, default=None, help="模型 YAML；默认读取根目录 .env")
-    parser.add_argument("--raw-json", type=Path, default=None, help="raw JSON；默认按训练 YAML 自动寻找")
+    parser.add_argument("--raw-json", type=Path, default=None, help="参考 JSON；优先读取 MODEL_ANALYSIS_SCENE_JSON，否则选择已有有效缓存（优先 90-100）")
     parser.add_argument("--output", type=Path, default=PROJECT_ROOT / "artifacts/model_analysis")
     parser.add_argument("--max-samples", type=int, default=256, help="用于分析的样本数，<=0 表示整份 compiled cache")
     parser.add_argument("--max-tokens", type=int, default=20000, help="每层最多保留的有效 token 数")
