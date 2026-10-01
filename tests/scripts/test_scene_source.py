@@ -35,7 +35,7 @@ def scene_cache(tmp_path):
             manifest = cache_dir / manifest.name
         manifest.parent.mkdir(parents=True, exist_ok=True)
         shard = manifest.with_suffix(".shard.pt")
-        torch.save({"samples": [{}]}, shard)
+        torch.save({"cache_format": CACHE_FORMAT, "samples": [{}]}, shard)
         signature = build_cache_signature(
             source, normalizer=normalizer,
             int_dtype=precision.resolve_int_dtype(),
@@ -111,3 +111,68 @@ def test_scene_source_requires_existing_valid_cache(scene_cache):
     with pytest.raises(FileNotFoundError, match="先运行训练文件转换"):
         _select(root, cache_dir)
     assert not cache_dir.exists()
+
+
+@pytest.mark.parametrize("later_shard", [False, True])
+@pytest.mark.parametrize("damage", [
+    "truncated", "missing_format", "missing_samples", "invalid_samples",
+    "short_samples", "invalid_sample",
+])
+def test_scene_source_skips_damaged_shard(scene_cache, later_shard, damage, caplog):
+    root, cache_dir, create = scene_cache
+    broken = create("AAA/90-100/a.json.br")
+    expected = create("ZZZ/80-90/a.json.br")
+    manifest = cache_path_for_source(cache_dir, broken)
+    payload = torch.load(manifest, weights_only=True)
+    shard = manifest.parent / payload["shard_files"][0]
+    if later_shard:
+        # 第一片完整且可读，损坏只发生在后续分片。
+        torch.save({"cache_format": CACHE_FORMAT, "samples": [{}] * 768}, shard)
+        shard = manifest.with_suffix(".second.pt")
+        payload["num_samples"] = 769
+        payload["shard_files"].append(shard.name)
+        torch.save(payload, manifest)
+
+    shard_payload = {"cache_format": CACHE_FORMAT, "samples": [{}]}
+    if damage == "missing_format":
+        del shard_payload["cache_format"]
+    elif damage == "missing_samples":
+        del shard_payload["samples"]
+    elif damage == "invalid_samples":
+        shard_payload["samples"] = {}
+    elif damage == "short_samples":
+        shard_payload["samples"] = []
+    elif damage == "invalid_sample":
+        shard_payload["samples"] = [None]
+    torch.save(shard_payload, shard)
+    if damage == "truncated":
+        shard.write_bytes(shard.read_bytes()[:64])
+
+    before = {path: path.read_bytes() for path in cache_dir.rglob("*.pt")}
+    assert _select(root, cache_dir) == expected
+    assert "跳过分片不可读取的参考场景" in caplog.text
+    assert before == {path: path.read_bytes() for path in cache_dir.rglob("*.pt")}
+
+
+def test_scene_source_reports_no_usable_cache_when_all_shards_are_broken(scene_cache):
+    root, cache_dir, create = scene_cache
+    source = create("FRU/90-100/a.json.br")
+    manifest = cache_path_for_source(cache_dir, source)
+    shard = manifest.with_suffix(".shard.pt")
+    shard.write_bytes(b"broken")
+    with pytest.raises(FileNotFoundError, match="先运行训练文件转换"):
+        _select(root, cache_dir)
+
+
+def test_scene_source_does_not_hide_memory_error(scene_cache, monkeypatch):
+    from common.policy.data.compiled_cache import CompiledCacheReader
+
+    root, cache_dir, create = scene_cache
+    create("FRU/90-100/a.json.br")
+
+    def fail(*_args):
+        raise MemoryError("test allocation failure")
+
+    monkeypatch.setattr(CompiledCacheReader, "samples", fail)
+    with pytest.raises(MemoryError, match="test allocation failure"):
+        _select(root, cache_dir)
