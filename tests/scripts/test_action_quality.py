@@ -3,10 +3,13 @@
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
+import time
+from concurrent.futures import CancelledError
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Event, Thread, Timer
 from types import SimpleNamespace
 
 import pytest
@@ -62,7 +65,7 @@ def fake_process(monkeypatch, *, error=False, wrong_source=False, schema=2,
         if mutate is not None:
             mutate(analysis)
         return SimpleNamespace(returncode=0, stdout=json.dumps(analysis), stderr="")
-    monkeypatch.setattr(runner.subprocess, "run", run)
+    monkeypatch.setattr(runner, "_run_node", run)
 
 
 def test_merge_preserves_raw_and_uses_shared_stage_layout(raw_file, bridge_config, monkeypatch):
@@ -155,7 +158,7 @@ def test_invalid_analysis_preserves_existing_output(raw_file, bridge_config, mon
 
 
 def test_process_failure_does_not_publish(raw_file, bridge_config, monkeypatch):
-    monkeypatch.setattr(runner.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=1, stderr="broken module"))
+    monkeypatch.setattr(runner, "_run_node", lambda *args, **kwargs: SimpleNamespace(returncode=1, stderr="broken module"))
     with pytest.raises(RuntimeError, match="broken module"):
         runner.annotate_file(raw_file, config=bridge_config)
     assert not runner.output_path_for_source(raw_file, None, None).exists()
@@ -190,7 +193,7 @@ def test_invalid_raw_fails_before_starting_node(raw_file, bridge_config, monkeyp
     atomic_write_json(raw_file, raw)
     def unexpected(*args, **kwargs):
         pytest.fail("invalid raw must not start Node")
-    monkeypatch.setattr(runner.subprocess, "run", unexpected)
+    monkeypatch.setattr(runner, "_run_node", unexpected)
     with pytest.raises(ValueError):
         runner.annotate_file(raw_file, config=bridge_config)
 
@@ -327,3 +330,212 @@ def test_node_runtime_contracts():
         capture_output=True, text=True, encoding="utf-8", timeout=15, check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.fixture
+def lifecycle_node():
+    node = config.load_bridge_config().node
+    if shutil.which(node) is None:
+        pytest.skip(f"Node executable unavailable: {node}")
+    return node
+
+
+@pytest.fixture
+def launched_nodes(monkeypatch):
+    """记录本测试持有的进程句柄，失败时也只清理这些进程。"""
+    original = subprocess.Popen
+    processes = []
+
+    def launch(*args, **kwargs):
+        process = original(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(runner.subprocess, "Popen", launch)
+    yield processes
+    for process in processes:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_node_timeout_or_cancel_reaps_process(lifecycle_node, launched_nodes, cancel):
+    stop = Event()
+    timer = Timer(0.4, stop.set)
+    if cancel:
+        timer.start()
+    started = time.monotonic()
+    try:
+        with pytest.raises(CancelledError if cancel else subprocess.TimeoutExpired):
+            runner._run_node(
+                [lifecycle_node, "-e", "setInterval(() => {}, 1000)"],
+                input="{}", timeout=30 if cancel else 0.4, stop=stop,
+                text=True, encoding="utf-8",
+            )
+    finally:
+        timer.cancel()
+        if cancel:
+            timer.join()
+    assert time.monotonic() - started < 5
+    assert len(launched_nodes) == 1
+    assert launched_nodes[0].poll() is not None
+    assert all(pipe.closed for pipe in (launched_nodes[0].stdin, launched_nodes[0].stdout, launched_nodes[0].stderr))
+
+
+def test_node_polling_preserves_large_input_and_output(lifecycle_node, launched_nodes):
+    code = """
+      let input = '';
+      process.stdin.setEncoding('utf8');
+      process.stdin.on('data', chunk => input += chunk);
+      process.stdin.on('data', () => { if (!input.endsWith('\\n')) return; setTimeout(() => {
+        process.stderr.write('diagnostic'.repeat(20000));
+        process.stdout.write(input.replace(/\\r?\\n$/, ''));
+        process.exitCode = 0;
+        process.stdin.destroy();
+      }, 450); });
+    """
+    payload = "中文测试" * 100000
+    result = runner._run_node(
+        [lifecycle_node, "-e", code], input=payload, timeout=10,
+        text=True, encoding="utf-8",
+    )
+    assert result.returncode == 0
+    assert result.stdout == payload
+    assert result.stderr == "diagnostic" * 20000
+    assert launched_nodes[0].poll() == 0
+
+
+def test_cancelled_annotation_does_not_start_node(raw_file, bridge_config, monkeypatch):
+    stop = Event()
+    stop.set()
+    monkeypatch.setattr(runner, "_run_node", lambda *_args, **_kwargs: pytest.fail("取消后不得启动 Node"))
+    with pytest.raises(CancelledError):
+        runner.annotate_file(raw_file, config=bridge_config, stop=stop)
+    assert not runner.output_path_for_source(raw_file, None, None).exists()
+
+
+def test_cancellation_before_publish_preserves_output(raw_file, bridge_config, monkeypatch):
+    output = runner.output_path_for_source(raw_file, None, None)
+    atomic_write_json(output, {"existing": True})
+    before = output.read_bytes()
+    stop = Event()
+    fake_process(monkeypatch, mutate=lambda _analysis: stop.set())
+    with pytest.raises(CancelledError):
+        runner.annotate_file(raw_file, config=bridge_config, stop=stop)
+    assert output.read_bytes() == before
+
+
+@pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM] + (
+    [signal.SIGBREAK] if hasattr(signal, "SIGBREAK") else []
+))
+def test_cli_repeated_interrupt_stops_running_nodes_and_pending_files(
+    raw_file, bridge_config, lifecycle_node, launched_nodes, monkeypatch, tmp_path, signum,
+):
+    from dataclasses import replace
+
+    for index in range(5):
+        raw_file.with_name(f"pending-{index}.json.br").write_bytes(raw_file.read_bytes())
+    output = runner.output_path_for_source(raw_file, None, None)
+    atomic_write_json(output, {"existing": True})
+    before = output.read_bytes()
+    runtime = tmp_path / "blocked.cjs"
+    runtime.write_text("setInterval(() => {}, 1000);", encoding="utf-8", newline="\n")
+    monkeypatch.setattr(runner, "RUNTIME", runtime)
+    monkeypatch.setattr(cli, "load_bridge_config", lambda: replace(bridge_config, node=lifecycle_node))
+    monkeypatch.setattr(sys, "argv", ["action_quality", str(raw_file.parent), "--force"])
+    original_wait = cli.wait
+    previous_handler = signal.getsignal(signum)
+
+    def interrupt(futures, **kwargs):
+        deadline = time.monotonic() + 5
+        while len(launched_nodes) < 2 and time.monotonic() < deadline:
+            original_wait(futures, timeout=0.05)
+        assert len(launched_nodes) == 2
+        signal.raise_signal(signum)
+        signal.raise_signal(signum)
+        return original_wait(futures, **kwargs)
+
+    monkeypatch.setattr(cli, "wait", interrupt)
+    started = time.monotonic()
+    assert cli.main() == 130
+    assert time.monotonic() - started < 8
+    assert len(launched_nodes) == 2
+    assert all(process.poll() is not None for process in launched_nodes)
+    assert signal.getsignal(signum) == previous_handler
+    assert output.read_bytes() == before
+    assert list(output.parent.glob("*.json.br")) == [output]
+
+
+@pytest.fixture
+def isolated_runtime(tmp_path):
+    runtime = tmp_path / "run.cjs"
+    runtime.write_bytes(runner.RUNTIME.read_bytes())
+    (tmp_path / "bootstrap.cjs").write_text(
+        "exports.bootstrap = () => {};", encoding="utf-8", newline="\n",
+    )
+    (tmp_path / "analyze.cjs").write_text(
+        "exports.analyze = async request => request;", encoding="utf-8", newline="\n",
+    )
+    return runtime
+
+
+def test_runtime_pipe_protocol_returns_result(lifecycle_node, isolated_runtime):
+    result = runner._run_node(
+        [lifecycle_node, str(isolated_runtime)], input='{"source_id": 2}',
+        timeout=5, text=True, encoding="utf-8",
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"source_id": 2}
+
+
+@pytest.mark.parametrize("busy", [False, True])
+def test_node_exits_when_owner_is_killed(lifecycle_node, isolated_runtime, busy):
+    if busy:
+        isolated_runtime.with_name("analyze.cjs").write_text(
+            "exports.analyze = async () => { require('fs').writeSync(1, 'ready\\n'); while (true) {} };",
+            encoding="utf-8", newline="\n",
+        )
+    code = """
+import subprocess, sys, time
+node = subprocess.Popen(sys.argv[1:3], stdin=subprocess.PIPE, stdout=sys.stdout, stderr=sys.stderr)
+print(node.pid, flush=True)
+if sys.argv[3] == 'busy':
+    node.stdin.write(b'{}\\n')
+    node.stdin.flush()
+time.sleep(60)
+"""
+    owner = subprocess.Popen(
+        [sys.executable, "-c", code, lifecycle_node, str(isolated_runtime), "busy" if busy else "waiting"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+    )
+    node_pid = None
+    cleaned = False
+    try:
+        node_pid = int(owner.stdout.readline())
+        if busy:
+            ready = Event()
+            lines = []
+            def read_ready():
+                lines.append(owner.stdout.readline())
+                ready.set()
+            reader = Thread(target=read_ready, daemon=True)
+            reader.start()
+            assert ready.wait(timeout=5)
+            reader.join(timeout=1)
+            assert lines == ["ready\n"]
+        assert owner.poll() is None
+        owner.kill()
+        # Node 继承输出管道，只有它也退出后 communicate 才会返回。
+        _, stderr = owner.communicate(timeout=5)
+        cleaned = True
+        assert not stderr
+    finally:
+        if owner.poll() is None:
+            owner.kill()
+        if not cleaned and node_pid is not None:
+            try:
+                os.kill(node_pid, signal.SIGTERM)
+            except OSError:
+                pass
+        owner.communicate(timeout=5)

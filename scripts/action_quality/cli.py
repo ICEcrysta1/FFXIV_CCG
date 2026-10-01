@@ -2,9 +2,11 @@
 
 import argparse
 import logging
+import signal
 import subprocess
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import CancelledError, FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
+from threading import Event
 
 from common.dataset_layout import find_dataset_json_files
 from scripts.common.json_io import is_json_file
@@ -49,31 +51,71 @@ def main() -> int:
     if commit is None and not args.force:
         logger.warning("无法确认分析器 commit，本次不跳过已有标注")
 
+    stop = Event()
+
     def process(source: Path, destination: Path):
         try:
+            if stop.is_set():
+                raise CancelledError("标注已取消")
             if not args.force and annotation_is_current(source, destination, commit=commit):
                 return "skipped", destination, None
             output = annotate_file(
                 source, config=config, output_root=args.output_root,
-                source_root=args.source_root,
+                source_root=args.source_root, stop=stop,
             )
         except (OSError, TypeError, ValueError, RuntimeError, UnicodeError, subprocess.TimeoutExpired) as error:
             return "failed", None, error
         return "saved", output, None
 
     counts = {"saved": 0, "skipped": 0, "failed": 0}
-    with ThreadPoolExecutor(max_workers=min(config.max_workers, len(selected))) as executor:
-        futures = {
-            executor.submit(process, source, destination): source
-            for source, destination in zip(selected, destinations, strict=True)
-        }
-        for index, future in enumerate(as_completed(futures), 1):
-            source = futures[future]
-            status, output, error = future.result()
-            counts[status] += 1
-            if error is not None:
-                logger.error("分析失败 %s: %s", source, error)
-            else:
-                logger.info("%d/%d %s: %s", index, len(selected), "跳过" if status == "skipped" else "已保存", output)
+    previous_handlers = {}
+
+    def cancel(signum, frame):
+        # 重复 Ctrl+C 只设置取消状态，不打断子进程回收和线程退出。
+        stop.set()
+
+    executor = ThreadPoolExecutor(max_workers=min(config.max_workers, len(selected)))
+    try:
+        signals = [signal.SIGINT, signal.SIGTERM]
+        if hasattr(signal, "SIGBREAK"):
+            signals.append(signal.SIGBREAK)
+        for signum in signals:
+            previous_handlers[signum] = signal.signal(signum, cancel)
+        remaining = iter(zip(selected, destinations, strict=True))
+        futures = {}
+        index = 0
+        while not stop.is_set():
+            # 只提交当前并发所需任务，中断后不再从长队列启动 Node。
+            while len(futures) < config.max_workers and not stop.is_set():
+                item = next(remaining, None)
+                if item is None:
+                    break
+                source, destination = item
+                futures[executor.submit(process, source, destination)] = source
+            if not futures:
+                break
+            completed, _ = wait(futures, timeout=0.2, return_when=FIRST_COMPLETED)
+            for future in completed:
+                source = futures.pop(future)
+                status, output, error = future.result()
+                index += 1
+                counts[status] += 1
+                if error is not None:
+                    logger.error("分析失败 %s: %s", source, error)
+                else:
+                    logger.info("%d/%d %s: %s", index, len(selected), "跳过" if status == "skipped" else "已保存", output)
+    except (KeyboardInterrupt, CancelledError):
+        stop.set()
+    finally:
+        cancelled = stop.is_set()
+        stop.set()
+        try:
+            executor.shutdown(wait=True, cancel_futures=True)
+        finally:
+            for signum, handler in previous_handlers.items():
+                signal.signal(signum, handler)
+    if cancelled:
+        logger.warning("标注已取消，已回收分析进程；已保存的结果保留，下次运行可继续。")
+        return 130
     logger.info("完成: 新标注=%d 跳过=%d 失败=%d", counts["saved"], counts["skipped"], counts["failed"])
     return int(counts["failed"] > 0)

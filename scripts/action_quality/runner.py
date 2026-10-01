@@ -6,7 +6,10 @@ import json
 import os
 import re
 import subprocess
+import time
+from concurrent.futures import CancelledError
 from pathlib import Path
+from threading import Event
 
 from common.dataset_layout import map_dataset_output_path
 from scripts.common.json_io import atomic_write_json, read_json, read_json_bytes
@@ -14,6 +17,45 @@ from scripts.common.json_io import atomic_write_json, read_json, read_json_bytes
 from .config import BridgeConfig
 
 RUNTIME = Path(__file__).parent / "runtime" / "run.cjs"
+
+
+def _check_cancelled(stop: Event | None) -> None:
+    if stop is not None and stop.is_set():
+        raise CancelledError("标注已取消")
+
+
+def _run_node(arguments: list[str], *, input: str, timeout: float,
+              stop: Event | None = None, **kwargs) -> subprocess.CompletedProcess:
+    """短周期检查取消；所有退出路径都回收本次启动的 Node。"""
+    _check_cancelled(stop)
+    # 由 Python 统一处理终端中断，避免 Node 抢先退出被记作分析失败。
+    options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
+    with subprocess.Popen(arguments, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, **options, **kwargs) as process:
+        deadline = time.monotonic() + timeout
+        owner_pipe = None
+        try:
+            # communicate 会关闭 stdin；额外持有写端，使 Node 能独立检测 Python 退出。
+            owner_pipe = os.dup(process.stdin.fileno())
+            input += "\n"
+            while True:
+                _check_cancelled(stop)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(arguments, timeout)
+                try:
+                    stdout, stderr = process.communicate(input=input, timeout=min(0.2, remaining))
+                    _check_cancelled(stop)
+                    return subprocess.CompletedProcess(arguments, process.returncode, stdout, stderr)
+                except subprocess.TimeoutExpired:
+                    # communicate 会保留尚未写完的输入及已读取的输出，重试时不重复提交。
+                    input = None
+        finally:
+            if owner_pipe is not None:
+                os.close(owner_pipe)
+            if process.poll() is None:
+                process.kill()
+            process.communicate()
 
 
 def _report_code(raw: dict) -> object:
@@ -121,8 +163,10 @@ def output_path_for_source(source: Path, output_root: Path | None, source_root: 
 def annotate_file(
     source: Path, *, config: BridgeConfig, output_root: Path | None = None,
     source_root: Path | None = None,
+    stop: Event | None = None,
 ) -> Path:
     """成功后新增 analysis，原始字段与 events 保持不变；失败不覆盖旧结果。"""
+    _check_cancelled(stop)
     source = source.resolve()
     output = output_path_for_source(source, output_root, source_root)
     content = read_json_bytes(source)
@@ -142,11 +186,11 @@ def annotate_file(
     process_env = dict(os.environ)
     for key in ("FFLOGS_V2_CLIENT_ID", "FFLOGS_V2_CLIENT_SECRET"):
         process_env.pop(key, None)
-    result = subprocess.run(
+    result = _run_node(
         [config.node, str(RUNTIME)],
         input=json.dumps(request, ensure_ascii=False),
-        cwd=RUNTIME.parent, env=process_env, capture_output=True,
-        text=True, encoding="utf-8", errors="replace", timeout=config.timeout, check=False,
+        cwd=RUNTIME.parent, env=process_env, stop=stop,
+        text=True, encoding="utf-8", errors="replace", timeout=config.timeout,
     )
     if result.returncode:
         raise RuntimeError(f"analysis process failed:\n{result.stderr.strip()}")
@@ -181,5 +225,6 @@ def annotate_file(
     if read_json_bytes(source) != content:
         raise ValueError("raw input changed during analysis")
     analysis["job_tag"] = job_tag
+    _check_cancelled(stop)
     atomic_write_json(output, {**raw, "analysis": analysis})
     return output
