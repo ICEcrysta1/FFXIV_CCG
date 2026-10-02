@@ -18,7 +18,6 @@ from .activation import (
 ROLE_SCENE = 0
 ROLE_HISTORY = 1
 ROLE_CANDIDATE = 2
-ROLE_CLS = 3
 
 SEG_SCENE = 0
 SEG_HISTORY = 1
@@ -67,8 +66,7 @@ class CandidateInputEncoder(nn.Module):
             nn.Linear(pair_dim, d_model),
             nn.LayerNorm(d_model),
         )
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, pair_dim))
-        self.role_embed = nn.Embedding(4, d_model)
+        self.role_embed = nn.Embedding(3, d_model)
         self.segment_embed = nn.Embedding(3, d_model)
 
     @property
@@ -78,7 +76,6 @@ class CandidateInputEncoder(nn.Module):
             self.config.scene_capacity
             + self.config.history_capacity
             + self.data_spec.num_candidates
-            + 1
         )
 
     def forward(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
@@ -91,7 +88,7 @@ class CandidateInputEncoder(nn.Module):
         candidate_token_count = candidate_count
         # 物理 token 布局仍按 batch 的最大 scene/history 宽度补齐；
         # RoPE 使用的逻辑位置由有效长度单独生成，不再把 padding 当成时间步。
-        total_length = scene_length + history_length + candidate_token_count + 1
+        total_length = scene_length + history_length + candidate_token_count
         if total_length > self.max_token_count:
             raise ValueError(
                 "physical token sequence length exceeds computed model capacity: "
@@ -118,9 +115,8 @@ class CandidateInputEncoder(nn.Module):
         candidate_pair = pair_embeddings["candidate"]
         candidate_tokens = candidate_pair
 
-        cls_tokens = self.cls_token.expand(batch_size, 1, pair_dim)
         content_tokens = torch.cat(
-            (scene_embeds, history_pair, candidate_tokens, cls_tokens),
+            (scene_embeds, history_pair, candidate_tokens),
             dim=1,
         )
         tokens = self.token_embedding(content_tokens)
@@ -152,7 +148,6 @@ class CandidateInputEncoder(nn.Module):
         candidate_position_ids = position_ids[
             :, candidate_start : candidate_start + candidate_count
         ]
-        cls_position_ids = position_ids[:, candidate_start + candidate_count :]
         prefix_valid = torch.cat(
             (batch["scene_mask"], batch["history_mask"]),
             dim=1,
@@ -162,14 +157,12 @@ class CandidateInputEncoder(nn.Module):
             dtype=torch.bool,
             device=device,
         )
-        cls_valid = torch.ones((batch_size, 1), dtype=torch.bool, device=device)
-        valid = torch.cat((prefix_valid, candidate_valid, cls_valid), dim=1)
+        valid = torch.cat((prefix_valid, candidate_valid), dim=1)
         return {
             "tokens": tokens,
             "padding_mask": ~valid,
             "prefix_valid": prefix_valid,
             "candidate_valid": candidate_valid,
-            "cls_valid": cls_valid,
             "scene_length": scene_length,
             "history_length": history_length,
             "prefix_length": scene_length + history_length,
@@ -179,7 +172,6 @@ class CandidateInputEncoder(nn.Module):
             "segment_ids": segment_ids,
             "candidate_positions": candidate_positions,
             "candidate_position_ids": candidate_position_ids,
-            "cls_position_ids": cls_position_ids,
         }
 
     def embed_pairs(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
@@ -321,7 +313,7 @@ def build_position_ids(
     """构造按样本有效长度生成的 RoPE 逻辑位置编号。
 
     物理布局可以包含任意位置的 padding，但有效 token 的编号始终遵循：
-    ``scene -> history -> candidate -> CLS``。scene/history 的位置按各自
+    ``scene -> history -> candidate``。scene/history 的位置按各自
     mask 的有效计数生成，不依赖有效 token 是否位于物理布局前段；无效
     scene/history token 的位置固定为 0，并由 attention mask 完全排除。
     """
@@ -361,13 +353,11 @@ def build_position_ids(
     candidate_positions = candidate_start.unsqueeze(1) + torch.arange(
         candidate_count, device=device
     ).unsqueeze(0)
-    cls_positions = (candidate_start + candidate_count).unsqueeze(1)
     return torch.cat(
         (
             scene_positions,
             history_positions,
             candidate_positions,
-            cls_positions,
         ),
         dim=1,
     )
@@ -382,14 +372,13 @@ def build_role_and_segment_ids(
             torch.full((scene_length,), ROLE_SCENE, device=device),
             torch.full((history_length,), ROLE_HISTORY, device=device),
             torch.full((candidate_count,), ROLE_CANDIDATE, device=device),
-            torch.tensor([ROLE_CLS], device=device),
         )
     ).unsqueeze(0).expand(batch_size, -1)
     segment_ids = torch.cat(
         (
             torch.full((scene_length,), SEG_SCENE, device=device),
             torch.full((history_length,), SEG_HISTORY, device=device),
-            torch.full((candidate_count + 1,), SEG_CANDIDATE, device=device),
+            torch.full((candidate_count,), SEG_CANDIDATE, device=device),
         )
     ).unsqueeze(0).expand(batch_size, -1)
     return role_ids, segment_ids

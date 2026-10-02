@@ -159,12 +159,12 @@ def trace_encoder(encoder, encoded: dict[str, torch.Tensor]) -> ModelTrace:
     from .attention_masks import build_split_attention_mask
     from .split_encoder import run_split_encoder
 
-    prefix_hidden, candidate_hidden, cls_hidden, layer_hidden, attentions = run_split_encoder(
+    prefix_hidden, candidate_hidden, layer_hidden, attentions = run_split_encoder(
         encoder,
         encoded,
         collect_attention=True,
     )
-    hidden = torch.cat((prefix_hidden, candidate_hidden, cls_hidden), dim=1)
+    hidden = torch.cat((prefix_hidden, candidate_hidden), dim=1)
     traced_encoded = dict(encoded)
     traced_encoded["attention_mask"] = build_split_attention_mask(
         prefix_length=int(encoded["prefix_length"]),

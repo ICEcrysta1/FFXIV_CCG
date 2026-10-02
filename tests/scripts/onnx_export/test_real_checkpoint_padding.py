@@ -1,4 +1,4 @@
-"""真实 46.9M 参数 checkpoint 的固定容量 padding 回归。"""
+"""真实 checkpoint 的固定容量 padding 回归。"""
 
 from __future__ import annotations
 
@@ -82,7 +82,6 @@ def test_real_bf16_checkpoint_padding_matrix_cuda():
         contract.scene_capacity
         + contract.history_capacity
         + contract.candidate_token_count
-        + 1
     )
     assert contract.total_token_count == required_positions
     contract.validate()
@@ -128,7 +127,7 @@ def test_real_checkpoint_full_export_profile_and_ort(tmp_path):
             ModelConfig.scene_capacity,
         )
     )
-    required_positions = scene_capacity + history_capacity + candidate_count + 1
+    required_positions = scene_capacity + history_capacity + candidate_count
     embedding = checkpoint["model_state_dict"]["input_encoder.skill_embed.weight"]
 
     output = export_package(

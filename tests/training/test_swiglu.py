@@ -194,6 +194,15 @@ def test_checkpoint_rejects_unknown_activation():
         CandidateTransformerModel.checkpoint_model_config({"model_config": config})
 
 
+def test_checkpoint_rejects_removed_cls_architecture():
+    checkpoint = {
+        "model_config": asdict(ModelConfig()),
+        "model_state_dict": {"input_encoder.cls_token": torch.zeros(1, 1, 4)},
+    }
+    with pytest.raises(ValueError, match="checkpoint with CLS token is unsupported"):
+        CandidateTransformerModel.checkpoint_model_config(checkpoint)
+
+
 @pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
 def test_candidate_scorer_matches_explicit_formula_and_gradients(activation):
     torch.manual_seed(23)
@@ -201,19 +210,11 @@ def test_candidate_scorer_matches_explicit_formula_and_gradients(activation):
         d_model=8, dropout=0.0, activation=activation
     ).double().eval()
     reference = deepcopy(scorer)
-    cls_hidden = torch.randn(2, 8, dtype=torch.float64, requires_grad=True)
     candidate_hidden = torch.randn(2, 3, 8, dtype=torch.float64, requires_grad=True)
-    reference_cls = cls_hidden.detach().clone().requires_grad_(True)
     reference_candidates = candidate_hidden.detach().clone().requires_grad_(True)
 
-    actual = scorer(cls_hidden=cls_hidden, candidate_hidden=candidate_hidden)
-    paired = torch.cat(
-        (
-            reference_cls.unsqueeze(1).expand(-1, 3, -1),
-            reference_candidates,
-        ),
-        dim=-1,
-    )
+    actual = scorer(candidate_hidden=candidate_hidden)
+    paired = reference_candidates
     up = F.linear(paired, reference.up_proj.weight, reference.up_proj.bias)
     if uses_gate(activation):
         # 展开 sigmoid 门控公式，独立验证门控、逐元素乘法与三个投影的梯度。
@@ -232,7 +233,6 @@ def test_candidate_scorer_matches_explicit_formula_and_gradients(activation):
     gradient = torch.randn_like(actual)
     actual.backward(gradient)
     expected.backward(gradient)
-    torch.testing.assert_close(cls_hidden.grad, reference_cls.grad, atol=1e-12, rtol=1e-12)
     torch.testing.assert_close(
         candidate_hidden.grad, reference_candidates.grad, atol=1e-12, rtol=1e-12,
     )
@@ -247,18 +247,18 @@ def test_candidate_scorer_matches_explicit_formula_and_gradients(activation):
 
 @pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
 def test_candidate_scorer_keeps_two_layer_mlp_matrix_parameter_budget(activation):
-    """折算后打分头矩阵参数量与原来的两层 MLP 近似相等。"""
+    """折算后打分头矩阵参数量与候选 hidden 单独输入的两层 MLP 近似相等。"""
     scorer = CandidateScorer(d_model=768, dropout=0.1, activation=activation)
-    legacy_parameters = 2 * 768 * 768 + 768 + 768 + 1
+    reference_parameters = 768 * 768 + 768 + 768 + 1
     scorer_parameters = sum(parameter.numel() for parameter in scorer.parameters())
 
-    assert abs(scorer_parameters - legacy_parameters) / legacy_parameters < 0.01
+    assert abs(scorer_parameters - reference_parameters) / reference_parameters < 0.01
     if uses_gate(activation):
         assert scorer.gate_proj.out_features == 384
         assert scorer.up_proj.out_features == 384
         assert scorer.down_proj.in_features == 384
     else:
-        assert scorer_parameters == legacy_parameters
+        assert scorer_parameters == reference_parameters
         assert not hasattr(scorer, "gate_proj")
 
 

@@ -84,7 +84,7 @@ def test_runtime_debug_records_transformer_attention_and_ffn(tmp_path):
     )
     encoder.layers[0].set_runtime_debug(recorder, layer_index=3)
     encoder.layers[0].set_activation_checkpoint_ffn(True)
-    source = torch.randn(2, 5, 8, requires_grad=True)
+    source = torch.randn(2, 4, 8, requires_grad=True)
 
     recorder.begin_step(
         epoch=1,
@@ -97,10 +97,9 @@ def test_runtime_debug_records_transformer_attention_and_ffn(tmp_path):
         "candidate_count": 2,
         "prefix_valid": torch.ones((2, 2), dtype=torch.bool),
         "candidate_valid": torch.ones((2, 2), dtype=torch.bool),
-        "cls_valid": torch.ones((2, 1), dtype=torch.bool),
     }
     outputs = run_split_encoder(encoder, encoded)
-    sum(value.square().mean() for value in outputs[:3]).backward()
+    sum(value.square().mean() for value in outputs[:2]).backward()
     recorder.end_step()
 
     report = _read_report(output_path)[0]

@@ -327,7 +327,6 @@ class _LayerForward:
                 hidden = (
                     tokens[:, :prefix_length],
                     tokens[:, prefix_length : prefix_length + candidate_count],
-                    tokens[:, prefix_length + candidate_count :],
                 )
                 for layer in context.model.encoder.layers[:layer_index]:
                     hidden = self._step(layer, hidden)
@@ -339,10 +338,9 @@ class _LayerForward:
             layer, *hidden,
             prefix_valid=encoded["prefix_valid"],
             candidate_valid=encoded["candidate_valid"],
-            cls_valid=encoded["cls_valid"],
             position_ids=encoded["position_ids"],
             rotary_position_encoding=self.context.model.encoder.rotary_position_encoding,
-        )[:3]
+        )[:2]
 
     def logits(self):
         model = self.context.model

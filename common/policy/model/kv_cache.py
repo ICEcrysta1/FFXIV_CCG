@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import torch
 
-from .attention_masks import build_cached_segment_masks
+from .attention_masks import build_cached_candidate_mask
 from .split_encoder import (
     run_cached_candidate_layer,
     run_prefix_layer,
@@ -34,8 +34,7 @@ def encode_with_kv_cache(
     """使用 prefix cache 编码当前候选集合。
 
     scene/history prefix 逐层保持因果并缓存；候选在每次决策中只保留一份，
-    以非因果 SDPA 同时读取完整 prefix K/V 与全部候选 K/V。CLS 单独读取
-    prefix、候选和自身，候选不会读取 CLS。
+    以非因果 SDPA 同时读取完整 prefix K/V 与全部候选 K/V。
     """
 
     tokens = encoded["tokens"]
@@ -48,19 +47,15 @@ def encode_with_kv_cache(
     prefix_valid = encoded["prefix_valid"]
     position_ids = encoded["position_ids"]
     candidate_valid = encoded["candidate_valid"]
-    cls_valid = encoded["cls_valid"]
     assert isinstance(prefix_valid, torch.Tensor)
     assert isinstance(position_ids, torch.Tensor)
     assert isinstance(candidate_valid, torch.Tensor)
-    assert isinstance(cls_valid, torch.Tensor)
 
     candidate_tokens = tokens[:, prefix_length : prefix_length + candidate_count]
-    cls_tokens = tokens[:, prefix_length + candidate_count :]
     attention_residual = getattr(encoder, "attention_residual", None)
 
     prefix_position_ids = position_ids[:, :prefix_length]
     candidate_position_ids = position_ids[:, prefix_length : prefix_length + candidate_count]
-    cls_position_ids = position_ids[:, prefix_length + candidate_count :]
     rotary_position_encoding = getattr(encoder, "rotary_position_encoding", None)
     if rotary_position_encoding is None:
         raise ValueError("encoder is missing the required RotaryPositionEncoding module")
@@ -93,44 +88,34 @@ def encode_with_kv_cache(
         )
 
     candidate_hidden = candidate_tokens
-    cls_hidden = cls_tokens
     candidate_sources = [candidate_tokens] if attention_residual is not None else None
-    cls_sources = [cls_tokens] if attention_residual is not None else None
-    # 候选 / CLS 两段 mask 只取决于本步的有效性布局，与层无关：一次算好复用，
+    # 候选 mask 只取决于本步的有效性布局，与层无关：一次算好复用，
     # 避免每层重复构造并触发 device 到 host 的同步。
-    segment_masks = build_cached_segment_masks(
+    segment_mask = build_cached_candidate_mask(
         cache.prefix_valid,
         candidate_valid,
-        cls_valid,
         candidate_count=candidate_count,
-        cls_count=cls_tokens.shape[1],
     )
     for layer_index, layer in enumerate(encoder.layers):
-        candidate_hidden, cls_hidden = run_cached_candidate_layer(
+        candidate_hidden = run_cached_candidate_layer(
             layer,
             candidate_hidden,
-            cls_hidden,
             prefix_key=cache.key_cache[layer_index],
             prefix_value=cache.value_cache[layer_index],
             prefix_valid=cache.prefix_valid,
-            prefix_position_ids=cache.prefix_position_ids,
             candidate_position_ids=candidate_position_ids,
-            cls_position_ids=cls_position_ids,
             candidate_valid=candidate_valid,
-            cls_valid=cls_valid,
             rotary_position_encoding=rotary_position_encoding,
             attention_residual=attention_residual,
             candidate_sources=candidate_sources,
-            cls_sources=cls_sources,
             query_index=2 * layer_index,
-            segment_masks=segment_masks,
+            segment_mask=segment_mask,
         )
 
     if encoder.norm is not None:
         candidate_hidden = encoder.norm(candidate_hidden)
-        cls_hidden = encoder.norm(cls_hidden)
 
-    return torch.cat((candidate_hidden, cls_hidden), dim=1), cache
+    return candidate_hidden, cache
 
 
 def _cache_matches(

@@ -77,13 +77,12 @@ class OnnxPolicy(nn.Module):
                 for key, value in batch.items()
             }
         encoded = compute_model.input_encoder(batch)
-        _prefix_hidden, candidate_hidden, cls_hidden, _layers, _attentions = run_split_encoder(
+        _prefix_hidden, candidate_hidden, _layers, _attentions = run_split_encoder(
             compute_model.encoder,
             encoded,
             force_explicit_mask=True,
         )
         logits = compute_model.scorer(
-            cls_hidden=cls_hidden[:, -1, :],
             candidate_hidden=candidate_hidden,
         )
         return logits.to(torch.bfloat16) if self.compute_model is not None else logits
@@ -97,7 +96,6 @@ class OnnxPolicy(nn.Module):
         hidden = trace.hidden
         candidate_hidden = hidden[:, encoded["candidate_positions"], :]
         logits = self.model.scorer(
-            cls_hidden=hidden[:, -1, :],
             candidate_hidden=candidate_hidden,
         )
         return OnnxPolicyTrace(

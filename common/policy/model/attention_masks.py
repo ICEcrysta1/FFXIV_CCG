@@ -90,27 +90,24 @@ def build_segment_mask(
 def build_split_segment_masks(
     prefix_valid: torch.Tensor,
     candidate_valid: torch.Tensor,
-    cls_valid: torch.Tensor,
     *,
     prefix_length: int,
     candidate_count: int,
-    cls_count: int,
     force_explicit_mask: bool = False,
-) -> tuple[SegmentAttentionMask, SegmentAttentionMask, SegmentAttentionMask]:
-    """一次算好 prefix / candidate / CLS 三段 mask，供所有层复用。
+) -> tuple[SegmentAttentionMask, SegmentAttentionMask]:
+    """一次算好 prefix / candidate 两段 mask，供所有层复用。
 
-    三段的有效性只取决于输入 batch，与层无关，因此这里只做一次 host 同步：
-    三段 key 的“全有效”标志由同一个 stack 结果读出。
+    两段的有效性只取决于输入 batch，与层无关，因此这里只做一次 host 同步：
+    两段 key 的“全有效”标志由同一个 stack 结果读出。
     """
     if force_explicit_mask:
-        prefix_all_valid = candidate_block_valid = cls_block_valid = False
+        prefix_all_valid = candidate_block_valid = False
     else:
-        prefix_all_valid, candidate_block_valid, cls_block_valid = (
+        prefix_all_valid, candidate_block_valid = (
             torch.stack(
                 (
                     prefix_valid.all(),
                     candidate_valid.all(),
-                    cls_valid.all(),
                 )
             )
             .tolist()
@@ -131,37 +128,26 @@ def build_split_segment_masks(
         force_explicit_mask=force_explicit_mask,
         all_valid=prefix_all_valid and candidate_block_valid,
     )
-    cls_mask = build_segment_mask(
-        torch.cat((prefix_valid, candidate_valid, cls_valid), dim=1),
-        query_count=cls_count,
-        key_count=prefix_length + candidate_count + cls_count,
-        causal=False,
-        force_explicit_mask=force_explicit_mask,
-        all_valid=prefix_all_valid and candidate_block_valid and cls_block_valid,
-    )
-    return prefix_mask, candidate_mask, cls_mask
+    return prefix_mask, candidate_mask
 
 
-def build_cached_segment_masks(
+def build_cached_candidate_mask(
     prefix_valid: torch.Tensor,
     candidate_valid: torch.Tensor,
-    cls_valid: torch.Tensor,
     *,
     candidate_count: int,
-    cls_count: int,
     force_explicit_mask: bool = False,
-) -> tuple[SegmentAttentionMask, SegmentAttentionMask]:
-    """KV-cache 解码用的候选 / CLS 两段 mask，一次算好供所有层复用。"""
+) -> SegmentAttentionMask:
+    """KV-cache 解码用的候选 mask，一次算好供所有层复用。"""
     prefix_length = prefix_valid.shape[1]
     if force_explicit_mask:
         # 导出/显式 mask 路径不允许读取 device 取值，控制流必须保持静态。
-        prefix_all_valid = candidate_all_valid = cls_all_valid = False
+        prefix_all_valid = candidate_all_valid = False
     else:
-        prefix_all_valid, candidate_all_valid, cls_all_valid = torch.stack(
+        prefix_all_valid, candidate_all_valid = torch.stack(
             (
                 prefix_valid.all(),
                 candidate_valid.all(),
-                cls_valid.all(),
             )
         ).tolist()
     candidate_mask = build_segment_mask(
@@ -172,27 +158,18 @@ def build_cached_segment_masks(
         force_explicit_mask=force_explicit_mask,
         all_valid=prefix_all_valid and candidate_all_valid,
     )
-    cls_mask = build_segment_mask(
-        torch.cat((prefix_valid, candidate_valid, cls_valid), dim=1),
-        query_count=cls_count,
-        key_count=prefix_length + candidate_count + cls_count,
-        causal=False,
-        force_explicit_mask=force_explicit_mask,
-        all_valid=prefix_all_valid and candidate_all_valid and cls_all_valid,
-    )
-    return candidate_mask, cls_mask
+    return candidate_mask
 
 
 def assemble_attention(
     prefix_attention: torch.Tensor,
     candidate_attention: torch.Tensor,
-    cls_attention: torch.Tensor,
     *,
     prefix_length: int,
     candidate_count: int,
 ) -> torch.Tensor:
-    """把三次区域 attention 组装为分析用完整矩阵。"""
-    total_length = prefix_length + candidate_count + 1
+    """把两次区域 attention 组装为分析用完整矩阵。"""
+    total_length = prefix_length + candidate_count
     attention = prefix_attention.new_zeros(
         prefix_attention.shape[0],
         prefix_attention.shape[1],
@@ -203,7 +180,6 @@ def assemble_attention(
     attention[
         :, :, prefix_length : prefix_length + candidate_count, : prefix_length + candidate_count
     ] = candidate_attention
-    attention[:, :, -1:, :] = cls_attention
     return attention
 
 
@@ -216,7 +192,7 @@ def build_split_attention_mask(
     """生成 trace/可视化使用的 split attention 禁止矩阵。"""
     if prefix_length < 0 or candidate_count < 0:
         raise ValueError("attention token lengths must be non-negative")
-    total_length = prefix_length + candidate_count + 1
+    total_length = prefix_length + candidate_count
     allowed = torch.zeros(
         (total_length, total_length),
         dtype=torch.bool,
@@ -228,5 +204,4 @@ def build_split_attention_mask(
     candidate_start = prefix_length
     candidate_end = prefix_length + candidate_count
     allowed[candidate_start:candidate_end, :candidate_end] = True
-    allowed[-1, :] = True
     return ~allowed

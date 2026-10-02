@@ -257,7 +257,7 @@ def test_sample_token_count_requires_mapping_and_sums_distinct_token_groups():
         "candidate_skill_ids": [3, 4, 5],
     }
 
-    assert attention_output._sample_token_count(sample) == 7
+    assert attention_output._sample_token_count(sample) == 6
 
     with pytest.raises(TypeError, match="expected mapping sample"):
         attention_output._sample_token_count(object())
@@ -277,9 +277,9 @@ def test_sample_token_count_supports_compact_history_bank_samples():
     ]
 
     assert [attention_output._sample_token_count(sample) for sample in samples] == [
-        5,
-        7,
-        10,
+        4,
+        6,
+        9,
     ]
     assert max(samples, key=attention_output._sample_token_count)["history_length"] == 5
 
@@ -308,7 +308,7 @@ def _analysis_schema():
 
 def _analysis_context(tmp_path):
     candidate_mask = np.array([False, False, True, True, True, True, False, False])
-    roles = np.array([0, ROLE_HISTORY, ROLE_CANDIDATE, ROLE_CANDIDATE, ROLE_CANDIDATE, ROLE_CANDIDATE, 3, 0])
+    roles = np.array([0, ROLE_HISTORY, ROLE_CANDIDATE, ROLE_CANDIDATE, ROLE_CANDIDATE, ROLE_CANDIDATE, ROLE_HISTORY, 0])
     vectors = np.array(
         [
             [0.0, 0.0, 0.0, 1.0],
@@ -379,7 +379,7 @@ def test_model_analysis_metadata_and_black_mage_fallbacks():
         "label_index": torch.tensor([0]),
     }
     encoded = {
-        "role_ids": torch.tensor([[0, ROLE_HISTORY, ROLE_CANDIDATE, ROLE_CANDIDATE, 3]]),
+        "role_ids": torch.tensor([[0, ROLE_HISTORY, ROLE_CANDIDATE, ROLE_CANDIDATE]]),
         "candidate_positions": torch.tensor([2, 3]),
     }
     metadata = build_token_metadata(
@@ -538,7 +538,7 @@ def test_model_analysis_common_helpers_and_context_loading(monkeypatch, tmp_path
         def trace(self, _batch):
             encoded = {
                 "padding_mask": torch.zeros((1, 4), dtype=torch.bool),
-                "role_ids": torch.tensor([[0, 1, ROLE_CANDIDATE, 3]]),
+                "role_ids": torch.tensor([[0, 1, ROLE_CANDIDATE, ROLE_CANDIDATE]]),
             }
             return SimpleNamespace(
                 encoded=encoded,
@@ -680,7 +680,7 @@ def test_model_analysis_outputs_generate_pngs(monkeypatch, tmp_path):
         numeric=False,
     )[0] == "PC2"
     handles, labels = pca_output._legend_handles()
-    assert len(handles) == len(labels) == 4
+    assert len(handles) == len(labels) == 3
 
     skill_path = skill_output.plot_skill_embedding(context)
     assert skill_path.is_file()
@@ -858,6 +858,53 @@ def test_loss_landscape_rejects_invalid_options(kwargs, message):
         loss_output._validate_options(**options)
 
 
+def test_opener_attention_averages_all_candidate_queries(monkeypatch, tmp_path):
+    """无 CLS 时汇总全部候选 query，不能误用最后一个候选作为汇总 token。"""
+    weights = torch.tensor([
+        [1.0, 0.0, 0.0],
+        [0.3, 0.6, 0.1],
+        [0.4, 0.2, 0.4],
+    ]).reshape(1, 1, 3, 3).expand(1, 2, 3, 3)
+
+    class Model:
+        @staticmethod
+        def trace(_batch):
+            return SimpleNamespace(
+                encoded={"candidate_positions": torch.tensor([1, 2])},
+                hidden=torch.zeros(1, 3, 2),
+                attentions=(weights,),
+            )
+
+        @staticmethod
+        def score_hidden(_encoded, _hidden, _batch):
+            return torch.tensor([[1.0, 0.0]])
+
+    context = SimpleNamespace(
+        model=Model(),
+        dataset=[{
+            "candidate_action_keys": ["a", "b"],
+            "label_action_key": "a",
+            "label_index": 0,
+        }],
+        device=torch.device("cpu"),
+        output_dir=tmp_path,
+        autocast=nullcontext,
+    )
+    captured = {}
+    monkeypatch.setattr(attention_output, "TrainingCollator", lambda: (lambda _samples: {}))
+    monkeypatch.setattr(
+        attention_output, "_plot_candidate_attention",
+        lambda values, *_args: captured.update(candidates=values),
+    )
+    monkeypatch.setattr(
+        attention_output, "_plot_layer_attention",
+        lambda values, *_args: captured.update(layers=values),
+    )
+    attention_output.plot_opener_attention(context, steps=1, batch_size=1)
+    np.testing.assert_allclose(captured["candidates"], [[1.0, 0.625]])
+    np.testing.assert_allclose(captured["layers"], [[1.0, 0.625]])
+
+
 def test_model_analysis_attention_output_and_main(monkeypatch, tmp_path):
     context = _analysis_context(tmp_path)
     context.output_dir.mkdir(parents=True)
@@ -928,11 +975,11 @@ def test_model_analysis_attention_output_and_main(monkeypatch, tmp_path):
     class StandardFakeAttentionModel:
         @staticmethod
         def trace(_batch):
-            role_ids = torch.tensor([[0, 1, 1, 2, 2, 3]], dtype=torch.int64)
-            attention_mask = torch.zeros((6, 6), dtype=torch.bool)
+            role_ids = torch.tensor([[0, 1, 1, 2, 2]], dtype=torch.int64)
+            attention_mask = torch.zeros((5, 5), dtype=torch.bool)
             attention_mask[2, 0] = True
-            padding_mask = torch.zeros((1, 6), dtype=torch.bool)
-            attention = torch.ones((1, 2, 6, 6), dtype=torch.float32) / 6.0
+            padding_mask = torch.zeros((1, 5), dtype=torch.bool)
+            attention = torch.ones((1, 2, 5, 5), dtype=torch.float32) / 5.0
             return SimpleNamespace(
                 encoded={
                     "attention_mask": attention_mask,

@@ -113,7 +113,7 @@ class ModelConfig:
         if "max_sequence_length" in values:
             raise ValueError(
                 "model.max_sequence_length is removed; physical token capacity is derived "
-                "from scene_capacity, history_capacity, candidates and CLS"
+                "from scene_capacity, history_capacity and candidates"
             )
         if "max_history" in values:
             raise ValueError("model.max_history is removed; configure model.history_capacity")

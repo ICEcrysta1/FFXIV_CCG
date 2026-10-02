@@ -35,14 +35,13 @@ def _encoded(tokens, prefix_length):
         "candidate_count": 2,
         "prefix_valid": prefix_valid,
         "candidate_valid": torch.tensor([[True, False], [False, False]]),
-        "cls_valid": torch.ones((2, 1), dtype=torch.bool),
         "position_ids": torch.arange(tokens.shape[1]).expand(2, -1),
     }
 
 
 def _reference_split_layer(layer, encoded, rope):
     """保留优化前的逐段投影/FFN 作为独立参照，保护 attention 分区契约。"""
-    lengths = (encoded["prefix_length"], 2, 1)
+    lengths = (encoded["prefix_length"], 2)
     parts = encoded["tokens"].split(lengths, dim=1)
     positions = encoded["position_ids"].split(lengths, dim=1)
     projected = []
@@ -54,7 +53,7 @@ def _reference_split_layer(layer, encoded, rope):
             split.split_heads(key, split.kv_head_count(layer.self_attn)), ids, ids,
         )
         projected.append((query, key, split.split_heads(value, split.kv_head_count(layer.self_attn))))
-    valid = (encoded["prefix_valid"], encoded["candidate_valid"], encoded["cls_valid"])
+    valid = (encoded["prefix_valid"], encoded["candidate_valid"])
     outputs = []
     for index, hidden in enumerate(parts):
         attended, _ = split.run_head_attention(
@@ -76,17 +75,17 @@ def test_fused_segments_match_previous_outputs_and_gradients(norm_first, activat
     torch.manual_seed(12)
     layer = _layer(norm_first=norm_first, activation=activation, kv_heads=kv_heads).double()
     reference = deepcopy(layer)
-    tokens = torch.randn(2, prefix_length + 3, 8, dtype=torch.float64, requires_grad=True)
+    tokens = torch.randn(2, prefix_length + 2, 8, dtype=torch.float64, requires_grad=True)
     reference_tokens = tokens.detach().clone().requires_grad_()
     rope = RotaryPositionEncoding(2)
     encoded = _encoded(tokens, prefix_length)
-    prefix, candidate, cls = tokens.split((prefix_length, 2, 1), dim=1)
+    prefix, candidate = tokens.split((prefix_length, 2), dim=1)
     actual = torch.cat(split.run_split_layer(
-        layer, prefix, candidate, cls,
+        layer, prefix, candidate,
         prefix_valid=encoded["prefix_valid"], candidate_valid=encoded["candidate_valid"],
-        cls_valid=encoded["cls_valid"], position_ids=encoded["position_ids"],
+        position_ids=encoded["position_ids"],
         rotary_position_encoding=rope, force_explicit_mask=True,
-    )[:3], dim=1)
+    )[:2], dim=1)
     expected = _reference_split_layer(reference, _encoded(reference_tokens, prefix_length), rope)
     torch.testing.assert_close(actual, expected, atol=1e-10, rtol=1e-9)
     probe = torch.randn_like(actual)
@@ -97,7 +96,7 @@ def test_fused_segments_match_previous_outputs_and_gradients(norm_first, activat
         torch.testing.assert_close(actual_param.grad, expected_param.grad, atol=1e-10, rtol=1e-8)
 
 
-def test_shared_projections_run_once_while_sdpa_keeps_three_regions(monkeypatch):
+def test_shared_projections_run_once_while_sdpa_keeps_two_regions(monkeypatch):
     encoder = torch.nn.TransformerEncoder(_layer(), 1, enable_nested_tensor=False)
     encoder.rotary_position_encoding = RotaryPositionEncoding(2)
     layer = encoder.layers[0]
@@ -117,10 +116,10 @@ def test_shared_projections_run_once_while_sdpa_keeps_three_regions(monkeypatch)
         return original_sdpa(*args, **kwargs)
 
     monkeypatch.setattr(attention_variants_module, "scaled_dot_product_attention", counted_sdpa)
-    split.run_split_encoder(encoder, _encoded(torch.randn(2, 6, 8), 3))
+    split.run_split_encoder(encoder, _encoded(torch.randn(2, 5, 8), 3))
     for handle in handles:
         handle.remove()
-    assert counts.pop("sdpa") == 3
+    assert counts.pop("sdpa") == 2
     assert len(counts) == 9
     assert set(counts.values()) == {1}
 
@@ -137,12 +136,12 @@ def test_fused_checkpoint_preserves_dropout_outputs_and_gradients(full_residual,
     for layer in encoder.layers:
         layer.set_activation_checkpoint_ffn(checkpoint_ffn)
         layer.set_activation_checkpoint_attention(checkpoint_attention)
-    tokens = torch.randn(2, 6, 8, requires_grad=True)
+    tokens = torch.randn(2, 5, 8, requires_grad=True)
     reference_tokens = tokens.detach().clone().requires_grad_()
     torch.manual_seed(32)
-    actual = torch.cat(split.run_split_encoder(encoder, _encoded(tokens, 3))[:3], dim=1)
+    actual = torch.cat(split.run_split_encoder(encoder, _encoded(tokens, 3))[:2], dim=1)
     torch.manual_seed(32)
-    expected = torch.cat(split.run_split_encoder(reference, _encoded(reference_tokens, 3))[:3], dim=1)
+    expected = torch.cat(split.run_split_encoder(reference, _encoded(reference_tokens, 3))[:2], dim=1)
     torch.testing.assert_close(actual, expected)
     probe = torch.randn_like(actual)
     (actual * probe).sum().backward()

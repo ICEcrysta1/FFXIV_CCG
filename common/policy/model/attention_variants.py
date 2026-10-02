@@ -28,21 +28,20 @@ def _run_split_attention(
     candidate_count: int,
     prefix_valid: torch.Tensor,
     candidate_valid: torch.Tensor,
-    cls_valid: torch.Tensor,
     position_ids: torch.Tensor,
     rotary_position_encoding,
     collect_attention: bool = False,
     force_explicit_mask: bool = False,
     segment_masks: tuple[
-        SegmentAttentionMask, SegmentAttentionMask, SegmentAttentionMask
+        SegmentAttentionMask, SegmentAttentionMask
     ]
     | None = None,
 ):
     """只运行 self-attention，供标准残差和 Full AttnRes 共同使用。"""
     if segment_masks is None:
-        prefix_mask = candidate_mask = cls_mask = None
+        prefix_mask = candidate_mask = None
     else:
-        prefix_mask, candidate_mask, cls_mask = segment_masks
+        prefix_mask, candidate_mask = segment_masks
     attention_input = layer.norm1(hidden) if layer.norm_first else hidden
     query, key, value = project_qkv(layer.self_attn, attention_input)
     query_heads, key_heads = rotate_qk(
@@ -55,7 +54,7 @@ def _run_split_attention(
     value_heads = split_heads(value, kv_head_count(layer.self_attn))
     candidate_end = prefix_length + candidate_count
 
-    # 三段各自保留原有可见范围；K/V 直接切片，不再重复拼接。
+    # 两段各自保留原有可见范围；K/V 直接切片，不再重复拼接。
     prefix_attended, prefix_attention = _attend_heads(
         layer,
         query_heads[:, :, :prefix_length],
@@ -78,30 +77,17 @@ def _run_split_attention(
         force_explicit_mask=force_explicit_mask,
         segment_mask=candidate_mask,
     )
-    cls_attended, cls_attention = _attend_heads(
-        layer,
-        query_heads[:, :, candidate_end:],
-        key_heads,
-        value_heads,
-        key_valid=torch.cat((prefix_valid, candidate_valid, cls_valid), dim=1),
-        causal=False,
-        collect_attention=collect_attention,
-        force_explicit_mask=force_explicit_mask,
-        segment_mask=cls_mask,
-    )
-
     if not collect_attention:
         attention = None
     else:
         attention = assemble_attention(
             prefix_attention,
             candidate_attention,
-            cls_attention,
             prefix_length=prefix_length,
             candidate_count=candidate_count,
         )
     attended = merge_heads(
-        torch.cat((prefix_attended, candidate_attended, cls_attended), dim=2)
+        torch.cat((prefix_attended, candidate_attended), dim=2)
     )
     return layer.self_attn.out_proj(attended), attention
 

@@ -298,7 +298,6 @@ def _raw_logits(policy, trace) -> torch.Tensor:
     """用与 policy trace 相同的方式从 raw model trace 计算 logits。"""
     candidate_hidden = trace.hidden[:, trace.encoded["candidate_positions"], :]
     return policy.model.scorer(
-        cls_hidden=trace.hidden[:, -1, :],
         candidate_hidden=candidate_hidden,
     )
 
