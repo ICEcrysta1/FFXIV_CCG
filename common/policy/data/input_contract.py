@@ -15,7 +15,8 @@ from .schema import TrainingSchema
 # 6：技能和状态输入移除累计 GCD 索引；状态输入同时移除精确战斗剩余时间
 #    及四个冗余 GCD 窗口字段，旧 checkpoint 必须重新训练。
 # 7：状态输入移除调用方调度窗口与所有 GCD 单位的时间字段，旧权重不兼容。
-INPUT_CONTRACT_VERSION = 7
+# 8：状态输入移除资源 consumed、weave 计数/上限和黑魔残留辅助 Buff。
+INPUT_CONTRACT_VERSION = 8
 
 
 @dataclass(frozen=True)

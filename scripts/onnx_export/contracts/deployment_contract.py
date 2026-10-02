@@ -26,7 +26,8 @@ from ..runtime.tensor_runtime import GOLDEN_FORMAT, golden_encoding
 # 候选合法性与 Sidecar 执行语义变化后，旧导出包不得继续被部署侧接受。
 # 10：技能和状态输入收缩为新的秒制窗口契约，禁止复用旧部署包。
 # 11：移除模型调度窗口和 GCD 单位时间字段，状态维度与归一化契约变化。
-DEPLOYMENT_CONTRACT_VERSION = 11
+# 12：状态输入移除资源 consumed、weave 字段及黑魔残留辅助 Buff，拒绝旧维度。
+DEPLOYMENT_CONTRACT_VERSION = 12
 DEPLOYMENT_MANIFEST_VERSION = 7
 MANIFEST_SCHEMA_FILENAME = "manifest.schema.json"
 

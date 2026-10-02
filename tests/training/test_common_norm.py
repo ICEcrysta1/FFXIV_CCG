@@ -272,8 +272,6 @@ def test_normalizer_uses_system_and_job_status_max_stacks():
     assert normalizer.cache_signature["status_limits"] == {
         "job.ley_lines": 1.0,
         "job.lucid_dreaming": 1.0,
-        "job.manaward": 1.0,
-        "job.surecast": 1.0,
         "job.swiftcast": 1.0,
         "job.triplecast": 3.0,
         "system.burst_potion": 1.0,

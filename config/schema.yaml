@@ -17,7 +17,8 @@ contracts:
   # 8：移除动画锁状态与输出；秒制观测提供完整 cast_remaining_seconds 供调用方调度。
   # 9：模型 token 移除累计 GCD 索引、精确战斗剩余时间和冗余 GCD 窗口字段。
   # 10：模型 token 移除调用方调度窗口与所有 GCD 单位的时间字段。
-  sidecar_contract_version: 10
+  # 11：状态 token 移除资源 consumed、weave 计数/上限与黑魔残留辅助 Buff。
+  sidecar_contract_version: 11
   scene_context_absolute_mode: "absolute_from_fight_scene_context"
   scene_context_keys:
     targetable: "targetable_window_context"
@@ -46,7 +47,7 @@ scene_context:
       - "target_count"
 
 canonical_output:
-  schema_version: 9
+  schema_version: 10
   token_key: "tokens"
   top_level_keys:
     - "job_tag"
@@ -83,8 +84,6 @@ state_vector_fields:
     - "next_untargetable_in_seconds"
     - "downtime_remaining_seconds"
     - "is_moving"
-    - "ogcds_weaved"
-    - "max_ogcd_per_window"
   buff_state:
     - "active"
     - "remaining_seconds"

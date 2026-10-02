@@ -64,9 +64,8 @@ public sealed class OutputContextBuilder
 
     internal Dictionary<string, double[]> BuildStateTransitionToken(
         CombatState before,
-        CombatState after,
-        IReadOnlyDictionary<string, object> consumed) =>
-        _stateTokenBuilder.Build(BuildStateContext(before), BuildStateContext(after), consumed);
+        CombatState after) =>
+        _stateTokenBuilder.Build(BuildStateContext(before), BuildStateContext(after));
 
     /// <summary>装配 canonical 顶层上下文（对照 build_context）。</summary>
     public Dictionary<string, object?> BuildContext(

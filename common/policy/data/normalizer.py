@@ -477,7 +477,7 @@ def _infer_rule_type(
         return "keep"
     if leaf_name.endswith("_ready"):
         return "keep"
-    if leaf_name in ("ogcds_weaved", "max_ogcd_per_window", "mp_ratio"):
+    if leaf_name == "mp_ratio":
         return "keep"
     if leaf_name == "mp":
         return "divide_mp_max"
@@ -516,7 +516,7 @@ _BINARY_FIELDS = frozenset(
 
 
 def _strip_prefix(name: str) -> str:
-    for prefix in ("before.", "after.", "consumed."):
+    for prefix in ("before.", "after."):
         if name.startswith(prefix):
             return name[len(prefix) :]
     return name

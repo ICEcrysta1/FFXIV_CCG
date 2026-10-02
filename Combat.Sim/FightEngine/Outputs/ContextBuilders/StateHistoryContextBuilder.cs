@@ -43,8 +43,7 @@ public sealed class StateHistoryContextBuilder
             {
                 token = _stateTokenBuilder.Build(
                     entry.StateBefore,
-                    entry.StateAfter,
-                    entry.JobResourcesConsumed);
+                    entry.StateAfter);
             }
 
             tokens.Add(token);

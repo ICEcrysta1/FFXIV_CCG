@@ -69,7 +69,7 @@
 dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj --configuration Debug
 ```
 
-Python 客户端会将程序集嵌入的契约版本与 `config/schema.yaml`（当前 `sidecar_contract_version: 10`）比较，拒绝旧 DLL；新版 DLL 使用缺少
+Python 客户端会将程序集嵌入的契约版本与 `config/schema.yaml`（当前 `sidecar_contract_version: 11`）比较，拒绝旧 DLL；新版 DLL 使用缺少
 `contracts.scene_epsilon` 或 `contracts.sidecar_contract_version` 的旧 schema 则会在 C# 配置加载时失败。
 FightEngine DLL、`config/schema.yaml` 与输出 token 契约必须作为同一版本构建和使用。自回归回放把移动事实直接提交给状态机，训练样本转换仍可在输出层合成移动字段。
 

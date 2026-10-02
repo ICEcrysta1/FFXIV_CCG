@@ -10,7 +10,7 @@ namespace Combat.Sim.Outputs.ContextBuilders;
 /// <summary>
 /// 候选状态上下文装配器（对照 candidate_context_builders/candidate_state_context_builder.py）。
 /// 与状态历史共用同一个 <see cref="StateTokenBuilder.Build"/>；
-/// 非法候选保留真实 before 并把 after/consumed 统一写成 null。
+/// 非法候选保留真实 before 并把 after 统一写成 null。
 /// </summary>
 public sealed class CandidateStateContextBuilder
 {
@@ -32,8 +32,7 @@ public sealed class CandidateStateContextBuilder
                 .Select(entry => entry.Preview.IsLegal
                     ? (object)_stateTokenBuilder.Build(
                         entry.BeforeStateContext,
-                        entry.AfterStateContext!,
-                        entry.JobResourcesConsumed)
+                        entry.AfterStateContext!)
                     : _stateTokenBuilder.BuildIllegalCandidateToken(entry.BeforeStateContext))
                 .ToList(),
         };

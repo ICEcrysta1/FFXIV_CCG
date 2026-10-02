@@ -72,9 +72,7 @@ public sealed class StateContextBuilder
             NextUntargetableInGcds: GcdUnits.ToOptionalGcdUnits(nextUntargetableSeconds, currentGcd),
             DowntimeRemainingSeconds: state.DowntimeRemaining,
             DowntimeRemainingGcds: GcdUnits.ToGcdUnits(state.DowntimeRemaining, currentGcd),
-            IsMoving: state.IsMoving,
-            OgcdsWeaved: state.OgcdsWeaved,
-            MaxOgcdPerWindow: state.MaxOgcdPerWindow);
+            IsMoving: state.IsMoving);
     }
 
     private List<BuffContextEntry> BuildBuffContext(CombatState state, double currentGcd)

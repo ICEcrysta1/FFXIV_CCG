@@ -84,7 +84,7 @@ def test_inprocess_backend_returns_native_python_context():
     ("job_tag", "action_key"),
     [("black_mage", "fire_iii"), ("machinist", "heated_split_shot")],
 )
-def test_model_vectors_exclude_scheduling_fields_but_runtime_keeps_them(job_tag, action_key):
+def test_model_vectors_exclude_scheduling_and_weave_fields(job_tag, action_key):
     """两个职业的模型不读取调度计时；运行时仍可使用完整秒制观测。"""
     _require_inprocess_backend()
     with InProcessBackend(job_tag, fight_remaining=60.0, max_history=32) as backend:
@@ -102,10 +102,11 @@ def test_model_vectors_exclude_scheduling_fields_but_runtime_keeps_them(job_tag,
         "weave_window_gcds", "ogcd_window_gcds", "downtime_remaining_gcds",
         "gcd_remaining_seconds", "weave_window_seconds", "ogcd_window_seconds",
         "next_untargetable_in_gcds", "remaining_gcds",
+        "ogcds_weaved", "max_ogcd_per_window",
     }
     for context_key in ("state_history_context", "candidate_state_context"):
         keys = canonical[context_key]["player_state_feature_keys"]
-        assert len(keys) == 22
+        assert len(keys) == 18
         all_keys = [
             feature_key
             for group_key, feature_keys in canonical[context_key].items()
@@ -114,6 +115,7 @@ def test_model_vectors_exclude_scheduling_fields_but_runtime_keeps_them(job_tag,
         ]
         assert not any(
             key.rsplit(".", 1)[-1] in removed_fields or key.endswith("_gcds")
+            or key.startswith("consumed.") or ".manaward." in key or ".surecast." in key
             for key in all_keys
         )
         assert "before.current_gcd_seconds" in keys
@@ -121,3 +123,24 @@ def test_model_vectors_exclude_scheduling_fields_but_runtime_keeps_them(job_tag,
     for context_key in ("skill_history_context", "candidate_skill_context"):
         assert canonical[context_key]
         assert all("gcd_index" not in token for token in canonical[context_key])
+
+
+def test_compact_model_state_keeps_runtime_ogcd_limit(cs_backend):
+    """模型不读取 weave 计数时，真实状态机仍在 GCD 窗口内限制并在边界恢复 oGCD。"""
+    assert cs_backend.submit_action(0.0, "fire_iii", actual_cast_seconds=0.0).accepted
+    for timestamp, action in ((0.1, "triplecast"), (0.2, "amplifier"), (0.3, "swiftcast")):
+        assert cs_backend.submit_action(timestamp, action).accepted
+
+    context = cs_backend.observe_at(0.4, format="vector", next_observation_timestamp=0.5).context
+    candidate = next(
+        token for token in context["candidate_skill_context"]
+        if token["skill_key"] == "lucid_dreaming"
+    )
+    assert not candidate["is_legal"]
+    assert candidate["invalid_reason"] == "ogcd_limit"
+    rejected = cs_backend.submit_action(0.4, "lucid_dreaming")
+    assert not rejected.accepted
+    assert rejected.reason == "ogcd_limit"
+
+    assert cs_backend.validate_at(2.5, "lucid_dreaming").legal
+    assert cs_backend.submit_action(2.5, "lucid_dreaming").accepted

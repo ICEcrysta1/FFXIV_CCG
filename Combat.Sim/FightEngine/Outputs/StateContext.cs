@@ -26,9 +26,7 @@ public sealed record PlayerContext(
     double? NextUntargetableInGcds,
     double DowntimeRemainingSeconds,
     double DowntimeRemainingGcds,
-    bool IsMoving,
-    int OgcdsWeaved,
-    int MaxOgcdPerWindow);
+    bool IsMoving);
 
 /// <summary>状态上下文里的目标段（对照 output_context_builder 的 target 段）。</summary>
 public sealed record TargetContext(
@@ -78,7 +76,7 @@ public sealed record StateContext(
             WeaveWindowSeconds: 0.0, WeaveWindowGcds: 0.0, OgcdWindowSeconds: 0.0,
             OgcdWindowGcds: 0.0, BossTargetable: false, NextUntargetableInSeconds: null,
             NextUntargetableInGcds: null, DowntimeRemainingSeconds: 0.0,
-            DowntimeRemainingGcds: 0.0, IsMoving: false, OgcdsWeaved: 0, MaxOgcdPerWindow: 0),
+            DowntimeRemainingGcds: 0.0, IsMoving: false),
         Target: new TargetContext(
             CumulativePotency: 0.0, CumulativeDotPotency: 0.0,
             CurrentPotency: 0.0, CurrentGcdDotPotency: 0.0),

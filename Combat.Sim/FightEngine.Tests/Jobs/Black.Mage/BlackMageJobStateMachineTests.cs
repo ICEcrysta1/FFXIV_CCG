@@ -463,6 +463,8 @@ public class BlackMageJobStateMachineTests
         Assert.False(machine.SkillBook.Contains("retrace"));
         Assert.False(machine.SkillBook.Contains("manaward"));
         Assert.False(machine.SkillBook.Contains("surecast"));
+        Assert.DoesNotContain("manaward", machine.SystemMachine.JobStatusDefinitions.Keys);
+        Assert.DoesNotContain("surecast", machine.SystemMachine.JobStatusDefinitions.Keys);
         Assert.False(machine.JobMachine.SupportsBehavior("ley_lines_utility"));
 
         var available = machine.AvailableActionKeys(machine.InitialState());

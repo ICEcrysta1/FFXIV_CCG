@@ -169,7 +169,7 @@ public class ProjectConfigLoaderTests
         Assert.Equal(9, config.Job.ResourceLimits.Count);
         Assert.Equal(3, config.Job.ResourceLimits["astral_fire"]);
         Assert.Equal(30, config.Job.ResourceLimits["polyglot_timer"]);
-        Assert.Equal(6, config.Job.Statuses.Count);
+        Assert.Equal(4, config.Job.Statuses.Count);
         Assert.Equal(737, config.Job.Statuses["ley_lines"].GameId);
         Assert.True(config.Job.Skills.Count >= 20);
 
