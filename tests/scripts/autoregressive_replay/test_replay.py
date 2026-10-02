@@ -658,12 +658,13 @@ def test_replay_history_ablation_guards(monkeypatch, tmp_path):
     reference = ReplayRow(1, "a", 1.0, (("a", 0.0, 1.0, True),))
     replay._generate_full_trajectory = lambda: (
         [reference],
-        (ReplaySnapshot({"canonical": "x"}, reference),),
+        (ReplaySnapshot({"canonical": "x"}, reference, gcd_phase=False),),
         SimpleNamespace(),
     )
     seen_forbid_flags = []
 
     def predict_from_canonical(*_args, **kwargs):
+        assert kwargs["gcd_phase"] is False
         seen_forbid_flags.append(kwargs["max_history"])
         return ReplayRow(1, "b", 0.5, (("b", 0.0, 0.5, True),))
 

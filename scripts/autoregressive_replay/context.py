@@ -507,6 +507,7 @@ class LiveBatchBuilder:
         ).context
         return self._build_batch_from_canonical(
             canonical,
+            gcd_phase=is_gcd_decision(state.gcd_remaining),
             max_history=self._max_history if max_history is None else max_history,
         )
 
@@ -514,11 +515,13 @@ class LiveBatchBuilder:
         self,
         canonical,
         *,
+        gcd_phase: bool,
         max_history: int,
     ):
-        """从缓存的决策时刻上下文直接构建 batch（历史消融旁路，不驱动后端）。"""
+        """复用决策上下文和调用方阶段；调度计时不从模型特征反推。"""
         return self._build_batch_from_canonical(
             canonical,
+            gcd_phase=gcd_phase,
             max_history=max_history,
         )
 
@@ -526,16 +529,13 @@ class LiveBatchBuilder:
         self,
         canonical,
         *,
+        gcd_phase: bool,
         max_history: int,
     ):
         candidate_context = canonical["candidate_skill_context"]
         candidate_state_context = canonical["candidate_state_context"]
         if not candidate_context:
             raise RuntimeError("no candidate actions in live state")
-        feature_keys = candidate_state_context["player_state_feature_keys"]
-        remaining_index = feature_keys.index("before.gcd_remaining_seconds")
-        remaining = candidate_state_context["tokens"][0]["player_state"][remaining_index]
-        gcd_phase = is_gcd_decision(remaining)
         source_candidate_keys = tuple(
             str(token.get("skill_key", "")) for token in candidate_context
         )

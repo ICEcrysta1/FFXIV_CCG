@@ -84,8 +84,8 @@ def test_inprocess_backend_returns_native_python_context():
     ("job_tag", "action_key"),
     [("black_mage", "fire_iii"), ("machinist", "heated_split_shot")],
 )
-def test_model_vectors_exclude_progress_counters_but_runtime_keeps_them(job_tag, action_key):
-    """两个职业的真实桥接输出都不把运行时步号和结束边界传入模型。"""
+def test_model_vectors_exclude_scheduling_fields_but_runtime_keeps_them(job_tag, action_key):
+    """两个职业的模型不读取调度计时；运行时仍可使用完整秒制观测。"""
     _require_inprocess_backend()
     with InProcessBackend(job_tag, fight_remaining=60.0, max_history=32) as backend:
         assert backend.submit_action(0.0, action_key).accepted
@@ -95,15 +95,28 @@ def test_model_vectors_exclude_progress_counters_but_runtime_keeps_them(job_tag,
 
     assert scalar["gcd_index"] == 1
     assert scalar["fight_remaining_seconds"] == pytest.approx(56.0)
+    assert "gcd_remaining_seconds" in scalar
+    assert "weave_window_seconds" in scalar
     removed_fields = {
         "gcd_index", "fight_remaining_seconds", "gcd_remaining_gcds",
         "weave_window_gcds", "ogcd_window_gcds", "downtime_remaining_gcds",
+        "gcd_remaining_seconds", "weave_window_seconds", "ogcd_window_seconds",
+        "next_untargetable_in_gcds", "remaining_gcds",
     }
     for context_key in ("state_history_context", "candidate_state_context"):
         keys = canonical[context_key]["player_state_feature_keys"]
-        assert len(keys) == 30
-        assert not any(key.rsplit(".", 1)[-1] in removed_fields for key in keys)
-        assert "before.gcd_remaining_seconds" in keys
+        assert len(keys) == 22
+        all_keys = [
+            feature_key
+            for group_key, feature_keys in canonical[context_key].items()
+            if group_key.endswith("_feature_keys")
+            for feature_key in feature_keys
+        ]
+        assert not any(
+            key.rsplit(".", 1)[-1] in removed_fields or key.endswith("_gcds")
+            for key in all_keys
+        )
+        assert "before.current_gcd_seconds" in keys
         assert "after.downtime_remaining_seconds" in keys
     for context_key in ("skill_history_context", "candidate_skill_context"):
         assert canonical[context_key]

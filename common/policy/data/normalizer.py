@@ -12,7 +12,8 @@ from common.torch_dependencies import import_torch
 from .normalization import NormalizerConfig, load_normalizer_config
 
 
-NORMALIZER_CONTRACT_VERSION = 1
+# 2：移除 GCD 单位时间字段的归一化上限和规则。
+NORMALIZER_CONTRACT_VERSION = 2
 
 
 class Normalizer:
@@ -157,7 +158,6 @@ class Normalizer:
             remaining_seconds_max=float(config_payload["remaining_seconds_max"]),
             fight_time_max=float(config_payload["fight_time_max"]),
             target_count_max=float(config_payload["target_count_max"]),
-            remaining_gcds_max=float(config_payload["remaining_gcds_max"]),
             current_potency_max=float(config_payload["current_potency_max"]),
             cumulative_potency_mode=str(config_payload["cumulative_potency_mode"]),
         )
@@ -415,8 +415,6 @@ def _apply_normalize_inplace(
         if max_value is None or max_value <= 0.0:
             raise ValueError("status normalization requires a positive max_value")
         values.clamp_(min=0.0, max=max_value).div_(max_value)
-    elif rule_type == "clip_divide_gcds_max":
-        values.clamp_(min=0.0, max=config.remaining_gcds_max).div_(config.remaining_gcds_max)
     elif rule_type == "log1p_potency":
         values.clamp_(min=0.0)
         values.log1p_()
@@ -440,9 +438,6 @@ def _apply_skill_normalize_inplace(
         return
     if leaf_name in {"actual_mp_cost", "mp_cost"}:
         values.clamp_(min=0.0, max=config.mp_max).div_(config.mp_max)
-        return
-    if feature_name.endswith(".gcds"):
-        values.clamp_(min=0.0, max=config.remaining_gcds_max).div_(config.remaining_gcds_max)
         return
     if leaf_name == "time_seconds":
         _apply_normalize_inplace(values, "clip_divide_fight_time_max", config)
@@ -494,8 +489,6 @@ def _infer_rule_type(
         return "clip_divide_resource_max"
     if leaf_name.endswith("_seconds"):
         return "clip_divide_seconds_max"
-    if leaf_name.endswith("_gcds"):
-        return "clip_divide_gcds_max"
     if leaf_name == "current_potency":
         return "divide_current_potency_max"
     if leaf_name == "current_gcd_dot_potency":
@@ -578,8 +571,6 @@ def _apply_rule_to_scalar(
         if max_value is None or max_value <= 0.0:
             raise ValueError("status normalization requires a positive max_value")
         return max(0.0, min(value, max_value)) / max_value
-    if rule_type == "clip_divide_gcds_max":
-        return max(0.0, min(value, config.remaining_gcds_max)) / config.remaining_gcds_max
     if rule_type == "log1p_potency":
         return math.log1p(max(0.0, value))
     if rule_type == "divide_current_potency_max":
@@ -614,8 +605,6 @@ def _inverse_rule(
         if max_value is None or max_value <= 0.0:
             raise ValueError("status normalization requires a positive max_value")
         return normalized * max_value
-    if rule_type == "clip_divide_gcds_max":
-        return normalized * config.remaining_gcds_max
     if rule_type == "log1p_potency":
         return math.expm1(normalized)
     if rule_type == "divide_current_potency_max":
