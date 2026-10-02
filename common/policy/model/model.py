@@ -88,7 +88,6 @@ class CandidateTransformerModel(nn.Module):
         for parameter in self.parameters():
             if parameter.dim() > 1:
                 nn.init.xavier_uniform_(parameter)
-        nn.init.normal_(self.input_encoder.cls_token, std=0.02)
         attention_residual = getattr(self.encoder, "attention_residual", None)
         if attention_residual is not None:
             attention_residual.reset_parameters()
@@ -147,7 +146,7 @@ class CandidateTransformerModel(nn.Module):
         cached_candidate_positions = None
         if self.training or not self._kv_cache_enabled:
             with self._debug_stage("encoder"):
-                prefix_hidden, candidate_hidden, cls_hidden, _, _ = run_split_encoder(
+                prefix_hidden, candidate_hidden, _, _ = run_split_encoder(
                     self.encoder,
                     encoded,
                 )
@@ -155,7 +154,6 @@ class CandidateTransformerModel(nn.Module):
                     (
                         prefix_hidden,
                         candidate_hidden,
-                        cls_hidden,
                     ),
                     dim=1,
                 )
@@ -167,7 +165,7 @@ class CandidateTransformerModel(nn.Module):
                         encoded,
                         self._kv_cache,
                     )
-            # cached hidden 只包含候选块和 CLS；候选位置需要换算为 suffix 局部索引。
+            # cached hidden 只包含候选块；候选位置需要换算为 suffix 局部索引。
             prefix_length = encoded["scene_length"] + encoded["history_length"]
             cached_candidate_positions = encoded["candidate_positions"] - prefix_length
         with self._debug_stage("scorer"):
@@ -232,7 +230,6 @@ class CandidateTransformerModel(nn.Module):
         )
         candidate_hidden = hidden[:, positions, :]
         logits = self.scorer(
-            cls_hidden=hidden[:, -1, :],
             candidate_hidden=candidate_hidden,
         )
         return apply_repetition_penalty(logits, batch, self.repetition)
@@ -249,6 +246,8 @@ class CandidateTransformerModel(nn.Module):
                 "retrain it with Transformer-only candidate scoring"
             )
         state_dict = checkpoint.get("model_state_dict")
+        if isinstance(state_dict, Mapping) and "input_encoder.cls_token" in state_dict:
+            raise ValueError("checkpoint with CLS token is unsupported; retrain without CLS")
         if isinstance(state_dict, Mapping) and any(
             str(key).startswith("scorer.network.") for key in state_dict
         ):

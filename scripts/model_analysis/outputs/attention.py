@@ -32,7 +32,7 @@ def plot_opener_attention(
     steps: int = 28,
     batch_size: int = 16,
 ) -> tuple[Path, Path]:
-    """用 compiled cache 的真实开场样本，绘制 CLS 对全部候选动作的注意力。"""
+    """用 compiled cache 的真实开场样本，绘制候选 query 对候选 key 的平均注意力。"""
     if steps <= 0:
         raise ValueError("attention steps must be positive")
     if batch_size <= 0:
@@ -63,9 +63,11 @@ def plot_opener_attention(
                 layer_rows = [[] for _ in attentions]
 
             for layer_index, attention in enumerate(attentions):
-                # attention: [batch, head, query, key]. CLS 是最后一个 query。
-                cls_to_candidate = attention[:, :, -1, candidate_positions]
-                candidate_attention = cls_to_candidate.mean(dim=1)
+                # attention: [batch, head, query, key]；对所有候选 query 和 head 求均值。
+                candidate_to_candidate = attention.index_select(2, candidate_positions).index_select(
+                    3, candidate_positions
+                )
+                candidate_attention = candidate_to_candidate.mean(dim=(1, 2))
                 layer_rows[layer_index].append(
                     candidate_attention.detach().float().cpu().numpy()
                 )
@@ -189,7 +191,7 @@ def _sample_token_count(sample: object) -> int:
                 raise TypeError(
                     "sample field 'history_length' must be an integer for representative selection"
                 ) from exc
-    return total + 1
+    return total
 
 
 def _single_sample_attention(attention: torch.Tensor) -> np.ndarray:
@@ -484,7 +486,7 @@ def _plot_candidate_attention(
     )
     ax.set_xticks(np.arange(len(candidate_keys)), candidate_keys, rotation=90, fontsize=8)
     ax.set_yticks(np.arange(len(labels)), labels, fontsize=8)
-    ax.set_xlabel("Candidate action (CLS attention; each row normalized to max=1.0)")
+    ax.set_xlabel("Candidate action (mean candidate-query attention; each row normalized to max=1.0)")
     ax.set_ylabel("Opening decision step / recorded label")
     ax.set_title("Opener candidate attention — final Transformer layer")
 

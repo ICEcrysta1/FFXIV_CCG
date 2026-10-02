@@ -42,7 +42,6 @@ ROLE_NAMES = {
     0: "scene",
     1: "history_pair",
     2: "candidate_pair",
-    3: "cls",
 }
 
 # 模型分析统一使用 attention 图的黑色到白金色阶；有明确正负语义的图仍保留专用发散色阶。
@@ -51,7 +50,6 @@ ROLE_COLORS = {
     0: "#321067",
     1: "#8c2981",
     2: "#e34f66",
-    3: "#febd82",
 }
 
 

@@ -41,8 +41,8 @@ class CapacityContract:
 
     @property
     def total_token_count(self) -> int:
-        """由 scene、history、候选和 CLS 容量自动换算物理 token 数。"""
-        return self.scene_capacity + self.history_capacity + self.candidate_token_count + 1
+        """由 scene、history 和候选容量自动换算物理 token 数。"""
+        return self.scene_capacity + self.history_capacity + self.candidate_token_count
 
     def validate(self) -> None:
         if self.batch_size != 1:

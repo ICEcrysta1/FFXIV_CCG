@@ -27,7 +27,8 @@ from ..runtime.tensor_runtime import GOLDEN_FORMAT, golden_encoding
 # 10：技能和状态输入收缩为新的秒制窗口契约，禁止复用旧部署包。
 # 11：移除模型调度窗口和 GCD 单位时间字段，状态维度与归一化契约变化。
 # 12：状态输入移除资源 consumed、weave 字段及黑魔残留辅助 Buff，拒绝旧维度。
-DEPLOYMENT_CONTRACT_VERSION = 12
+# 13：移除 CLS token 和对应评分器输入，部署图的内部 token 布局变化。
+DEPLOYMENT_CONTRACT_VERSION = 13
 DEPLOYMENT_MANIFEST_VERSION = 7
 MANIFEST_SCHEMA_FILENAME = "manifest.schema.json"
 

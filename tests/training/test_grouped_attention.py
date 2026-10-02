@@ -48,7 +48,6 @@ def _make_encoded(tokens: torch.Tensor) -> dict[str, torch.Tensor | int]:
         "candidate_count": 2,
         "prefix_valid": torch.ones((tokens.shape[0], 2), dtype=torch.bool),
         "candidate_valid": torch.ones((tokens.shape[0], 2), dtype=torch.bool),
-        "cls_valid": torch.ones((tokens.shape[0], 1), dtype=torch.bool),
     }
 
 
@@ -123,18 +122,17 @@ def test_grouped_training_preserves_per_head_attention_mask(num_kv_heads):
 def test_grouped_attention_accepts_configured_divisor_kv_head_counts():
     for num_kv_heads in (1, 2, 4):
         encoder = _make_encoder(num_kv_heads=num_kv_heads)
-        values = torch.randn(1, 5, 8)
+        values = torch.randn(1, 4, 8)
         query, key, value = project_qkv(encoder.layers[0].self_attn, values)
 
         assert query.shape[-1] == 8
         assert key.shape[-1] == value.shape[-1] == 2 * num_kv_heads
-        prefix_output, candidate_output, cls_output, _, _ = run_split_encoder(
+        prefix_output, candidate_output, _, _ = run_split_encoder(
             encoder,
             _make_encoded(values),
         )
         assert prefix_output.shape == (1, 2, 8)
         assert candidate_output.shape == (1, 2, 8)
-        assert cls_output.shape == (1, 1, 8)
 
 
 @pytest.mark.parametrize("training", (False, True))
@@ -147,7 +145,7 @@ def test_sdpa_batches_query_heads_with_compressed_kv_storage(
     attention = GroupedQueryAttention(
         8, 4, num_kv_heads, batch_first=True,
     ).train(training)
-    values = torch.randn(2, 5, 8, requires_grad=training)
+    values = torch.randn(2, 4, 8, requires_grad=training)
     original = torch.nn.functional.scaled_dot_product_attention
     call_count = 0
     key_storages = set()
@@ -174,7 +172,7 @@ def test_sdpa_batches_query_heads_with_compressed_kv_storage(
     monkeypatch.setattr(torch.nn.functional, "scaled_dot_product_attention", capture)
     with torch.set_grad_enabled(training):
         if split:
-            outputs = run_split_encoder(encoder, _make_encoded(values))[:3]
+            outputs = run_split_encoder(encoder, _make_encoded(values))[:2]
         else:
             output, weights = attention(
                 values, values, values, need_weights=False,
@@ -188,7 +186,7 @@ def test_sdpa_batches_query_heads_with_compressed_kv_storage(
             assert torch.isfinite(values.grad).all()
 
     # MQA 和 MHA 每个区域一次调用；GQA 每个 KV 组一次调用。
-    assert call_count == (3 if split else 1) * (num_kv_heads if num_kv_heads < 4 else 1)
+    assert call_count == (2 if split else 1) * (num_kv_heads if num_kv_heads < 4 else 1)
     assert len(key_storages) == len(value_storages) == 1
 
 
@@ -239,9 +237,9 @@ def test_grouped_sdpa_matches_explicit_kv_forward_and_gradients(
 
 def test_mqa_trace_expands_only_the_explicit_attention_weight_result():
     encoder = _make_encoder()
-    encoded = _make_encoded(torch.randn(1, 5, 8))
+    encoded = _make_encoded(torch.randn(1, 4, 8))
 
     *_, attentions = run_split_encoder(encoder, encoded, collect_attention=True)
 
     assert len(attentions) == 1
-    assert attentions[0].shape == (1, 4, 5, 5)
+    assert attentions[0].shape == (1, 4, 4, 4)

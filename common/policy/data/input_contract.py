@@ -16,7 +16,8 @@ from .schema import TrainingSchema
 #    及四个冗余 GCD 窗口字段，旧 checkpoint 必须重新训练。
 # 7：状态输入移除调用方调度窗口与所有 GCD 单位的时间字段，旧权重不兼容。
 # 8：状态输入移除资源 consumed、weave 计数/上限和黑魔残留辅助 Buff。
-INPUT_CONTRACT_VERSION = 8
+# 9：移除 CLS token，评分器直接读取候选 hidden，旧模型权重不兼容。
+INPUT_CONTRACT_VERSION = 9
 
 
 @dataclass(frozen=True)

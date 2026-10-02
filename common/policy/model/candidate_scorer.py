@@ -1,4 +1,4 @@
-"""候选动作 scorer：把 CLS 与候选 Transformer hidden 映射为 logits。"""
+"""候选动作 scorer：把候选 Transformer hidden 映射为 logits。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from .activation import (
 
 
 class CandidateScorer(nn.Module):
-    """组合 CLS 与候选 Transformer hidden，输出每个候选的分数。
+    """直接读取各候选 Transformer hidden，输出每个候选的分数。
 
     激活与主干 FFN 共用 ``model.transformer_activation``：SwiGLU 走门控三投影，
     GELU/ReLU 走单条上行投影。
@@ -28,7 +28,7 @@ class CandidateScorer(nn.Module):
         activation: str,
     ):
         super().__init__()
-        input_dim = 2 * d_model
+        input_dim = d_model
         self.gated = uses_gate(activation)
         self.activation = resolve_pointwise_activation(activation)
         hidden_dim = gated_hidden_dim(
@@ -46,15 +46,11 @@ class CandidateScorer(nn.Module):
     def forward(
         self,
         *,
-        cls_hidden: torch.Tensor,
         candidate_hidden: torch.Tensor,
     ) -> torch.Tensor:
-        candidate_count = candidate_hidden.shape[1]
-        cls_for_candidates = cls_hidden.unsqueeze(1).expand(-1, candidate_count, -1)
-        paired = torch.cat((cls_for_candidates, candidate_hidden), dim=-1)
         hidden = activation_hidden(
             self.activation,
-            self.up_proj(paired),
-            gate=self.gate_proj(paired) if self.gated else None,
+            self.up_proj(candidate_hidden),
+            gate=self.gate_proj(candidate_hidden) if self.gated else None,
         )
         return self.down_proj(self.dropout(hidden)).squeeze(-1)

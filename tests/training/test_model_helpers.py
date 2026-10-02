@@ -623,7 +623,7 @@ def test_model_and_trace_helpers_cover_error_and_norm_paths():
             }
         )
 
-    tokens = torch.zeros((1, 3, 4))
+    tokens = torch.zeros((1, 2, 4))
 
     encoder = _attach_rope(nn.TransformerEncoder(
         TraceableTransformerEncoderLayer(
@@ -642,13 +642,12 @@ def test_model_and_trace_helpers_cover_error_and_norm_paths():
         "candidate_count": 1,
         "prefix_valid": torch.ones((1, 1), dtype=torch.bool),
         "candidate_valid": torch.ones((1, 1), dtype=torch.bool),
-        "cls_valid": torch.ones((1, 1), dtype=torch.bool),
     }
     trace = trace_encoder(encoder, encoded)
     assert trace.hidden.shape == tokens.shape
     assert len(trace.layer_hidden) == 1
     assert len(trace.attentions) == 1
-    assert trace.attentions[0].shape[-2:] == (3, 3)
+    assert trace.attentions[0].shape[-2:] == (2, 2)
 
 
 def test_model_defaults_to_pre_ln_gelu_with_final_layer_norm():
@@ -784,13 +783,12 @@ def test_attention_block_checkpoint_matches_sdpa_checkpoint():
             nn.TransformerEncoder(layer, 1, norm=nn.LayerNorm(8)).train()
         )
 
-    base_tokens = torch.randn(2, 5, 8)
+    base_tokens = torch.randn(2, 4, 8)
     encoded_template = {
         "prefix_length": 2,
         "candidate_count": 2,
         "prefix_valid": torch.ones((2, 2), dtype=torch.bool),
         "candidate_valid": torch.ones((2, 2), dtype=torch.bool),
-        "cls_valid": torch.ones((2, 1), dtype=torch.bool),
     }
 
     def run(encoder):
@@ -798,8 +796,8 @@ def test_attention_block_checkpoint_matches_sdpa_checkpoint():
         torch.manual_seed(29)
         tokens = base_tokens.detach().clone().requires_grad_(True)
         encoded = {**encoded_template, "tokens": tokens}
-        prefix, candidate, cls, _, _ = run_split_encoder(encoder, encoded)
-        loss = torch.cat((prefix, candidate, cls), dim=1).square().mean()
+        prefix, candidate, _, _ = run_split_encoder(encoder, encoded)
+        loss = torch.cat((prefix, candidate), dim=1).square().mean()
         loss.backward()
         gradients = {
             name: parameter.grad.detach().clone()
@@ -846,7 +844,7 @@ def test_attention_activation_checkpoint_preserves_forward_and_gradients(num_kv_
     ).train())
     checkpointed.norm.load_state_dict(eager.norm.state_dict())
 
-    eager_input = torch.randn(2, 5, 8, requires_grad=True)
+    eager_input = torch.randn(2, 4, 8, requires_grad=True)
     checkpointed_input = eager_input.detach().clone().requires_grad_(True)
     encoded = {
         "tokens": eager_input,
@@ -854,7 +852,6 @@ def test_attention_activation_checkpoint_preserves_forward_and_gradients(num_kv_
         "candidate_count": 2,
         "prefix_valid": torch.ones((2, 2), dtype=torch.bool),
         "candidate_valid": torch.ones((2, 2), dtype=torch.bool),
-        "cls_valid": torch.ones((2, 1), dtype=torch.bool),
     }
     checkpointed_encoded = {**encoded, "tokens": checkpointed_input}
     with patch(
@@ -869,17 +866,17 @@ def test_attention_activation_checkpoint_preserves_forward_and_gradients(num_kv_
         sdpa.reset_mock()
         torch.manual_seed(123)
         checkpointed_output = run_split_encoder(checkpointed, checkpointed_encoded)
-        forward_call_count = 3 * (num_kv_heads if num_kv_heads < 4 else 1)
+        forward_call_count = 2 * (num_kv_heads if num_kv_heads < 4 else 1)
         assert sdpa.call_count == forward_call_count
-        sum(value.square().sum() for value in eager_output[:3]).backward()
-        sum(value.square().sum() for value in checkpointed_output[:3]).backward()
+        sum(value.square().sum() for value in eager_output[:2]).backward()
+        sum(value.square().sum() for value in checkpointed_output[:2]).backward()
         assert sdpa.call_count == 2 * forward_call_count
 
-    assert attention_checkpoint.call_count == 3
+    assert attention_checkpoint.call_count == 2
     for call in attention_checkpoint.call_args_list:
         # checkpoint 在广播之前保存输入，K/V 激活仍是压缩的头数。
         assert call.args[2].shape[1] == call.args[3].shape[1] == num_kv_heads
-    for eager_value, checkpointed_value in zip(eager_output[:3], checkpointed_output[:3]):
+    for eager_value, checkpointed_value in zip(eager_output[:2], checkpointed_output[:2]):
         assert torch.allclose(eager_value, checkpointed_value)
     assert torch.allclose(eager_input.grad, checkpointed_input.grad)
     for eager_parameter, checkpointed_parameter in zip(
@@ -918,7 +915,7 @@ def test_full_attention_residual_checkpoint_recomputes_source_path_and_preserves
         layer.set_activation_checkpoint_ffn(True)
         layer.set_activation_checkpoint_attention(True)
 
-    eager_input = torch.randn(2, 5, 8, requires_grad=True)
+    eager_input = torch.randn(2, 4, 8, requires_grad=True)
     checkpointed_input = eager_input.detach().clone().requires_grad_(True)
     encoded = {
         "tokens": eager_input,
@@ -926,7 +923,6 @@ def test_full_attention_residual_checkpoint_recomputes_source_path_and_preserves
         "candidate_count": 2,
         "prefix_valid": torch.ones((2, 2), dtype=torch.bool),
         "candidate_valid": torch.ones((2, 2), dtype=torch.bool),
-        "cls_valid": torch.ones((2, 1), dtype=torch.bool),
     }
     checkpointed_encoded = {**encoded, "tokens": checkpointed_input}
 
@@ -945,13 +941,13 @@ def test_full_attention_residual_checkpoint_recomputes_source_path_and_preserves
         sdpa.reset_mock()
         torch.manual_seed(123)
         checkpointed_output = run_split_encoder(checkpointed, checkpointed_encoded)
-        sum(value.square().sum() for value in eager_output[:3]).backward()
-        sum(value.square().sum() for value in checkpointed_output[:3]).backward()
+        sum(value.square().sum() for value in eager_output[:2]).backward()
+        sum(value.square().sum() for value in checkpointed_output[:2]).backward()
 
     assert residual_checkpoint.call_count == 1
     assert ffn_checkpoint.call_count == 0
-    assert sdpa.call_count == 12
-    for eager_value, checkpointed_value in zip(eager_output[:3], checkpointed_output[:3]):
+    assert sdpa.call_count == 8
+    for eager_value, checkpointed_value in zip(eager_output[:2], checkpointed_output[:2]):
         assert torch.allclose(eager_value, checkpointed_value)
     assert torch.allclose(eager_input.grad, checkpointed_input.grad)
     for eager_parameter, checkpointed_parameter in zip(
@@ -981,14 +977,13 @@ def test_full_attention_residual_checkpoint_preserves_partial_layer_granularity(
     encoder.attention_residual = FullAttentionResidual(d_model=8, num_queries=5)
     encoder.layers[0].set_activation_checkpoint_ffn(True)
 
-    tokens = torch.randn(2, 5, 8, requires_grad=True)
+    tokens = torch.randn(2, 4, 8, requires_grad=True)
     encoded = {
         "tokens": tokens,
         "prefix_length": 2,
         "candidate_count": 2,
         "prefix_valid": torch.ones((2, 2), dtype=torch.bool),
         "candidate_valid": torch.ones((2, 2), dtype=torch.bool),
-        "cls_valid": torch.ones((2, 1), dtype=torch.bool),
     }
     with patch(
         "common.policy.model.split_encoder.checkpoint",
@@ -998,7 +993,7 @@ def test_full_attention_residual_checkpoint_preserves_partial_layer_granularity(
         wraps=__import__("torch.utils.checkpoint", fromlist=["checkpoint"]).checkpoint,
     ) as ffn_checkpoint:
         output = run_split_encoder(encoder, encoded)
-        sum(value.square().sum() for value in output[:3]).backward()
+        sum(value.square().sum() for value in output[:2]).backward()
 
     assert residual_checkpoint.call_count == 0
     assert ffn_checkpoint.call_count == 1

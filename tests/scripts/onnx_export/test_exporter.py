@@ -100,7 +100,7 @@ def test_capacity_contract_rejects_invalid_or_oversized_layout():
         CapacityContract(0, 1, 3).validate()
     contract = CapacityContract(3, 8, 3)
     contract.validate()
-    assert contract.total_token_count == 15
+    assert contract.total_token_count == 14
 
 
 def test_failed_export_keeps_previous_valid_directory(tmp_path, monkeypatch):

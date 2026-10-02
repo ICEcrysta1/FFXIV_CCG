@@ -133,8 +133,8 @@ def test_position_ids_are_logical_sequential_when_all_tokens_are_valid():
         device=torch.device("cpu"),
     )[0].tolist()
 
-    assert position_ids == [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-    assert position_ids[-1] == 9
+    assert position_ids == [0, 1, 2, 3, 4, 5, 6, 7, 8]
+    assert position_ids[-1] == 8
 
 
 def test_position_ids_ignore_right_padding_per_sample():
@@ -152,8 +152,8 @@ def test_position_ids_ignore_right_padding_per_sample():
     )
 
     assert position_ids.tolist() == [
-        [0, 1, 0, 2, 0, 0, 0, 3, 4, 5],
-        [0, 1, 2, 3, 4, 5, 0, 6, 7, 8],
+        [0, 1, 0, 2, 0, 0, 0, 3, 4],
+        [0, 1, 2, 3, 4, 5, 0, 6, 7],
     ]
 
 
@@ -169,10 +169,10 @@ def test_position_ids_count_valid_tokens_without_right_padding():
         history_mask=torch.tensor([[False, True, False, True]]),
     )
 
-    assert position_ids.tolist() == [[0, 0, 1, 0, 2, 0, 3, 4, 5, 6]]
+    assert position_ids.tolist() == [[0, 0, 1, 0, 2, 0, 3, 4, 5]]
 
 
-def test_candidate_rope_positions_are_indexed_and_cls_is_after_candidate_block():
+def test_candidate_rope_positions_are_indexed_and_end_the_sequence():
     torch = pytest.importorskip("torch")
     position_ids = build_position_ids(
         batch_size=1,
@@ -182,7 +182,7 @@ def test_candidate_rope_positions_are_indexed_and_cls_is_after_candidate_block()
         device=torch.device("cpu"),
     )
 
-    assert position_ids.tolist() == [[0, 1, 2, 3, 4, 5, 6, 7]]
+    assert position_ids.tolist() == [[0, 1, 2, 3, 4, 5, 6]]
 
 
 def test_rope_logits_are_invariant_to_other_samples_right_padding():
@@ -280,16 +280,13 @@ def test_split_attention_mask_keeps_prefix_causal_and_candidates_bidirectional()
     )
 
     assert mask is not None
-    assert mask.shape == (8, 8)
+    assert mask.shape == (7, 7)
     assert mask[0, :1].tolist() == [False]
     assert mask[0, 1:5].all().item() is True
     assert mask[4, :5].all().item() is False
     assert mask[4, 5:].all().item() is True
     assert mask[5, :7].all().item() is False
-    assert mask[5, 7].item() is True
     assert mask[6, :7].all().item() is False
-    assert mask[6, 7].item() is True
-    assert not mask[7].any().item()
 
 
 def test_split_attention_model_uses_single_candidate_block():
@@ -339,6 +336,10 @@ def test_split_attention_model_uses_single_candidate_block():
     assert encoded["prefix_length"] == 3
     assert encoded["candidate_count"] == 2
     assert encoded["candidate_positions"].tolist() == [3, 4]
+    assert encoded["tokens"].shape == (1, 5, 8)
+    assert encoded["role_ids"].tolist() == [[0, 1, 1, 2, 2]]
+    assert encoded["position_ids"].tolist() == [[0, 1, 2, 3, 4]]
+    assert not any(key.startswith("cls_") for key in encoded)
 
 
 def test_input_encoder_derives_context_capacity_from_context_blocks():
@@ -367,8 +368,8 @@ def test_input_encoder_derives_context_capacity_from_context_blocks():
         ),
         vocab_size=4,
     ).eval()
-    # scene 4 + history 2 + candidate 2 + CLS 1 = 9，由各块容量自动换算。
-    assert model.input_encoder.max_token_count == 9
+    # scene 4 + history 2 + candidate 2 = 8，由各块容量自动换算。
+    assert model.input_encoder.max_token_count == 8
     batch = {
         "history_skill_ids": torch.ones((1, 2), dtype=torch.int64),
         "history_skill_features": torch.zeros((1, 2, 1)),
@@ -488,7 +489,7 @@ def test_pair_embedding_reduces_history_and_candidate_to_one_token():
 
     encoded = model.input_encoder(batch)
 
-    assert encoded["tokens"].shape[1] == 1 + 2 + 2 + 1
+    assert encoded["tokens"].shape[1] == 1 + 2 + 2
     assert "raw_candidate_pair" not in encoded
     assert encoded["candidate_positions"].tolist() == [3, 4]
 
@@ -543,9 +544,11 @@ def test_input_encoder_routes_all_token_sources_through_shared_embedding():
     finally:
         handle.remove()
 
-    assert captured["shape"] == (1, 6, 6)
+    assert captured["shape"] == (1, 5, 6)
     assert model.input_encoder.scene_proj[0].out_features == 6
-    assert model.input_encoder.cls_token.shape[-1] == 6
+    assert model.input_encoder.role_embed.num_embeddings == 3
+    assert "input_encoder.cls_token" not in model.state_dict()
+    assert model.scorer.up_proj.in_features == model.config.d_model
 
 
 def test_job_model_config_loads_training_precision(tmp_path):
