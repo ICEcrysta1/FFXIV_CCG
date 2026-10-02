@@ -1,4 +1,5 @@
 # 黑魔 Artzip GRPO 后训练配置。
+# 优化器类型、学习率、权重衰减和 warmup 统一在 optimizer.yaml 的 optimizers.grpo 配置。
 
 grpo:
   # ------------------------------
@@ -38,15 +39,6 @@ grpo:
 
   # 每次策略更新从 rollout 决策中取出的 minibatch 大小。
   minibatch_size: 64
-
-  # GRPO AdamW 学习率。
-  learning_rate: 0.000001
-
-  # GRPO AdamW 权重衰减系数。
-  weight_decay: 0.0
-
-  # GRPO 学习率 warmup 更新步数。
-  warmup_steps: 20
 
   # clipped surrogate ratio 的下界裁剪比例。
   clip_low: 0.2

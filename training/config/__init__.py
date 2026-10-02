@@ -17,6 +17,7 @@ from common.project_config import (
     resolve_project_path,
 )
 from common.training.tensorboard import TensorBoardConfig
+from common.training.optimizer_config import OptimizerConfig, parse_optimizer_settings
 
 from ..runtime.runtime_debug import RuntimeDebugConfig
 from .action_quality import ActionQualityLossConfig, parse_action_quality_loss_config
@@ -96,6 +97,7 @@ class RunConfig:
     config_path: Path | None = None
 
     model: _ModelConfig = _ModelConfig()
+    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
 
 
 def _parse_val_ppg_use_kv_cache() -> bool:
@@ -267,9 +269,14 @@ def load_run_config(path: Path) -> RunConfig:
         candidate_order_file=candidate_order_file,
         candidate_shuffle_enabled=candidate_shuffle_enabled,
         candidate_shuffle_probability=candidate_shuffle_probability,
-        learning_rate=float(training_raw.get("learning_rate", 1e-4)),
-        weight_decay=float(training_raw.get("weight_decay", 0.01)),
-        warmup_steps=int(training_raw.get("warmup_steps", 500)),
+        **parse_optimizer_settings(
+            raw,
+            stage="bc",
+            legacy=training_raw,
+            default_learning_rate=RunConfig.learning_rate,
+            default_weight_decay=RunConfig.weight_decay,
+            default_warmup_steps=RunConfig.warmup_steps,
+        ),
         max_files=max_files,
         validation_files=validation_files,
         seed=int(training_raw.get("seed", 42)),

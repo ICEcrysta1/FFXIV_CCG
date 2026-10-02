@@ -1,4 +1,5 @@
 # 黑魔 Artzip 预训练配置。
+# 优化器类型、学习率、权重衰减和 warmup 统一在 optimizer.yaml 的 optimizers.bc 配置。
 
 training:
 
@@ -22,15 +23,6 @@ training:
 
   # 最大训练轮数。
   max_epochs: 8
-
-  # AdamW 优化器学习率。
-  learning_rate: 0.0001
-
-  # AdamW 权重衰减系数。
-  weight_decay: 0.01
-
-  # 学习率 warmup 的更新步数。
-  warmup_steps: 500
 
   # 训练输入 JSON 文件数上限；null 表示使用模型输入目录下全部有效文件。
   # 训练文件先按副本子目录比例分配，再在已有百分位区间均分。

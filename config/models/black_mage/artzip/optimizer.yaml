@@ -1,0 +1,34 @@
+# 黑魔 Artzip 优化器配置；BC 与 GRPO 独立选择算法和超参数。
+# name: adamw 表示全部参数使用 AdamW。
+# name: muon 表示 Transformer 主干矩阵使用 Muon，其余参数使用 AdamW；
+# 两组共用所属阶段的基础学习率、权重衰减与调度。
+
+optimizers:
+  bc:
+    name: muon
+    # BC 基础学习率与权重衰减系数。
+    learning_rate: 0.0001
+    weight_decay: 0.01
+    # warmup 更新步数；结束后沿用 BC 的 cosine 调度。
+    warmup_steps: 500
+    # 以下参数仅在 name: muon 时生效。
+    # 动量系数必须位于 [0, 1)；nesterov 控制 Nesterov 动量更新。
+    momentum: 0.95
+    nesterov: true
+    # Newton-Schulz 正交化迭代次数，允许 1 至 99。
+    ns_steps: 5
+    # 按矩阵形状匹配 AdamW 更新的 RMS，使用上述基础学习率。
+    adjust_lr_fn: match_rms_adamw
+
+  grpo:
+    name: adamw
+    # GRPO 独立的基础学习率与权重衰减系数。
+    learning_rate: 0.000001
+    weight_decay: 0.0
+    # warmup 更新步数；结束后保持基础学习率。
+    warmup_steps: 20
+    # 切换为 muon 时采用以下独立参数，不影响 BC。
+    momentum: 0.95
+    nesterov: true
+    ns_steps: 5
+    adjust_lr_fn: match_rms_adamw

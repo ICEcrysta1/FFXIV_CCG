@@ -25,6 +25,7 @@ from common.policy.replay import AutoregressiveReplayConfig
 from common.torch_runtime import autocast_context, move_batch
 from common.torch_serialization import safe_torch_load
 from common.training.metrics import MetricAccumulator
+from common.training.optimizer import build_optimizer
 from common.training.tensorboard import (
     close_tensorboard_writer,
     create_tensorboard_writer,
@@ -761,10 +762,17 @@ def run_grpo_training(
         )
         if tensorboard_writer is not None:
             logger.info("TensorBoard events: %s", tensorboard_writer.log_dir)
-        optimizer = torch.optim.AdamW(
-            model.parameters(),
-            lr=grpo.learning_rate,
+        optimizer = build_optimizer(
+            model,
+            grpo.optimizer,
+            learning_rate=grpo.learning_rate,
             weight_decay=grpo.weight_decay,
+        )
+        logger.info(
+            "GRPO 优化器: %s learning_rate=%g weight_decay=%g",
+            grpo.optimizer.name,
+            grpo.learning_rate,
+            grpo.weight_decay,
         )
         scheduler = torch.optim.lr_scheduler.LambdaLR(
             optimizer,

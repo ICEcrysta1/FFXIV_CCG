@@ -152,6 +152,37 @@ def _checkpoint_validation_files(checkpoint: Mapping[str, object]) -> int | None
     return value
 
 
+def _validate_resume_optimizer(checkpoint: Mapping[str, object], config: RunConfig) -> None:
+    """续训必须保持优化器契约，旧 checkpoint 只按历史 AdamW 解释。"""
+    checkpoint_run_config = checkpoint.get("run_config", {})
+    if not isinstance(checkpoint_run_config, Mapping):
+        raise ValueError("resume checkpoint run_config must be a mapping")
+    saved_optimizer = checkpoint_run_config.get("optimizer", {"name": "adamw"})
+    if not isinstance(saved_optimizer, Mapping):
+        raise ValueError("resume checkpoint run_config.optimizer must be a mapping")
+    saved_name = saved_optimizer.get("name")
+    if saved_name not in ("adamw", "muon"):
+        raise ValueError("resume checkpoint run_config.optimizer.name must be adamw or muon")
+    current_optimizer = asdict(config.optimizer)
+    new_training_message = "优化器变更需要开始新训练，不能使用 --resume。"
+    if saved_name != current_optimizer["name"]:
+        raise ValueError(
+            "resume checkpoint optimizer mismatch: "
+            f"checkpoint={saved_name!r} != current={current_optimizer['name']!r}; "
+            f"{new_training_message}"
+        )
+    # AdamW 不使用 Muon 参数；学习率与权重衰减继续沿用原续训恢复策略。
+    if saved_name == "adamw":
+        return
+    for field, current_value in current_optimizer.items():
+        if field not in saved_optimizer or saved_optimizer[field] != current_value:
+            raise ValueError(
+                "resume checkpoint optimizer config mismatch: "
+                f"{field}: checkpoint={saved_optimizer.get(field)!r} "
+                f"!= current={current_value!r}; {new_training_message}"
+            )
+
+
 def read_checkpoint_epoch(path: Path) -> int:
     """只读取 checkpoint 载荷里的 epoch，不加载权重数据。"""
     payload = _read_checkpoint_metadata(path)
@@ -231,6 +262,9 @@ def _validate_resume_checkpoint(
                 "resume checkpoint model variant mismatch: "
                 f"{checkpoint_model_variant!r} != {config.model_variant!r}"
             )
+
+    # 优化器不属于数据规模豁免范围，必须在恢复任何优化器状态前独立校验。
+    _validate_resume_optimizer(checkpoint, config)
 
     # 只有 checkpoint 明确记录 null 才表示不限量；缺失字段的旧 checkpoint
     # 无法推断历史数据规模，必须按不匹配处理。
