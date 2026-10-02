@@ -77,6 +77,7 @@ public class OutputsSchemaTests
             "weave_window_gcds", "ogcd_window_gcds", "downtime_remaining_gcds",
             "gcd_remaining_seconds", "weave_window_seconds", "ogcd_window_seconds",
             "next_untargetable_in_gcds", "remaining_gcds",
+            "ogcds_weaved", "max_ogcd_per_window",
         };
 
         // 模拟器继续计数和推进结束边界，历史与候选向量只输出部署需要的字段。
@@ -85,7 +86,7 @@ public class OutputsSchemaTests
         {
             var context = (Dictionary<string, object?>)payload[contextKey];
             var featureKeys = (List<string>)context["player_state_feature_keys"];
-            Assert.Equal(22, featureKeys.Count);
+            Assert.Equal(18, featureKeys.Count);
             foreach (var field in removedFields)
             {
                 Assert.DoesNotContain($"before.{field}", featureKeys);
@@ -98,8 +99,16 @@ public class OutputsSchemaTests
                 "player_state_feature_keys", "buff_state_feature_keys",
                 "target_buff_state_feature_keys", "resource_state_feature_keys",
             }.SelectMany(key => (List<string>)context[key]).ToArray();
-            Assert.Equal(109, allFeatureKeys.Length);
+            Assert.Equal(86, allFeatureKeys.Length);
             Assert.DoesNotContain(allFeatureKeys, key => key.EndsWith("_gcds", StringComparison.Ordinal));
+            Assert.DoesNotContain(allFeatureKeys, key => key.StartsWith("consumed.", StringComparison.Ordinal));
+            Assert.DoesNotContain(allFeatureKeys, key => key.Contains(".manaward.", StringComparison.Ordinal)
+                || key.Contains(".surecast.", StringComparison.Ordinal));
+            Assert.Equal(40, ((List<string>)context["buff_state_feature_keys"]).Count);
+            var resourceKeys = (List<string>)context["resource_state_feature_keys"];
+            Assert.Equal(14, resourceKeys.Count);
+            Assert.Equal(resourceKeys.Take(7).Select(key => key["before.".Length..]),
+                resourceKeys.Skip(7).Select(key => key["after.".Length..]));
             Assert.Contains("before.job.triplecast.remaining_seconds", allFeatureKeys);
             Assert.Contains("after.target.high_thunder.remaining_seconds", allFeatureKeys);
         }

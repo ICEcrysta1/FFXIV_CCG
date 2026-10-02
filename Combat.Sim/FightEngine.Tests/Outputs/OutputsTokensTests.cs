@@ -123,15 +123,15 @@ public class OutputsTokensTests
         var playerAfterStart = ((List<string>)candidateState["player_state_feature_keys"]).Count / 2;
         var buffAfterStart = ((List<string>)candidateState["buff_state_feature_keys"]).Count / 2;
         var targetAfterStart = ((List<string>)candidateState["target_buff_state_feature_keys"]).Count / 2;
-        var resourceBeforeSize = ((List<string>)candidateState["resource_state_feature_keys"]).Count / 3;
-        var resourceAfterStart = resourceBeforeSize;
-        var resourceConsumedStart = resourceBeforeSize * 2;
+        var resourceKeys = (List<string>)candidateState["resource_state_feature_keys"];
+        Assert.Equal(14, resourceKeys.Count);
+        var resourceAfterStart = resourceKeys.Count / 2;
 
         Assert.All(OutputsTestKit.VectorOf(tokens[index], "player_state").Skip(playerAfterStart), value => Assert.Null(value));
         Assert.All(OutputsTestKit.VectorOf(tokens[index], "buff_state").Skip(buffAfterStart), value => Assert.Null(value));
         Assert.All(OutputsTestKit.VectorOf(tokens[index], "target_buff_state").Skip(targetAfterStart), value => Assert.Null(value));
         Assert.All(OutputsTestKit.VectorOf(tokens[index], "resource_state").Skip(resourceAfterStart), value => Assert.Null(value));
-        Assert.All(OutputsTestKit.VectorOf(tokens[index], "resource_state").Skip(resourceConsumedStart), value => Assert.Null(value));
+        Assert.All(OutputsTestKit.VectorOf(tokens[index], "resource_state").Take(resourceAfterStart), value => Assert.NotNull(value));
     }
 
     [Fact]

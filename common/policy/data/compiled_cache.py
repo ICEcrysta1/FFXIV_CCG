@@ -21,7 +21,8 @@ from .schema import SceneWindowSchema, TrainingSchema
 # 不再与旧缓存兼容；同时保留 v11 的提前效果结算语义。
 # v16：技能和状态 bank 移除累计 GCD 索引、精确战斗剩余时间及冗余 GCD 窗口。
 # v17：状态 bank 移除三个调度窗口秒数字段以及全部 GCD 单位时间字段。
-CACHE_FORMAT = "raw_json_compiled_samples_v17_seconds_only_state"
+# v18：状态 bank 只保留资源 before/after，移除 weave 字段与黑魔残留辅助 Buff。
+CACHE_FORMAT = "raw_json_compiled_samples_v18_compact_state"
 # v11：C# 状态机把硬读条的服务器效果结算与完整读条锁结束拆开；转换请求时刻
 # 仍按统一滑步窗口恢复，日志抖动只由容量一动作队列吸收。旧缓存的效果状态时序不可复用。
 # v10：硬读条请求时刻改由 `cast − 实际读条时长 + 0.5 秒滑步窗口` 解析，
@@ -36,7 +37,8 @@ CACHE_FORMAT = "raw_json_compiled_samples_v17_seconds_only_state"
 # v14：真实技能样本补齐 step/source_step；旧 v13 缓存中的零步号不能复用。
 # v17：按新的模型 token 契约重建完整 history bank；读取窗口仍不影响缓存身份。
 # v18：按纯秒制时间输入重建完整 history bank，调度窗口不进入模型。
-DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v18_seconds_only_state"
+# v19：按精简后的状态 token 契约重建完整 history bank，技能侧继续保留资源消耗。
+DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v19_compact_state"
 # `weights_only=True` 的安全 unpickler 对 protocol 2 支持最稳定；compiled
 # cache 的样本数据只需要普通 mapping 和 tensor，不需要更高协议。
 CACHE_PICKLE_PROTOCOL = 2

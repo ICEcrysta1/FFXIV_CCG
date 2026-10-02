@@ -9,7 +9,7 @@ namespace FightEngine.Tests.Outputs;
 public class OutputsHistoryTests
 {
     [Fact]
-    public void VectorStateHistoryContextPutsMpBeforeAfterInPlayerAndConsumedInResource()
+    public void VectorStateHistoryKeepsResourceBeforeAfterAndSkillConsumption()
     {
         var machine = OutputsTestKit.BuildMachine();
         var state = machine.InitialState();
@@ -28,7 +28,11 @@ public class OutputsHistoryTests
         Assert.Equal(400.0, OutputsTestKit.HistoryVectorValue(historyState, "player_state", "after.mp"), 5);
         Assert.Equal(1.0, OutputsTestKit.HistoryVectorValue(historyState, "resource_state", "before.paradox_ready"), 5);
         Assert.Equal(0.0, OutputsTestKit.HistoryVectorValue(historyState, "resource_state", "after.paradox_ready"), 5);
-        Assert.Equal(1.0, OutputsTestKit.HistoryVectorValue(historyState, "resource_state", "consumed.paradox_ready"), 5);
+        // 资源消耗只保留在技能 token，状态历史不重复输出 consumed 段。
+        var consumed = (Dictionary<string, object?>)skillHistory[^1]["job_resources_consumed"]!;
+        Assert.Equal(true, consumed["paradox_ready"]);
+        Assert.DoesNotContain((List<string>)historyState["resource_state_feature_keys"],
+            key => key.StartsWith("consumed.", StringComparison.Ordinal));
     }
 
     [Fact]

@@ -9,7 +9,7 @@ namespace Combat.Sim.Outputs.TokenBuilders;
 /// 统一状态 token 装配器（对照 token_builders/state_token_builder.py）。
 /// 只负责把四组向量拼成一种状态 token：状态历史与候选状态共用同一个
 /// <see cref="Build"/>；非法候选额外走 <see cref="BuildIllegalCandidateToken"/>，
-/// 保留真实 before 并把 after/consumed 统一写成 null。
+/// 保留真实 before 并把 after 统一写成 null。
 /// </summary>
 public sealed class StateTokenBuilder
 {
@@ -45,8 +45,7 @@ public sealed class StateTokenBuilder
     /// <summary>状态历史与合法候选共用：before/after 四组向量（对照 build）。</summary>
     public Dictionary<string, double[]> Build(
         StateContext beforeStateContext,
-        StateContext afterStateContext,
-        IReadOnlyDictionary<string, object> consumedResources) =>
+        StateContext afterStateContext) =>
         new()
         {
             ["player_state"] = _playerVectorTokenBuilder.BuildHistoryToken(
@@ -56,10 +55,10 @@ public sealed class StateTokenBuilder
             ["target_buff_state"] = _targetBuffVectorTokenBuilder.BuildHistoryToken(
                 beforeStateContext, afterStateContext).ToArray(),
             ["resource_state"] = _resourceVectorTokenBuilder.BuildHistoryToken(
-                beforeStateContext.Resources, afterStateContext.Resources, consumedResources).ToArray(),
+                beforeStateContext.Resources, afterStateContext.Resources).ToArray(),
         };
 
-    /// <summary>非法候选：真实 before + null 填充的 after/consumed 段（对照 build_illegal_candidate_token）。</summary>
+    /// <summary>非法候选：真实 before + null 填充的 after 段（对照 build_illegal_candidate_token）。</summary>
     public Dictionary<string, double?[]> BuildIllegalCandidateToken(StateContext beforeStateContext)
     {
         var beforePlayer = VectorOf(_playerVectorTokenBuilder.BuildCurrentToken(beforeStateContext.Player));
@@ -74,7 +73,6 @@ public sealed class StateTokenBuilder
             ["target_buff_state"] = beforeTargetBuff.Cast<double?>().Concat(NullVector(beforeTargetBuff.Length)).ToArray(),
             ["resource_state"] = beforeResource
                 .Cast<double?>()
-                .Concat(NullVector(beforeResource.Length))
                 .Concat(NullVector(beforeResource.Length))
                 .ToArray(),
         };

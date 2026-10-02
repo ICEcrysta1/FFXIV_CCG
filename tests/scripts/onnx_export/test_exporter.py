@@ -26,7 +26,10 @@ from scripts.onnx_export import TENSOR_INPUT_NAMES, CapacityContract, Deployment
 from scripts.onnx_export import export as export_module
 from scripts.onnx_export.contracts.contract import make_inputs, slice_dynamic_inputs
 from scripts.onnx_export.contracts.deployment_profile import DeploymentProfile
-from scripts.onnx_export.contracts.deployment_contract import DEPLOYMENT_CONTRACT_VERSION
+from scripts.onnx_export.contracts.deployment_contract import (
+    DEPLOYMENT_CONTRACT_VERSION,
+    DeploymentContract,
+)
 from scripts.onnx_export.export import environment as environment_module
 from scripts.onnx_export.export import export_package
 from scripts.onnx_export.export import publish as publish_module
@@ -471,6 +474,12 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
     ] == ["raw_logits"]
     loaded = DeploymentManifest.load(output / "manifest.json")
     assert loaded.contract.data_spec == data_spec
+
+    # 即使候选布局一致，精简状态输入前的部署包也必须被版本门禁拒绝。
+    previous_state_contract = deepcopy(manifest["contract"])
+    previous_state_contract["contract_version"] = DEPLOYMENT_CONTRACT_VERSION - 1
+    with pytest.raises(ValueError, match="unsupported deployment contract version"):
+        DeploymentContract.from_dict(previous_state_contract)
 
     fixed_inputs = make_inputs(
         data_spec,

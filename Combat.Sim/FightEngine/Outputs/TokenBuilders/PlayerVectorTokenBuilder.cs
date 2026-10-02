@@ -58,8 +58,6 @@ public sealed class PlayerVectorTokenBuilder
         "next_untargetable_in_seconds" => player.NextUntargetableInSeconds ?? 0.0,
         "downtime_remaining_seconds" => player.DowntimeRemainingSeconds,
         "is_moving" => player.IsMoving ? 1.0 : 0.0,
-        "ogcds_weaved" => player.OgcdsWeaved,
-        "max_ogcd_per_window" => player.MaxOgcdPerWindow,
         _ => throw new InvalidOperationException($"schema.yaml 中未知的玩家状态字段: {key}"),
     };
 }

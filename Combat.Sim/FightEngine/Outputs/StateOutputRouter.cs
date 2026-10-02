@@ -80,9 +80,8 @@ public sealed class StateOutputRouter
 
     internal Dictionary<string, double[]> BuildStateTransitionToken(
         CombatState before,
-        CombatState after,
-        IReadOnlyDictionary<string, object> consumed) =>
-        _contextBuilder.BuildStateTransitionToken(before, after, consumed);
+        CombatState after) =>
+        _contextBuilder.BuildStateTransitionToken(before, after);
 
     private ModelTensorFormatter LoadTensorFormatter()
     {

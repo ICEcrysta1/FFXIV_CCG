@@ -47,14 +47,6 @@ statuses:
     game_id: 1204
     duration: 21.0
     max_stacks: 1
-  manaward:
-    game_id: 168
-    duration: 20.0
-    max_stacks: 1
-  surecast:
-    game_id: 160
-    duration: 6.0
-    max_stacks: 1
 
 skills:
   # value 只供训练辅助 loss 读取，不写入 PT，也不作为模型输入；黑魔技能当前统一为 1.00。

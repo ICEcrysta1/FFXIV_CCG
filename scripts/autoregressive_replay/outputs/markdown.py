@@ -34,8 +34,6 @@ SKILL_NAMES = {
     "amplifier": "详述",
     "swiftcast": "即刻咏唱",
     "lucid_dreaming": "醒梦",
-    "manaward": "魔罩",
-    "surecast": "沉稳咏唱",
 }
 
 

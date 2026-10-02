@@ -50,7 +50,7 @@ public sealed class PolicyContextBuilder
                 action,
                 state.Time,
                 consumed));
-            candidateStates.Insert(0, router.BuildStateTransitionToken(state, after, consumed));
+            candidateStates.Insert(0, router.BuildStateTransitionToken(state, after));
         }
 
         MergePolicyHistory(output, history, router);
@@ -84,7 +84,7 @@ public sealed class PolicyContextBuilder
                 decision.Timestamp,
                 order++,
                 BuildSkillToken(decision.Action, decision.Timestamp, consumed),
-                router.BuildStateTransitionToken(decision.StateBefore, decision.StateAfter, consumed)));
+                router.BuildStateTransitionToken(decision.StateBefore, decision.StateAfter)));
         }
 
         merged.Sort((left, right) =>
