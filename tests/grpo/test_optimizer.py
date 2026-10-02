@@ -15,7 +15,7 @@ from common.policy.config import ModelConfig
 from common.training.optimizer import build_optimizer
 from common.training.optimizer_config import OptimizerConfig
 from grpo.config import GrpoConfig, GrpoRunConfig
-from grpo.trainer import _restore_grpo_rollback_state
+from grpo.trainer import _restore_grpo_rollback_state, _snapshot_optimizer_state
 
 
 class _TinyPolicy(nn.Module):
@@ -34,7 +34,8 @@ class _TinyPolicy(nn.Module):
 
 
 @pytest.mark.parametrize("name", ["adamw", "muon"])
-def test_grpo_training_builds_its_own_optimizer_and_closes_session(tmp_path, monkeypatch, name):
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_grpo_training_builds_its_own_optimizer_and_closes_session(tmp_path, monkeypatch, name, dtype):
     """正式入口使用 GRPO 参数建真实优化器，setup 中止时仍关闭回放会话。"""
     config = GrpoRunConfig(
         raw_data_dir=tmp_path,
@@ -47,7 +48,7 @@ def test_grpo_training_builds_its_own_optimizer_and_closes_session(tmp_path, mon
         learning_rate=3e-5,
         weight_decay=0.04,
     )
-    model = _TinyPolicy()
+    model = _TinyPolicy().to(dtype=dtype)
     model.config = config.model
     # 来源 checkpoint 故意声明相反算法及不同 LR/WD，热启动不能复用其优化器配置。
     checkpoint = {
@@ -106,9 +107,12 @@ def test_grpo_training_builds_its_own_optimizer_and_closes_session(tmp_path, mon
     assert captured["close_count"] == 1
     assert all(group["lr"] == grpo.learning_rate for group in optimizer.param_groups)
     assert all(group["weight_decay"] == grpo.weight_decay for group in optimizer.param_groups)
-    if name == "adamw":
+    if dtype == torch.bfloat16:
+        assert optimizer.state_dict()["format"] == "fp32_master_v1"
+        assert all(parameter.dtype == torch.float32 for group in optimizer.param_groups for parameter in group["params"])
+    elif name == "adamw":
         assert type(optimizer) is torch.optim.AdamW
-    else:
+    if name == "muon":
         assert [group["optimizer_name"] for group in optimizer.param_groups] == ["muon", "adamw"]
         assert optimizer.param_groups[0]["momentum"] == grpo.optimizer.momentum
         assert optimizer.param_groups[0]["ns_steps"] == grpo.optimizer.ns_steps
@@ -116,7 +120,7 @@ def test_grpo_training_builds_its_own_optimizer_and_closes_session(tmp_path, mon
 
 def _step(model, optimizer, scheduler, seed):
     generator = torch.Generator().manual_seed(seed)
-    inputs = torch.randn((2, 3, 4), generator=generator)
+    inputs = torch.randn((2, 3, 4), generator=generator).to(next(model.parameters()).dtype)
     labels = torch.randint(2, (6,), generator=generator)
     optimizer.zero_grad(set_to_none=True)
     logits = model(inputs)
@@ -141,13 +145,22 @@ def _assert_state_equal(actual, expected):
         assert actual == expected
 
 
+def _native_states(state):
+    native = state.get("optimizer", state)
+    if native.get("format") == "muon_adamw_v1":
+        return [native[name]["state"] for name in ("muon", "adamw")]
+    return [native["state"]]
+
+
 @pytest.mark.parametrize("source", ["disk", "first_iteration"])
-def test_muon_grpo_rollback_restores_both_optimizers_and_next_update(tmp_path, source):
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("name", ["adamw", "muon"])
+def test_grpo_rollback_restores_optimizer_and_next_update(tmp_path, source, dtype, name):
     torch.manual_seed(113)
-    model = _TinyPolicy()
+    model = _TinyPolicy().to(dtype=dtype)
     baseline = deepcopy(model)
     grpo = GrpoConfig(
-        optimizer=OptimizerConfig(name="muon"),
+        optimizer=OptimizerConfig(name=name),
         learning_rate=0.01,
         weight_decay=0.02,
         warmup_steps=0,
@@ -168,10 +181,10 @@ def test_muon_grpo_rollback_restores_both_optimizers_and_next_update(tmp_path, s
             _step(model, optimizer, scheduler, seed)
             _step(baseline, baseline_optimizer, baseline_scheduler, seed)
     expected_model = deepcopy(model.state_dict())
-    expected_optimizer = deepcopy(optimizer.state_dict())
+    expected_optimizer = _snapshot_optimizer_state(optimizer)
     expected_scheduler = deepcopy(scheduler.state_dict())
-    for name in ("muon", "adamw"):
-        assert bool(expected_optimizer[name]["state"]) == (source == "disk")
+    for state in _native_states(expected_optimizer):
+        assert bool(state) == (source == "disk")
 
     checkpoint_path = None
     if source == "disk":
@@ -189,7 +202,7 @@ def test_muon_grpo_rollback_restores_both_optimizers_and_next_update(tmp_path, s
         not torch.equal(value, expected_model[name])
         for name, value in model.state_dict().items()
     )
-    assert all(optimizer.state_dict()[name]["state"] for name in ("muon", "adamw"))
+    assert all(_native_states(optimizer.state_dict()))
 
     _restore_grpo_rollback_state(
         checkpoint_path=checkpoint_path,
@@ -211,3 +224,14 @@ def test_muon_grpo_rollback_restores_both_optimizers_and_next_update(tmp_path, s
         _assert_state_equal(model.state_dict(), baseline.state_dict())
         _assert_state_equal(optimizer.state_dict(), baseline_optimizer.state_dict())
         _assert_state_equal(scheduler.state_dict(), baseline_scheduler.state_dict())
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="需要 CUDA 检查回滚快照设备")
+def test_first_grpo_rollback_snapshot_copies_master_weights_to_cpu():
+    model = _TinyPolicy().to(device="cuda", dtype=torch.bfloat16)
+    optimizer = build_optimizer(model, OptimizerConfig(), learning_rate=1e-6, weight_decay=0.0)
+    snapshot = _snapshot_optimizer_state(optimizer)
+    assert all(weight.device.type == "cpu" for weight in snapshot["master_weights"])
+    before = snapshot["master_weights"][0].clone()
+    optimizer.param_groups[0]["params"][0].add_(1)
+    torch.testing.assert_close(snapshot["master_weights"][0], before, rtol=0, atol=0)

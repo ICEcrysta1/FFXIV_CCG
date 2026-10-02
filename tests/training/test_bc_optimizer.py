@@ -53,7 +53,9 @@ def _assert_models_equal(first: nn.Module, second: nn.Module) -> None:
     for first_parameter, second_parameter in zip(
         first.parameters(), second.parameters(), strict=True,
     ):
-        torch.testing.assert_close(first_parameter, second_parameter, rtol=0, atol=0)
+        torch.testing.assert_close(
+            first_parameter, second_parameter.to(first_parameter.dtype), rtol=0, atol=0,
+        )
 
 
 def _native_pair(model: nn.Module, config: OptimizerConfig, parameter_names):
@@ -104,7 +106,8 @@ def test_muon_groups_only_transformer_projection_matrices(num_kv_heads):
 def test_muon_step_and_scheduler_match_independent_native_optimizers(dtype):
     torch.manual_seed(71)
     actual = _model(dtype=dtype)
-    expected = deepcopy(actual)
+    # 低精度前向权重应等于独立 FP32 优化器权重的舍入结果。
+    expected = deepcopy(actual).float()
     config = _config()
     optimizer = _build_optimizer(actual, config)
     native_optimizers = _native_pair(
@@ -117,7 +120,8 @@ def test_muon_step_and_scheduler_match_independent_native_optimizers(dtype):
     ]
     for step in range(3):
         _set_gradients(actual, step)
-        _set_gradients(expected, step)
+        for parameter, reference in zip(actual.parameters(), expected.parameters(), strict=True):
+            reference.grad = parameter.grad.float().clone()
         optimizer.step()
         for native in native_optimizers:
             native.step()
@@ -221,13 +225,19 @@ def test_muon_fails_clearly_without_native_support(monkeypatch):
         _build_optimizer(_model())
 
 
-def test_train_epoch_updates_muon_and_adamw_with_real_gradients():
+@pytest.mark.parametrize("name", ["adamw", "muon"])
+@pytest.mark.parametrize("precision", ["float32", "bf16"])
+def test_train_epoch_updates_both_parameter_groups_with_real_gradients(name, precision):
     from training.loop.training_loop import train_epoch
 
+    if precision == "bf16" and not torch.cuda.is_available():
+        pytest.skip("需要 CUDA 验证正式 BF16 训练路径")
+    device = torch.device("cuda" if precision == "bf16" else "cpu")
+    dtype = torch.bfloat16 if precision == "bf16" else torch.float32
     torch.manual_seed(73)
-    model = _model()
+    model = _model(dtype=dtype).to(device)
     # 关闭衰减，确保检查到的权重变化确实来自前后向梯度。
-    optimizer = _build_optimizer(model, weight_decay=0.0)
+    optimizer = _build_optimizer(model, _config(name), weight_decay=0.0)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda step: 0.8**step)
     batch = {
         "history_skill_ids": torch.ones((1, 1), dtype=torch.long),
@@ -248,10 +258,13 @@ def test_train_epoch_updates_muon_and_adamw_with_real_gradients():
         model.input_encoder.skill_embed.weight,
     )
     before = [parameter.detach().clone() for parameter in matrices]
-    metrics = train_epoch(model, [batch], optimizer, scheduler, torch.device("cpu"))
+    metrics = train_epoch(model, [batch], optimizer, scheduler, device, precision)
     assert metrics and all(math.isfinite(value) for value in metrics.values())
     assert metrics["cross_entropy_loss"] > 0
     for original, parameter in zip(before, matrices, strict=True):
         assert parameter.grad is not None and parameter.grad.abs().sum() > 0
         assert not torch.equal(original, parameter)
-    assert scheduler.get_last_lr() == [0.02 * 0.8, 0.02 * 0.8]
+    assert scheduler.get_last_lr() == [0.02 * 0.8] * (2 if name == "muon" else 1)
+    if precision == "bf16":
+        assert all(parameter.dtype == torch.bfloat16 for parameter in model.parameters())
+        assert optimizer.state_dict()["format"] == "fp32_master_v1"

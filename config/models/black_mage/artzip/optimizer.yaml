@@ -2,6 +2,7 @@
 # name: adamw 表示全部参数使用 AdamW。
 # name: muon 表示 Transformer 主干矩阵使用 Muon，其余参数使用 AdamW；
 # 两组共用所属阶段的基础学习率、权重衰减与调度。
+# BF16/FP16 模型统一使用 FP32 主权重和优化器状态累计更新；模型前向精度不变。
 
 optimizers:
   bc:

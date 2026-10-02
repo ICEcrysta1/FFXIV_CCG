@@ -10,6 +10,7 @@ import logging
 import torch
 from torch import nn
 
+from .master_weights import FP32MasterOptimizer, LOW_PRECISION_DTYPES
 from .optimizer_config import OptimizerConfig
 
 
@@ -152,8 +153,20 @@ def build_optimizer(
     learning_rate: float,
     weight_decay: float,
 ) -> torch.optim.Optimizer:
-    """保留原生 AdamW 续训格式，仅显式选择 Muon 时建立混合优化器。"""
+    """统一算法分组；低精度模型通过 FP32 主权重累计更新。"""
     if optimizer_config.name == "adamw":
+        named_parameters = list(model.named_parameters())
+        if any(parameter.dtype in LOW_PRECISION_DTYPES for _, parameter in named_parameters):
+            return FP32MasterOptimizer(
+                [{
+                    "params": [parameter for _, parameter in named_parameters],
+                    "param_names": [name for name, _ in named_parameters],
+                    "optimizer_name": "adamw",
+                }],
+                lambda groups: torch.optim.AdamW(
+                    groups, lr=learning_rate, weight_decay=weight_decay,
+                ),
+            )
         return torch.optim.AdamW(
             model.parameters(), lr=learning_rate, weight_decay=weight_decay,
         )
@@ -163,18 +176,19 @@ def build_optimizer(
     if muon_class is None:
         raise RuntimeError("Muon requires a PyTorch version with torch.optim.Muon")
     muon_group, adamw_group = _parameter_groups(model)
-    muon = muon_class(
-        [muon_group],
-        lr=learning_rate,
-        weight_decay=weight_decay,
-        momentum=optimizer_config.momentum,
-        nesterov=optimizer_config.nesterov,
-        ns_steps=optimizer_config.ns_steps,
-        adjust_lr_fn=optimizer_config.adjust_lr_fn,
-    )
-    adamw = torch.optim.AdamW(
-        [adamw_group], lr=learning_rate, weight_decay=weight_decay,
-    )
+    def build_native(groups: list[dict]) -> torch.optim.Optimizer:
+        muon = muon_class(
+            [groups[0]], lr=learning_rate, weight_decay=weight_decay,
+            momentum=optimizer_config.momentum,
+            nesterov=optimizer_config.nesterov,
+            ns_steps=optimizer_config.ns_steps,
+            adjust_lr_fn=optimizer_config.adjust_lr_fn,
+        )
+        adamw = torch.optim.AdamW(
+            [groups[1]], lr=learning_rate, weight_decay=weight_decay,
+        )
+        return _MuonAdamW(muon, adamw)
+
     total_parameters = sum(parameter.numel() for parameter in model.parameters())
     for group in (muon_group, adamw_group):
         count = sum(parameter.numel() for parameter in group["params"])
@@ -188,4 +202,7 @@ def build_optimizer(
         optimizer_config.momentum, optimizer_config.nesterov,
         optimizer_config.ns_steps, optimizer_config.adjust_lr_fn,
     )
-    return _MuonAdamW(muon, adamw)
+    groups = [muon_group, adamw_group]
+    if any(parameter.dtype in LOW_PRECISION_DTYPES for parameter in model.parameters()):
+        return FP32MasterOptimizer(groups, build_native)
+    return build_native(groups)
