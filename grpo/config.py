@@ -14,6 +14,7 @@ from common.policy.config import (
 )
 from common.project_config import resolve_project_path
 from common.training.tensorboard import TensorBoardConfig
+from common.training.optimizer_config import OptimizerConfig, parse_optimizer_settings
 
 
 @dataclass(frozen=True)
@@ -41,9 +42,15 @@ class GrpoConfig:
     advantage_scale_floor_ratio: float = 0.1
     advantage_clip: float = 5.0
     tensorboard: TensorBoardConfig = field(default_factory=TensorBoardConfig)
+    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
 
     @classmethod
-    def from_mapping(cls, raw: Mapping[str, object] | None = None) -> GrpoConfig:
+    def from_mapping(
+        cls,
+        raw: Mapping[str, object] | None = None,
+        *,
+        policy_config: Mapping[str, object] | None = None,
+    ) -> GrpoConfig:
         """从拆分后的 `grpo` mapping 构造并校验配置。"""
         values = {} if raw is None else raw
         if not isinstance(values, Mapping):
@@ -63,9 +70,14 @@ class GrpoConfig:
             top_p=float(values.get("top_p", cls.top_p)),
             inner_updates=int(values.get("inner_updates", cls.inner_updates)),
             minibatch_size=int(values.get("minibatch_size", cls.minibatch_size)),
-            learning_rate=float(values.get("learning_rate", cls.learning_rate)),
-            weight_decay=float(values.get("weight_decay", cls.weight_decay)),
-            warmup_steps=int(values.get("warmup_steps", cls.warmup_steps)),
+            **parse_optimizer_settings(
+                {} if policy_config is None else policy_config,
+                stage="grpo",
+                legacy=values,
+                default_learning_rate=cls.learning_rate,
+                default_weight_decay=cls.weight_decay,
+                default_warmup_steps=cls.warmup_steps,
+            ),
             clip_low=float(values.get("clip_low", cls.clip_low)),
             clip_high=float(values.get("clip_high", cls.clip_high)),
             kl_coefficient=float(
@@ -139,7 +151,7 @@ def load_grpo_config(path: Path) -> GrpoConfig:
         grpo_raw = training_raw.get("grpo", {})
     if not isinstance(grpo_raw, Mapping):
         raise ValueError("grpo must be a mapping")
-    return GrpoConfig.from_mapping(grpo_raw)
+    return GrpoConfig.from_mapping(grpo_raw, policy_config=raw)
 
 
 @dataclass(frozen=True)

@@ -25,6 +25,7 @@ from common.policy.replay import AutoregressiveReplayConfig
 from common.torch_runtime import autocast_context, move_batch
 from common.torch_serialization import safe_torch_load
 from common.training.metrics import MetricAccumulator
+from common.training.optimizer import build_optimizer
 from common.training.tensorboard import (
     close_tensorboard_writer,
     create_tensorboard_writer,
@@ -597,6 +598,22 @@ def _save_grpo_checkpoint(
     torch.save(payload, path)
 
 
+def _snapshot_optimizer_state(optimizer) -> dict:
+    """首轮回滚状态放在 CPU，包含主权重时也不额外常驻一份 GPU 副本。"""
+    def copy_to_cpu(value):
+        if isinstance(value, torch.Tensor):
+            return value.detach().to(device="cpu", copy=True)
+        if isinstance(value, Mapping):
+            return {key: copy_to_cpu(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [copy_to_cpu(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(copy_to_cpu(item) for item in value)
+        return deepcopy(value)
+
+    return copy_to_cpu(optimizer.state_dict())
+
+
 def _restore_grpo_rollback_state(
     *,
     checkpoint_path: Path | None,
@@ -761,10 +778,17 @@ def run_grpo_training(
         )
         if tensorboard_writer is not None:
             logger.info("TensorBoard events: %s", tensorboard_writer.log_dir)
-        optimizer = torch.optim.AdamW(
-            model.parameters(),
-            lr=grpo.learning_rate,
+        optimizer = build_optimizer(
+            model,
+            grpo.optimizer,
+            learning_rate=grpo.learning_rate,
             weight_decay=grpo.weight_decay,
+        )
+        logger.info(
+            "GRPO 优化器: %s learning_rate=%g weight_decay=%g",
+            grpo.optimizer.name,
+            grpo.learning_rate,
+            grpo.weight_decay,
         )
         scheduler = torch.optim.lr_scheduler.LambdaLR(
             optimizer,
@@ -863,14 +887,13 @@ def run_grpo_training(
             if rollout_store.total_decisions < 1:
                 raise RuntimeError("GRPO produced no decisions; inspect the scene time window")
 
-            # 第 1 轮尚未有上一轮 GRPO checkpoint，只需保留小型优化器状态；模型权重
-            # 直接复用 backend 已加载的 CPU checkpoint。后续轮次直接读取上一轮 latest.pt，
-            # 不再 deepcopy 一份完整模型到 GPU。
+            # 第 1 轮的优化器状态（含 FP32 主权重）只在 CPU 留回滚快照；模型权重
+            # 复用 backend 已加载的 CPU checkpoint。后续轮次读取上一轮 latest.pt。
             rollback_checkpoint = (
                 output_path / "latest.pt" if iteration > 1 else None
             )
             initial_optimizer_state = (
-                deepcopy(optimizer.state_dict()) if rollback_checkpoint is None else None
+                _snapshot_optimizer_state(optimizer) if rollback_checkpoint is None else None
             )
             initial_scheduler_state = (
                 deepcopy(scheduler.state_dict()) if rollback_checkpoint is None else None

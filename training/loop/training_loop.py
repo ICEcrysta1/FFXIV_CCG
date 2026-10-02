@@ -19,6 +19,7 @@ from common.policy.model.repetition import RepetitionConfig, prepare_repetition_
 from common.project_config import resolve_registered_job_tags
 from common.torch_runtime import autocast_context, model_dtype, move_batch
 from common.training.metrics import MetricAccumulator
+from common.training.optimizer import build_optimizer
 from common.training.tensorboard import (
     close_tensorboard_writer,
     create_tensorboard_writer,
@@ -200,10 +201,17 @@ def run_training(
         device,
     )
 
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=config.learning_rate,
+    optimizer = build_optimizer(
+        model,
+        config.optimizer,
+        learning_rate=config.learning_rate,
         weight_decay=config.weight_decay,
+    )
+    logger.info(
+        "BC 优化器: %s learning_rate=%g weight_decay=%g",
+        config.optimizer.name,
+        config.learning_rate,
+        config.weight_decay,
     )
     total_steps = max(1, len(train_loader) * config.max_epochs)
     scheduler = torch.optim.lr_scheduler.LambdaLR(

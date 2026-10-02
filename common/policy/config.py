@@ -187,8 +187,8 @@ def load_policy_config(
 ) -> dict[str, object]:
     """加载兼容旧单文件与新拆分 manifest 的策略配置。
 
-    `config.yaml` 可以声明 `model_config`、`training_config`、`grpo_config`
-    和 `action_quality_config` 相对路径；各子文件仍可独立传入，便于
+    `config.yaml` 可以声明 `model_config`、`training_config`、`optimizer_config`、
+    `grpo_config` 和 `action_quality_config` 相对路径；各子文件仍可独立传入，便于
     调试和测试。返回值统一为旧调用方使用的合并视图。
     """
     resolved_path = Path(path).resolve()
@@ -196,6 +196,7 @@ def load_policy_config(
     references = (
         "model_config",
         "training_config",
+        "optimizer_config",
         "grpo_config",
         "action_quality_config",
     )
