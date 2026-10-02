@@ -69,8 +69,7 @@ public sealed class SkillHistoryContextBuilder
             availableCharges: entry.AvailableCharges,
             maxCharges: entry.MaxCharges,
             jobResourcesConsumed: entry.JobResourcesConsumed,
-            timeSeconds: entry.TimeSeconds,
-            gcdIndex: entry.GcdIndex);
+            timeSeconds: entry.TimeSeconds);
 
     private List<ActionHistoryEntry> Limit(List<ActionHistoryEntry> history)
     {

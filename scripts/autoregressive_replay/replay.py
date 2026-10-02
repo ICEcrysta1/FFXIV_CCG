@@ -33,7 +33,7 @@ from .backends import (
 )
 from .config import AutoregressiveReplayConfig
 from .context import LiveBatchBuilder, SceneTemplateProvider
-from .scheduler import DecisionScheduler, decision_timing, gcd_request_delay
+from .scheduler import DecisionScheduler, decision_timing, gcd_request_delay, is_gcd_decision
 
 
 GCD_ACTION_KIND = "gcd"
@@ -143,7 +143,8 @@ class ReplaySnapshot:
 
     canonical: dict[str, object]
     reference_row: ReplayRow
-    # 该标记来自 C# 状态机快照，避免 replay 自己推导 wait 边界生命周期。
+    # 调度阶段只用于调用方候选过滤，不作为模型数值输入。
+    gcd_phase: bool
 
 
 @dataclass(frozen=True)
@@ -587,6 +588,7 @@ class AutoregressiveReplay:
                 for snapshot in snapshots:
                     row = self._predict_from_canonical(
                         snapshot.canonical,
+                        gcd_phase=snapshot.gcd_phase,
                         gcd_step=snapshot.reference_row.gcd_step,
                         max_history=history_limit,
                     )
@@ -710,6 +712,7 @@ class AutoregressiveReplay:
                 format="vector",
                 next_observation_timestamp=next_observation,
             ).context
+            gcd_phase = is_gcd_decision(state.gcd_remaining)
             try:
                 row = self._predict_row(
                     state,
@@ -745,6 +748,7 @@ class AutoregressiveReplay:
                     ReplaySnapshot(
                         decision_canonical,
                         row,
+                        gcd_phase,
                     )
                 )
                 rows.append(row)
@@ -768,6 +772,7 @@ class AutoregressiveReplay:
                 ReplaySnapshot(
                     decision_canonical,
                     row,
+                    gcd_phase,
                 )
             )
             rows.append(row)
@@ -798,11 +803,13 @@ class AutoregressiveReplay:
         self,
         canonical: dict[str, object],
         *,
+        gcd_phase: bool,
         gcd_step: int,
         max_history: int,
     ) -> ReplayRow:
         batch, candidate_keys = self.batcher.build_from_canonical(
             canonical,
+            gcd_phase=gcd_phase,
             max_history=max_history,
         )
         return self._score_row(

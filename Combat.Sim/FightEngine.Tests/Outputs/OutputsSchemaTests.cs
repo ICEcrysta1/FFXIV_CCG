@@ -41,15 +41,14 @@ public class OutputsSchemaTests
         Assert.Equal(0.0, OutputsTestKit.HistoryVectorValue(historyState, "player_state", "before.time_seconds"), 5);
         Assert.Equal(3.0, OutputsTestKit.HistoryVectorValue(historyState, "player_state", "after.time_seconds"), 5);
         Assert.Equal(2.5, OutputsTestKit.HistoryVectorValue(historyState, "player_state", "after.current_gcd_seconds"), 5);
-        Assert.Equal(597.0, OutputsTestKit.HistoryVectorValue(historyState, "player_state", "after.fight_remaining_seconds"), 5);
-        Assert.Equal(0.0, OutputsTestKit.HistoryVectorValue(historyState, "player_state", "after.gcd_remaining_seconds"), 5);
+        Assert.Equal(597.0, state.FightRemaining, 5);
+        Assert.Equal(0.0, state.GcdRemaining, 5);
         Assert.Equal(1.0, OutputsTestKit.HistoryVectorValue(historyState, "player_state", "after.boss_targetable"), 5);
         Assert.Equal(1.0, OutputsTestKit.HistoryVectorValue(historyState, "buff_state", "after.resource.thundercloud_ready"), 5);
         Assert.Equal(new List<string>
         {
             "before.target.high_thunder.active",
             "before.target.high_thunder.remaining_seconds",
-            "before.target.high_thunder.remaining_gcds",
             "before.target.high_thunder.stacks",
             "before.target.cumulative_dot_potency",
             "before.target.cumulative_potency",
@@ -57,7 +56,6 @@ public class OutputsSchemaTests
             "before.target.current_gcd_dot_potency",
             "after.target.high_thunder.active",
             "after.target.high_thunder.remaining_seconds",
-            "after.target.high_thunder.remaining_gcds",
             "after.target.high_thunder.stacks",
             "after.target.cumulative_dot_potency",
             "after.target.cumulative_potency",
@@ -65,6 +63,51 @@ public class OutputsSchemaTests
             "after.target.current_gcd_dot_potency",
         }, historyState["target_buff_state_feature_keys"]);
         Assert.Equal(3.0, OutputsTestKit.HistoryVectorValue(historyState, "resource_state", "after.astral_fire"), 5);
+    }
+
+    [Fact]
+    public void ModelTokensExcludeProgressCountersSchedulingWindowsAndGcdTimeUnits()
+    {
+        var machine = OutputsTestKit.BuildMachine();
+        var state = TimelineTestDriver.Execute(machine, machine.InitialState(), "fire_iii").NextState;
+        var payload = TimelineTestDriver.FormatVectorState(machine, state);
+        var removedFields = new[]
+        {
+            "gcd_index", "fight_remaining_seconds", "gcd_remaining_gcds",
+            "weave_window_gcds", "ogcd_window_gcds", "downtime_remaining_gcds",
+            "gcd_remaining_seconds", "weave_window_seconds", "ogcd_window_seconds",
+            "next_untargetable_in_gcds", "remaining_gcds",
+        };
+
+        // 模拟器继续计数和推进结束边界，历史与候选向量只输出部署需要的字段。
+        Assert.Equal(1, state.GcdIndex);
+        foreach (var contextKey in new[] { "state_history_context", "candidate_state_context" })
+        {
+            var context = (Dictionary<string, object?>)payload[contextKey];
+            var featureKeys = (List<string>)context["player_state_feature_keys"];
+            Assert.Equal(22, featureKeys.Count);
+            foreach (var field in removedFields)
+            {
+                Assert.DoesNotContain($"before.{field}", featureKeys);
+                Assert.DoesNotContain($"after.{field}", featureKeys);
+            }
+            Assert.Contains("before.current_gcd_seconds", featureKeys);
+            Assert.Contains("after.downtime_remaining_seconds", featureKeys);
+            var allFeatureKeys = new[]
+            {
+                "player_state_feature_keys", "buff_state_feature_keys",
+                "target_buff_state_feature_keys", "resource_state_feature_keys",
+            }.SelectMany(key => (List<string>)context[key]).ToArray();
+            Assert.Equal(109, allFeatureKeys.Length);
+            Assert.DoesNotContain(allFeatureKeys, key => key.EndsWith("_gcds", StringComparison.Ordinal));
+            Assert.Contains("before.job.triplecast.remaining_seconds", allFeatureKeys);
+            Assert.Contains("after.target.high_thunder.remaining_seconds", allFeatureKeys);
+        }
+        foreach (var contextKey in new[] { "skill_history_context", "candidate_skill_context" })
+        {
+            var tokens = (List<Dictionary<string, object?>>)payload[contextKey];
+            Assert.All(tokens, token => Assert.DoesNotContain("gcd_index", token.Keys));
+        }
     }
 
     [Fact]

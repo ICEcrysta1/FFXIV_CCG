@@ -21,7 +21,6 @@ class NormalizerConfig:
     remaining_seconds_max: float = 120.0
     fight_time_max: float = 1800.0
     target_count_max: float = 3.0
-    remaining_gcds_max: float = 48.0
     current_potency_max: float = 2500.0
     cumulative_potency_mode: str = "log1p"
 
@@ -40,9 +39,6 @@ def load_normalizer_config(path: Path | None = None) -> NormalizerConfig:
         ),
         fight_time_max=float(values.get("fight_time_max", NormalizerConfig.fight_time_max)),
         target_count_max=float(values.get("target_count_max", NormalizerConfig.target_count_max)),
-        remaining_gcds_max=float(
-            values.get("remaining_gcds_max", NormalizerConfig.remaining_gcds_max)
-        ),
         current_potency_max=float(
             values.get("current_potency_max", NormalizerConfig.current_potency_max)
         ),

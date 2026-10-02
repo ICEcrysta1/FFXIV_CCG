@@ -26,7 +26,6 @@ from common.contracts import (
     TARGETABLE_WINDOW_CONTEXT_KEY,
     TARGET_COUNT_WINDOW_CONTEXT_KEY,
 )
-from common.gcd_utils import to_gcd_units
 from common.schema_config import load_schema_config
 from common.scene_window import feature_index_map
 
@@ -44,9 +43,7 @@ _FACT_ORDER = {
 _PLAYER_SCENE_FIELDS = (
     "is_moving",
     "next_untargetable_in_seconds",
-    "next_untargetable_in_gcds",
     "downtime_remaining_seconds",
-    "downtime_remaining_gcds",
 )
 
 
@@ -160,8 +157,8 @@ def rewrite_scene_player_state(
     """按场景上下文原地改写 canonical context 的 player 场景字段。
 
     改写 `state_history_context.tokens` 与 `candidate_state_context.tokens` 的
-    player_state 段（before ‖ after）：移动位、下次停手 ETA、停手剩余秒数及其
-    GCD 版本。非法候选的 after 段是 null，逐位置跳过；Boss 可选中不再改写，
+    player_state 段（before ‖ after）：移动位、下次停手 ETA（秒）及
+    停手剩余秒数。非法候选的 after 段是 null，逐位置跳过；Boss 可选中不再改写，
     由状态机自己维护。
 
     时刻取值：历史条目 before = 生效时刻 − 实际读条时长、after = 生效时刻；
@@ -169,7 +166,6 @@ def rewrite_scene_player_state(
     （policy 候选则取调用方约定的下一次观测时刻）。
     """
     offset = len(_player_state_fields())
-    gcd_index = _player_field_index("current_gcd_seconds")
 
     history_tokens = _context_tokens(canonical, "state_history_context")
     history_skills = _context_entries(canonical, "skill_history_context")
@@ -182,7 +178,6 @@ def rewrite_scene_player_state(
         _rewrite_state_token(
             token,
             offset=offset,
-            gcd_index=gcd_index,
             before_timestamp=effect_time - cast_seconds,
             after_timestamp=effect_time,
             scene_state_at=scene_state_at,
@@ -200,7 +195,6 @@ def rewrite_scene_player_state(
         _rewrite_state_token(
             token,
             offset=offset,
-            gcd_index=gcd_index,
             before_timestamp=observation_timestamp,
             after_timestamp=after_timestamp,
             scene_state_at=scene_state_at,
@@ -212,7 +206,6 @@ def _rewrite_state_token(
     token: object,
     *,
     offset: int,
-    gcd_index: int,
     before_timestamp: float,
     after_timestamp: float,
     scene_state_at,
@@ -223,14 +216,11 @@ def _rewrite_state_token(
     if not isinstance(vector, list) or len(vector) < offset * 2:
         return
     for segment_start, timestamp in ((0, before_timestamp), (offset, after_timestamp)):
-        gcd_seconds = _optional_float(vector[segment_start + gcd_index]) or 0.0
         state = scene_state_at(timestamp)
         values = {
             "is_moving": 1.0 if state.is_moving else 0.0,
             "next_untargetable_in_seconds": state.next_downtime_eta,
-            "next_untargetable_in_gcds": to_gcd_units(state.next_downtime_eta, gcd_seconds),
             "downtime_remaining_seconds": state.downtime_remaining,
-            "downtime_remaining_gcds": to_gcd_units(state.downtime_remaining, gcd_seconds),
         }
         for field, value in values.items():
             position = segment_start + _player_field_index(field)

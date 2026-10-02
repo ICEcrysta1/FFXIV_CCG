@@ -12,7 +12,7 @@ namespace Combat.Sim.Outputs.TokenBuilders;
 
 /// <summary>
 /// Buff 向量 token 装配器（对照 token_builders/buff_vector_token_builder.py）。
-/// 按注册的系统/职业状态顺序导出 active / remaining_seconds / remaining_gcds / stacks，
+/// 按注册的系统/职业状态顺序导出 active / remaining_seconds / stacks，
 /// 并在末尾追加 buff 分组的职业资源。
 /// </summary>
 public sealed class BuffVectorTokenBuilder
@@ -90,7 +90,6 @@ public sealed class BuffVectorTokenBuilder
     {
         "active" => buff is null ? 0.0 : 1.0,
         "remaining_seconds" => buff?.RemainingSeconds ?? 0.0,
-        "remaining_gcds" => buff?.RemainingGcds ?? 0.0,
         "stacks" => buff?.Stacks ?? 0,
         _ => throw new InvalidOperationException($"schema.yaml 中未知的 Buff 状态字段: {field}"),
     };

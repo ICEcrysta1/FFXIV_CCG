@@ -12,7 +12,10 @@ from .schema import TrainingSchema
 # 候选合法性与执行语义变化时必须升级，拒绝旧 checkpoint 静默复用。
 # 5：黑魔模型移除 retrace、manaward、surecast 候选并更新模型结构，候选布局与
 #    输入张量形状均已变化，旧 checkpoint 的输入分布不可复用。
-INPUT_CONTRACT_VERSION = 5
+# 6：技能和状态输入移除累计 GCD 索引；状态输入同时移除精确战斗剩余时间
+#    及四个冗余 GCD 窗口字段，旧 checkpoint 必须重新训练。
+# 7：状态输入移除调用方调度窗口与所有 GCD 单位的时间字段，旧权重不兼容。
+INPUT_CONTRACT_VERSION = 7
 
 
 @dataclass(frozen=True)

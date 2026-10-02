@@ -11,7 +11,7 @@ namespace Combat.Sim.Outputs.TokenBuilders;
 
 /// <summary>
 /// 目标 Buff 向量 token 装配器（对照 token_builders/target_buff_vector_token_builder.py）。
-/// 统一导出目标侧 DoT 的 active / remaining_seconds / remaining_gcds / stacks
+/// 统一导出目标侧 DoT 的 active / remaining_seconds / stacks
 /// 与累计直伤、累计 DoT、当前直伤、当前 GCD 内 DoT 结算威力。
 /// </summary>
 public sealed class TargetBuffVectorTokenBuilder
@@ -78,7 +78,6 @@ public sealed class TargetBuffVectorTokenBuilder
     {
         "active" => dot is null ? 0.0 : 1.0,
         "remaining_seconds" => dot?.RemainingSeconds ?? 0.0,
-        "remaining_gcds" => dot?.RemainingGcds ?? 0.0,
         // DoT 无层数概念，存在即 1.0（与 Python 侧一致）
         "stacks" => dot is null ? 0.0 : 1.0,
         _ => throw new InvalidOperationException($"schema.yaml 中未知的目标 DoT 字段: {field}"),

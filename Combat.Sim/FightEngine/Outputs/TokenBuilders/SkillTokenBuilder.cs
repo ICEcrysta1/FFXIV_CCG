@@ -28,8 +28,7 @@ public static class SkillTokenBuilder
         int availableCharges,
         int maxCharges,
         IReadOnlyDictionary<string, object> jobResourcesConsumed,
-        double? timeSeconds = null,
-        int? gcdIndex = null)
+        double? timeSeconds = null)
     {
         var encodedKind = kind switch
         {
@@ -68,11 +67,6 @@ public static class SkillTokenBuilder
         if (timeSeconds is not null)
         {
             payload["time_seconds"] = Math.Round(timeSeconds.Value, 4);
-        }
-
-        if (gcdIndex is not null)
-        {
-            payload["gcd_index"] = gcdIndex;
         }
 
         return payload;

@@ -9,6 +9,17 @@ import pytest
 from common.policy.data import Normalizer
 from common.policy.data.schema import SceneWindowSchema, TrainingSchema
 from common.policy.data.normalization import NormalizerConfig
+from common.policy.data.normalizer import NORMALIZER_CONTRACT_VERSION
+
+
+def test_normalizer_contract_rejects_previous_gcd_time_unit_config():
+    """不把旧 GCD 单位上限静默带进新的模型输入契约。"""
+    contract = Normalizer().normalization_contract
+    assert "remaining_gcds_max" not in contract["config"]
+    contract["version"] = NORMALIZER_CONTRACT_VERSION - 1
+    contract["config"]["remaining_gcds_max"] = 48.0
+    with pytest.raises(ValueError, match="unsupported normalizer contract version"):
+        Normalizer.from_contract(contract)
 
 
 def test_normalizer_does_not_treat_midfield_seconds_name_as_time_rule():
@@ -26,18 +37,18 @@ def test_normalizer_uses_fight_time_max_for_player_time_seconds():
     normalizer = Normalizer()
     normalizer.register_feature_keys(
         "player_state",
-        ["before.time_seconds", "before.fight_remaining_seconds"],
+        ["before.time_seconds", "after.time_seconds"],
     )
 
     assert normalizer.normalize_value("player_state", "before.time_seconds", 900.0) == pytest.approx(0.5)
     assert normalizer.normalize_value(
         "player_state",
-        "before.fight_remaining_seconds",
+        "after.time_seconds",
         900.0,
     ) == pytest.approx(0.5)
     assert normalizer.normalize_value(
         "player_state",
-        "before.fight_remaining_seconds",
+        "after.time_seconds",
         1800.0,
     ) == pytest.approx(1.0)
 
