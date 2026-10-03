@@ -147,7 +147,7 @@ def test_grpo_sampling_is_independent_of_worker_count(dataset, tmp_path):
     def worker(index, client, engine):
         with AutoregressiveReplaySession(config, backend=client, cache_store=cache, engine=engine) as session:
             result, decisions = _run_scene_rollout(
-                config, scene_json_path=paths[index % len(paths)], backend=client,
+                config, scene_json_path=paths[index % len(paths)],
                 temperature=1, record_decisions=True, session=session, sampling_seed=120 + index,
             )
             assert decisions

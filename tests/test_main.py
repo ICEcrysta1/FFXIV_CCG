@@ -66,11 +66,27 @@ class _FakeBackend:
         return SimpleNamespace(timestamp=timestamp)
 
 
+class _FakeEngine:
+    def __init__(self, job_tag, *, capacity):
+        self.job_tag = job_tag
+        self.capacity = capacity
+
+    def create_backend(self, **_kwargs):
+        return _FakeBackend(job_tag=self.job_tag)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+
 def test_list_actions_uses_vector_observation(monkeypatch, capsys):
     _FakeBackend.instances.clear()
-    monkeypatch.setattr(main, "InProcessBackend", _FakeBackend)
+    monkeypatch.setattr(main, "InProcessEngine", _FakeEngine)
 
-    main.cmd_list_actions("black_mage")
+    monkeypatch.setattr("sys.argv", ["main", "list-actions", "--job-tag", "black_mage"])
+    main.main()
 
     assert capsys.readouterr().out.splitlines() == ["fire_iii"]
     calls = _FakeBackend.instances[0].calls
@@ -79,9 +95,10 @@ def test_list_actions_uses_vector_observation(monkeypatch, capsys):
 
 def test_smoke_uses_absolute_time_protocol(monkeypatch, capsys):
     _FakeBackend.instances.clear()
-    monkeypatch.setattr(main, "InProcessBackend", _FakeBackend)
+    monkeypatch.setattr(main, "InProcessEngine", _FakeEngine)
 
-    main.cmd_smoke("black_mage")
+    monkeypatch.setattr("sys.argv", ["main", "smoke", "--job-tag", "black_mage"])
+    main.main()
 
     output = json.loads(capsys.readouterr().out)
     assert output["time"] == 15.0

@@ -114,6 +114,7 @@ class InProcessEngine:
             raise ValueError("capacity must be a positive integer")
         engine_type, _, _ = _load_dotnet_types()
         self.job_tag = job_tag
+        self.capacity = capacity
         self._engine = engine_type(str(_PROJECT_ROOT), job_tag, capacity)
 
     def _require_engine(self) -> Any:
@@ -154,7 +155,7 @@ class InProcessEngine:
 
 
 class InProcessBackend:
-    """C# 引擎中的一个队列句柄；独立使用时也走同一个引擎和队列实现。"""
+    """共享 C# 引擎中的一个队列句柄；只释放队列，引擎由调用方管理。"""
 
     def __init__(
         self,
@@ -164,17 +165,18 @@ class InProcessBackend:
         fight_remaining: float | None = None,
         max_history: int | None = None,
         initial_timestamp: float | None = None,
-        engine: InProcessEngine | None = None,
+        engine: InProcessEngine,
     ):
-        if engine is not None and engine.job_tag != job_tag:
+        if engine is None:
+            raise ValueError("backend requires a shared engine")
+        if engine.job_tag != job_tag:
             raise ValueError("backend job_tag must match the shared engine")
         self.job_tag = job_tag
         self._max_history = max_history
         self._initial_timestamp = float(initial_timestamp or 0.0)
         self._session: Any | None = None
         self._lifecycle_lock = threading.RLock()
-        self._owns_engine = engine is None
-        self._engine = engine if engine is not None else InProcessEngine(job_tag, capacity=1)
+        self._engine = engine
         self._closed = False
         try:
             self.init(
@@ -351,8 +353,6 @@ class InProcessBackend:
             if self._session is not None:
                 self._session.Dispose()
                 self._session = None
-            if self._owns_engine:
-                self._engine.close()
 
     def statistics(self) -> dict[str, int | float]:
         """读取容量诊断，不复制战斗历史，也不推进时钟。"""

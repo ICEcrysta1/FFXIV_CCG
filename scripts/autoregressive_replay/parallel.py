@@ -70,14 +70,15 @@ class TrainingPolicyBackend:
 class _PolicyClient:
     """单轨迹推理句柄；工作线程不直接访问模型可变缓存。"""
 
-    def __init__(self, coordinator, slot):
+    def __init__(self, coordinator, slot, backend):
         self._coordinator = coordinator
         self._slot = slot
+        self._backend = backend
         self._cache_enabled = False
         self._cache_generation = 0
 
     def __getattr__(self, name):
-        return getattr(self._coordinator.backend, name)
+        return getattr(self._backend, name)
 
     def configure_cache(self, enabled):
         self._cache_enabled = bool(enabled)
@@ -99,13 +100,14 @@ class _PolicyClient:
 
 
 class _InferenceCoordinator:
-    def __init__(self, backend, count):
+    def __init__(self, backend, count, *, isolate_errors=False):
         self.backend = backend
         self.condition = Condition()
         self.active = set(range(count))
         self.pending = {}
         self.failure = None
         self.cache_layout = None
+        self.isolate_errors = isolate_errors
 
     def request(self, client, batch, keys):
         future = Future()
@@ -157,28 +159,45 @@ class _InferenceCoordinator:
 
     def _infer(self, requests):
         # 固定 batch=1 的部署包保留契约，状态机仍可跨队列并行。
-        groups = [requests] if getattr(self.backend, "supports_batch_inference", False) else [[r] for r in requests]
+        shared = all(r[0]._backend is requests[0][0]._backend for r in requests)
+        backend = requests[0][0]._backend
+        groups = [requests] if shared and getattr(backend, "supports_batch_inference", False) else [[r] for r in requests]
         for group in groups:
-            flags = {client._cache_enabled for client, *_ in group}
-            if len(flags) != 1:
-                for request in group:
-                    self._infer([request])
-                continue
-            layout = tuple((c._slot, c._cache_generation, c._cache_enabled) for c, *_ in group)
-            if layout != self.cache_layout:
-                self.backend.configure_cache(next(iter(flags)))
-                self.cache_layout = layout
-            keys = group[0][2]
-            if any(request[2] != keys for request in group):
-                raise ValueError("parallel replay candidate order mismatch")
-            batch = collate_live_batches([request[1] for request in group])
-            with torch.inference_mode():
-                logits = self.backend.raw_logits(batch, keys)
-            if logits.ndim != 2 or logits.shape[0] != len(group):
-                raise ValueError("parallel backend returned an invalid logits batch")
-            for index, (_, _, _, future) in enumerate(group):
-                # 克隆单行，避免慢轨迹持有整个 batch 的输出 storage。
-                future.set_result(logits[index:index + 1].clone())
+            try:
+                self._infer_group(group)
+            except Exception as exc:
+                if not self.isolate_errors:
+                    raise
+                # 验收任务各自写失败报告，不因一条轨迹失败跳过其他验收。
+                for _, _, _, future in group:
+                    if future.done():
+                        continue
+                    failure = RuntimeError(f"parallel inference failed: {exc}")
+                    failure.__cause__ = exc
+                    future.set_exception(failure)
+
+    def _infer_group(self, group):
+        backend = group[0][0]._backend
+        flags = {client._cache_enabled for client, *_ in group}
+        if len(flags) != 1:
+            for request in group:
+                self._infer([request])
+            return
+        layout = (id(backend), tuple((c._slot, c._cache_generation, c._cache_enabled) for c, *_ in group))
+        if layout != self.cache_layout:
+            backend.configure_cache(next(iter(flags)))
+            self.cache_layout = layout
+        keys = group[0][2]
+        if any(request[2] != keys for request in group):
+            raise ValueError("parallel replay candidate order mismatch")
+        batch = collate_live_batches([request[1] for request in group])
+        with torch.inference_mode():
+            logits = backend.raw_logits(batch, keys)
+        if logits.ndim != 2 or logits.shape[0] != len(group):
+            raise ValueError("parallel backend returned an invalid logits batch")
+        for index, (_, _, _, future) in enumerate(group):
+            # 克隆单行，避免慢轨迹持有整个 batch 的输出 storage。
+            future.set_result(logits[index:index + 1].clone())
 
 
 class ParallelRollouts:
@@ -192,19 +211,23 @@ class ParallelRollouts:
         self.engine = InProcessEngine(job_tag, capacity=self.workers)
         self._closed = False
 
-    def map(self, worker, items):
+    def map(self, worker, items, *, prepare=None, policy_factory=None, isolate_errors=False):
         """worker(item, policy, engine)；输入与输出有序，在途及完成结果均有上限。"""
         if self._closed:
             raise RuntimeError("parallel replay is closed")
         iterator = iter(items)
         with ThreadPoolExecutor(max_workers=self.workers, thread_name_prefix="replay") as executor:
             while chunk := list(islice(iterator, self.workers)):
-                coordinator = _InferenceCoordinator(self.backend, len(chunk))
+                # 准备阶段也复用本引擎；回放队列尚未占用容量，可并行补齐缓存。
+                if prepare is not None:
+                    prepare(chunk, self.engine)
+                policies = [self.backend if policy_factory is None else policy_factory(item) for item in chunk]
+                coordinator = _InferenceCoordinator(self.backend, len(chunk), isolate_errors=isolate_errors)
 
                 def run(slot, item):
                     try:
                         with torch.inference_mode():
-                            return worker(item, _PolicyClient(coordinator, slot), self.engine)
+                            return worker(item, _PolicyClient(coordinator, slot, policies[slot]), self.engine)
                     except BaseException as exc:
                         coordinator.abort(exc)
                         raise

@@ -5,7 +5,7 @@ from threading import Barrier
 
 import pytest
 
-from scripts.common.inprocess_backend import InProcessBackend, InProcessEngine
+from scripts.common.inprocess_backend import InProcessEngine
 from scripts.convert_fflogs import build_training_samples
 from tests.helpers import build_test_scene_context, targetable_window_token
 from tests.scripts.conftest import _require_inprocess_backend
@@ -34,8 +34,7 @@ def test_sixteen_python_threads_share_one_engine_without_context_leaks(job, acti
 
     expected = []
     for index in range(16):
-        with InProcessBackend(job, max_history=4, actual_base_gcd=2.0 + index * 0.03,
-                              initial_timestamp=index * 100) as backend:
+        with InProcessEngine(job) as engine, engine.create_backend(max_history=4, actual_base_gcd=2.0 + index * 0.03, initial_timestamp=index * 100) as backend:
             expected.append(replay(backend, index))
 
     barrier = Barrier(16)
@@ -104,7 +103,7 @@ def test_six_conversion_workers_share_engine_and_preserve_full_history(cs_skill_
                               (12.0, "blizzard_iii"), (18.0, "fire_iii")]
         ],
     }
-    with InProcessBackend("black_mage", actual_base_gcd=2.46) as backend:
+    with InProcessEngine("black_mage") as engine, engine.create_backend(actual_base_gcd=2.46, max_history=None) as backend:
         expected = build_training_samples(backend, cs_skill_book, payload)
 
     barrier = Barrier(6)

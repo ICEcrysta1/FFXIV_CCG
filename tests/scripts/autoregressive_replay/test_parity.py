@@ -191,7 +191,7 @@ def test_parity_failure_writes_auditable_partial_report(monkeypatch, tmp_path):
             self.source_path = tmp_path / f"{name}.model"
             self.input_device = torch.device("cpu")
             self.data_spec = SimpleNamespace(job_tag="black_mage")
-            self.input_contract = SimpleNamespace(to_dict=lambda: {"version": 1})
+            self.input_contract = SimpleNamespace(to_dict=lambda: {"version": 1}, create_normalizer=lambda: object())
             self.repetition = RepetitionConfig()
             self.vocab_entries = ((100, 1), (200, 2), (300, 3))
             self.execution_provider = name
@@ -213,9 +213,15 @@ def test_parity_failure_writes_auditable_partial_report(monkeypatch, tmp_path):
     candidate.manifest = SimpleNamespace(payload={"runtime_targets": {}})
 
     class FakeReplay:
-        def __init__(self, _config):
-            self.backend = reference
+        def __init__(self, _config, *, session):
+            self.backend = session.backend
             self.data_spec = reference.data_spec
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
 
         def _configure_kv_cache(self, _enabled):
             return None
@@ -228,6 +234,21 @@ def test_parity_failure_writes_auditable_partial_report(monkeypatch, tmp_path):
             raise AssertionError("unreachable")
 
     monkeypatch.setattr(parity_module, "OrtPolicyBackend", lambda *_args, **_kwargs: candidate)
+    monkeypatch.setattr(parity_module, "PyTorchPolicyBackend", lambda *_args, **_kwargs: reference)
+    monkeypatch.setattr(parity_module.ReplayCacheStore, "prepare", lambda *_args, **_kwargs: None)
+
+    closed = []
+    class FakeSession:
+        def __init__(self, _config, **kwargs):
+            self.backend = kwargs["backend"]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            closed.append(self)
+
+    monkeypatch.setattr(parity_module, "AutoregressiveReplaySession", FakeSession)
     monkeypatch.setattr(parity_module, "AutoregressiveReplay", FakeReplay)
     monkeypatch.setattr(
         parity_module,
@@ -265,11 +286,11 @@ def test_parity_failure_writes_auditable_partial_report(monkeypatch, tmp_path):
     output = tmp_path / "parity.json"
 
     with pytest.raises(AssertionError, match="audit report written"):
-        parity_module.run_rollout_parity(
-            config,
+        parity_module.run_rollout_parities(
+            [config],
             onnx_package_path=tmp_path / "deployment",
             provider="CPUExecutionProvider",
-            output_path=output,
+            output_paths=[output],
         )
 
     report = json.loads(output.read_text(encoding="utf-8"))
@@ -289,11 +310,11 @@ def test_parity_failure_writes_auditable_partial_report(monkeypatch, tmp_path):
     )
     formal_output = tmp_path / "formal-parity.json"
     with pytest.raises(AssertionError, match="audit report written"):
-        parity_module.run_rollout_parity(
-            config,
+        parity_module.run_rollout_parities(
+            [config],
             onnx_package_path=tmp_path / "deployment",
             provider="CPUExecutionProvider",
-            output_path=formal_output,
+            output_paths=[formal_output],
             release_gate=True,
         )
     assert recorded == [
@@ -312,11 +333,11 @@ def test_parity_failure_writes_auditable_partial_report(monkeypatch, tmp_path):
     monkeypatch.setattr(parity_module, "AutoregressiveReplay", EmptyFailReplay)
     empty_output = tmp_path / "empty-parity.json"
     with pytest.raises(AssertionError, match="audit report written"):
-        parity_module.run_rollout_parity(
-            config,
+        parity_module.run_rollout_parities(
+            [config],
             onnx_package_path=tmp_path / "deployment",
             provider="CPUExecutionProvider",
-            output_path=empty_output,
+            output_paths=[empty_output],
         )
 
     empty_report = json.loads(empty_output.read_text(encoding="utf-8"))
@@ -324,6 +345,7 @@ def test_parity_failure_writes_auditable_partial_report(monkeypatch, tmp_path):
     assert empty_report["parity"]["passed"] is False
     assert empty_report["parity"]["decision_count"] == 0
     assert empty_report["rollout"]["action_sequence_match"] is False
+    assert len(closed) == 3
 
 
 @pytest.mark.parametrize(
@@ -352,11 +374,11 @@ def test_parity_rejects_non_finite_or_negative_tolerance(
     )
 
     with pytest.raises(ValueError, match="finite and >= 0"):
-        parity_module.run_rollout_parity(
-            config,
+        parity_module.run_rollout_parities(
+            [config],
             onnx_package_path=tmp_path / "deployment",
             provider="CPUExecutionProvider",
-            output_path=tmp_path / "parity.json",
+            output_paths=[tmp_path / "parity.json"],
             tolerance=tolerance,
         )
 
@@ -375,9 +397,9 @@ def test_parity_cli_uses_resolved_env_provider(monkeypatch, tmp_path):
 
     def fake_parity(_config, **kwargs):
         calls.update(kwargs)
-        return kwargs["output_path"]
+        return kwargs["output_paths"]
 
-    monkeypatch.setattr(replay_main_module, "run_rollout_parity", fake_parity)
+    monkeypatch.setattr(replay_main_module, "run_rollout_parities", fake_parity)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -406,10 +428,10 @@ def test_parity_cli_forwards_precision_and_tolerance(monkeypatch, tmp_path):
 
     def fake_parity(_config, **kwargs):
         parity_kwargs.update(kwargs)
-        return kwargs["output_path"]
+        return kwargs["output_paths"]
 
     monkeypatch.setattr(replay_main_module, "load_replay_config", fake_load_replay_config)
-    monkeypatch.setattr(replay_main_module, "run_rollout_parity", fake_parity)
+    monkeypatch.setattr(replay_main_module, "run_rollout_parities", fake_parity)
     monkeypatch.setattr(
         "sys.argv",
         [

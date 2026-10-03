@@ -1,3 +1,5 @@
+using Combat.Sim.Sessions;
+using Combat.Sim.Policy;
 using Combat.Sim.Facade;
 using Combat.Sim.Models.Timeline;
 
@@ -11,7 +13,8 @@ public class SequenceRunnerTests
     [Fact]
     public void 绝对时间序列只保留最终候选快照()
     {
-        var machine = FacadeKit.BuildMachine();
+        using var engine = CreateEngine();
+        using var session = engine.CreateSession(null);
         ActionRequest[] requests =
         {
             new(0.0, "gcd_strike"),
@@ -19,7 +22,7 @@ public class SequenceRunnerTests
             new(2.5, "gcd_strike"),
         };
         var summary = SequenceRunner.RunActionSequence(
-            machine,
+            session,
             requests);
 
         var requested = Assert.IsType<List<Dictionary<string, object?>>>(summary["requested_sequence"]);
@@ -40,11 +43,12 @@ public class SequenceRunnerTests
     [Fact]
     public void 输出历史按绝对请求序列完整记录()
     {
-        var machine = FacadeKit.BuildMachine();
+        using var engine = CreateEngine();
+        using var session = engine.CreateSession(null);
         var requests = Enumerable.Range(0, 8)
             .Select(index => new ActionRequest(index * 2.5, "gcd_strike"))
             .ToArray();
-        var summary = SequenceRunner.RunActionSequence(machine, requests);
+        var summary = SequenceRunner.RunActionSequence(session, requests);
 
         var appliedActions = Assert.IsType<List<Dictionary<string, object?>>>(summary["applied_actions"]);
         Assert.Equal(requests.Length, appliedActions.Count);
@@ -63,4 +67,32 @@ public class SequenceRunnerTests
         var candidateStateTokens = Assert.IsAssignableFrom<IReadOnlyList<object>>(candidateStates["tokens"]);
         Assert.Equal(candidateSkills.Count, candidateStateTokens.Count);
     }
+    private static SimulationEngine CreateEngine()
+    {
+        var rules = FacadeKit.BuildMachine();
+        return new SimulationEngine(rules, new PolicyActionRegistry([], rules.SkillBook));
+    }
+
+    [Fact]
+    public void 多个序列共享引擎并行执行并释放队列()
+    {
+        using var engine = CreateEngine();
+        Parallel.For(0, 16, index =>
+        {
+            using var session = engine.CreateSession(4);
+            ActionRequest[] requests = [new(0, "gcd_strike"), new(2.5, "gcd_strike")];
+            var summary = SequenceRunner.RunActionSequence(session, requests);
+            var applied = Assert.IsType<List<Dictionary<string, object?>>>(summary["applied_actions"]);
+            Assert.Equal(2, applied.Count);
+            Assert.Equal(2, session.GetStatistics().ActionHistoryCount);
+        });
+        Assert.Equal(0, engine.ActiveCount);
+        Assert.ThrowsAny<Exception>(() =>
+        {
+            using var session = engine.CreateSession(4);
+            SequenceRunner.RunActionSequence(session, [new(0, "missing_skill")]);
+        });
+        Assert.Equal(0, engine.ActiveCount);
+    }
+
 }

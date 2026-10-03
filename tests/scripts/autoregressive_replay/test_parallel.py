@@ -171,3 +171,34 @@ def test_backend_measurement_retains_bounded_samples(monkeypatch):
     assert metrics.calls == 5000
     assert metrics.latency_ms_max == 1000
     assert metrics.latency_ms_p50 == 500
+
+
+def test_per_queue_policy_failure_does_not_cancel_other_audits():
+    shared = FakePolicy()
+    policies = []
+    prepared = []
+    def prepare(items, engine):
+        assert not policies
+        prepared.extend(items)
+    def factory(item):
+        policy = FakePolicy()
+        if item == 1:
+            def fail(*_args):
+                raise ValueError("one audit failed")
+            policy.raw_logits = fail
+        policies.append(policy)
+        return policy
+    def run(item, policy, engine):
+        assert prepared == [0, 1, 2]
+        try:
+            for _ in range(3):
+                value = policy.raw_logits(sample(item), ("a", "b"))
+            return int(value[0, 0])
+        except RuntimeError as exc:
+            assert "one audit failed" in str(exc)
+            return "failed"
+    with parallel.ParallelRollouts(shared, job_tag="test", workers=3) as pool:
+        results = list(pool.map(run, range(3), prepare=prepare, policy_factory=factory, isolate_errors=True))
+    assert results == [0, "failed", 2]
+    assert len(policies[0].batches) == len(policies[2].batches) == 3
+    assert pool.engine.closed

@@ -76,10 +76,8 @@ def evaluate_none_ppg(
 
     def run_empty(_item, policy, engine):
         policy.configure_cache(cache_was_enabled)
-        with InProcessBackend(
-            job_tag=data_spec.job_tag,
+        with engine.create_backend(
             max_history=config.model.history_capacity,
-            engine=engine,
         ) as backend:
             batcher = LiveBatchBuilder(
                 backend=backend,
@@ -154,9 +152,8 @@ def evaluate_validation_ppg(
     def run_source(item, policy, engine):
         source_index, reader = item
         policy.configure_cache(ppg_config.use_kv_cache)
-        with InProcessBackend(
-            job_tag=data_spec.job_tag, max_history=config.model.history_capacity,
-            engine=engine,
+        with engine.create_backend(
+            max_history=config.model.history_capacity,
         ) as backend:
             initial_metadata = reader.step_metadata(0)
             initial_time = float(initial_metadata["time_offset"])

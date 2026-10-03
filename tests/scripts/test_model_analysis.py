@@ -596,7 +596,7 @@ def test_model_analysis_retries_after_compiling_missing_cache(monkeypatch, tmp_p
     )
     monkeypatch.setattr(
         analysis_common,
-        "compile_raw_training_cache",
+        "compile_raw_training_caches",
         lambda **kwargs: compiled_calls.append(kwargs),
     )
 
@@ -621,7 +621,7 @@ def test_model_analysis_retries_after_compiling_missing_cache(monkeypatch, tmp_p
     )
     assert compiled_calls == [
         {
-            "source_path": source_path,
+            "source_paths": [source_path],
             "cache_dir": cache_dir,
             "cache_shard_size": 768,
             "job_tag": "black_mage",
@@ -629,29 +629,26 @@ def test_model_analysis_retries_after_compiling_missing_cache(monkeypatch, tmp_p
     ]
 
 
-def test_model_analysis_cache_compilation_calls_conversion_cli(monkeypatch, tmp_path):
+def test_model_analysis_cache_compilation_uses_inprocess_batch_api(monkeypatch, tmp_path):
     calls = []
-
-    def fake_run(command, *, cwd, check):
-        calls.append((command, cwd, check))
-
-    monkeypatch.setattr(cache_compilation.subprocess, "run", fake_run)
-    source_path = tmp_path / "source.json"
-    cache_dir = tmp_path / "cache"
-    cache_compilation.compile_raw_training_cache(
-        source_path=source_path,
-        cache_dir=cache_dir,
-        cache_shard_size=768,
-        job_tag="black_mage",
+    def compile(paths, **kwargs):
+        calls.append((paths, kwargs))
+        return paths
+    monkeypatch.setattr("scripts.convert_fflogs.cache.precompile_raw_training_caches", compile)
+    source = tmp_path / "source.json"
+    cache_compilation.compile_raw_training_caches(
+        source_paths=[source], cache_dir=tmp_path / "cache", cache_shard_size=768, job_tag="black_mage",
     )
-
-    assert len(calls) == 1
-    command, cwd, check = calls[0]
-    assert command[1:4] == ["-m", "scripts.convert_fflogs.cli", str(source_path.resolve())]
-    assert "--job-tag" in command
-    assert "--cache-root" in command
-    assert cwd == cache_compilation.PROJECT_ROOT
-    assert check is True
+    shared = object()
+    cache_compilation.compile_raw_training_caches(
+        source_paths=[source, tmp_path / "second.json", source], cache_dir=tmp_path / "cache",
+        cache_shard_size=768, job_tag="black_mage", engine=shared, workers=2,
+    )
+    assert calls[0][0] == [source.resolve()]
+    assert calls[0][1]["shard_size"] == 768
+    assert len(calls[1][0]) == 2
+    assert calls[1][1]["engine"] is shared
+    assert calls[1][1]["max_workers"] == 2
 
 
 def test_model_analysis_outputs_generate_pngs(monkeypatch, tmp_path):

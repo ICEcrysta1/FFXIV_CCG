@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from common.models import ActionKind
-from scripts.common.inprocess_backend import InProcessBackend
+from scripts.common.inprocess_backend import InProcessEngine
 from scripts.convert_fflogs import build_training_samples
 from scripts.convert_fflogs.cache.cache_writer import write_compiled_cache_stream
 from scripts.convert_fflogs.source.source_reader import TrainingSourceReader
@@ -30,7 +30,7 @@ def _build_training_samples(fight_payload: dict[str, object]) -> dict[str, objec
     from tests.scripts.conftest import _require_inprocess_backend
 
     _require_inprocess_backend()
-    with InProcessBackend(job_tag="black_mage") as backend:
+    with InProcessEngine("black_mage") as engine, engine.create_backend(max_history=None) as backend:
         return build_training_samples(
             backend,
             build_skill_book(load_job_project_config("black_mage")),
@@ -83,7 +83,7 @@ def make_demo_pt(
 
     _require_inprocess_backend()
     skill_book = build_skill_book(load_job_project_config("black_mage"))
-    with InProcessBackend(job_tag="black_mage", fight_remaining=fight_duration) as backend:
+    with InProcessEngine("black_mage") as engine, engine.create_backend(fight_remaining=fight_duration, max_history=None) as backend:
         fight_payload = make_demo_payload(backend, skill_book, actions, fight_id=fight_id)
         # 动作生成会推进后端 history；构建训练样本前重新初始化到空历史
         backend.init(fight_remaining=fight_duration)

@@ -245,7 +245,7 @@ def test_default_replay_uses_saved_contract_without_recompiling(
     )
     assert config.scene_json_path == expected
     reader = replay_module._load_replay_cache(
-        config, "black_mage", contract.create_normalizer(),
+        config, "black_mage", contract.create_normalizer(), engine=object(),
     )
     assert reader.sample(0) == {}
 

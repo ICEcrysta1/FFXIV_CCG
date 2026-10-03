@@ -7,7 +7,7 @@ import pickletools
 
 import pytest
 
-from scripts.common.inprocess_backend import InProcessBackend, _load_dotnet_types
+from scripts.common.inprocess_backend import InProcessEngine, _load_dotnet_types
 from tests.scripts.conftest import _require_inprocess_backend
 
 
@@ -93,7 +93,7 @@ def test_packet_rejects_unsupported_keys_values_and_cycles():
 def test_observations_are_independent_after_caller_mutation_and_reset(format):
     from copy import deepcopy
 
-    with InProcessBackend("black_mage", max_history=2) as backend:
+    with InProcessEngine("black_mage") as engine, engine.create_backend(max_history=2) as backend:
         assert backend.submit_action(0, "blizzard_iii").accepted
         backend.advance_to(4)
         backend.record_policy_action(4, "ogcd_wait", 6)

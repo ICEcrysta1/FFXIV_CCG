@@ -68,13 +68,12 @@ class _TrainableRolloutReplay(AutoregressiveReplay):
         self,
         config,
         *,
-        backend,
         record_decisions: bool,
-        session: AutoregressiveReplaySession | None = None,
+        session: AutoregressiveReplaySession,
     ):
         self.decisions: list[GrpoDecision] = []
         self._record_decisions = bool(record_decisions)
-        super().__init__(config, backend=backend, session=session)
+        super().__init__(config, session=session)
 
     def _reset_for_trajectory(self, *, initial_timestamp: float = 0.0):
         """重置共享 replay session，并丢弃上一条轨迹的决策记录。"""
@@ -317,10 +316,9 @@ def _run_scene_rollout(
     replay_config: AutoregressiveReplayConfig,
     *,
     scene_json_path: Path,
-    backend,
     temperature: float,
     record_decisions: bool,
-    session: AutoregressiveReplaySession | None = None,
+    session: AutoregressiveReplaySession,
     sampling_seed: int | None = None,
 ):
     config = replace(
@@ -328,31 +326,21 @@ def _run_scene_rollout(
         scene_json_path=Path(scene_json_path),
         temperature=float(temperature),
     )
-    replay: _TrainableRolloutReplay | None = None
-    try:
-        replay = _TrainableRolloutReplay(
-            config,
-            backend=backend,
-            record_decisions=record_decisions,
-            session=session,
-        )
-        if sampling_seed is not None:
-            # 每条轨迹的随机流由 YAML seed 与稳定任务编号决定，不依赖线程调度。
-            replay._sampling_generator = torch.Generator(device=backend.input_device)
-            replay._sampling_generator.manual_seed(sampling_seed)
-        # 自回归阶段只负责执行状态机、采样和记录标注；禁止构建任何反向图。
-        # backend.raw_logits 本身也使用 no_grad，这里再用 inference_mode
-        # 覆盖整条轨迹，避免 16 条样本把激活留在显存中。
-        with torch.inference_mode():
-            result = replay.run()
-        decisions = tuple(replay.decisions)
-    except BaseException:
-        if session is not None:
-            session.close()
-        raise
-    finally:
-        if replay is not None:
-            replay.close()
+    replay = _TrainableRolloutReplay(
+        config,
+        record_decisions=record_decisions,
+        session=session,
+    )
+    if sampling_seed is not None:
+        # 每条轨迹的随机流由 YAML seed 与稳定任务编号决定，不依赖线程调度。
+        replay._sampling_generator = torch.Generator(device=session.device)
+        replay._sampling_generator.manual_seed(sampling_seed)
+    # 自回归阶段只负责执行状态机、采样和记录标注；禁止构建任何反向图。
+    # backend.raw_logits 本身也使用 no_grad，这里再用 inference_mode
+    # 覆盖整条轨迹，避免 16 条样本把激活留在显存中。
+    with torch.inference_mode():
+        result = replay.run()
+    decisions = tuple(replay.decisions)
     return result, decisions
 
 
@@ -717,12 +705,19 @@ def run_grpo_training(
         )
         try:
             return _run_scene_rollout(
-                replay_config, scene_json_path=scene_path, backend=policy,
+                replay_config, scene_json_path=scene_path,
                 temperature=temperature, record_decisions=record_decisions,
                 session=session, sampling_seed=sampling_seed,
             )
         finally:
             session.close()
+
+    def prepare_rollouts(tasks, engine):
+        replay_cache_store.prepare(
+            [replace(replay_config, scene_json_path=task[0]) for task in tasks],
+            job_tag=data_spec.job_tag, normalizer=input_contract.create_normalizer(),
+            engine=engine, workers=rollouts.workers,
+        )
 
     tensorboard_writer = None
     try:
@@ -782,7 +777,7 @@ def run_grpo_training(
             # 阶段一：完整自回归采样并用 C# 状态机完成 PPG/奖励标注。
             # 这一步完全 inference-only；所有 decisions 在 _score_row 中已脱离到 CPU。
             baseline_tasks = ((path, 0.0, False, None) for path in selected_scenes)
-            for result, _ in rollouts.map(run_rollout_task, baseline_tasks):
+            for result, _ in rollouts.map(run_rollout_task, baseline_tasks, prepare=prepare_rollouts):
                 baseline_ppgs.append(_ppg_from_result(result))
             group_trajectories = [[] for _ in selected_scenes]
             reward_groups = [[] for _ in selected_scenes]
@@ -794,7 +789,7 @@ def run_grpo_training(
                 for sample_index in range(grpo.group_size)
             )
             for task_index, (sampled_result, decisions) in enumerate(
-                rollouts.map(run_rollout_task, sampling_tasks)
+                rollouts.map(run_rollout_task, sampling_tasks, prepare=prepare_rollouts)
             ):
                 scene_index = task_index // grpo.group_size
                 scene_path = selected_scenes[scene_index]
@@ -868,6 +863,7 @@ def run_grpo_training(
             post_update_greedy = []
             for result, _ in rollouts.map(
                 run_rollout_task, ((path, 0.0, False, None) for path in selected_scenes),
+                prepare=prepare_rollouts,
             ):
                 post_update_greedy.append(_ppg_from_result(result))
             pre_mean = sum(baseline_ppgs) / len(baseline_ppgs)

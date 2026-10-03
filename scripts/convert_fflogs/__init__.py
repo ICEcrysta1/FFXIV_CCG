@@ -58,7 +58,7 @@ from .scene.scene_context import (
     resolve_anchor,
 )
 from .training.training import build_training_samples, resolve_initial_timestamp
-from .utils import build_backend, build_skill_book, load_job_project_config, merge_timestamps_to_windows
+from .utils import build_skill_book, load_job_project_config, merge_timestamps_to_windows
 
 
 def main() -> None:
@@ -91,7 +91,6 @@ __all__ = [
     "annotate_action_movement",
     "build_fight_payload",
     "build_forced_movement_context",
-    "build_backend",
     "build_skill_book",
     "load_job_project_config",
     "build_output_fight_id",

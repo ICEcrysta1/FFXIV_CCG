@@ -33,7 +33,7 @@ def test_convert_raw_file_reads_brotli_json(tmp_path, monkeypatch):
         "fights": [{"id": 5, "name": "FRU"}], "player_name": "Tester",
     })
     backend = SimpleNamespace(close=lambda: None)
-    monkeypatch.setattr(raw_source, "build_backend", lambda **_kwargs: backend)
+    engine = SimpleNamespace(job_tag="black_mage", create_backend=lambda **_kwargs: backend)
     monkeypatch.setattr(raw_source, "load_job_project_config", lambda _job: object())
     monkeypatch.setattr(raw_source, "build_skill_book", lambda _config: object())
     seen = {}
@@ -43,7 +43,7 @@ def test_convert_raw_file_reads_brotli_json(tmp_path, monkeypatch):
         return {"converted": True}, {}
 
     monkeypatch.setattr(raw_source, "convert_report_to_training_payload", convert)
-    assert raw_source.convert_raw_file(source, job_tag="black_mage") == ({"converted": True}, {})
+    assert raw_source.convert_raw_file(source, job_tag="black_mage", engine=engine) == ({"converted": True}, {})
     assert seen["payload"]["fight_id"] == 5
     assert seen["kwargs"]["encounter_name"] == "FRU"
 
@@ -52,12 +52,12 @@ def test_convert_raw_file_reads_brotli_json(tmp_path, monkeypatch):
 def test_raw_source_releases_only_its_queue_and_keeps_full_history(tmp_path, monkeypatch, fails):
     source = tmp_path / "fight.json.br"
     atomic_write_json(source, {"source_id": 2})
-    engine = object()
+    engine = SimpleNamespace(job_tag="black_mage")
     closed = []
     backend = SimpleNamespace(close=lambda: closed.append(True))
 
     def create_backend(**kwargs):
-        assert kwargs == {"job_tag": "black_mage", "max_history": None, "engine": engine}
+        assert kwargs == {"max_history": None}
         return backend
 
     def convert(_payload, **kwargs):
@@ -66,7 +66,7 @@ def test_raw_source_releases_only_its_queue_and_keeps_full_history(tmp_path, mon
             raise ValueError("conversion failed")
         return {"converted": True}, {}
 
-    monkeypatch.setattr(raw_source, "build_backend", create_backend)
+    engine.create_backend = create_backend
     monkeypatch.setattr(raw_source, "load_job_project_config", lambda _job: object())
     monkeypatch.setattr(raw_source, "build_skill_book", lambda _config: object())
     monkeypatch.setattr(raw_source, "convert_report_to_training_payload", convert)
@@ -556,17 +556,17 @@ def test_real_threaded_cache_compile_matches_serial_and_keeps_full_history(tmp_p
             assert self.active_count == 0
             return super().__exit__(*args)
 
-    actual_build_backend = raw_source.build_backend
+    actual_build_backend = InProcessEngine.create_backend
 
-    def create_backend(**kwargs):
+    def create_backend(self, **kwargs):
         assert kwargs["max_history"] is None
-        assert kwargs["engine"] is engines[-1]
-        backend = actual_build_backend(**kwargs)
+        assert self is engines[-1]
+        backend = actual_build_backend(self, **kwargs)
         queues.append(backend)
         return backend
 
     monkeypatch.setattr(cache_compile_module, "InProcessEngine", TrackedEngine)
-    monkeypatch.setattr(raw_source, "build_backend", create_backend)
+    monkeypatch.setattr(TrackedEngine, "create_backend", create_backend)
     cache_dirs = [tmp_path / "serial", tmp_path / "parallel"]
     for workers, cache_dir in zip((1, 3), cache_dirs):
         assert precompile_raw_training_caches(

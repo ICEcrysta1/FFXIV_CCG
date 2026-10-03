@@ -108,7 +108,7 @@ public sealed class SimulationSession : IDisposable
         }
     }
 
-    private SessionResult<T> Execute<T>(Func<JobSimulator, T> action)
+    internal SessionResult<T> Execute<T>(Func<JobSimulator, T> action)
     {
         lock (_gate)
         {

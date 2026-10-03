@@ -1,4 +1,4 @@
-"""通用工具函数 —— 后端构造、静态配置、时间合并、路径消毒。"""
+"""通用工具函数 —— 静态配置、时间合并、路径消毒。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 
 from .config.constants import _round_time
-from scripts.common.inprocess_backend import InProcessBackend, InProcessEngine
 
 # 确保项目根目录在 sys.path 中，以解析 common 配置/模型导入
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -26,13 +25,6 @@ def load_job_project_config(job_tag: str):
 def build_skill_book(project_config):
     """从项目配置构建技能索引（静态数据，系统技能 + 职业技能合并）。"""
     return SkillBook.from_project_config(project_config)
-
-
-def build_backend(
-    job_tag: str, *, max_history: int | None = None, engine: InProcessEngine | None = None,
-) -> InProcessBackend:
-    """创建独立队列；批量转换由调用方传入共享引擎。"""
-    return InProcessBackend(job_tag, max_history=max_history, engine=engine)
 
 
 def merge_timestamps_to_windows(

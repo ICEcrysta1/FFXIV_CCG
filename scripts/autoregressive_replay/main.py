@@ -10,8 +10,7 @@ from scripts.onnx_export.runtime.precision import SUPPORTED_PRECISIONS
 
 from .config import load_replay_config
 from .outputs import write_markdown
-from .parity import run_rollout_parity
-from .replay import AutoregressiveReplay
+from .parity import run_rollout_parities
 from .batch_replay import run_replays
 
 
@@ -77,8 +76,10 @@ def main() -> None:
     args = parser.parse_args()
     if args.workers is not None and args.workers < 1:
         parser.error("--workers 必须是正整数")
-    if args.scenes and (args.scene_json or args.parity_onnx_package or args.history_ablation):
-        parser.error("--scenes 不能与 --scene-json、parity 或历史消融一起使用")
+    if args.scenes and args.scene_json:
+        parser.error("--scenes 不能与 --scene-json 一起使用")
+    if args.history_ablation and args.parity_onnx_package:
+        parser.error("parity 不能与历史消融一起使用")
 
     config = load_replay_config(
         checkpoint=args.checkpoint,
@@ -99,40 +100,30 @@ def main() -> None:
         use_kv_cache=args.use_kv_cache,
         policy_precision=args.precision,
     )
+    configs = [config] if not args.scenes else [
+        replace(config, scene_json_path=path, scene_duration_seconds=None,
+                output_path=config.output_path.with_name(
+                    f"{config.output_path.stem}_{index:03d}_{path.stem}{config.output_path.suffix}"
+                ))
+        for index, path in enumerate(args.scenes)
+    ]
     if args.parity_onnx_package is not None:
-        output_path = args.parity_output or config.output_path.with_suffix(".parity.json")
-        print(
-            run_rollout_parity(
-                config,
-                onnx_package_path=args.parity_onnx_package,
-                provider=config.ort_provider,
-                output_path=output_path,
-                tolerance=args.parity_tolerance,
+        kwargs = dict(onnx_package_path=args.parity_onnx_package, provider=config.ort_provider,
+                      tolerance=args.parity_tolerance)
+        base = args.parity_output or config.output_path.with_suffix(".parity.json")
+        if args.scenes:
+            paths = [base.with_name(f"{base.stem}_{index:03d}_{path.stem}{base.suffix}")
+                     for index, path in enumerate(args.scenes)]
+        else:
+            paths = [base]
+        for path in run_rollout_parities(configs, output_paths=paths, workers=args.workers, **kwargs):
+            print(path)
+        return
+    limits = None if not args.history_ablation else tuple(args.history_ablation)
+    for item, result in zip(configs, run_replays(configs, workers=args.workers, history_limits=limits), strict=True):
+        results = (result,) if limits is None else result
+        for index, row in enumerate(results):
+            output_path = item.output_path if index == 0 else item.output_path.with_name(
+                f"{item.output_path.stem}_history_{row.history_limit}{item.output_path.suffix}"
             )
-        )
-        return
-    if not args.history_ablation:
-        configs = [config] if not args.scenes else [
-            replace(config, scene_json_path=path, scene_duration_seconds=None,
-                    output_path=config.output_path.with_name(
-                        f"{config.output_path.stem}_{index:03d}_{path.stem}{config.output_path.suffix}"
-                    ))
-            for index, path in enumerate(args.scenes)
-        ]
-        for item, result in zip(configs, run_replays(configs, workers=args.workers), strict=True):
-            print(write_markdown(result, item.output_path))
-        return
-    with AutoregressiveReplay(config) as replay:
-        results = replay.run_history_ablation(tuple(args.history_ablation))
-        output_paths = [config.output_path]
-        write_markdown(results[0], config.output_path)
-        for result in results[1:]:
-            output_path = config.output_path.with_name(
-                f"{config.output_path.stem}_history_{result.history_limit}"
-                f"{config.output_path.suffix}"
-            )
-            write_markdown(result, output_path)
-            output_paths.append(output_path)
-        for output_path in output_paths:
-            print(output_path)
-        return
+            print(write_markdown(row, output_path))

@@ -455,7 +455,10 @@ def test_validation_ppg_reads_history_capacity_from_model_config(
             captured["batcher_max_history"] = kwargs["max_history"]
 
     monkeypatch.setattr(ppg_module, "Normalizer", FakeNormalizer)
-    monkeypatch.setattr(ppg_module, "InProcessBackend", FakeBackend)
+    monkeypatch.setattr(
+        "scripts.common.inprocess_backend.InProcessEngine.create_backend",
+        lambda engine, **kwargs: FakeBackend(job_tag=engine.job_tag, engine=engine, **kwargs),
+    )
     monkeypatch.setattr(ppg_module, "SceneTemplateProvider", FakeSceneProvider)
     monkeypatch.setattr(ppg_module, "LiveBatchBuilder", FakeBatcher)
     monkeypatch.setattr(ppg_module, "_infer_initial_base_gcd", lambda *args, **kwargs: 2.5)

@@ -11,7 +11,7 @@ from scripts.common.json_io import read_json
 
 from ..config.constants import DEFAULT_DOWNTIME_GAP_SECONDS
 from ..pipeline import convert_report_to_training_payload
-from ..utils import build_backend, build_skill_book, load_job_project_config
+from ..utils import build_skill_book, load_job_project_config
 
 
 def convert_raw_file(
@@ -21,9 +21,11 @@ def convert_raw_file(
     source: int | None = None,
     encounter: str | None = None,
     downtime_gap: float = DEFAULT_DOWNTIME_GAP_SECONDS,
-    engine: InProcessEngine | None = None,
+    engine: InProcessEngine,
 ) -> tuple[dict[str, object] | None, Counter[tuple[int, str]]]:
     """读取一份 raw JSON，并直接返回内存训练 payload。"""
+    if engine is None or engine.job_tag != job_tag:
+        raise ValueError("raw conversion requires a matching shared engine")
     input_path = Path(input_path)
     payload = read_json(input_path)
     if not isinstance(payload, dict):
@@ -41,7 +43,7 @@ def convert_raw_file(
     player_name = str(payload.get("player_name", "?"))
     project_config = load_job_project_config(job_tag)
     # 转换始终保留完整历史；只释放本文件的队列，共享引擎由批次持有。
-    backend = build_backend(job_tag=job_tag, max_history=None, engine=engine)
+    backend = engine.create_backend(max_history=None)
     try:
         return convert_report_to_training_payload(
             payload,

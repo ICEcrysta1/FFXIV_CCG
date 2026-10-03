@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import nullcontext
 from dataclasses import replace
 from itertools import islice
 from pathlib import Path
@@ -269,12 +270,15 @@ def precompile_raw_training_caches(
     shard_size: int = DEFAULT_CACHE_SHARD_SIZE,
     max_workers: int = 1,
     max_shards: int = DEFAULT_CACHE_MAX_SHARDS,
+    engine: InProcessEngine | None = None,
 ) -> list[Path]:
     """读取 raw JSON，并把结果直接写入最终 compiled cache。"""
     if cache_dir is None or not raw_paths:
         return []
     if max_workers < 1:
         raise ValueError("compiled cache workers must be >= 1")
+    if engine is not None and engine.job_tag != job_tag:
+        raise ValueError("cache compilation job must match the shared engine")
 
     normalizer.ensure_job_resources(job_tag)
     cache_dir = Path(cache_dir).resolve()
@@ -299,7 +303,11 @@ def precompile_raw_training_caches(
     if not missing:
         return sorted(set(valid_paths), key=lambda path: str(path).casefold())
 
+    # 在启动工作线程前建立公共目录，避免并发首次创建改变 Windows 路径解析结果。
+    cache_dir.mkdir(parents=True, exist_ok=True)
     worker_count = min(int(max_workers), len(missing))
+    if engine is not None:
+        worker_count = min(worker_count, engine.capacity)
     logger.info("raw JSON 缓存编译: %d 个源文件, %d 个线程共享一个状态机引擎", len(missing), worker_count)
     normalizer_contract = normalizer.normalization_contract
     tasks = (
@@ -322,7 +330,8 @@ def precompile_raw_training_caches(
     failed_count = 0
     # 线程数与队列容量一致，在途任务也不超过该上限。完成一个才接收下一个，
     # 避免大量 Future 或异常 traceback 持有已失败文件的完整转换上下文。
-    with InProcessEngine(job_tag, capacity=worker_count) as engine:
+    owner = InProcessEngine(job_tag, capacity=worker_count) if engine is None else nullcontext(engine)
+    with owner as engine:
         with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="fflogs-convert") as executor:
             future_sources = {
                 executor.submit(_compile_raw_source_worker, task, engine=engine): Path(task[0])

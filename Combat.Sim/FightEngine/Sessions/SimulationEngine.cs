@@ -31,6 +31,17 @@ public sealed class SimulationEngine : IDisposable
     }
 
     public int Capacity { get; }
+
+    /// <summary>嵌入宿主可注入已装配的规则与策略索引，多个队列共用同一份配置。</summary>
+    public SimulationEngine(CombatStateMachine rules, PolicyActionRegistry policyRegistry, int capacity = 16)
+    {
+        ArgumentNullException.ThrowIfNull(rules);
+        ArgumentNullException.ThrowIfNull(policyRegistry);
+        if (capacity < 1) throw new ArgumentOutOfRangeException(nameof(capacity));
+        Capacity = capacity;
+        _rules = rules;
+        _policyRegistry = policyRegistry;
+    }
     public string JobTag => _rules.JobTag;
     public int ActiveCount { get { lock (_gate) return _sessions.Count; } }
 

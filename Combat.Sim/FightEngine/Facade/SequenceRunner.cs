@@ -4,6 +4,7 @@
 // See LICENSE and LICENSE-FightEngine-Linking-Exception in the repository root.
 
 using Combat.Sim.Models.Timeline;
+using Combat.Sim.Sessions;
 
 namespace Combat.Sim.Facade;
 
@@ -11,10 +12,13 @@ namespace Combat.Sim.Facade;
 public static class SequenceRunner
 {
     public static Dictionary<string, object?> RunActionSequence(
-        CombatStateMachine machine,
+        SimulationSession session,
         IReadOnlyList<ActionRequest> sequence)
+        => session.Execute(simulator => RunCore(simulator, sequence)).Value;
+
+    private static Dictionary<string, object?> RunCore(
+        JobSimulator simulator, IReadOnlyList<ActionRequest> sequence)
     {
-        var simulator = new JobSimulator(machine);
         var appliedActions = new List<Dictionary<string, object?>>(sequence.Count);
         double? finalEffectTimestamp = null;
 
