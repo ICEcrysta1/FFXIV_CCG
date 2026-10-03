@@ -6,6 +6,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+from scripts.common.inprocess_backend import InProcessEngine
 from scripts.common.json_io import read_json
 
 from ..config.constants import DEFAULT_DOWNTIME_GAP_SECONDS
@@ -20,6 +21,7 @@ def convert_raw_file(
     source: int | None = None,
     encounter: str | None = None,
     downtime_gap: float = DEFAULT_DOWNTIME_GAP_SECONDS,
+    engine: InProcessEngine | None = None,
 ) -> tuple[dict[str, object] | None, Counter[tuple[int, str]]]:
     """读取一份 raw JSON，并直接返回内存训练 payload。"""
     input_path = Path(input_path)
@@ -38,7 +40,8 @@ def convert_raw_file(
     report_code = str(payload.get("report_code", input_path.name.removesuffix(".json.br")))
     player_name = str(payload.get("player_name", "?"))
     project_config = load_job_project_config(job_tag)
-    backend = build_backend(job_tag=job_tag)
+    # 转换始终保留完整历史；只释放本文件的队列，共享引擎由批次持有。
+    backend = build_backend(job_tag=job_tag, max_history=None, engine=engine)
     try:
         return convert_report_to_training_payload(
             payload,

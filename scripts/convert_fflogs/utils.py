@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from .config.constants import _round_time
-from scripts.common.inprocess_backend import InProcessBackend
+from scripts.common.inprocess_backend import InProcessBackend, InProcessEngine
 
 # 确保项目根目录在 sys.path 中，以解析 common 配置/模型导入
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -28,9 +28,11 @@ def build_skill_book(project_config):
     return SkillBook.from_project_config(project_config)
 
 
-def build_backend(job_tag: str, *, max_history: int | None = None) -> InProcessBackend:
-    """构造通过 Python.NET 在当前进程调用的 C# 状态机后端。"""
-    return InProcessBackend(job_tag, max_history=max_history)
+def build_backend(
+    job_tag: str, *, max_history: int | None = None, engine: InProcessEngine | None = None,
+) -> InProcessBackend:
+    """创建独立队列；批量转换由调用方传入共享引擎。"""
+    return InProcessBackend(job_tag, max_history=max_history, engine=engine)
 
 
 def merge_timestamps_to_windows(
