@@ -19,6 +19,41 @@ from scripts.convert_fflogs.scene.scene_context import (
 from tests.helpers import build_test_scene_context
 
 
+def test_scene_lookup_cache_preserves_boundaries_is_bounded_and_releases_owner():
+    import weakref
+    from scripts.common import scene_state as module
+    from common.contracts import FORCED_MOVEMENT_CONTEXT_KEY, SCENE_EPSILON
+
+    scene = build_test_scene_context(targetable_tokens=[
+        build_targetable_window_token(0, 10, targetable=True, segment_kind="combat"),
+        build_targetable_window_token(10, 20, targetable=False, segment_kind="downtime"),
+        build_targetable_window_token(20, 30, targetable=True, segment_kind="combat_final"),
+    ])
+    movement = scene[FORCED_MOVEMENT_CONTEXT_KEY]
+    keys = movement["feature_keys"]
+    movement["tokens"] = [[3.0 if key == "start_offset_seconds" else
+                            7.0 if key == "end_offset_seconds" else 0.0 for key in keys]]
+    lookup = module.SceneStateLookup(scene)
+    targetable, ti = module._window_tokens(scene, module.TARGETABLE_WINDOW_CONTEXT_KEY)
+    moving, mi = module._window_tokens(scene, FORCED_MOVEMENT_CONTEXT_KEY)
+    timestamps = [boundary + epsilon for boundary in (0, 3, 6.5, 7, 10, 20, 30)
+                  for epsilon in (-2 * SCENE_EPSILON, -SCENE_EPSILON, 0, SCENE_EPSILON)]
+    # 查询顺序可回退；缓存不四舍五入时间戳，也不更改滑步与停手端点。
+    for timestamp in timestamps + list(reversed(timestamps)):
+        expected = module._resolve_targetable_state(targetable, ti, timestamp=timestamp)
+        assert lookup.state_at(timestamp) == module.SceneState(
+            module._resolve_is_moving(moving, mi, timestamp=timestamp),
+            expected["next_downtime_eta"], expected["downtime_remaining"],
+        )
+    assert lookup._cached_state_at.cache_info().hits >= len(timestamps)
+    for index in range(10000):
+        lookup.state_at(index / 1000)
+    assert lookup._cached_state_at.cache_info().currsize <= 4096
+    reference = weakref.ref(lookup)
+    del lookup
+    assert reference() is None
+
+
 def test_target_count_facts_restore_single_target_after_window():
     """多目标区间结束后必须显式归位到单目标。
 

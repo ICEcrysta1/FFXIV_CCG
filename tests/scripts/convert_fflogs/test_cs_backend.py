@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from scripts.common.inprocess_backend import InProcessBackend
+from scripts.common.inprocess_backend import InProcessEngine
 from tests.scripts.conftest import _require_inprocess_backend
 
 
@@ -47,14 +47,14 @@ def test_inprocess_backend_never_launches_a_host_process(monkeypatch):
         pytest.fail("InProcessBackend must not launch a subprocess")
 
     monkeypatch.setattr(subprocess, "Popen", reject_process)
-    with InProcessBackend("black_mage") as backend:
+    with InProcessEngine("black_mage") as engine, engine.create_backend(max_history=None) as backend:
         assert backend.validate_at(0.0, "fire_iii").legal
 
 
 def test_inprocess_backend_returns_native_python_context():
     """观测结果由 PythonBridge 直接转换为 Python 原生容器。"""
     _require_inprocess_backend()
-    with InProcessBackend("black_mage", actual_base_gcd=2.46, max_history=32) as backend:
+    with InProcessEngine("black_mage") as engine, engine.create_backend(actual_base_gcd=2.46, max_history=32) as backend:
         observation = backend.observe_at(
             0.0,
             format="vector",
@@ -87,7 +87,7 @@ def test_inprocess_backend_returns_native_python_context():
 def test_model_vectors_exclude_scheduling_and_weave_fields(job_tag, action_key):
     """两个职业的模型不读取调度计时；运行时仍可使用完整秒制观测。"""
     _require_inprocess_backend()
-    with InProcessBackend(job_tag, fight_remaining=60.0, max_history=32) as backend:
+    with InProcessEngine(job_tag) as engine, engine.create_backend(fight_remaining=60.0, max_history=32) as backend:
         assert backend.submit_action(0.0, action_key).accepted
         backend.advance_to(4.0)
         scalar = backend.observe_at(4.0, format="seconds").context

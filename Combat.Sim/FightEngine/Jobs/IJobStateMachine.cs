@@ -15,6 +15,8 @@ namespace Combat.Sim.Jobs;
 /// 职业子状态机契约。
 /// 系统层与门面只通过该接口驱动职业，不感知具体职业规则。
 /// Python 侧用 getattr 判断的可选方法在 C# 侧以默认接口实现表达默认行为。
+/// Bind/注册完成后，实例由引擎的多个队列共享；执行方法只能改写传入的 CombatState，
+/// 不得在职业实例字段中保存战斗游标、临时计数或可变缓存。
 /// </summary>
 public interface IJobStateMachine
 {
@@ -35,7 +37,7 @@ public interface IJobStateMachine
     /// <summary>职业向系统层注册的资源与状态定义（对照 build_state_registration）。</summary>
     JobStateRegistration BuildStateRegistration();
 
-    /// <summary>当前状态下的有效基础 GCD 秒数（对照 current_gcd_duration）。</summary>
+    /// <summary>当前有效 GCD；优先使用 state.BaseGcd，再应用职业加速倍率。</summary>
     double CurrentGcdDuration(CombatState state);
 
     /// <summary>判断技能在当前状态下是否等效瞬发（对照 is_instant）。</summary>

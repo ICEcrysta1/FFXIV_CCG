@@ -5,6 +5,7 @@
 
 using Combat.Sim.Models.Combat;
 using Combat.Sim.Models.Timeline;
+using Combat.Sim.Sessions;
 
 namespace Combat.Sim.Facade;
 
@@ -44,11 +45,14 @@ public static class RandomSequenceReplay
     }
 
     public static IReadOnlyList<RandomSequenceStep> Run(
-        CombatStateMachine machine,
+        SimulationSession session,
         long seed,
         int maxSteps)
+        => session.Execute(simulator => RunCore(simulator, seed, maxSteps)).Value;
+
+    private static IReadOnlyList<RandomSequenceStep> RunCore(
+        JobSimulator simulator, long seed, int maxSteps)
     {
-        var simulator = new JobSimulator(machine);
         var rngState = (ulong)seed;
         var steps = new List<RandomSequenceStep>();
 

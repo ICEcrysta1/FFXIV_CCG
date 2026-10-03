@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import logging
-import multiprocessing
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import nullcontext
 from dataclasses import replace
+from itertools import islice
 from pathlib import Path
 
 from common.policy.data.compiled_cache import (
@@ -24,6 +25,7 @@ from common.policy.data.source_selection import (
     select_validation_raw_path_groups,
 )
 from common.torch_dependencies import import_torch
+from scripts.common.inprocess_backend import InProcessEngine
 
 from ..config.constants import DEFAULT_DOWNTIME_GAP_SECONDS
 from ..source.raw_source import convert_raw_file
@@ -268,20 +270,22 @@ def precompile_raw_training_caches(
     shard_size: int = DEFAULT_CACHE_SHARD_SIZE,
     max_workers: int = 1,
     max_shards: int = DEFAULT_CACHE_MAX_SHARDS,
+    engine: InProcessEngine | None = None,
 ) -> list[Path]:
     """读取 raw JSON，并把结果直接写入最终 compiled cache。"""
     if cache_dir is None or not raw_paths:
         return []
     if max_workers < 1:
         raise ValueError("compiled cache workers must be >= 1")
+    if engine is not None and engine.job_tag != job_tag:
+        raise ValueError("cache compilation job must match the shared engine")
 
     normalizer.ensure_job_resources(job_tag)
     cache_dir = Path(cache_dir).resolve()
     shard_cache = CompiledShardCache(max_shards)
     valid_paths: list[Path] = []
     missing: list[Path] = []
-    for source_path in raw_paths:
-        source_path = Path(source_path)
+    for source_path in dict.fromkeys(Path(path).resolve() for path in raw_paths):
         cached = _load_cache(
             source_path,
             cache_dir=cache_dir,
@@ -299,9 +303,14 @@ def precompile_raw_training_caches(
     if not missing:
         return sorted(set(valid_paths), key=lambda path: str(path).casefold())
 
+    # 在启动工作线程前建立公共目录，避免并发首次创建改变 Windows 路径解析结果。
+    cache_dir.mkdir(parents=True, exist_ok=True)
     worker_count = min(int(max_workers), len(missing))
-    logger.info("raw JSON 缓存编译: %d 个源文件, %d 个 worker", len(missing), worker_count)
-    tasks = [
+    if engine is not None:
+        worker_count = min(worker_count, engine.capacity)
+    logger.info("raw JSON 缓存编译: %d 个源文件, %d 个线程共享一个状态机引擎", len(missing), worker_count)
+    normalizer_contract = normalizer.normalization_contract
+    tasks = (
         (
             source_path,
             job_tag,
@@ -311,34 +320,37 @@ def precompile_raw_training_caches(
             cache_dir,
             _dtype_name(int_dtype),
             _dtype_name(float_dtype),
-            normalizer.normalization_contract,
+            normalizer_contract,
             int(shard_size),
         )
         for source_path in missing
-    ]
+    )
 
     results: list[tuple[str, int, int]] = []
     failed_count = 0
-    if worker_count == 1:
-        for task in tasks:
-            try:
-                results.append(_compile_raw_source_worker(task))
-            except Exception as exc:
-                failed_count += 1
-                _log_compile_failure(task[0], exc)
-    else:
-        context = multiprocessing.get_context("spawn")
-        with ProcessPoolExecutor(max_workers=worker_count, mp_context=context) as executor:
+    # 线程数与队列容量一致，在途任务也不超过该上限。完成一个才接收下一个，
+    # 避免大量 Future 或异常 traceback 持有已失败文件的完整转换上下文。
+    owner = InProcessEngine(job_tag, capacity=worker_count) if engine is None else nullcontext(engine)
+    with owner as engine:
+        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="fflogs-convert") as executor:
             future_sources = {
-                executor.submit(_compile_raw_source_worker, task): Path(task[0])
-                for task in tasks
+                executor.submit(_compile_raw_source_worker, task, engine=engine): Path(task[0])
+                for task in islice(tasks, worker_count)
             }
-            for future in as_completed(future_sources):
-                try:
-                    results.append(future.result())
-                except Exception as exc:
-                    failed_count += 1
-                    _log_compile_failure(future_sources[future], exc)
+            while future_sources:
+                completed, _ = wait(future_sources, return_when=FIRST_COMPLETED)
+                for future in completed:
+                    source_path = future_sources.pop(future)
+                    try:
+                        results.append(future.result())
+                    except Exception as exc:
+                        failed_count += 1
+                        _log_compile_failure(source_path, exc)
+                    task = next(tasks, None)
+                    if task is not None:
+                        future_sources[executor.submit(
+                            _compile_raw_source_worker, task, engine=engine,
+                        )] = Path(task[0])
 
     if failed_count:
         logger.error(
@@ -361,7 +373,7 @@ def precompile_raw_training_caches(
     return sorted(set(valid_paths), key=lambda path: str(path).casefold())
 
 
-def _compile_raw_source_worker(task) -> tuple[str, int, int]:
+def _compile_raw_source_worker(task, *, engine: InProcessEngine) -> tuple[str, int, int]:
     (
         source_path,
         job_tag,
@@ -383,6 +395,7 @@ def _compile_raw_source_worker(task) -> tuple[str, int, int]:
         source=None if source is None else int(source),
         encounter=None if encounter is None else str(encounter),
         downtime_gap=float(downtime_gap_seconds),
+        engine=engine,
     )
     if training_payload is None:
         return str(source_path), 0, 0

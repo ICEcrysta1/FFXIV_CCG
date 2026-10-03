@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from scripts.common.inprocess_backend import (
-    InProcessBackend,
+    InProcessEngine,
     _FIGHT_ENGINE_DLL,
     _PYTHON_BRIDGE_DLL,
     _RUNTIME_CONFIG,
@@ -44,9 +44,9 @@ def _require_inprocess_backend() -> None:
 def cs_backend():
     """黑魔 C# 状态机后端（每个测试独立会话，结束后释放）。"""
     _require_inprocess_backend()
-    backend = InProcessBackend("black_mage")
-    yield backend
-    backend.close()
+    with InProcessEngine("black_mage") as engine:
+        with engine.create_backend(max_history=None) as backend:
+            yield backend
 
 
 @pytest.fixture

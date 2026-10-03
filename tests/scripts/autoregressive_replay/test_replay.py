@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,6 +11,7 @@ import torch
 
 from common.torch_runtime import autocast_context, model_dtype
 from common.policy.model import RepetitionConfig
+from common.policy.replay import AutoregressiveReplayConfig
 from scripts.autoregressive_replay import main as replay_main_module
 from scripts.autoregressive_replay.outputs.markdown import SKILL_NAMES, write_markdown
 from scripts.autoregressive_replay.replay import (
@@ -141,7 +143,8 @@ def test_replay_compiles_missing_cache_and_retries(monkeypatch, tmp_path):
         lambda *args, **kwargs: compile_calls.append((args, kwargs)),
     )
 
-    assert replay_module._load_replay_cache(config, "black_mage", normalizer) is reader
+    engine = object()
+    assert replay_module._load_replay_cache(config, "black_mage", normalizer, engine=engine) is reader
     assert len(load_calls) == 2
     assert compile_calls == [
         (
@@ -155,6 +158,7 @@ def test_replay_compiles_missing_cache_and_retries(monkeypatch, tmp_path):
                 "shard_size": 768,
                 "max_workers": 1,
                 "max_shards": 24,
+                "engine": engine,
             },
         )
     ]
@@ -181,8 +185,9 @@ def test_replay_cache_store_reuses_reader_for_unchanged_scene(monkeypatch, tmp_p
     )
 
     store = ReplayCacheStore(max_shards=2)
-    assert store.load(config, job_tag="black_mage", normalizer=normalizer) is reader
-    assert store.load(config, job_tag="black_mage", normalizer=normalizer) is reader
+    engine = object()
+    assert store.load(config, job_tag="black_mage", normalizer=normalizer, engine=engine) is reader
+    assert store.load(config, job_tag="black_mage", normalizer=normalizer, engine=engine) is reader
     assert len(load_calls) == 1
     assert load_calls[0][1]["shard_cache"] is store._shard_cache
 
@@ -210,7 +215,7 @@ def test_replay_session_reset_reinitializes_backend_and_state_machine():
 
     session = object.__new__(AutoregressiveReplaySession)
     session.backend = FakeBackend()
-    session.state_machine = FakeStateMachine()
+    state_machine = session._state_machine = FakeStateMachine()
     session.data_spec = SimpleNamespace(job_tag="black_mage")
     session._closed = False
     config = SimpleNamespace(
@@ -230,7 +235,8 @@ def test_replay_session_reset_reinitializes_backend_and_state_machine():
     ]
     session.close()
     session.close()
-    assert session.state_machine.close_calls == 1
+    assert state_machine.close_calls == 1
+    assert session._state_machine is None
 
 
 def test_replay_reset_for_trajectory_resets_scene_provider_before_session():
@@ -255,7 +261,32 @@ def test_replay_reset_for_trajectory_resets_scene_provider_before_session():
     assert calls == ["scene", "session", ("observe", 3.5)]
 
 
-def test_replay_uses_session_normalizer_for_context_builders(monkeypatch):
+@pytest.fixture
+def constructor_config(tmp_path):
+    return AutoregressiveReplayConfig(
+        checkpoint_path=None,
+        output_path=tmp_path / "rollout.md",
+        scene_json_path=tmp_path / "scene.json",
+        cache_dir=tmp_path / "cache",
+        model_history_capacity=8,
+        cache_shard_size=4,
+        cache_max_shards=2,
+        scene_duration_seconds=10.0,
+        job_tag="black_mage",
+        use_kv_cache=False,
+        scene_mode="empty",
+        max_history=8,
+    )
+
+
+def test_replay_requires_session_before_loading_scene(constructor_config):
+    config = replace(constructor_config, scene_duration_seconds=None)
+    assert not config.scene_json_path.exists()
+    with pytest.raises(ValueError, match="requires a shared session"):
+        AutoregressiveReplay(config, session=None)
+
+
+def test_replay_uses_session_normalizer_for_context_builders(monkeypatch, constructor_config):
     session_normalizer = object()
     schema = SimpleNamespace()
     reader = SimpleNamespace(
@@ -298,13 +329,7 @@ def test_replay_uses_session_normalizer_for_context_builders(monkeypatch):
         state_machine=object(),
         load_reader=lambda _config: reader,
     )
-    config = SimpleNamespace(
-        job_tag="black_mage",
-        use_kv_cache=False,
-        scene_mode="empty",
-        scene_sample_index=0,
-        max_history=8,
-    )
+    config = constructor_config
     captured = {}
 
     def fake_scene_provider(*_args, **kwargs):
@@ -325,7 +350,7 @@ def test_replay_uses_session_normalizer_for_context_builders(monkeypatch):
     assert backend.cache_calls == [False]
 
 
-def test_replay_closes_owned_session_when_constructor_fails(monkeypatch):
+def test_replay_constructor_failure_keeps_session_ownership_with_caller(constructor_config):
     class FakeBackend:
         input_device = torch.device("cpu")
 
@@ -333,10 +358,8 @@ def test_replay_closes_owned_session_when_constructor_fails(monkeypatch):
             return None
 
     class FakeSession:
-        instance = None
-
-        def __init__(self, _config, *, backend=None):
-            self.backend = FakeBackend() if backend is None else backend
+        def __init__(self):
+            self.backend = FakeBackend()
             self.device = torch.device("cpu")
             self.data_spec = SimpleNamespace(
                 job_tag="black_mage",
@@ -345,7 +368,6 @@ def test_replay_closes_owned_session_when_constructor_fails(monkeypatch):
             self.input_contract = SimpleNamespace()
             self.vocab = object()
             self.close_calls = 0
-            FakeSession.instance = self
 
         def load_reader(self, _config):
             raise RuntimeError("cache load failed")
@@ -353,21 +375,14 @@ def test_replay_closes_owned_session_when_constructor_fails(monkeypatch):
         def close(self):
             self.close_calls += 1
 
-    monkeypatch.setattr(replay_module, "AutoregressiveReplaySession", FakeSession)
-    config = SimpleNamespace(
-        scene_json_path=None,
-        job_tag="black_mage",
-        use_kv_cache=False,
-        scene_mode="empty",
-        scene_sample_index=0,
-        max_history=8,
-    )
-
+    config = constructor_config
+    session = FakeSession()
     with pytest.raises(RuntimeError, match="cache load failed"):
-        AutoregressiveReplay(config)
+        AutoregressiveReplay(config, session=session)
 
-    assert FakeSession.instance is not None
-    assert FakeSession.instance.close_calls == 1
+    assert session.close_calls == 0
+    session.close()
+    assert session.close_calls == 1
 
 
 def test_replay_prediction_modes_and_result_helpers(monkeypatch, tmp_path):
@@ -426,7 +441,7 @@ def test_replay_prediction_modes_and_result_helpers(monkeypatch, tmp_path):
     )
     sampled_probabilities = []
 
-    def fake_multinomial(probabilities, count):
+    def fake_multinomial(probabilities, count, *, generator=None):
         sampled_probabilities.append(probabilities.clone())
         return torch.tensor([2])
 
@@ -495,6 +510,7 @@ def test_replay_respects_shared_candidate_mask():
 
 def test_replay_waits_until_early_gcd_decision():
     replay = object.__new__(AutoregressiveReplay)
+    replay._session = SimpleNamespace(reset=lambda _config, **_kwargs: None)
     replay.config = SimpleNamespace(
         initial_action=None,
         max_steps=2,
@@ -726,6 +742,7 @@ def test_replay_event_timeline_advances_action_completion_and_gcd_window(cs_back
 
 def test_replay_no_legal_candidate_waits_until_next_event_and_continues():
     replay = object.__new__(AutoregressiveReplay)
+    replay._session = SimpleNamespace(reset=lambda _config, **_kwargs: None)
     replay.config = SimpleNamespace(
         initial_action=None,
         initial_time_seconds=None,
@@ -764,6 +781,7 @@ def test_replay_no_legal_candidate_waits_until_next_event_and_continues():
 
 def test_replay_no_legal_candidate_reports_finished_fight():
     replay = object.__new__(AutoregressiveReplay)
+    replay._session = SimpleNamespace(reset=lambda _config, **_kwargs: None)
     replay.config = SimpleNamespace(
         initial_action=None,
         max_steps=1,
@@ -795,6 +813,7 @@ def test_replay_no_legal_candidate_reports_finished_fight():
 
 def test_replay_rejects_unreached_max_gcd_target():
     replay = object.__new__(AutoregressiveReplay)
+    replay._session = SimpleNamespace(reset=lambda _config, **_kwargs: None)
     replay.config = SimpleNamespace(
         initial_action=None,
         initial_time_seconds=None,
@@ -842,13 +861,17 @@ def test_markdown_output_and_cli_history_ablation(monkeypatch, tmp_path):
     )
     output = tmp_path / "nested" / "rollout.md"
     path = write_markdown(
-        ReplayResult(rows, Path("checkpoint.pt"), Path("scene.pt"), "cpu"),
+        ReplayResult(
+            rows, Path("checkpoint.pt"), Path("scene.pt"), "cpu",
+            backend_metrics={"scope": "backend_lifetime"},
+        ),
         output,
     )
     text = path.read_text(encoding="utf-8")
     assert "爆炎（强制）" in text
     assert "炽炎 0.700" in text
     assert "冰封 0.200" in text
+    assert "共享后端累计；内存为进程/PyTorch 设备峰值" in text
 
     ort_output = tmp_path / "ort.md"
     write_markdown(
@@ -890,7 +913,6 @@ def test_markdown_output_and_cli_history_ablation(monkeypatch, tmp_path):
         "load_replay_config",
         fake_load_replay_config,
     )
-    monkeypatch.setattr(replay_main_module, "AutoregressiveReplay", lambda config: calls.append(config) or "replay")
     monkeypatch.setattr(replay_main_module, "write_markdown", lambda result, path: calls.append((result, path)) or path)
     monkeypatch.setattr(
         replay_main_module,
@@ -917,17 +939,16 @@ def test_markdown_output_and_cli_history_ablation(monkeypatch, tmp_path):
             "--no-use-kv-cache",
         ],
     )
-    class FakeReplay:
-        def run_history_ablation(self, limits):
-            calls.append(("ablation", limits))
-            return (
-                ReplayResult((), Path("checkpoint.pt"), Path("scene.pt"), "cpu"),
-                ReplayResult((), Path("checkpoint.pt"), Path("scene.pt"), "cpu", history_limit=2),
-                ReplayResult((), Path("checkpoint.pt"), Path("scene.pt"), "cpu", history_limit=4),
-            )
+    def fake_replays(configs, *, workers, history_limits):
+        assert len(configs) == 1
+        calls.append(("ablation", history_limits))
+        yield (
+            ReplayResult((), Path("checkpoint.pt"), Path("scene.pt"), "cpu"),
+            ReplayResult((), Path("checkpoint.pt"), Path("scene.pt"), "cpu", history_limit=2),
+            ReplayResult((), Path("checkpoint.pt"), Path("scene.pt"), "cpu", history_limit=4),
+        )
 
-    calls.clear()
-    monkeypatch.setattr(replay_main_module, "AutoregressiveReplay", lambda config: FakeReplay())
+    monkeypatch.setattr(replay_main_module, "run_replays", fake_replays)
     replay_main_module.main()
     assert ("ablation", (2, 4)) in calls
     assert config_kwargs["top_p"] == 0.85

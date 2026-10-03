@@ -9,6 +9,8 @@ from .replay import (
     ReplayResult,
 )
 from .scheduler import DecisionScheduler
+from .batch_replay import run_replays
+from .parity import run_rollout_parities
 
 __all__ = [
     "AutoregressiveReplay",
@@ -21,4 +23,6 @@ __all__ = [
     "ReplayResult",
     "DecisionScheduler",
     "load_replay_config",
+    "run_replays",
+    "run_rollout_parities",
 ]

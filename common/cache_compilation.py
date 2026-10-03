@@ -3,36 +3,35 @@
 from __future__ import annotations
 
 from pathlib import Path
-import subprocess
-import sys
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def compile_raw_training_cache(
-    *,
-    source_path: Path,
-    cache_dir: Path,
-    cache_shard_size: int,
-    job_tag: str,
+def compile_raw_training_caches(
+    *, source_paths, cache_dir: Path, cache_shard_size: int, job_tag: str,
+    engine=None, workers: int | None = None,
 ) -> None:
-    """调用正式转换 CLI 编译单个 raw JSON，不在调用方复制转换逻辑。"""
-    command = [
-        sys.executable,
-        "-m",
-        "scripts.convert_fflogs.cli",
-        str(Path(source_path).resolve()),
-        "--job-tag",
-        job_tag,
-        "--cache-root",
-        str(Path(cache_dir).resolve()),
-        "--shard-size",
-        str(cache_shard_size),
-    ]
-    try:
-        subprocess.run(command, cwd=PROJECT_ROOT, check=True)
-    except subprocess.CalledProcessError as exc:
-        raise RuntimeError(
-            f"failed to compile cache for raw source: {source_path}"
-        ) from exc
+    """调用正式转换 API，多文件共享引擎；允许宿主提供现有引擎。"""
+    # 延迟导入，避免公共配置加载时初始化转换器或 PyTorch。
+    from common.config import load_precision_config
+    from common.policy.data import Normalizer
+    from common.project_config import resolve_positive_worker_count
+    from scripts.convert_fflogs.cache import precompile_raw_training_caches
+
+    normalizer = Normalizer()
+    normalizer.configure_job_resources(job_tag)
+    precision = load_precision_config()
+    paths = list(dict.fromkeys(Path(path).resolve() for path in source_paths))
+    valid = precompile_raw_training_caches(
+        paths, cache_dir=Path(cache_dir).resolve(), shard_size=cache_shard_size,
+        job_tag=job_tag, normalizer=normalizer,
+        int_dtype=precision.resolve_int_dtype(), float_dtype=precision.resolve_float_dtype(),
+        max_workers=workers if workers is not None else resolve_positive_worker_count(
+            project_root=PROJECT_ROOT, env_name="CONVERT_FFLOGS_WORKERS",
+        ),
+        engine=engine,
+    )
+    missing = set(paths) - set(valid)
+    if missing:
+        raise RuntimeError("failed to compile cache for raw sources: " + ", ".join(map(str, sorted(missing))))

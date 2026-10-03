@@ -54,7 +54,7 @@ def write_markdown(result: ReplayResult, output_path: Path) -> Path:
             f"- history limit: `{result.history_limit}`",
             f"- PPG: `{result.ppg}`",
             (
-                f"- backend metrics: `{result.backend_metrics}`"
+                f"- backend metrics（共享后端累计；内存为进程/PyTorch 设备峰值）: `{result.backend_metrics}`"
                 if result.backend_metrics is not None
                 else ""
             ),

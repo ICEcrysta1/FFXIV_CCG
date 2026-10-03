@@ -24,6 +24,10 @@ namespace Combat.Sim.Facade;
 public sealed class CombatStateMachine
 {
     private readonly double _skillTableBaseGcd;
+    private readonly string? _projectRoot;
+    private readonly StateContextBuilder _stateContextBuilder;
+
+    internal int? MaxHistory { get; }
 
     internal ProjectConfig Project { get; }
     public string JobTag { get; }
@@ -31,10 +35,9 @@ public sealed class CombatStateMachine
     internal IJobStateMachine JobMachine { get; }
     internal SkillBook SkillBook { get; }
 
-    /// <summary>
-    /// 统一输出路由器，作为状态机门面的输出层总入口。
-    /// </summary>
-    internal StateOutputRouter OutputRouter { get; }
+    // 规则可被多个队列并发读取；带增量缓存的输出路由器必须由各模拟游标单独持有。
+    internal StateOutputRouter CreateOutputRouter() =>
+        new(Project, SystemMachine, JobMachine, precisionConfigRoot: _projectRoot);
 
     /// <summary>
     /// 直接以配置对象构造门面。
@@ -55,11 +58,12 @@ public sealed class CombatStateMachine
         SchemaConfigLoader.Load(projectRoot ?? RepoRootLocator.Find());
         Project = projectConfig;
         JobTag = jobTag;
+        _projectRoot = projectRoot;
+        MaxHistory = new HistoryRetention(maxHistory).Limit;
         SystemMachine = new SystemStateMachine(
             projectConfig.EngineTiming,
             projectConfig.System.Potency,
-            projectConfig.System.MpRecovery,
-            maxHistory: maxHistory);
+            projectConfig.System.MpRecovery);
         SystemMachine.RegisterSystemStatuses(projectConfig.System.Statuses);
         JobMachine = BuildJobMachine(projectConfig, jobTag, SystemMachine);
         SystemMachine.RegisterJobState(
@@ -69,11 +73,7 @@ public sealed class CombatStateMachine
         SkillBook = SkillBook.FromProjectConfig(projectConfig);
         SystemMachine.RegisterJobTargetDots(SkillBook.EnabledSkills());
         ValidateSkillContracts();
-        OutputRouter = new StateOutputRouter(
-            projectConfig,
-            SystemMachine,
-            JobMachine,
-            precisionConfigRoot: projectRoot);
+        _stateContextBuilder = new StateContextBuilder(projectConfig, SystemMachine, JobMachine);
         _skillTableBaseGcd = projectConfig.System.SkillTableBaseGcd;
     }
 
@@ -408,8 +408,8 @@ public sealed class CombatStateMachine
         double castCompletedTimestamp,
         double effectTimestamp)
     {
-        var stateBefore = OutputRouter.BuildStateContext(requestState);
-        var stateAfter = OutputRouter.BuildStateContext(effectState);
+        var stateBefore = _stateContextBuilder.Build(requestState);
+        var stateAfter = _stateContextBuilder.Build(effectState);
         var snapshot = BuildSkillSnapshot(
             effectState,
             skill,

@@ -17,6 +17,8 @@ namespace Combat.Sim.Policy;
 public sealed class PolicyContextBuilder
 {
     private readonly PolicyActionRegistry _registry;
+    private Dictionary<PolicyDecision, (Dictionary<string, object?> Skill, Dictionary<string, double[]> State)>
+        _historyTokens = new(ReferenceEqualityComparer.Instance);
 
     public PolicyContextBuilder(PolicyActionRegistry registry)
     {
@@ -28,14 +30,14 @@ public sealed class PolicyContextBuilder
         PolicyDecisionHistory history,
         double nextObservationTimestamp)
     {
-        var state = simulator.GetState();
+        var state = simulator.GetStateWithoutHistory();
         if (nextObservationTimestamp < state.Time)
             throw new ArgumentOutOfRangeException(nameof(nextObservationTimestamp));
 
         var output = simulator.FormatVectorState();
-        var branch = simulator.Fork();
+        var branch = simulator.ForkForPreview();
         var after = branch.ObserveAt(nextObservationTimestamp);
-        var router = simulator.Rules.OutputRouter;
+        var router = simulator.OutputRouter;
         var consumed = router.BuildNoopResourceTransition(state);
 
         var candidateSkills = (List<Dictionary<string, object?>>)
@@ -57,7 +59,7 @@ public sealed class PolicyContextBuilder
         return output;
     }
 
-    private static void MergePolicyHistory(
+    private void MergePolicyHistory(
         Dictionary<string, object?> output,
         PolicyDecisionHistory history,
         StateOutputRouter router)
@@ -77,21 +79,32 @@ public sealed class PolicyContextBuilder
         }
 
         var order = skillHistory.Count;
-        foreach (var decision in history.Entries)
+        var retainedTokens = new Dictionary<PolicyDecision,
+            (Dictionary<string, object?> Skill, Dictionary<string, double[]> State)>(ReferenceEqualityComparer.Instance);
+        foreach (var decision in history.ReadEntries)
         {
-            var consumed = router.BuildNoopResourceTransition(decision.StateBefore);
+            if (!_historyTokens.TryGetValue(decision, out var token))
+            {
+                var consumed = router.BuildNoopResourceTransition(decision.StateBefore);
+                token = (BuildSkillToken(decision.Action, decision.Timestamp, consumed),
+                    router.BuildStateTransitionToken(decision.StateBefore, decision.StateAfter));
+            }
+            retainedTokens.Add(decision, token);
             merged.Add((
                 decision.Timestamp,
                 order++,
-                BuildSkillToken(decision.Action, decision.Timestamp, consumed),
-                router.BuildStateTransitionToken(decision.StateBefore, decision.StateAfter)));
+                token.Skill,
+                token.State));
         }
+        // 只保留当前窗口中的条目，重置、恢复及滑动淘汰都不累积旧快照。
+        _historyTokens = retainedTokens;
 
         merged.Sort((left, right) =>
         {
             var byTime = left.Time.CompareTo(right.Time);
             return byTime != 0 ? byTime : left.Order.CompareTo(right.Order);
         });
+        history.Retention.Trim(merged);
         skillHistory.Clear();
         skillHistory.AddRange(merged.Select(item => item.Skill));
         stateHistory.Clear();

@@ -8,6 +8,33 @@ namespace FightEngine.Tests.System;
 public sealed class CombatTimelineRuntimeTests
 {
     [Fact]
+    public void 处理器与Mutation保留的快照不能在返回后修改真实状态()
+    {
+        var runtime = new CombatTimelineRuntime();
+        CombatState? observed = null;
+        CombatState? changed = null;
+        runtime.RegisterHandler(TimelineEventKind.DecisionBoundary, (_, state) =>
+        {
+            observed = state;
+            return new TimelineMutation(ApplyState: target =>
+            {
+                target.Mp = 1234;
+                changed = target;
+            });
+        });
+        runtime.Schedule(new(1, TimelineEventPriority.DecisionBoundary, TimelineEventKind.DecisionBoundary));
+        var result = runtime.AdvanceTo(1);
+        observed!.Mp = 1;
+        changed!.Mp = 2;
+        result.Mp = 3;
+        Assert.Equal(1234, runtime.GetState().Mp);
+        var fork = runtime.Fork();
+        fork.ApplyMutation(new TimelineMutation(ApplyState: state => state.Mp = 4));
+        Assert.Equal(1234, runtime.GetState().Mp);
+        Assert.Equal(4, fork.GetState().Mp);
+    }
+
+    [Fact]
     public void 单次推进与分段推进结果一致()
     {
         var direct = CreateRuntime();
@@ -186,6 +213,45 @@ public sealed class CombatTimelineRuntimeTests
             TimelineEventPriority.PeriodicSettlement,
             TimelineEventKind.MpTick));
         return runtime;
+    }
+
+    [Fact]
+    public void 反复取消远期事件的物理队列有界且保留同刻排序()
+    {
+        var runtime = new CombatTimelineRuntime();
+        var handled = new List<string?>();
+        runtime.RegisterHandler(TimelineEventKind.SceneChanged, (item, _) =>
+        {
+            handled.Add(item.OwnerKey);
+            return TimelineMutation.Empty;
+        });
+        runtime.Schedule(new(10, TimelineEventPriority.ExternalScene, TimelineEventKind.SceneChanged, "first"));
+        runtime.Schedule(new(10, TimelineEventPriority.ExternalScene, TimelineEventKind.SceneChanged, "second"));
+        for (var index = 0; index < 10000; index++)
+        {
+            var item = runtime.Schedule(new(100000 + index,
+                TimelineEventPriority.ExternalScene, TimelineEventKind.SceneChanged, "cancel"));
+            Assert.True(runtime.Cancel(item.Sequence));
+            Assert.InRange(runtime.QueueEntryCount, 2, 2 * runtime.PendingEventCount + 64);
+        }
+        runtime.AdvanceTo(1000000);
+        Assert.Equal(new[] { "first", "second" }, handled);
+        Assert.Equal(0, runtime.QueueEntryCount);
+    }
+
+    [Fact]
+    public void 活跃事件消耗后也会释放远期取消节点()
+    {
+        var runtime = new CombatTimelineRuntime();
+        for (var index = 1; index <= 100; index++)
+            runtime.Schedule(new(index, TimelineEventPriority.ExternalScene, TimelineEventKind.SceneChanged));
+        var canceled = Enumerable.Range(0, 100).Select(index => runtime.Schedule(new(
+            10000 + index, TimelineEventPriority.ExternalScene, TimelineEventKind.SceneChanged))).ToArray();
+        foreach (var item in canceled) runtime.Cancel(item.Sequence);
+        runtime.AdvanceTo(99);
+        Assert.Equal(1, runtime.PendingEventCount);
+        Assert.InRange(runtime.QueueEntryCount, 1, 2 * runtime.PendingEventCount + 64);
+        Assert.Equal(100, runtime.GetNextScheduledEventTime());
     }
 
     [Fact]

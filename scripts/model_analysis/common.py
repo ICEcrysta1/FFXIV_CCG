@@ -19,7 +19,7 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
 from common.config import PROJECT_ROOT, load_precision_config, load_project_config
-from common.cache_compilation import compile_raw_training_cache
+from common.cache_compilation import compile_raw_training_caches
 from common.project_config import resolve_project_job_tag, resolve_project_path
 from scripts.common.scene_source import find_prepared_scene_source
 from common.torch_runtime import autocast_context, model_dtype, move_batch
@@ -529,8 +529,8 @@ def _load_analysis_dataset(
         return TrainingDataset([source_path], **dataset_kwargs)
     except FileNotFoundError:
         logger.info("模型分析 cache 缺失或过期，调用转换脚本: %s", source_path)
-        compile_raw_training_cache(
-            source_path=source_path,
+        compile_raw_training_caches(
+            source_paths=[source_path],
             cache_dir=cache_dir,
             cache_shard_size=cache_shard_size,
             job_tag=job_tag,

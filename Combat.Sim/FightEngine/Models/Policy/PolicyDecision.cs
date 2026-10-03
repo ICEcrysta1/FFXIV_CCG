@@ -17,7 +17,7 @@ public sealed record PolicyDecision(
 {
     internal PolicyDecision DeepClone() => this with
     {
-        StateBefore = StateBefore.Clone(),
-        StateAfter = StateAfter.Clone(),
+        StateBefore = StateBefore.CloneWithoutHistory(),
+        StateAfter = StateAfter.CloneWithoutHistory(),
     };
 }

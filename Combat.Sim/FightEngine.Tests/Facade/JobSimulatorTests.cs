@@ -5,6 +5,51 @@ namespace FightEngine.Tests.Facade;
 
 public sealed class JobSimulatorTests
 {
+    [Theory]
+    [InlineData("black_mage", "fire_iii")]
+    [InlineData("machinist", "heated_split_shot")]
+    public void 精简候选分支与完整分支在读条排队和场景事件下逐值相同(string job, string action)
+    {
+        var simulator = new JobSimulator(CombatStateMachine.FromDefaultConfig(FindRepoRoot(), job));
+        Assert.True(simulator.SubmitAction(0, action).Accepted);
+        foreach (var time in new[] { 0.0, 0.2, 2.2, 3.0, 6.0 })
+        {
+            simulator.AdvanceTo(time);
+            var snapshot = simulator.CreateSnapshot();
+            simulator.RestoreSnapshot(snapshot with
+            {
+                PendingEvents = snapshot.PendingEvents.Append(new TimelineEvent(
+                    time + 0.3, TimelineEventPriority.ExternalScene, TimelineEventKind.SceneChanged,
+                    "target_count_changed", Payload: new ExternalCombatEvent(time + 0.3,
+                        "target_count_changed", TargetCount: 2), Sequence: snapshot.NextSequence)).ToArray(),
+                NextSequence = snapshot.NextSequence + 1,
+            });
+            foreach (var candidate in simulator.BuildCandidatePreviews())
+            {
+                var full = simulator.Fork();
+                var submission = full.SubmitAction(time, candidate.Skill.Key);
+                Assert.Equal(submission.Accepted, candidate.IsLegal);
+                Assert.Equal(submission.Reason, candidate.InvalidReason);
+                if (!submission.Accepted)
+                {
+                    Assert.Null(candidate.CandidateAfterState);
+                    continue;
+                }
+                var effectAt = submission.EffectTimestamp!.Value;
+                var next = full.AdvanceTo(effectAt);
+                Assert.Equal(StateJson(next), StateJson(candidate.NextState));
+                var timing = simulator.Rules.BuildActionTimingPlan(simulator.GetState(), candidate.Skill);
+                var delay = candidate.Skill.Kind == Combat.Sim.Models.Definitions.ActionKind.Gcd
+                    ? timing.NextGcdWindowSeconds : timing.ActualOccupancySeconds;
+                var after = full.AdvanceTo(Math.Max(effectAt, submission.AcceptedTimestamp!.Value + delay));
+                Assert.Equal(StateJson(after), StateJson(candidate.CandidateAfterState!));
+            }
+        }
+    }
+
+    private static string StateJson(Combat.Sim.Models.Combat.CombatState state) =>
+        global::System.Text.Json.JsonSerializer.Serialize(state.CloneWithoutHistory());
+
     [Fact]
     public void 同戳连续非公共技能不生成动画锁或排队等待()
     {
@@ -306,7 +351,7 @@ public sealed class JobSimulatorTests
     [Fact]
     public void 团辅外部事实使用注册状态并按绝对时间到期()
     {
-        var simulator = JobSimulator.Create(FindRepoRoot(), "black_mage");
+        var simulator = new JobSimulator(CombatStateMachine.FromDefaultConfig(FindRepoRoot(), "black_mage"));
         simulator.ApplyExternalEvent(new ExternalCombatEvent(
             1.0,
             ExternalCombatEventKinds.RaidBuffWindowChanged,

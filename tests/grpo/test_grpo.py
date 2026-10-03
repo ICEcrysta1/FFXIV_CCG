@@ -303,6 +303,7 @@ def _run_grpo_with_backend(
     """在只跑到 setup 阶段的环境里执行 run_grpo_training，返回输出目录。"""
     scene_path = tmp_path / "scene.json"
     scene_path.write_text("{}", encoding="utf-8", newline="\n")
+    monkeypatch.setattr("grpo.trainer.ReplayCacheStore.prepare", lambda *_a, **_k: None)
     captured: dict[str, object] = {}
     Path(checkpoint_path).parent.mkdir(parents=True, exist_ok=True)
     torch.save(checkpoint_payload, checkpoint_path)
@@ -321,12 +322,12 @@ def _run_grpo_with_backend(
                 num_candidates=1,
                 candidate_action_keys=("fire",),
             )
-            self.input_contract = object()
+            self.input_contract = SimpleNamespace(create_normalizer=lambda: object())
             self.repetition = SimpleNamespace()
             self.checkpoint = checkpoint_payload
 
     class FakeSession:
-        def __init__(self, _replay_config, *, backend, cache_store):
+        def __init__(self, _replay_config, *, backend, cache_store, engine):
             del backend, cache_store
             captured["replay_config"] = _replay_config
 
@@ -558,6 +559,7 @@ def test_grpo_training_closes_replay_session_on_outer_failure(monkeypatch, tmp_p
     checkpoint_path.write_bytes(b"checkpoint")
     scene_path = tmp_path / "scene.json"
     scene_path.write_text("{}", encoding="utf-8", newline="\n")
+    monkeypatch.setattr("grpo.trainer.ReplayCacheStore.prepare", lambda *_a, **_k: None)
     config = GrpoRunConfig(
         raw_data_dir=tmp_path / "raw",
         output_dir=tmp_path / "output",
@@ -579,7 +581,7 @@ def test_grpo_training_closes_replay_session_on_outer_failure(monkeypatch, tmp_p
                 num_candidates=1,
                 candidate_action_keys=("fire",),
             )
-            self.input_contract = object()
+            self.input_contract = SimpleNamespace(create_normalizer=lambda: object())
             self.repetition = SimpleNamespace()
             self.checkpoint = {}
 
@@ -588,7 +590,7 @@ def test_grpo_training_closes_replay_session_on_outer_failure(monkeypatch, tmp_p
     class FakeSession:
         instance = None
 
-        def __init__(self, _config, *, backend, cache_store):
+        def __init__(self, _config, *, backend, cache_store, engine):
             del _config, cache_store
             self.backend = backend
             self.close_calls = 0

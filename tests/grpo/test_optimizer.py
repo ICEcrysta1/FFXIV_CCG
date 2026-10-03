@@ -35,8 +35,8 @@ class _TinyPolicy(nn.Module):
 
 @pytest.mark.parametrize("name", ["adamw", "muon"])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-def test_grpo_training_builds_its_own_optimizer_and_closes_session(tmp_path, monkeypatch, name, dtype):
-    """正式入口使用 GRPO 参数建真实优化器，setup 中止时仍关闭回放会话。"""
+def test_grpo_training_builds_its_own_optimizer_and_closes_engine(tmp_path, monkeypatch, name, dtype):
+    """正式入口使用 GRPO 参数建真实优化器，setup 中止时仍关闭共享引擎。"""
     config = GrpoRunConfig(
         raw_data_dir=tmp_path,
         output_dir=tmp_path / "output",
@@ -92,7 +92,7 @@ def test_grpo_training_builds_its_own_optimizer_and_closes_session(tmp_path, mon
         raise SetupComplete
 
     monkeypatch.setattr(trainer_module, "PyTorchPolicyBackend", lambda *_args, **_kwargs: backend)
-    monkeypatch.setattr(trainer_module, "AutoregressiveReplaySession", FakeSession)
+    monkeypatch.setattr("scripts.autoregressive_replay.parallel.InProcessEngine", FakeSession)
     monkeypatch.setattr(trainer_module, "create_tensorboard_writer", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(trainer_module, "resolve_policy_cache_dir", lambda _job: tmp_path / "cache")
     monkeypatch.setattr(trainer_module, "build_optimizer", spy_builder)

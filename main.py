@@ -7,11 +7,12 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
 
 from common.config import load_project_config
 from common.skills import SkillBook
-from scripts.common.inprocess_backend import InProcessBackend
+from scripts.common.inprocess_backend import InProcessEngine
 
 
 def _resolve_job_tag(job_tag: str | None) -> str:
@@ -50,75 +51,48 @@ def cmd_list_skills(job_tag: str | None) -> None:
         print(f"{skill.key:16} {skill.kind.value:4} id={skill.game_id}")
 
 
-def cmd_list_actions(job_tag: str | None) -> None:
-    """列出初始状态下的合法动作。"""
-    job = _resolve_job_tag(job_tag)
-    with InProcessBackend(job_tag=job) as backend:
-        observation = backend.observe_at(
-            0.0,
-            format="vector",
-            next_observation_timestamp=0.0,
-        )
-        context = observation.context
-        if not isinstance(context, dict):
-            raise RuntimeError("C# vector observation must return a mapping context")
-        for token in context["candidate_skill_context"]:
-            if bool(token.get("is_legal", False)):
-                print(str(token["skill_key"]))
+def _check_actions(backend):
+    context = backend.observe_at(0.0, format="vector", next_observation_timestamp=0.0).context
+    if not isinstance(context, dict):
+        raise RuntimeError("C# vector observation must return a mapping context")
+    return [str(token["skill_key"]) for token in context["candidate_skill_context"] if token.get("is_legal", False)]
 
 
-def cmd_smoke(job_tag: str | None) -> None:
-    """跑一段最小黑魔循环，确认状态机主链路能执行。"""
-    job = _resolve_job_tag(job_tag)
-    sequence = [
-        "fire_iii",
-        "fire_iv",
-        "fire_iv",
-        "fire_iv",
-        "fire_iv",
-        "despair",
-    ]
-
+def _check_smoke(backend):
     timestamp = 0.0
-    with InProcessBackend(job_tag=job) as backend:
-        for action in sequence:
-            result = backend.submit_action(timestamp, action)
-            if not result.accepted or result.accepted_timestamp is None:
-                raise RuntimeError(
-                    f"smoke action {action!r} was rejected: {result.reason}"
-                )
-
-            timestamp = max(timestamp, float(result.accepted_timestamp))
-            backend.advance_to(timestamp)
-            state = backend.observe_at(timestamp, format="seconds").context
-            if not isinstance(state, dict):
-                raise RuntimeError("C# seconds observation must return a mapping context")
-
-            wait_seconds = max(
-                float(state.get("cast_remaining_seconds", 0.0) or 0.0),
-                float(state.get("gcd_remaining_seconds", 0.0) or 0.0),
-            )
-            if wait_seconds > 0.0:
-                timestamp += wait_seconds
-                backend.advance_to(timestamp)
-
+    for action in ("fire_iii", "fire_iv", "fire_iv", "fire_iv", "fire_iv", "despair"):
+        result = backend.submit_action(timestamp, action)
+        if not result.accepted or result.accepted_timestamp is None:
+            raise RuntimeError(f"smoke action {action!r} was rejected: {result.reason}")
+        timestamp = max(timestamp, float(result.accepted_timestamp))
+        backend.advance_to(timestamp)
         state = backend.observe_at(timestamp, format="seconds").context
         if not isinstance(state, dict):
             raise RuntimeError("C# seconds observation must return a mapping context")
-    print(
-        json.dumps(
-            {
-                "time": round(float(state.get("time_seconds", timestamp)), 2),
-                "mp": int(state.get("mp", 0)),
-                "astral_fire": int(state.get("astral_fire", 0)),
-                "umbral_ice": int(state.get("umbral_ice", 0)),
-                "umbral_hearts": int(state.get("umbral_hearts", 0)),
-                "astral_soul": int(state.get("astral_soul", 0)),
-                "polyglot": int(state.get("polyglot", 0)),
-            },
-            indent=2,
-        )
-    )
+        wait_seconds = max(float(state.get("cast_remaining_seconds", 0) or 0),
+                           float(state.get("gcd_remaining_seconds", 0) or 0))
+        if wait_seconds > 0:
+            timestamp += wait_seconds
+            backend.advance_to(timestamp)
+    state = backend.observe_at(timestamp, format="seconds").context
+    if not isinstance(state, dict):
+        raise RuntimeError("C# seconds observation must return a mapping context")
+    return {"time": round(float(state.get("time_seconds", timestamp)), 2),
+            **{key: int(state.get(key, 0)) for key in
+               ("mp", "astral_fire", "umbral_ice", "umbral_hearts", "astral_soul", "polyglot")}}
+
+
+def run_checks(command: str, job_tag: str | None, *, queues: int = 1):
+    """单次或并行自检共用一个原生引擎，结果按队列顺序返回。"""
+    if isinstance(queues, bool) or not isinstance(queues, int) or queues < 1:
+        raise ValueError("queues must be a positive integer")
+    check = {"list-actions": _check_actions, "smoke": _check_smoke}[command]
+    with InProcessEngine(_resolve_job_tag(job_tag), capacity=queues) as engine:
+        def run(_index):
+            with engine.create_backend(max_history=None) as backend:
+                return check(backend)
+        with ThreadPoolExecutor(max_workers=queues, thread_name_prefix="sim-check") as pool:
+            return list(pool.map(run, range(queues)))
 
 
 def main() -> None:
@@ -126,16 +100,26 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="FFXIV_CCG combat simulator")
     parser.add_argument("command", choices=["validate", "list-skills", "list-actions", "smoke"])
     parser.add_argument("--job-tag", help="按职业 tag 选择状态机路由，默认读取根目录 .env 的 FFXIV_JOB_TAG")
+    parser.add_argument("--queues", type=int, default=1, help="自检并发队列数，共用一个引擎")
     args = parser.parse_args()
+    if args.queues < 1:
+        parser.error("--queues 必须是正整数")
+    if args.queues != 1 and args.command in {"validate", "list-skills"}:
+        parser.error("--queues 只用于 list-actions 或 smoke")
 
     if args.command == "validate":
         cmd_validate(args.job_tag)
     elif args.command == "list-skills":
         cmd_list_skills(args.job_tag)
-    elif args.command == "list-actions":
-        cmd_list_actions(args.job_tag)
     else:
-        cmd_smoke(args.job_tag)
+        results = run_checks(args.command, args.job_tag, queues=args.queues)
+        if args.queues > 1:
+            print(json.dumps(results, indent=2))
+        elif args.command == "list-actions":
+            for action in results[0]:
+                print(action)
+        else:
+            print(json.dumps(results[0], indent=2))
 
 
 if __name__ == "__main__":

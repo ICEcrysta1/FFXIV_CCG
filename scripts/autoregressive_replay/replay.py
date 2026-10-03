@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, is_dataclass, replace
+from dataclasses import dataclass, replace
+from collections import OrderedDict
 import logging
 from pathlib import Path
 from types import SimpleNamespace
+from threading import RLock
 
 import torch
 
 from common.config import load_precision_config, load_project_config
 from common.skills import SkillBook
-from scripts.common.inprocess_backend import InProcessBackend
+from scripts.common.inprocess_backend import InProcessBackend, InProcessEngine
 from scripts.common.json_io import read_json
 from scripts.convert_fflogs.cache import (
     load_raw_compiled_cache,
@@ -173,8 +175,11 @@ def _load_replay_cache(
     normalizer: Normalizer,
     *,
     shard_cache: CompiledShardCache | None = None,
+    engine: InProcessEngine,
 ) -> CompiledCacheReader:
     """读取 replay cache；缺失或过期时用 checkpoint 契约重建后重试。"""
+    if engine is None:
+        raise ValueError("replay cache loading requires a shared engine")
     normalizer.ensure_job_resources(job_tag)
     precision = load_precision_config()
     load_kwargs = {
@@ -202,6 +207,7 @@ def _load_replay_cache(
         shard_size=config.cache_shard_size,
         max_workers=1,
         max_shards=config.cache_max_shards,
+        engine=engine,
     )
     reader = load_raw_compiled_cache(config.scene_json_path, **load_kwargs)
     if reader is None:
@@ -224,9 +230,13 @@ def _cache_file_fingerprint(path: Path) -> tuple[int, int] | None:
 class ReplayCacheStore:
     """跨多条 replay 轨迹复用 compiled cache reader 与 shard LRU。"""
 
-    def __init__(self, *, max_shards: int):
+    def __init__(self, *, max_shards: int, max_readers: int = 16):
+        if max_readers < 1:
+            raise ValueError("max_readers must be positive")
+        self._lock = RLock()
+        self._max_readers = max_readers
         self._shard_cache = CompiledShardCache(max_shards)
-        self._readers: dict[tuple[object, ...], CompiledCacheReader] = {}
+        self._readers: OrderedDict[tuple[object, ...], CompiledCacheReader] = OrderedDict()
         self._cache_fingerprints: dict[
             str,
             tuple[tuple[int, int], tuple[int, int] | None],
@@ -238,8 +248,28 @@ class ReplayCacheStore:
         *,
         job_tag: str,
         normalizer: Normalizer,
+        engine: InProcessEngine,
     ) -> CompiledCacheReader:
-        """按 source/cache 契约读取 reader，并在 cache 更新后失效旧 shard。"""
+        """共享 reader 与 shard；并发首次加载只执行一次，缓存容量有界。"""
+        with self._lock:
+            return self._load(config, job_tag=job_tag, normalizer=normalizer, engine=engine)
+
+    def prepare(self, configs, *, job_tag, normalizer, engine, workers):
+        """按缓存契约集中补编译；使用尚未被回放占用的共享队列容量。"""
+        groups = {}
+        for config in configs:
+            key = (Path(config.cache_dir).resolve(), config.cache_shard_size, config.cache_max_shards)
+            groups.setdefault(key, []).append(Path(config.scene_json_path))
+        precision = load_precision_config()
+        for (cache_dir, shard_size, max_shards), paths in groups.items():
+            precompile_raw_training_caches(
+                paths, job_tag=job_tag, normalizer=normalizer,
+                int_dtype=precision.resolve_int_dtype(), float_dtype=precision.resolve_float_dtype(),
+                cache_dir=cache_dir, shard_size=shard_size, max_shards=max_shards,
+                max_workers=workers, engine=engine,
+            )
+
+    def _load(self, config, *, job_tag, normalizer, engine):
         source_path = Path(config.scene_json_path).resolve()
         source_stat = source_path.stat()
         cache_path = cache_path_for_source(config.cache_dir, source_path).resolve()
@@ -275,20 +305,29 @@ class ReplayCacheStore:
                 job_tag,
                 normalizer,
                 shard_cache=self._shard_cache,
+                engine=engine,
             )
             # 缺失 cache 时本次调用可能触发编译，重新记录 manifest 指纹。
             cache_fingerprint = _cache_file_fingerprint(cache_path)
             self._cache_fingerprints[cache_key] = (source_fingerprint, cache_fingerprint)
             reader_key = (*reader_key[:-1], cache_fingerprint)
             self._readers[reader_key] = reader
+        self._readers.move_to_end(reader_key)
+        while len(self._readers) > self._max_readers:
+            self._readers.popitem(last=False)
+        live_paths = {key[0] for key in self._readers}
+        self._cache_fingerprints = {
+            key: value for key, value in self._cache_fingerprints.items() if key in live_paths
+        }
         return reader
 
 
 class AutoregressiveReplaySession:
     """可复用的 replay 运行时资源。
 
-    session 顺序服务多条轨迹：C# 状态机、compiled cache reader/shard LRU
-    和静态职业资源只初始化一次；每条轨迹由 :meth:`reset` 恢复到空战斗状态。
+    session 顺序服务多条轨迹，共享引擎、compiled cache reader/shard LRU
+    和静态职业资源；缓存补编译复用同一引擎，完成后再创建回放队列。
+    每条轨迹由 :meth:`reset` 恢复到空战斗状态。
     session 不是线程安全对象，调用方必须串行运行轨迹。
     """
 
@@ -296,13 +335,18 @@ class AutoregressiveReplaySession:
         self,
         config: AutoregressiveReplayConfig,
         *,
-        backend=None,
+        backend,
         cache_store: ReplayCacheStore | None = None,
+        engine: InProcessEngine,
     ):
-        self.backend = _create_backend(config) if backend is None else backend
+        if engine is None:
+            raise ValueError("replay session requires a shared engine")
+        self.backend = backend
         self.device = self.backend.input_device
         self.data_spec = self.backend.data_spec
         self.input_contract = self.backend.input_contract
+        if engine.job_tag != self.data_spec.job_tag:
+            raise ValueError("replay session job must match the shared engine")
         if config.job_tag and self.data_spec.job_tag != config.job_tag:
             raise ValueError(
                 f"replay job_tag mismatch: checkpoint={self.data_spec.job_tag!r} "
@@ -322,21 +366,36 @@ class AutoregressiveReplaySession:
         self.mp_tick_interval_seconds = (
             float(mp_recovery.tick_interval_seconds) if mp_recovery is not None else None
         )
-        self.state_machine = InProcessBackend(
-            job_tag=self.data_spec.job_tag,
-            actual_base_gcd=config.base_gcd,
-            max_history=config.max_history,
-        )
+        self._initial_config = config
+        self._engine = engine
+        self._state_machine = None
         self._closed = False
+
+    @property
+    def state_machine(self):
+        """缓存准备结束后才占用回放队列，单会话补编译也复用同一引擎。"""
+        if self._closed:
+            raise RuntimeError("replay session is already closed")
+        if self._state_machine is None:
+            self._state_machine = self._engine.create_backend(
+                actual_base_gcd=self._initial_config.base_gcd,
+                max_history=self._initial_config.max_history,
+            )
+        return self._state_machine
 
     def load_reader(self, config: AutoregressiveReplayConfig):
         """读取指定场景的 reader，场景之间共享 shard LRU。"""
         if self._closed:
             raise RuntimeError("replay session is already closed")
+        # load_reader 开始下一条轨迹；释放旧队列，为可能的补编译留出容量。
+        if self._state_machine is not None:
+            self._state_machine.close()
+            self._state_machine = None
         return self.cache_store.load(
             config,
             job_tag=self.data_spec.job_tag,
             normalizer=self.normalizer,
+            engine=self._engine,
         )
 
     def reset(
@@ -380,7 +439,9 @@ class AutoregressiveReplaySession:
         if self._closed:
             return
         self._closed = True
-        self.state_machine.close()
+        if self._state_machine is not None:
+            self._state_machine.close()
+            self._state_machine = None
 
     def __enter__(self) -> "AutoregressiveReplaySession":
         return self
@@ -390,91 +451,58 @@ class AutoregressiveReplaySession:
 
 
 class AutoregressiveReplay:
-    """加载 checkpoint，在 C# 状态机后端上逐步执行模型 Top-1 合法动作。"""
+    """借用已有会话，在 C# 队列上逐步执行模型 Top-1 合法动作。"""
 
     def __init__(
         self,
         config: AutoregressiveReplayConfig,
         *,
-        backend=None,
-        session: AutoregressiveReplaySession | None = None,
+        session: AutoregressiveReplaySession,
     ):
-        scene_duration = getattr(config, "scene_duration_seconds", None)
-        scene_path = getattr(config, "scene_json_path", None)
-        if scene_duration is None and scene_path is not None:
-            scene_duration = _load_scene_duration_seconds(scene_path)
-        if is_dataclass(config):
-            self.config = replace(
-                config,
-                scene_duration_seconds=scene_duration,
-            )
-        else:
-            # 测试中的轻量 SimpleNamespace 注入不具备 dataclass replace 契约。
-            setattr(config, "scene_duration_seconds", scene_duration)
-            self.config = config
-        # 训练侧 rollout 可以注入一个共享 backend，避免同一轮 GRPO 为每条
-        # 轨迹重复加载 checkpoint；普通回放仍由 config 创建 backend。
         if session is None:
-            self._session = AutoregressiveReplaySession(config, backend=backend)
-            self._owns_session = True
-        else:
-            if backend is not None and backend is not session.backend:
-                raise ValueError("replay backend must match the supplied session")
-            self._session = session
-            self._owns_session = False
-        try:
-            self.backend = self._session.backend
-            self.device = self._session.device
-            self.data_spec = self._session.data_spec
-            self.input_contract = self._session.input_contract
-            self.vocab = self._session.vocab
-            self._configure_kv_cache(bool(getattr(config, "use_kv_cache", True)))
+            raise ValueError("replay requires a shared session")
+        scene_duration = config.scene_duration_seconds
+        if scene_duration is None:
+            scene_duration = _load_scene_duration_seconds(config.scene_json_path)
+        self.config = replace(config, scene_duration_seconds=scene_duration)
+        self._session = session
+        self.backend = self._session.backend
+        self.device = self._session.device
+        self.data_spec = self._session.data_spec
+        self.input_contract = self._session.input_contract
+        self.vocab = self._session.vocab
+        self._configure_kv_cache(bool(getattr(config, "use_kv_cache", True)))
 
-            reader = self._session.load_reader(config)
-            if reader.job_tag != self.data_spec.job_tag:
-                raise ValueError(
-                    f"scene compiled cache job_tag mismatch: {reader.job_tag!r} != {self.data_spec.job_tag!r}"
-                )
-            self.input_contract.schema.assert_compatible_with(reader.schema)
-            if tuple(reader.skill_feature_names) != tuple(self.data_spec.skill_feature_names):
-                raise ValueError("scene compiled cache skill feature layout mismatch")
-            self.skill_book = self._session.skill_book
-            self._mp_tick_interval_seconds = self._session.mp_tick_interval_seconds
-            self._state_machine = self._session.state_machine
-            scene_provider = SceneTemplateProvider(
-                reader,
-                normalizer=self._session.normalizer,
-                initial_sample_index=config.scene_sample_index,
-                enabled=config.scene_mode == "cache",
-                backend=self._state_machine,
+        reader = self._session.load_reader(config)
+        if reader.job_tag != self.data_spec.job_tag:
+            raise ValueError(
+                f"scene compiled cache job_tag mismatch: {reader.job_tag!r} != {self.data_spec.job_tag!r}"
             )
-            self.scene_provider = scene_provider
-            self.batcher = LiveBatchBuilder(
-                backend=self._state_machine,
-                vocab=self.vocab,
-                normalizer=self._session.normalizer,
-                schema=reader.schema,
-                skill_feature_names=reader.skill_feature_names,
-                scene_provider=scene_provider,
-                device=self.device,
-                max_history=config.max_history,
-                candidate_action_keys=self.data_spec.candidate_action_keys,
-            )
-        except BaseException:
-            if self._owns_session:
-                self._session.close()
-            raise
-
-    def close(self) -> None:
-        """回收自有 replay session；共享 session 由其所有者关闭。"""
-        if self._owns_session:
-            self._session.close()
-
-    def __enter__(self) -> "AutoregressiveReplay":
-        return self
-
-    def __exit__(self, *exc_info: object) -> None:
-        self.close()
+        self.input_contract.schema.assert_compatible_with(reader.schema)
+        if tuple(reader.skill_feature_names) != tuple(self.data_spec.skill_feature_names):
+            raise ValueError("scene compiled cache skill feature layout mismatch")
+        self.skill_book = self._session.skill_book
+        self._mp_tick_interval_seconds = self._session.mp_tick_interval_seconds
+        self._state_machine = self._session.state_machine
+        scene_provider = SceneTemplateProvider(
+            reader,
+            normalizer=self._session.normalizer,
+            initial_sample_index=config.scene_sample_index,
+            enabled=config.scene_mode == "cache",
+            backend=self._state_machine,
+        )
+        self.scene_provider = scene_provider
+        self.batcher = LiveBatchBuilder(
+            backend=self._state_machine,
+            vocab=self.vocab,
+            normalizer=self._session.normalizer,
+            schema=reader.schema,
+            skill_feature_names=reader.skill_feature_names,
+            scene_provider=scene_provider,
+            device=self.device,
+            max_history=config.max_history,
+            candidate_action_keys=self.data_spec.candidate_action_keys,
+        )
 
     def _sync_scene_state(self, state) -> object:
         sync_state = getattr(self.scene_provider, "sync_state", None)
@@ -490,12 +518,7 @@ class AutoregressiveReplay:
         scene_provider = getattr(self, "scene_provider", None)
         if scene_provider is not None:
             scene_provider.reset()
-        session = getattr(self, "_session", None)
-        if session is None:
-            # 测试中可直接注入后端；正式 replay 始终使用 session。
-            self._configure_kv_cache(bool(getattr(self.config, "use_kv_cache", True)))
-            return self._observe_state(initial_timestamp)
-        session.reset(self.config, initial_timestamp=initial_timestamp)
+        self._session.reset(self.config, initial_timestamp=initial_timestamp)
         return self._observe_state(initial_timestamp)
 
     def _next_scene_event_after(self, time_seconds: float) -> float | None:
@@ -557,7 +580,7 @@ class AutoregressiveReplay:
         )
 
     def run(self) -> ReplayResult:
-        rows, _snapshots, final_state = self._generate_full_trajectory()
+        rows, _snapshots, final_state = self._generate_full_trajectory(capture_snapshots=False)
         return self._build_result(
             rows,
             history_limit=self.config.max_history,
@@ -611,6 +634,8 @@ class AutoregressiveReplay:
 
     def _generate_full_trajectory(
         self,
+        *,
+        capture_snapshots: bool = True,
     ) -> tuple[list[ReplayRow], tuple[ReplaySnapshot, ...], object]:
         # 一条新轨迹必须从空缓存开始；历史消融会走独立的完整 forward。
         initial_timestamp = 0.0
@@ -711,7 +736,7 @@ class AutoregressiveReplay:
                 float(state.time),
                 format="vector",
                 next_observation_timestamp=next_observation,
-            ).context
+            ).context if capture_snapshots else None
             gcd_phase = is_gcd_decision(state.gcd_remaining)
             try:
                 row = self._predict_row(
@@ -744,13 +769,10 @@ class AutoregressiveReplay:
                     interrupt_on_scene_event=False,
                     end_time=end_time,
                 )
-                snapshots.append(
-                    ReplaySnapshot(
-                        decision_canonical,
-                        row,
-                        gcd_phase,
+                if capture_snapshots:
+                    snapshots.append(
+                        ReplaySnapshot(decision_canonical, row, gcd_phase)
                     )
-                )
                 rows.append(row)
                 continue
             selected_skill = self.skill_book.get(row.action_key)
@@ -768,13 +790,10 @@ class AutoregressiveReplay:
             if selected_skill.kind.value == GCD_ACTION_KIND:
                 gcd_step += 1
             row = replace(row, gcd_step=gcd_step)
-            snapshots.append(
-                ReplaySnapshot(
-                    decision_canonical,
-                    row,
-                    gcd_phase,
+            if capture_snapshots:
+                snapshots.append(
+                    ReplaySnapshot(decision_canonical, row, gcd_phase)
                 )
-            )
             rows.append(row)
         if max_gcds is not None and gcd_step < max_gcds:
             raise RuntimeError(
@@ -844,7 +863,9 @@ class AutoregressiveReplay:
         else:
             probabilities = torch.softmax(legal_logits / self.config.temperature, dim=-1)
             probabilities = _apply_top_p(probabilities, order, self.config.top_p)
-            selected_index = int(torch.multinomial(probabilities, 1).item())
+            selected_index = int(torch.multinomial(
+                probabilities, 1, generator=getattr(self, "_sampling_generator", None),
+            ).item())
         return ReplayRow(
             gcd_step=gcd_step,
             action_key=candidate_keys[selected_index],

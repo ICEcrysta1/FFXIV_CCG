@@ -222,7 +222,7 @@ public sealed partial class BlackMageJobStateMachine : JobResourceAccessors, IJo
     /// <summary>返回当前全局视角下的有效 GCD 秒数（对照 current_gcd_duration）。</summary>
     public double CurrentGcdDuration(CombatState state)
     {
-        var gcd = Project.System.BaseGcd;
+        var gcd = state.BaseGcd ?? Project.System.BaseGcd;
         if (state.HasStatus("ley_lines"))
         {
             gcd *= Job.TimingValue("ley_lines_haste_multiplier");

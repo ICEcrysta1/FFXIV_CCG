@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import sys
-from concurrent.futures import Future
 from pathlib import Path
+from threading import Barrier, Lock, get_ident
 from types import SimpleNamespace
 
 import pytest
@@ -33,7 +33,7 @@ def test_convert_raw_file_reads_brotli_json(tmp_path, monkeypatch):
         "fights": [{"id": 5, "name": "FRU"}], "player_name": "Tester",
     })
     backend = SimpleNamespace(close=lambda: None)
-    monkeypatch.setattr(raw_source, "build_backend", lambda **_kwargs: backend)
+    engine = SimpleNamespace(job_tag="black_mage", create_backend=lambda **_kwargs: backend)
     monkeypatch.setattr(raw_source, "load_job_project_config", lambda _job: object())
     monkeypatch.setattr(raw_source, "build_skill_book", lambda _config: object())
     seen = {}
@@ -43,9 +43,39 @@ def test_convert_raw_file_reads_brotli_json(tmp_path, monkeypatch):
         return {"converted": True}, {}
 
     monkeypatch.setattr(raw_source, "convert_report_to_training_payload", convert)
-    assert raw_source.convert_raw_file(source, job_tag="black_mage") == ({"converted": True}, {})
+    assert raw_source.convert_raw_file(source, job_tag="black_mage", engine=engine) == ({"converted": True}, {})
     assert seen["payload"]["fight_id"] == 5
     assert seen["kwargs"]["encounter_name"] == "FRU"
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_raw_source_releases_only_its_queue_and_keeps_full_history(tmp_path, monkeypatch, fails):
+    source = tmp_path / "fight.json.br"
+    atomic_write_json(source, {"source_id": 2})
+    engine = SimpleNamespace(job_tag="black_mage")
+    closed = []
+    backend = SimpleNamespace(close=lambda: closed.append(True))
+
+    def create_backend(**kwargs):
+        assert kwargs == {"max_history": None}
+        return backend
+
+    def convert(_payload, **kwargs):
+        assert kwargs["backend"] is backend
+        if fails:
+            raise ValueError("conversion failed")
+        return {"converted": True}, {}
+
+    engine.create_backend = create_backend
+    monkeypatch.setattr(raw_source, "load_job_project_config", lambda _job: object())
+    monkeypatch.setattr(raw_source, "build_skill_book", lambda _config: object())
+    monkeypatch.setattr(raw_source, "convert_report_to_training_payload", convert)
+    if fails:
+        with pytest.raises(ValueError, match="conversion failed"):
+            raw_source.convert_raw_file(source, job_tag="black_mage", engine=engine)
+    else:
+        assert raw_source.convert_raw_file(source, job_tag="black_mage", engine=engine) == ({"converted": True}, {})
+    assert closed == [True]
 
 
 def test_training_source_selection_requires_precompiled_cache(tmp_path, monkeypatch):
@@ -411,42 +441,59 @@ def test_raw_cache_compiler_only_writes_compiled_cache(
     ) is None
 
 
-def test_parallel_cache_compile_skips_failed_source_and_reports_it(tmp_path, monkeypatch, caplog):
+def test_parallel_cache_compile_bounds_tasks_shares_engine_and_continues_after_failure(tmp_path, monkeypatch, caplog):
     torch = pytest.importorskip("torch")
     bad_path = tmp_path / "bad.json.br"
     good_path = tmp_path / "good.json.br"
     bad_path.write_text("{}", encoding="utf-8")
     good_path.write_text("{}", encoding="utf-8")
+    later_path = tmp_path / "later.json.br"
+    later_path.write_text("{}", encoding="utf-8")
+    barrier = Barrier(2)
+    lock = Lock()
+    engines = []
+    seen_threads = set()
+    started = []
+    waiting_counts = []
 
-    class ImmediateExecutor:
-        def __init__(self, *args, **kwargs):
-            del args, kwargs
+    class Engine:
+        def __init__(self, job_tag, *, capacity):
+            assert job_tag == "black_mage"
+            assert capacity == 2
+            self.closed = False
+            engines.append(self)
 
         def __enter__(self):
             return self
 
         def __exit__(self, *_args):
-            return False
+            self.closed = True
 
-        def submit(self, function, task):
-            future = Future()
-            try:
-                future.set_result(function(task))
-            except Exception as exc:
-                future.set_exception(exc)
-            return future
-
-    def fake_worker(task):
+    def fake_worker(task, *, engine):
+        assert engine is engines[0]
+        assert not engine.closed
         source_path = Path(task[0])
+        with lock:
+            seen_threads.add(get_ident())
+            started.append(source_path)
+        if source_path != later_path:
+            barrier.wait(timeout=10)
         if source_path.name == "bad.json.br":
             raise ValueError("invalid raw JSON fixture")
         return str(source_path), 1, 1
 
-    monkeypatch.setattr(cache_compile_module, "ProcessPoolExecutor", ImmediateExecutor)
+    actual_wait = cache_compile_module.wait
+
+    def track_wait(futures, **kwargs):
+        waiting_counts.append(len(futures))
+        return actual_wait(futures, **kwargs)
+
+    monkeypatch.setattr(cache_compile_module, "InProcessEngine", Engine)
+    monkeypatch.setattr(cache_compile_module, "wait", track_wait)
     monkeypatch.setattr(cache_compile_module, "_compile_raw_source_worker", fake_worker)
     with caplog.at_level("ERROR"):
         valid_paths = precompile_raw_training_caches(
-            [bad_path, good_path],
+            [bad_path, good_path, later_path, good_path],
             job_tag="black_mage",
             normalizer=Normalizer(),
             int_dtype=torch.int32,
@@ -455,6 +502,103 @@ def test_parallel_cache_compile_skips_failed_source_and_reports_it(tmp_path, mon
             max_workers=2,
         )
 
-    assert valid_paths == [good_path]
+    assert valid_paths == [good_path, later_path]
+    assert len(engines) == 1 and engines[0].closed
+    assert len(seen_threads) == 2
+    assert sorted(started) == sorted([bad_path, good_path, later_path])
+    assert max(waiting_counts) == 2
     assert "bad.json.br" in caplog.text
     assert "跳过并继续" in caplog.text
+
+
+def test_valid_cache_does_not_start_engine(tmp_path, monkeypatch):
+    source = tmp_path / "fight.json.br"
+    monkeypatch.setattr(cache_compile_module, "_load_cache", lambda *_args, **_kwargs:
+                        SimpleNamespace(num_samples=3, job_tag="black_mage"))
+
+    def unexpected_engine(*_args, **_kwargs):
+        pytest.fail("有效缓存不应启动引擎")
+
+    monkeypatch.setattr(cache_compile_module, "InProcessEngine", unexpected_engine)
+    assert precompile_raw_training_caches(
+        [source], job_tag="black_mage", normalizer=Normalizer(),
+        int_dtype="int32", float_dtype="float32", cache_dir=tmp_path / ".cache", max_workers=2,
+    ) == [source]
+
+
+def test_real_threaded_cache_compile_matches_serial_and_keeps_full_history(tmp_path, monkeypatch, cs_backend):
+    """从压缩日志到最终 PT 走正式入口，逐项比较共享引擎的并发与串行结果。"""
+    from dataclasses import asdict, is_dataclass
+    from scripts.common.inprocess_backend import InProcessEngine
+
+    torch = pytest.importorskip("torch")
+    sources = []
+    for index in range(4):
+        source = tmp_path / "raw" / f"fight{index}.json.br"
+        atomic_write_json(source, {
+            "source_id": 10, "report_code": f"REPORT{index}", "fight_id": index + 1,
+            "events": [
+                {"type": "cast", "sourceID": 10, "timestamp": 1000 + step * (5000 - 100 * index),
+                 "abilityGameID": 152 if step % 2 == 0 else 154}
+                for step in range(6 + index * 2)
+            ],
+        })
+        sources.append(source)
+    engines = []
+    queues = []
+
+    class TrackedEngine(InProcessEngine):
+        def __init__(self, job_tag, *, capacity):
+            super().__init__(job_tag, capacity=capacity)
+            engines.append(self)
+
+        def __exit__(self, *args):
+            assert self.active_count == 0
+            return super().__exit__(*args)
+
+    actual_build_backend = InProcessEngine.create_backend
+
+    def create_backend(self, **kwargs):
+        assert kwargs["max_history"] is None
+        assert self is engines[-1]
+        backend = actual_build_backend(self, **kwargs)
+        queues.append(backend)
+        return backend
+
+    monkeypatch.setattr(cache_compile_module, "InProcessEngine", TrackedEngine)
+    monkeypatch.setattr(TrackedEngine, "create_backend", create_backend)
+    cache_dirs = [tmp_path / "serial", tmp_path / "parallel"]
+    for workers, cache_dir in zip((1, 3), cache_dirs):
+        assert precompile_raw_training_caches(
+            sources, job_tag="black_mage", normalizer=Normalizer(),
+            int_dtype=torch.int32, float_dtype=torch.float32, cache_dir=cache_dir,
+            max_workers=workers, shard_size=4,
+        ) == sources
+    assert len(engines) == 2 and len(queues) == 8
+    assert all(engine._engine is None for engine in engines)
+
+    def assert_equal(left, right):
+        if isinstance(left, torch.Tensor):
+            assert left.dtype == right.dtype and torch.equal(left, right)
+        elif is_dataclass(left):
+            assert_equal(asdict(left), asdict(right))
+        elif isinstance(left, dict):
+            assert left.keys() == right.keys()
+            for key in left:
+                # 缓存目录身份不同；完整历史、候选、标签及其他元数据必须逐值一致。
+                if key != "history_bank_id":
+                    assert_equal(left[key], right[key])
+        elif isinstance(left, (list, tuple)):
+            assert len(left) == len(right)
+            for a, b in zip(left, right):
+                assert_equal(a, b)
+        else:
+            assert left == right
+
+    for source in sources:
+        manifests = [cache_path_for_source(root, source) for root in cache_dirs]
+        payloads = [torch.load(path, weights_only=False) for path in manifests]
+        assert payloads[0]["num_samples"] >= 6
+        assert_equal(*payloads)
+        for shard in payloads[0]["shard_files"]:
+            assert_equal(*(torch.load(path.parent / shard, weights_only=False) for path in manifests))

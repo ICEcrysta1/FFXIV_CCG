@@ -7,6 +7,33 @@ namespace FightEngine.Tests.Policy;
 
 public sealed class PolicyContextBuilderTests
 {
+    [Fact]
+    public void 等待输出缓存随窗口淘汰并在同刻恢复新快照后重新生成()
+    {
+        var (simulator, registry) = CreateRuntime();
+        var history = new PolicyDecisionHistory(registry, new HistoryRetention(2));
+        var builder = new PolicyContextBuilder(registry);
+        for (var index = 0; index < 20; index++)
+        {
+            simulator.AdvanceTo(index);
+            history.Record(simulator, index, "ogcd_wait", index + 1);
+            var actual = builder.BuildVectorContext(simulator, history, index + 1);
+            var expected = new PolicyContextBuilder(registry).BuildVectorContext(simulator, history, index + 1);
+            Assert.Equal(global::System.Text.Json.JsonSerializer.Serialize(expected),
+                global::System.Text.Json.JsonSerializer.Serialize(actual));
+        }
+        var restored = history.CreateSnapshot();
+        restored[0].StateBefore.Mp = 123;
+        restored[0].StateAfter.Mp = 456;
+        history.RestoreSnapshot(restored);
+        var rebuilt = builder.BuildVectorContext(simulator, history, simulator.Time + 1);
+        var fresh = new PolicyContextBuilder(registry).BuildVectorContext(simulator, history, simulator.Time + 1);
+        Assert.Equal(global::System.Text.Json.JsonSerializer.Serialize(fresh),
+            global::System.Text.Json.JsonSerializer.Serialize(rebuilt));
+        Assert.Equal(2, Assert.IsType<List<Dictionary<string, object?>>>(
+            rebuilt[OutputContextSchema.SkillHistoryContextKey]).Count);
+    }
+
     private static (JobSimulator Simulator, PolicyActionRegistry Registry) CreateRuntime()
     {
         var root = RepoRootLocator.Find();
@@ -71,5 +98,27 @@ public sealed class PolicyContextBuilderTests
             history.Record(simulator, 0.1, "ogcd_wait", 2.5));
         Assert.Empty(history.Entries);
         Assert.Equal(0.0, simulator.Time);
+    }
+
+    [Fact]
+    public void Policy记录与快照不嵌套持有动作历史且保留最新状态()
+    {
+        var (simulator, registry) = CreateRuntime();
+        simulator.SubmitAction(0, "blizzard_iii");
+        simulator.AdvanceTo(4);
+        Assert.Single(simulator.GetState().History);
+        var history = new PolicyDecisionHistory(registry, new HistoryRetention(2));
+        for (var index = 0; index < 10; index++)
+        {
+            simulator.AdvanceTo(4 + index);
+            var decision = history.Record(simulator, 4 + index, "ogcd_wait", 5 + index);
+            Assert.Empty(decision.StateBefore.History);
+            Assert.Empty(decision.StateAfter.History);
+        }
+        Assert.Equal(new[] { 12.0, 13.0 }, history.Entries.Select(item => item.Timestamp));
+        var fork = history.Fork();
+        Assert.Equal(2, fork.Entries.Count);
+        Assert.All(fork.Entries, item => Assert.Empty(item.StateBefore.History));
+        Assert.Single(simulator.GetState().History);
     }
 }

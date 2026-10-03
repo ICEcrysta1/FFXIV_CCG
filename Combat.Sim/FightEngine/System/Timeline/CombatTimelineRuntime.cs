@@ -19,7 +19,7 @@ public sealed class CombatTimelineRuntime
     public const double TimeEpsilon = 0.0000001;
 
     private readonly CombatState _state;
-    private readonly PriorityQueue<TimelineEvent, TimelineEventOrder> _queue = new();
+    private PriorityQueue<TimelineEvent, TimelineEventOrder> _queue = new();
     private readonly Dictionary<long, TimelineEvent> _scheduledEvents = new();
     private readonly Dictionary<TimelineEventKind, Func<TimelineEvent, CombatState, TimelineMutation>> _handlers = new();
     private readonly PendingSettlementQueue _pendingSettlements = new();
@@ -115,30 +115,28 @@ public sealed class CombatTimelineRuntime
         _nextSequence = 1;
     }
 
-    private CombatTimelineRuntime(SimulationSnapshot snapshot,
-        IReadOnlyDictionary<TimelineEventKind, Func<TimelineEvent, CombatState, TimelineMutation>> handlers)
+    private CombatTimelineRuntime(CombatTimelineRuntime source, bool includeHistory)
     {
-        ArgumentNullException.ThrowIfNull(snapshot);
-        _state = snapshot.State.Clone();
-        ValidateTime(_state.Time);
-        _nextSequence = snapshot.NextSequence;
+        // 内部分支直接复制一次；不先创建对外快照再重复克隆快照中的状态。
+        _state = includeHistory ? source._state.Clone() : source._state.CloneWithoutHistory();
+        _nextSequence = source._nextSequence;
 
-        foreach (var pendingEvent in snapshot.PendingEvents)
+        foreach (var pendingEvent in source._scheduledEvents.Values)
         {
-            AddRestoredEvent(pendingEvent);
+            AddRestoredEvent(pendingEvent.DeepClone());
         }
 
-        foreach (var settlement in snapshot.PendingSettlements)
+        foreach (var settlement in source._pendingSettlements.Snapshot())
         {
             ValidateTime(settlement.Timestamp);
-            _pendingSettlements.Enqueue(settlement);
+            _pendingSettlements.Enqueue(settlement.DeepClone());
             if (settlement.Sequence >= _nextSequence)
             {
                 _nextSequence = settlement.Sequence + 1;
             }
         }
 
-        foreach (var pair in handlers)
+        foreach (var pair in source._handlers)
         {
             _handlers[pair.Key] = pair.Value;
         }
@@ -146,6 +144,10 @@ public sealed class CombatTimelineRuntime
 
     /// <summary>当前逻辑时间。该属性没有 setter，只有 AdvanceTo 可以修改它。</summary>
     public double CurrentTime => _state.Time;
+    public int PendingEventCount => _scheduledEvents.Count;
+    public int QueueEntryCount => _queue.Count;
+    public int PendingSettlementCount => _pendingSettlements.Count;
+    internal int HistoryCount => _state.History.Count;
 
     public IReadOnlyList<TimelineEvent> PendingEvents =>
         _scheduledEvents.Values
@@ -154,6 +156,12 @@ public sealed class CombatTimelineRuntime
             .ToArray();
 
     public CombatState GetState() => _state.Clone();
+    internal CombatState GetStateWithoutHistory() => _state.CloneWithoutHistory();
+
+    internal bool HasQueuedAction() => _scheduledEvents.Values.Any(item =>
+        item.Kind == TimelineEventKind.ActionAccepted
+        && item.Payload is ActionLifecyclePayload payload
+        && payload.AcceptedTimestamp > payload.Request.Timestamp + TimeEpsilon);
 
     /// <summary>
     /// 注册一个按事件类型分派的领域处理器。
@@ -193,7 +201,20 @@ public sealed class CombatTimelineRuntime
     }
 
     /// <summary>取消尚未处理的事件；已处理或不存在的 sequence 返回 false。</summary>
-    public bool Cancel(long sequence) => _scheduledEvents.Remove(sequence);
+    public bool Cancel(long sequence)
+    {
+        if (!_scheduledEvents.Remove(sequence)) return false;
+        CompactQueueIfNeeded();
+        return true;
+    }
+
+    private void CompactQueueIfNeeded()
+    {
+        // 惰性取消只允许留下有限的旧节点；重建时也释放旧数组和载荷引用。
+        if (_queue.Count > 2 * _scheduledEvents.Count + 64)
+            _queue = new PriorityQueue<TimelineEvent, TimelineEventOrder>(
+                _scheduledEvents.Values.Select(item => (item, TimelineEventOrder.From(item))));
+    }
 
     public double? GetNextScheduledEventTime()
     {
@@ -206,6 +227,13 @@ public sealed class CombatTimelineRuntime
     /// 这是生产代码唯一的时间推进和事件排空入口。
     /// </summary>
     public CombatState AdvanceTo(double timestamp)
+    {
+        AdvanceClockTo(timestamp);
+        return GetState();
+    }
+
+    /// <summary>内部无需返回快照的推进仍走同一套事件内核。</summary>
+    internal void AdvanceClockTo(double timestamp)
     {
         ValidateTime(timestamp);
         if (timestamp < CurrentTime - TimeEpsilon)
@@ -240,7 +268,6 @@ public sealed class CombatTimelineRuntime
 
         _state.SetTimelineTime(Math.Max(_state.Time, timestamp));
         SynchronizeResources();
-        return GetState();
     }
 
     /// <summary>
@@ -330,9 +357,11 @@ public sealed class CombatTimelineRuntime
         }
     }
 
-    public CombatTimelineRuntime Fork()
+    public CombatTimelineRuntime Fork() => Fork(includeHistory: true);
+
+    internal CombatTimelineRuntime Fork(bool includeHistory)
     {
-        var fork = new CombatTimelineRuntime(CreateSnapshot(), _handlers);
+        var fork = new CombatTimelineRuntime(this, includeHistory);
         fork._resourceEvents = _resourceEvents;
         fork._resourceSequences.UnionWith(_resourceSequences);
         return fork;
@@ -391,6 +420,8 @@ public sealed class CombatTimelineRuntime
                 return false;
             }
 
+            // 活跃事件大量出队后，远期取消节点也需要压缩，不能只在 Cancel 时检查。
+            CompactQueueIfNeeded();
             timelineEvent = candidate;
             return true;
         }
@@ -432,6 +463,7 @@ public sealed class CombatTimelineRuntime
         var clone = source.Clone();
         target.SetTimelineTime(clone.Time);
         target.GcdIndex = clone.GcdIndex;
+        target.BaseGcd = clone.BaseGcd;
         target.FightEndsAt = clone.FightEndsAt;
         target.NextDowntimeStartsAt = clone.NextDowntimeStartsAt;
         target.DowntimeRemaining = clone.DowntimeRemaining;

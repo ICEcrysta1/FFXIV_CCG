@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import sys
 from types import SimpleNamespace
 
@@ -175,10 +174,11 @@ def test_full_workflow_returns_gate_exit_without_raising(monkeypatch, capsys):
     monkeypatch.setattr(workflow, "run_export", lambda **_kwargs: None)
     monkeypatch.setattr(workflow, "print_release_status", lambda **_kwargs: None)
 
-    def fail_parity(scenario, **_kwargs):
-        raise AssertionError(f"{scenario} mismatch")
+    def fail_parity(scenarios, **_kwargs):
+        assert scenarios == ("empty", "scene")
+        raise AssertionError("; ".join(f"{scenario} mismatch" for scenario in scenarios))
 
-    monkeypatch.setattr(workflow, "run_parity", fail_parity)
+    monkeypatch.setattr(workflow, "run_parities", fail_parity)
 
     assert workflow._run_all() == 2
     output = capsys.readouterr().out
@@ -215,7 +215,7 @@ def test_full_workflow_reports_export_failure_without_traceback(monkeypatch, cap
     )
     monkeypatch.setattr(
         workflow,
-        "run_parity",
+        "run_parities",
         lambda _scenario, **_kwargs: pytest.fail(
             "parity must not run after export failure"
         ),
@@ -297,32 +297,79 @@ def test_formal_workflow_uses_fixed_precision_tolerance(monkeypatch, tmp_path):
         lambda **_kwargs: replay_config,
     )
 
-    def run_parity(_config, **kwargs):
+    def run_parity(configs, **kwargs):
+        assert configs == (replay_config,)
         received.update(kwargs)
-        return tmp_path / "empty.json"
+        return [tmp_path / "empty.json"]
 
-    monkeypatch.setattr(workflow, "run_rollout_parity", run_parity)
+    monkeypatch.setattr(workflow, "run_rollout_parities", run_parity)
 
-    workflow.run_parity("empty")
+    workflow.run_parities(("empty",))
 
     assert received["tolerance"] == pytest.approx(0.25)
     assert received["release_gate"] is True
 
     parity_config.empty_max_steps = minimum_empty_action_budget(128) - 1
-    with pytest.raises(ValueError, match="action budget is too small"):
-        workflow.run_parity("empty")
+    with pytest.raises(AssertionError, match="action budget is too small"):
+        workflow.run_parities(("empty",))
     parity_config.empty_max_steps = minimum_empty_action_budget(128)
 
     parity_config.tolerance = 1.0
-    with pytest.raises(ValueError, match="fixed by manifest precision"):
-        workflow.run_parity("empty")
+    with pytest.raises(AssertionError, match="fixed by manifest precision"):
+        workflow.run_parities(("empty",))
 
     parity_config.tolerance = None
     export_config.precision = "float32"
-    with pytest.raises(ValueError, match="differs from the existing deployment package"):
-        workflow.run_parity("empty")
+    with pytest.raises(AssertionError, match="differs from the existing deployment package"):
+        workflow.run_parities(("empty",))
 
     export_config.precision = "bf16"
     parity_config.scene_max_steps = 99
-    with pytest.raises(ValueError, match="max_steps >= 100"):
-        workflow.run_parity("scene")
+    with pytest.raises(AssertionError, match="max_steps >= 100"):
+        workflow.run_parities(("scene",))
+
+
+@pytest.mark.parametrize("invalid_empty", [False, True])
+def test_workflow_prepares_all_scenarios_and_submits_one_batch(monkeypatch, tmp_path, invalid_empty):
+    prepared, submitted = [], []
+    checkpoint = tmp_path / "model.pt"
+    settings = dict(onnx_package_path=tmp_path / "deployment", provider="CPUExecutionProvider", release_gate=True)
+    def prepare(scenario, **kwargs):
+        assert kwargs["checkpoint"] == checkpoint
+        prepared.append(scenario)
+        if invalid_empty and scenario == "empty":
+            raise ValueError("invalid empty config")
+        return scenario, dict(settings, output_path=tmp_path / f"{scenario}.json")
+    def run(configs, **kwargs):
+        submitted.append((configs, kwargs))
+        return kwargs["output_paths"]
+    monkeypatch.setattr(workflow, "_parity_request", prepare)
+    monkeypatch.setattr(workflow, "run_rollout_parities", run)
+    if invalid_empty:
+        with pytest.raises(AssertionError, match="invalid empty config"):
+            workflow.run_parities(("empty", "scene"), checkpoint=checkpoint)
+    else:
+        workflow.run_parities(("empty", "scene"), checkpoint=checkpoint)
+    assert prepared == ["empty", "scene"]
+    assert len(submitted) == 1
+    configs, kwargs = submitted[0]
+    assert configs == (("scene",) if invalid_empty else ("empty", "scene"))
+    assert kwargs == dict(settings, output_paths=[tmp_path / f"{scene}.json" for scene in configs])
+
+
+def test_onnx_replay_workflow_uses_batch_entrypoint(monkeypatch, tmp_path):
+    output = tmp_path / "rollout.md"
+    config = SimpleNamespace(output_path=output)
+    monkeypatch.setattr(workflow, "_load_export_config", lambda _checkpoint: SimpleNamespace(output_dir=tmp_path, ort_provider="CPUExecutionProvider"))
+    def load(**kwargs):
+        assert kwargs["backend"] == "onnxruntime"
+        return config
+    monkeypatch.setattr(workflow, "load_replay_config", load)
+    calls = []
+    def run(configs):
+        calls.append(configs)
+        yield "result"
+    monkeypatch.setattr(workflow, "run_replays", run)
+    monkeypatch.setattr(workflow, "write_markdown", lambda result, path: path if result == "result" else pytest.fail("wrong result"))
+    workflow.run_onnx_replay()
+    assert calls == [[config]]

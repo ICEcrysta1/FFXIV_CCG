@@ -9,11 +9,13 @@ namespace FightEngine.Tests.System;
 /// <summary>防止新时间线 API 在领域模块中重新出现第二套推进入口。</summary>
 public sealed class TimelineAuthorityTests
 {
-    // 公开绝对时间门面只能委托 CombatTimelineRuntime.AdvanceTo，不属于第二套内核。
+    // 门面只能委托同一时间线内核；内部无返回值入口省略快照，不另建推进逻辑。
     private static readonly HashSet<string> AllowedDelegatingEntryPoints = new(StringComparer.Ordinal)
     {
         "Combat.Sim.Facade.JobSimulator.AdvanceTo",
+        "Combat.Sim.Facade.JobSimulator.AdvanceClockTo",
         "Combat.Sim.Facade.ReplayStateCache.AdvanceTo",
+        "Combat.Sim.Sessions.SimulationSession.AdvanceTo",
     };
 
     [Fact]

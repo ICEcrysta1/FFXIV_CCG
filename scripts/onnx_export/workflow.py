@@ -8,8 +8,8 @@ from pathlib import Path
 
 from scripts.autoregressive_replay.config import load_replay_config
 from scripts.autoregressive_replay.outputs import write_markdown
-from scripts.autoregressive_replay.parity import run_rollout_parity
-from scripts.autoregressive_replay.replay import AutoregressiveReplay
+from scripts.autoregressive_replay.parity import run_rollout_parities
+from scripts.autoregressive_replay.batch_replay import run_replays
 
 from .config.config import load_export_config, load_parity_config
 from .contracts.deployment_contract import DeploymentManifest
@@ -51,9 +51,9 @@ def main() -> int:
     if args.action == "env":
         check_environment(checkpoint=args.checkpoint)
     elif args.action == "empty-parity":
-        run_parity("empty", checkpoint=args.checkpoint)
+        run_parities(("empty",), checkpoint=args.checkpoint)
     elif args.action == "scene-parity":
-        run_parity("scene", checkpoint=args.checkpoint)
+        run_parities(("scene",), checkpoint=args.checkpoint)
     elif args.action == "verify":
         print_release_status(checkpoint=args.checkpoint)
     elif args.action == "run":
@@ -104,8 +104,29 @@ def check_environment(*, checkpoint: Path | None = None) -> None:
         raise RuntimeError("当前 CUDA 设备不支持原生 BF16")
 
 
-def run_parity(scenario: str, *, checkpoint: Path | None = None) -> None:
-    """从 `.env` 装配并执行指定的正式 parity 门禁。"""
+def run_parities(scenarios, *, checkpoint: Path | None = None) -> None:
+    """先检查所有场景，再共用模型和引擎验收，完整汇报失败。"""
+    requests, failures = [], []
+    for scenario in scenarios:
+        try:
+            requests.append(_parity_request(scenario, checkpoint=checkpoint))
+        except Exception as exc:
+            failures.append(f"{scenario}: {exc}")
+    if requests:
+        configs, settings = zip(*requests)
+        kwargs = {key: value for key, value in settings[0].items() if key != "output_path"}
+        if any({key: value for key, value in item.items() if key != "output_path"} != kwargs for item in settings):
+            raise ValueError("parallel release requests must use the same deployment contract")
+        try:
+            for path in run_rollout_parities(configs, output_paths=[item["output_path"] for item in settings], **kwargs):
+                print(path)
+        except Exception as exc:
+            failures.append(str(exc))
+    if failures:
+        raise AssertionError("; ".join(failures))
+
+
+def _parity_request(scenario: str, *, checkpoint: Path | None = None):
     export_config = _load_export_config(checkpoint)
     parity_config = load_parity_config()
     if scenario == "empty":
@@ -159,15 +180,13 @@ def run_parity(scenario: str, *, checkpoint: Path | None = None) -> None:
         top_p=1.0,
         use_kv_cache=False,
     )
-    report_path = run_rollout_parity(
-        replay_config,
+    return replay_config, dict(
         onnx_package_path=export_config.output_dir,
         provider=export_config.ort_provider,
         output_path=output_path,
         tolerance=required_tolerance,
         release_gate=True,
     )
-    print(report_path)
 
 
 def print_release_status(*, checkpoint: Path | None = None) -> None:
@@ -199,11 +218,8 @@ def run_onnx_replay(*, checkpoint: Path | None = None) -> None:
         onnx_package=export_config.output_dir,
         ort_provider=export_config.ort_provider,
     )
-    output = write_markdown(
-        AutoregressiveReplay(replay_config).run(),
-        replay_config.output_path,
-    )
-    print(output)
+    for result in run_replays([replay_config]):
+        print(write_markdown(result, replay_config.output_path))
 
 
 def _run_all(*, checkpoint: Path | None = None) -> int:
@@ -219,12 +235,11 @@ def _run_all(*, checkpoint: Path | None = None) -> int:
         print(f"ONNX 导出失败，已停止发布流程：{exc}")
         return 1
     failures: list[str] = []
-    for scenario in ("empty", "scene"):
-        try:
-            run_parity(scenario, checkpoint=checkpoint)
-        except Exception as exc:
-            failures.append(f"{scenario}: {exc}")
-            print(f"{scenario} parity 未通过，已继续下一项：{exc}")
+    try:
+        run_parities(("empty", "scene"), checkpoint=checkpoint)
+    except Exception as exc:
+        failures.append(str(exc))
+        print(f"parity 未通过，各场景验收结果已汇总：{exc}")
     print_release_status(checkpoint=checkpoint)
     if failures:
         print()

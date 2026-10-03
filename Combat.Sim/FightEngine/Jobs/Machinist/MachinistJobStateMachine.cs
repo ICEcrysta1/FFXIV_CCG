@@ -183,7 +183,7 @@ public sealed partial class MachinistJobStateMachine : JobResourceAccessors, IJo
         }
     }
 
-    public double CurrentGcdDuration(CombatState state) => Project.System.BaseGcd;
+    public double CurrentGcdDuration(CombatState state) => state.BaseGcd ?? Project.System.BaseGcd;
 
     public bool IsInstant(CombatState state, SkillDefinition skill) =>
         skill.Kind == ActionKind.Ogcd || skill.CastTime <= 0.0;

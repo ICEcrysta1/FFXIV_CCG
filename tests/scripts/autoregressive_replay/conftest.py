@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 import torch
 
@@ -15,6 +13,7 @@ from scripts.common.json_io import atomic_write_json
 def _isolate_replay_dotenv(monkeypatch):
     """单元测试不读取开发机根目录 `.env`，需要的变量由用例显式提供。"""
     monkeypatch.delenv("AUTOREGRESSIVE_REPLAY_BACKEND", raising=False)
+    monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_WORKERS", "1")
     monkeypatch.setattr(replay_config_module, "load_root_dotenv", lambda _root: None)
 
 

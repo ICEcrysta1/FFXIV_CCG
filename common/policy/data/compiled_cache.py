@@ -54,29 +54,43 @@ class CompiledShardCache:
             raise ValueError("max_shards must be >= 1")
         self.max_shards = int(max_shards)
         self._items: OrderedDict[tuple[str, int], list[dict[str, object]]] = OrderedDict()
+        from threading import RLock
+        self._lock = RLock()
 
     def get(
         self,
         key: tuple[str, int],
         loader: Callable[[], list[dict[str, object]]],
     ) -> list[dict[str, object]]:
-        cached = self._items.get(key)
-        if cached is not None:
+        with self._lock:
+            cached = self._items.get(key)
+            if cached is not None:
+                self._items.move_to_end(key)
+                return cached
+            loaded = loader()
+            self._items[key] = loaded
             self._items.move_to_end(key)
-            return cached
-
-        loaded = loader()
-        self._items[key] = loaded
-        self._items.move_to_end(key)
-        while len(self._items) > self.max_shards:
-            self._items.popitem(last=False)
-        return loaded
+            while len(self._items) > self.max_shards:
+                self._items.popitem(last=False)
+            return loaded
 
     def clear(self) -> None:
-        self._items.clear()
+        with self._lock:
+            self._items.clear()
 
     def __len__(self) -> int:
-        return len(self._items)
+        with self._lock:
+            return len(self._items)
+
+    def __getstate__(self):
+        # Windows DataLoader spawn 不传递线程锁，子进程重建自己的锁。
+        with self._lock:
+            return {"max_shards": self.max_shards, "_items": self._items.copy()}
+
+    def __setstate__(self, state):
+        from threading import RLock
+        self.__dict__.update(state)
+        self._lock = RLock()
 
 
 class CompiledCacheReader:
