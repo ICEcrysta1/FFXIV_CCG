@@ -115,30 +115,28 @@ public sealed class CombatTimelineRuntime
         _nextSequence = 1;
     }
 
-    private CombatTimelineRuntime(SimulationSnapshot snapshot,
-        IReadOnlyDictionary<TimelineEventKind, Func<TimelineEvent, CombatState, TimelineMutation>> handlers)
+    private CombatTimelineRuntime(CombatTimelineRuntime source, bool includeHistory)
     {
-        ArgumentNullException.ThrowIfNull(snapshot);
-        _state = snapshot.State.Clone();
-        ValidateTime(_state.Time);
-        _nextSequence = snapshot.NextSequence;
+        // 内部分支直接复制一次；不先创建对外快照再重复克隆快照中的状态。
+        _state = includeHistory ? source._state.Clone() : source._state.CloneWithoutHistory();
+        _nextSequence = source._nextSequence;
 
-        foreach (var pendingEvent in snapshot.PendingEvents)
+        foreach (var pendingEvent in source._scheduledEvents.Values)
         {
-            AddRestoredEvent(pendingEvent);
+            AddRestoredEvent(pendingEvent.DeepClone());
         }
 
-        foreach (var settlement in snapshot.PendingSettlements)
+        foreach (var settlement in source._pendingSettlements.Snapshot())
         {
             ValidateTime(settlement.Timestamp);
-            _pendingSettlements.Enqueue(settlement);
+            _pendingSettlements.Enqueue(settlement.DeepClone());
             if (settlement.Sequence >= _nextSequence)
             {
                 _nextSequence = settlement.Sequence + 1;
             }
         }
 
-        foreach (var pair in handlers)
+        foreach (var pair in source._handlers)
         {
             _handlers[pair.Key] = pair.Value;
         }
@@ -158,6 +156,12 @@ public sealed class CombatTimelineRuntime
             .ToArray();
 
     public CombatState GetState() => _state.Clone();
+    internal CombatState GetStateWithoutHistory() => _state.CloneWithoutHistory();
+
+    internal bool HasQueuedAction() => _scheduledEvents.Values.Any(item =>
+        item.Kind == TimelineEventKind.ActionAccepted
+        && item.Payload is ActionLifecyclePayload payload
+        && payload.AcceptedTimestamp > payload.Request.Timestamp + TimeEpsilon);
 
     /// <summary>
     /// 注册一个按事件类型分派的领域处理器。
@@ -224,6 +228,13 @@ public sealed class CombatTimelineRuntime
     /// </summary>
     public CombatState AdvanceTo(double timestamp)
     {
+        AdvanceClockTo(timestamp);
+        return GetState();
+    }
+
+    /// <summary>内部无需返回快照的推进仍走同一套事件内核。</summary>
+    internal void AdvanceClockTo(double timestamp)
+    {
         ValidateTime(timestamp);
         if (timestamp < CurrentTime - TimeEpsilon)
         {
@@ -257,7 +268,6 @@ public sealed class CombatTimelineRuntime
 
         _state.SetTimelineTime(Math.Max(_state.Time, timestamp));
         SynchronizeResources();
-        return GetState();
     }
 
     /// <summary>
@@ -347,9 +357,11 @@ public sealed class CombatTimelineRuntime
         }
     }
 
-    public CombatTimelineRuntime Fork()
+    public CombatTimelineRuntime Fork() => Fork(includeHistory: true);
+
+    internal CombatTimelineRuntime Fork(bool includeHistory)
     {
-        var fork = new CombatTimelineRuntime(CreateSnapshot(), _handlers);
+        var fork = new CombatTimelineRuntime(this, includeHistory);
         fork._resourceEvents = _resourceEvents;
         fork._resourceSequences.UnionWith(_resourceSequences);
         return fork;

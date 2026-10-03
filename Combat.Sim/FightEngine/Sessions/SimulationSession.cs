@@ -59,7 +59,7 @@ public sealed class SimulationSession : IDisposable
 
     public SessionResult<bool> AdvanceTo(double timestamp) => Execute(simulator =>
     {
-        simulator.AdvanceTo(timestamp);
+        simulator.AdvanceClockTo(timestamp);
         return true;
     });
 
@@ -91,7 +91,7 @@ public sealed class SimulationSession : IDisposable
             if (format == "vector" && (nextObservationTimestamp is not { } next
                 || !double.IsFinite(next) || next < timestamp))
                 throw new ArgumentOutOfRangeException(nameof(nextObservationTimestamp));
-            simulator.ObserveAt(timestamp);
+            simulator.AdvanceClockTo(timestamp);
             return format == "vector"
                 ? _policy!.BuildVectorContext(simulator, nextObservationTimestamp!.Value)
                 : simulator.FormatState(format);

@@ -8,6 +8,33 @@ namespace FightEngine.Tests.System;
 public sealed class CombatTimelineRuntimeTests
 {
     [Fact]
+    public void 处理器与Mutation保留的快照不能在返回后修改真实状态()
+    {
+        var runtime = new CombatTimelineRuntime();
+        CombatState? observed = null;
+        CombatState? changed = null;
+        runtime.RegisterHandler(TimelineEventKind.DecisionBoundary, (_, state) =>
+        {
+            observed = state;
+            return new TimelineMutation(ApplyState: target =>
+            {
+                target.Mp = 1234;
+                changed = target;
+            });
+        });
+        runtime.Schedule(new(1, TimelineEventPriority.DecisionBoundary, TimelineEventKind.DecisionBoundary));
+        var result = runtime.AdvanceTo(1);
+        observed!.Mp = 1;
+        changed!.Mp = 2;
+        result.Mp = 3;
+        Assert.Equal(1234, runtime.GetState().Mp);
+        var fork = runtime.Fork();
+        fork.ApplyMutation(new TimelineMutation(ApplyState: state => state.Mp = 4));
+        Assert.Equal(1234, runtime.GetState().Mp);
+        Assert.Equal(4, fork.GetState().Mp);
+    }
+
+    [Fact]
     public void 单次推进与分段推进结果一致()
     {
         var direct = CreateRuntime();

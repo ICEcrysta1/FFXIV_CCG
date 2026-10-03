@@ -59,6 +59,8 @@ public sealed class JobSimulator
     public string JobTag => _machine.JobTag;
     public double Time => _timeline.CurrentTime;
     public CombatState GetState() => _timeline.GetState();
+    internal CombatState GetStateWithoutHistory() => _timeline.GetStateWithoutHistory();
+    internal void AdvanceClockTo(double timestamp) => _timeline.AdvanceClockTo(timestamp);
 
     /// <summary>在绝对请求时刻提交真实游戏动作。</summary>
     public ActionSubmissionResult SubmitAction(double timestamp, string skillKey) =>
@@ -79,9 +81,9 @@ public sealed class JobSimulator
     {
         ArgumentNullException.ThrowIfNull(request);
         var skill = _machine.ResolveSkill(request.SkillKey);
-        _timeline.AdvanceTo(request.Timestamp);
+        _timeline.AdvanceClockTo(request.Timestamp);
 
-        var requestState = _timeline.GetState();
+        var requestState = _timeline.GetStateWithoutHistory();
         var submission = _machine.EvaluateActionSubmission(
             requestState,
             skill,
@@ -109,7 +111,7 @@ public sealed class JobSimulator
             actionId,
             request,
             skill,
-            requestState.CloneWithoutHistory(),
+            requestState,
             timing,
             submission.AcceptedTimestamp);
         _timeline.Schedule(new TimelineEvent(
@@ -123,7 +125,7 @@ public sealed class JobSimulator
         if (!submission.Queued)
         {
             // 同刻命令在已有到期事实结算后接受；事件处理器仍是唯一动作状态写入点。
-            _timeline.AdvanceTo(request.Timestamp);
+            _timeline.AdvanceClockTo(request.Timestamp);
         }
 
         return new(
@@ -140,8 +142,7 @@ public sealed class JobSimulator
     /// <summary>把逻辑时钟推进到绝对时刻并排空所有到期事件。</summary>
     public CombatState AdvanceTo(double timestamp)
     {
-        _timeline.AdvanceTo(timestamp);
-        return _timeline.GetState();
+        return _timeline.AdvanceTo(timestamp);
     }
 
     public CombatState ObserveAt(double timestamp) => AdvanceTo(timestamp);
@@ -149,22 +150,22 @@ public sealed class JobSimulator
     public ValidationResult ValidateActionAt(double timestamp, string skillKey)
     {
         var skill = _machine.ResolveSkill(skillKey);
-        _timeline.AdvanceTo(timestamp);
+        _timeline.AdvanceClockTo(timestamp);
         if (HasQueuedAction())
         {
             return new ValidationResult(false, "action_queue_occupied");
         }
-        return _machine.ValidateAction(_timeline.GetState(), skill);
+        return _machine.ValidateAction(_timeline.GetStateWithoutHistory(), skill);
     }
 
     public IReadOnlyList<string> AvailableActionKeysAt(double timestamp)
     {
-        _timeline.AdvanceTo(timestamp);
+        _timeline.AdvanceClockTo(timestamp);
         if (HasQueuedAction())
         {
             return Array.Empty<string>();
         }
-        return _machine.AvailableActionKeys(_timeline.GetState());
+        return _machine.AvailableActionKeys(_timeline.GetStateWithoutHistory());
     }
 
     public double? GetNextScheduledEventTime() => _timeline.GetNextScheduledEventTime();
@@ -180,7 +181,7 @@ public sealed class JobSimulator
             TimelineEventKind.SceneChanged,
             externalEvent.Kind,
             Payload: externalEvent));
-        _timeline.AdvanceTo(externalEvent.Timestamp);
+        _timeline.AdvanceClockTo(externalEvent.Timestamp);
         return new(true, "", externalEvent.Timestamp);
     }
 
@@ -189,6 +190,8 @@ public sealed class JobSimulator
     public void RestoreSnapshot(SimulationSnapshot snapshot) => _timeline.RestoreSnapshot(snapshot.DeepClone());
 
     public JobSimulator Fork() => new(_machine, _timeline.Fork(), _historyRetention);
+    // 预演只读取战斗状态，历史不参与职业规则；待结算事件及其载荷仍完整隔离。
+    internal JobSimulator ForkForPreview() => new(_machine, _timeline.Fork(includeHistory: false), _historyRetention);
 
     public Dictionary<string, object?> FormatState(string mode = "seconds") =>
         OutputRouter.Format(GetState(), mode);
@@ -214,10 +217,7 @@ public sealed class JobSimulator
         (_timeline.HistoryCount, _timeline.PendingEventCount,
             _timeline.QueueEntryCount, _timeline.PendingSettlementCount);
 
-    private bool HasQueuedAction() => _timeline.PendingEvents.Any(item =>
-        item.Kind == TimelineEventKind.ActionAccepted
-        && item.Payload is ActionLifecyclePayload payload
-        && payload.AcceptedTimestamp > payload.Request.Timestamp + CombatTimelineRuntime.TimeEpsilon);
+    internal bool HasQueuedAction() => _timeline.HasQueuedAction();
 
     private CombatTimelineRuntime BuildTimeline(CombatState state)
     {

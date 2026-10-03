@@ -23,6 +23,8 @@ public sealed class PolicyDecisionHistory
 
     internal HistoryRetention Retention { get; }
     internal int Count => _entries.Count;
+    // 仅供同队列输出层只读访问；公开快照仍防御性复制。
+    internal IReadOnlyList<PolicyDecision> ReadEntries => _entries;
 
     public IReadOnlyList<PolicyDecision> Entries => _entries.Select(item => item.DeepClone()).ToArray();
 
@@ -38,13 +40,14 @@ public sealed class PolicyDecisionHistory
             throw new InvalidOperationException(
                 $"policy decision timestamp must equal current observation time: {timestamp:R} != {simulator.Time:R}");
         }
-        var before = simulator.GetState();
+        var before = simulator.GetStateWithoutHistory();
         if (nextObservationTimestamp < timestamp)
             throw new ArgumentOutOfRangeException(nameof(nextObservationTimestamp));
-        var branch = simulator.Fork();
-        var after = branch.ObserveAt(nextObservationTimestamp);
+        var branch = simulator.ForkForPreview();
+        branch.AdvanceClockTo(nextObservationTimestamp);
+        var after = branch.GetStateWithoutHistory();
         var decision = new PolicyDecision(action, timestamp, before.GcdIndex,
-            before.CloneWithoutHistory(), after.CloneWithoutHistory());
+            before, after);
         _entries.Add(decision);
         Retention.Trim(_entries);
         return decision.DeepClone();

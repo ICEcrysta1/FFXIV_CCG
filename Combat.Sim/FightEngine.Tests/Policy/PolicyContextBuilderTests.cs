@@ -7,6 +7,33 @@ namespace FightEngine.Tests.Policy;
 
 public sealed class PolicyContextBuilderTests
 {
+    [Fact]
+    public void 等待输出缓存随窗口淘汰并在同刻恢复新快照后重新生成()
+    {
+        var (simulator, registry) = CreateRuntime();
+        var history = new PolicyDecisionHistory(registry, new HistoryRetention(2));
+        var builder = new PolicyContextBuilder(registry);
+        for (var index = 0; index < 20; index++)
+        {
+            simulator.AdvanceTo(index);
+            history.Record(simulator, index, "ogcd_wait", index + 1);
+            var actual = builder.BuildVectorContext(simulator, history, index + 1);
+            var expected = new PolicyContextBuilder(registry).BuildVectorContext(simulator, history, index + 1);
+            Assert.Equal(global::System.Text.Json.JsonSerializer.Serialize(expected),
+                global::System.Text.Json.JsonSerializer.Serialize(actual));
+        }
+        var restored = history.CreateSnapshot();
+        restored[0].StateBefore.Mp = 123;
+        restored[0].StateAfter.Mp = 456;
+        history.RestoreSnapshot(restored);
+        var rebuilt = builder.BuildVectorContext(simulator, history, simulator.Time + 1);
+        var fresh = new PolicyContextBuilder(registry).BuildVectorContext(simulator, history, simulator.Time + 1);
+        Assert.Equal(global::System.Text.Json.JsonSerializer.Serialize(fresh),
+            global::System.Text.Json.JsonSerializer.Serialize(rebuilt));
+        Assert.Equal(2, Assert.IsType<List<Dictionary<string, object?>>>(
+            rebuilt[OutputContextSchema.SkillHistoryContextKey]).Count);
+    }
+
     private static (JobSimulator Simulator, PolicyActionRegistry Registry) CreateRuntime()
     {
         var root = RepoRootLocator.Find();

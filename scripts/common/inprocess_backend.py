@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import pickle
 import threading
 from pathlib import Path
 from typing import Any, Self
@@ -83,11 +84,10 @@ def _load_dotnet_types() -> tuple[Any, Any, Any]:
             from Combat.Sim.Config import SchemaConfigLoader
             from Combat.Sim.Models.Timeline import ExternalCombatEvent
             from Combat.Sim.Sessions import SimulationEngine
-            from Combat.Sim.PythonBridge import NativeContextMarshaller
+            from Combat.Sim.PythonBridge import ContextPacketEncoder
         except Exception as exc:
             raise RuntimeError(
                 "无法在 Python 进程内加载 FightEngine/PythonBridge；请确认两个程序集来自当前工作树，"
-                "PythonBridge 按当前 pythonnet 的 Python.Runtime.dll 构建，"
                 "且本 Python 进程尚未加载其他版本的 .NET runtime。"
             ) from exc
 
@@ -98,7 +98,7 @@ def _load_dotnet_types() -> tuple[Any, Any, Any]:
                 f"expected={SIDECAR_CONTRACT_VERSION}, dll={assembly_version}。"
                 "请使用当前工作树重新构建 PythonBridge。"
             )
-        _DOTNET_TYPES = (SimulationEngine, ExternalCombatEvent, NativeContextMarshaller)
+        _DOTNET_TYPES = (SimulationEngine, ExternalCombatEvent, ContextPacketEncoder)
         return _DOTNET_TYPES
 
 
@@ -331,8 +331,12 @@ class InProcessBackend:
 
         response = self._require_session().ObserveAt(float(timestamp), format, next_observation_timestamp)
 
-        *_, native_context_marshaller = self._types()
-        python_context = native_context_marshaller.Convert(response.Value)
+        *_, context_packet_encoder = self._types()
+        # C# 编码不持有 GIL；借用托管数组缓冲区，交给标准库批量还原原生容器。
+        # 数据只来自当前加载的桥接程序集，不接受文件或外部 pickle 输入。
+        encoded = context_packet_encoder.Encode(response.Value)
+        with memoryview(encoded) as buffer:
+            python_context = pickle.loads(buffer)
         return ObservationResult(
             timestamp=float(response.Timestamp),
             format=format,

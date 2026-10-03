@@ -9,8 +9,8 @@ using Combat.Sim.Models.Definitions;
 namespace Combat.Sim.Facade;
 
 /// <summary>
-/// 候选动作预演。每个合法候选都从完整 SimulationSnapshot 分支并真实提交一次动作，
-/// 因而冷却、状态、职业事件和待结算事实与主执行路径完全相同。
+/// 候选动作预演。合法候选保留完整战斗状态和事件分支并真实提交一次动作，
+/// 冷却、状态、职业事件和待结算事实与主执行路径相同，不携带无关的历史前缀。
 /// </summary>
 internal static class CandidatePreviewBuilder
 {
@@ -19,37 +19,44 @@ internal static class CandidatePreviewBuilder
         CombatStateMachine machine)
     {
         var candidates = new List<CandidatePreview>();
+        var previousState = simulator.GetStateWithoutHistory();
+        // 同刻到期事件只在准备分支结算一次，非法候选不再复制整条时间线。
+        var prepared = simulator.ForkForPreview();
+        var submissionState = prepared.AdvanceTo(previousState.Time);
+        var queueOccupied = prepared.HasQueuedAction();
         foreach (var skill in machine.SkillBook.EnabledSkills())
         {
-            candidates.Add(BuildEntry(simulator.Fork(), machine, skill));
+            var submission = machine.EvaluateActionSubmission(submissionState, skill, queueOccupied);
+            candidates.Add(BuildEntry(prepared, machine, skill, previousState,
+                new ValidationResult(submission.Accepted, submission.Reason)));
         }
         return candidates;
     }
 
     private static CandidatePreview BuildEntry(
-        JobSimulator preview,
+        JobSimulator prepared,
         CombatStateMachine machine,
-        SkillDefinition skill)
+        SkillDefinition skill,
+        CombatState previousState,
+        ValidationResult validation)
     {
-        var previousState = preview.GetState();
-        var submission = preview.SubmitAction(previousState.Time, skill.Key);
-        var validation = new ValidationResult(submission.Accepted, submission.Reason);
         var snapshot = machine.BuildSkillSnapshot(previousState, skill, validation);
         var timing = machine.BuildActionTimingPlan(previousState, skill);
         var nextState = previousState;
         CombatState? candidateAfterState = null;
 
-        if (submission.Accepted)
+        if (validation.Ok)
         {
+            var preview = prepared.ForkForPreview();
+            var submission = preview.SubmitAction(previousState.Time, skill.Key);
             var acceptedAt = submission.AcceptedTimestamp ?? previousState.Time;
             var effectAt = submission.EffectTimestamp ?? acceptedAt;
-            preview.AdvanceTo(effectAt);
-            nextState = preview.GetState();
+            nextState = preview.AdvanceTo(effectAt);
             var observationDelay = skill.Kind == ActionKind.Gcd
                 ? timing.NextGcdWindowSeconds
                 : timing.ActualOccupancySeconds;
-            preview.AdvanceTo(Math.Max(effectAt, acceptedAt + observationDelay));
-            candidateAfterState = preview.GetState();
+            var observeAt = Math.Max(effectAt, acceptedAt + observationDelay);
+            candidateAfterState = observeAt == effectAt ? nextState : preview.AdvanceTo(observeAt);
         }
 
         return new CandidatePreview(

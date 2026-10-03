@@ -68,33 +68,37 @@ class SceneFact:
 
 
 class SceneStateLookup:
-    """按绝对时刻回答场景标量，不持有任何状态。"""
+    """按绝对时刻回答固定场景快照的标量，缓存不改变查询或窗口边界语义。"""
 
     def __init__(self, scene_context: dict[str, object] | None):
-        self._targetable, self._targetable_index = _window_tokens(
+        targetable_tokens, targetable_index = _window_tokens(
             scene_context,
             TARGETABLE_WINDOW_CONTEXT_KEY,
         )
-        self._movement, self._movement_index = _window_tokens(
+        movement_tokens, movement_index = _window_tokens(
             scene_context,
             FORCED_MOVEMENT_CONTEXT_KEY,
         )
 
-    def state_at(self, timestamp: float) -> SceneState:
-        targetable = _resolve_targetable_state(
-            self._targetable,
-            self._targetable_index,
-            timestamp=timestamp,
-        )
-        return SceneState(
-            is_moving=_resolve_is_moving(
-                self._movement,
-                self._movement_index,
+        # 历史前缀会反复查询相同时间；缓存属于本场景，最多 4096 项。
+        # 闭包只持有窗口快照，不引用 self，不让全局缓存延长已结束队列的生命周期。
+        @lru_cache(maxsize=4096)
+        def cached_state_at(timestamp: float) -> SceneState:
+            targetable = _resolve_targetable_state(
+                targetable_tokens,
+                targetable_index,
                 timestamp=timestamp,
-            ),
-            next_downtime_eta=targetable["next_downtime_eta"],
-            downtime_remaining=targetable["downtime_remaining"],
-        )
+            )
+            return SceneState(
+                is_moving=_resolve_is_moving(movement_tokens, movement_index, timestamp=timestamp),
+                next_downtime_eta=targetable["next_downtime_eta"],
+                downtime_remaining=targetable["downtime_remaining"],
+            )
+
+        self._cached_state_at = cached_state_at
+
+    def state_at(self, timestamp: float) -> SceneState:
+        return self._cached_state_at(timestamp)
 
 
 class SceneFactScheduler:
