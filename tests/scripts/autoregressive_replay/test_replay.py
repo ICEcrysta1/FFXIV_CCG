@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,6 +11,7 @@ import torch
 
 from common.torch_runtime import autocast_context, model_dtype
 from common.policy.model import RepetitionConfig
+from common.policy.replay import AutoregressiveReplayConfig
 from scripts.autoregressive_replay import main as replay_main_module
 from scripts.autoregressive_replay.outputs.markdown import SKILL_NAMES, write_markdown
 from scripts.autoregressive_replay.replay import (
@@ -259,7 +261,32 @@ def test_replay_reset_for_trajectory_resets_scene_provider_before_session():
     assert calls == ["scene", "session", ("observe", 3.5)]
 
 
-def test_replay_uses_session_normalizer_for_context_builders(monkeypatch):
+@pytest.fixture
+def constructor_config(tmp_path):
+    return AutoregressiveReplayConfig(
+        checkpoint_path=None,
+        output_path=tmp_path / "rollout.md",
+        scene_json_path=tmp_path / "scene.json",
+        cache_dir=tmp_path / "cache",
+        model_history_capacity=8,
+        cache_shard_size=4,
+        cache_max_shards=2,
+        scene_duration_seconds=10.0,
+        job_tag="black_mage",
+        use_kv_cache=False,
+        scene_mode="empty",
+        max_history=8,
+    )
+
+
+def test_replay_requires_session_before_loading_scene(constructor_config):
+    config = replace(constructor_config, scene_duration_seconds=None)
+    assert not config.scene_json_path.exists()
+    with pytest.raises(ValueError, match="requires a shared session"):
+        AutoregressiveReplay(config, session=None)
+
+
+def test_replay_uses_session_normalizer_for_context_builders(monkeypatch, constructor_config):
     session_normalizer = object()
     schema = SimpleNamespace()
     reader = SimpleNamespace(
@@ -302,13 +329,7 @@ def test_replay_uses_session_normalizer_for_context_builders(monkeypatch):
         state_machine=object(),
         load_reader=lambda _config: reader,
     )
-    config = SimpleNamespace(
-        job_tag="black_mage",
-        use_kv_cache=False,
-        scene_mode="empty",
-        scene_sample_index=0,
-        max_history=8,
-    )
+    config = constructor_config
     captured = {}
 
     def fake_scene_provider(*_args, **kwargs):
@@ -329,7 +350,7 @@ def test_replay_uses_session_normalizer_for_context_builders(monkeypatch):
     assert backend.cache_calls == [False]
 
 
-def test_replay_constructor_failure_keeps_session_ownership_with_caller(monkeypatch):
+def test_replay_constructor_failure_keeps_session_ownership_with_caller(constructor_config):
     class FakeBackend:
         input_device = torch.device("cpu")
 
@@ -337,10 +358,8 @@ def test_replay_constructor_failure_keeps_session_ownership_with_caller(monkeypa
             return None
 
     class FakeSession:
-        instance = None
-
-        def __init__(self, _config, *, backend=None):
-            self.backend = FakeBackend() if backend is None else backend
+        def __init__(self):
+            self.backend = FakeBackend()
             self.device = torch.device("cpu")
             self.data_spec = SimpleNamespace(
                 job_tag="black_mage",
@@ -349,7 +368,6 @@ def test_replay_constructor_failure_keeps_session_ownership_with_caller(monkeypa
             self.input_contract = SimpleNamespace()
             self.vocab = object()
             self.close_calls = 0
-            FakeSession.instance = self
 
         def load_reader(self, _config):
             raise RuntimeError("cache load failed")
@@ -357,17 +375,8 @@ def test_replay_constructor_failure_keeps_session_ownership_with_caller(monkeypa
         def close(self):
             self.close_calls += 1
 
-    monkeypatch.setattr(replay_module, "AutoregressiveReplaySession", FakeSession)
-    config = SimpleNamespace(
-        scene_json_path=None,
-        job_tag="black_mage",
-        use_kv_cache=False,
-        scene_mode="empty",
-        scene_sample_index=0,
-        max_history=8,
-    )
-
-    session = FakeSession(config)
+    config = constructor_config
+    session = FakeSession()
     with pytest.raises(RuntimeError, match="cache load failed"):
         AutoregressiveReplay(config, session=session)
 
@@ -501,6 +510,7 @@ def test_replay_respects_shared_candidate_mask():
 
 def test_replay_waits_until_early_gcd_decision():
     replay = object.__new__(AutoregressiveReplay)
+    replay._session = SimpleNamespace(reset=lambda _config, **_kwargs: None)
     replay.config = SimpleNamespace(
         initial_action=None,
         max_steps=2,
@@ -732,6 +742,7 @@ def test_replay_event_timeline_advances_action_completion_and_gcd_window(cs_back
 
 def test_replay_no_legal_candidate_waits_until_next_event_and_continues():
     replay = object.__new__(AutoregressiveReplay)
+    replay._session = SimpleNamespace(reset=lambda _config, **_kwargs: None)
     replay.config = SimpleNamespace(
         initial_action=None,
         initial_time_seconds=None,
@@ -770,6 +781,7 @@ def test_replay_no_legal_candidate_waits_until_next_event_and_continues():
 
 def test_replay_no_legal_candidate_reports_finished_fight():
     replay = object.__new__(AutoregressiveReplay)
+    replay._session = SimpleNamespace(reset=lambda _config, **_kwargs: None)
     replay.config = SimpleNamespace(
         initial_action=None,
         max_steps=1,
@@ -801,6 +813,7 @@ def test_replay_no_legal_candidate_reports_finished_fight():
 
 def test_replay_rejects_unreached_max_gcd_target():
     replay = object.__new__(AutoregressiveReplay)
+    replay._session = SimpleNamespace(reset=lambda _config, **_kwargs: None)
     replay.config = SimpleNamespace(
         initial_action=None,
         initial_time_seconds=None,
@@ -848,13 +861,17 @@ def test_markdown_output_and_cli_history_ablation(monkeypatch, tmp_path):
     )
     output = tmp_path / "nested" / "rollout.md"
     path = write_markdown(
-        ReplayResult(rows, Path("checkpoint.pt"), Path("scene.pt"), "cpu"),
+        ReplayResult(
+            rows, Path("checkpoint.pt"), Path("scene.pt"), "cpu",
+            backend_metrics={"scope": "backend_lifetime"},
+        ),
         output,
     )
     text = path.read_text(encoding="utf-8")
     assert "爆炎（强制）" in text
     assert "炽炎 0.700" in text
     assert "冰封 0.200" in text
+    assert "共享后端累计；内存为进程/PyTorch 设备峰值" in text
 
     ort_output = tmp_path / "ort.md"
     write_markdown(

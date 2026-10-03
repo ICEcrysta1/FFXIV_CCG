@@ -217,15 +217,6 @@ def test_parity_failure_writes_auditable_partial_report(monkeypatch, tmp_path):
             self.backend = session.backend
             self.data_spec = reference.data_spec
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return None
-
-        def _configure_kv_cache(self, _enabled):
-            return None
-
         def run(self):
             self.backend.raw_logits(
                 {"candidate_legal_mask": torch.tensor([[True, True, True]])},

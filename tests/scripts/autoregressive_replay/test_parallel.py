@@ -171,6 +171,8 @@ def test_backend_measurement_retains_bounded_samples(monkeypatch):
     assert metrics.calls == 5000
     assert metrics.latency_ms_max == 1000
     assert metrics.latency_ms_p50 == 500
+    assert metrics.to_dict()["scope"] == "backend_lifetime"
+    assert metrics.to_dict()["memory_scope"] == "process_and_torch_device_peak"
 
 
 def test_per_queue_policy_failure_does_not_cancel_other_audits():

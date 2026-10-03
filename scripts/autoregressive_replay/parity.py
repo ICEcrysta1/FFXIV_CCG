@@ -17,7 +17,6 @@ from scripts.onnx_export.release.release import (
 from scripts.onnx_export.runtime.precision import parity_max_abs_tolerance
 
 from .backends import OrtPolicyBackend, ParityPolicyBackend, PyTorchPolicyBackend
-from .config import AutoregressiveReplayConfig
 from .parallel import ParallelRollouts
 from .replay import AutoregressiveReplay, AutoregressiveReplaySession, ReplayCacheStore
 

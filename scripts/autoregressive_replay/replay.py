@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, is_dataclass, replace
+from dataclasses import dataclass, replace
 from collections import OrderedDict
 import logging
 from pathlib import Path
@@ -459,21 +459,12 @@ class AutoregressiveReplay:
         *,
         session: AutoregressiveReplaySession,
     ):
-        scene_duration = getattr(config, "scene_duration_seconds", None)
-        scene_path = getattr(config, "scene_json_path", None)
-        if scene_duration is None and scene_path is not None:
-            scene_duration = _load_scene_duration_seconds(scene_path)
-        if is_dataclass(config):
-            self.config = replace(
-                config,
-                scene_duration_seconds=scene_duration,
-            )
-        else:
-            # 测试中的轻量 SimpleNamespace 注入不具备 dataclass replace 契约。
-            setattr(config, "scene_duration_seconds", scene_duration)
-            self.config = config
         if session is None:
             raise ValueError("replay requires a shared session")
+        scene_duration = config.scene_duration_seconds
+        if scene_duration is None:
+            scene_duration = _load_scene_duration_seconds(config.scene_json_path)
+        self.config = replace(config, scene_duration_seconds=scene_duration)
         self._session = session
         self.backend = self._session.backend
         self.device = self._session.device
@@ -527,12 +518,7 @@ class AutoregressiveReplay:
         scene_provider = getattr(self, "scene_provider", None)
         if scene_provider is not None:
             scene_provider.reset()
-        session = getattr(self, "_session", None)
-        if session is None:
-            # 测试中可直接注入后端；正式 replay 始终使用 session。
-            self._configure_kv_cache(bool(getattr(self.config, "use_kv_cache", True)))
-            return self._observe_state(initial_timestamp)
-        session.reset(self.config, initial_timestamp=initial_timestamp)
+        self._session.reset(self.config, initial_timestamp=initial_timestamp)
         return self._observe_state(initial_timestamp)
 
     def _next_scene_event_after(self, time_seconds: float) -> float | None:

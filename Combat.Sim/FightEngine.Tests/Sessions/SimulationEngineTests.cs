@@ -20,7 +20,9 @@ public sealed class SimulationEngineTests
             .Select(index => engine.CreateSession(3, 2.0 + index * 0.03, index * 100, 180)).ToArray();
         // 基准将基础 GCD 写入配置；共享引擎将基础 GCD 放在各队列状态中。
         var references = Enumerable.Range(0, 16)
-            .Select(index => JobSimulator.Create(Root, job, 2.0 + index * 0.03, 3, index * 100, 180)).ToArray();
+            .Select(index => new JobSimulator(
+                CombatStateMachine.FromDefaultConfig(Root, job, 2.0 + index * 0.03, 3),
+                index * 100, 180)).ToArray();
         var policies = references.Select(simulator => PolicySession.Create(Root, simulator)).ToArray();
         Parallel.For(0, sessions.Length, index =>
         {

@@ -36,7 +36,10 @@ from scripts.onnx_export.runtime.tensor_runtime import run_ort_tensors
 
 @dataclass(frozen=True)
 class BackendMetrics:
-    """单个 backend 在当前进程内累计的推理性能数据。"""
+    """后端累计性能快照；共享队列合计，延迟分位数取最近 4096 次。
+
+    内存是进程工作集与 PyTorch 设备分配峰值，不归属于单条轨迹。
+    """
 
     calls: int
     latency_ms_p50: float
@@ -47,7 +50,11 @@ class BackendMetrics:
     cuda_peak_allocated_bytes: int | None
 
     def to_dict(self) -> dict[str, object]:
-        return asdict(self)
+        return {
+            **asdict(self),
+            "scope": "backend_lifetime",
+            "memory_scope": "process_and_torch_device_peak",
+        }
 
 
 class PolicyBackend(Protocol):
@@ -356,7 +363,7 @@ class OrtPolicyBackend(_MeasuredBackend):
 
 
 class ParityPolicyBackend:
-    """同一决策点同时执行 PT/ORT；只有完全过门槛才返回参考 logits。"""
+    """同一决策点执行 PT/ORT 并记录差异，继续返回参考 logits 以完成整条轨迹。"""
 
     name = "pytorch+onnxruntime-parity"
 

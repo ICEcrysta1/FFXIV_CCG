@@ -10,7 +10,7 @@ public sealed class JobSimulatorTests
     [InlineData("machinist", "heated_split_shot")]
     public void 精简候选分支与完整分支在读条排队和场景事件下逐值相同(string job, string action)
     {
-        var simulator = JobSimulator.Create(FindRepoRoot(), job);
+        var simulator = new JobSimulator(CombatStateMachine.FromDefaultConfig(FindRepoRoot(), job));
         Assert.True(simulator.SubmitAction(0, action).Accepted);
         foreach (var time in new[] { 0.0, 0.2, 2.2, 3.0, 6.0 })
         {
@@ -351,7 +351,7 @@ public sealed class JobSimulatorTests
     [Fact]
     public void 团辅外部事实使用注册状态并按绝对时间到期()
     {
-        var simulator = JobSimulator.Create(FindRepoRoot(), "black_mage");
+        var simulator = new JobSimulator(CombatStateMachine.FromDefaultConfig(FindRepoRoot(), "black_mage"));
         simulator.ApplyExternalEvent(new ExternalCombatEvent(
             1.0,
             ExternalCombatEventKinds.RaidBuffWindowChanged,

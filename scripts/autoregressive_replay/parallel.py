@@ -92,7 +92,7 @@ class _PolicyClient:
         return self._coordinator.request(self, batch, tuple(candidate_action_keys))
 
     def eval(self):
-        # 模型只由调度器的调用线程操作；兼容 PPG 的单轨迹接口。
+        # 满足 PPG 的模型调用契约；实际模型只由调度器的调用线程操作。
         return self
 
     def __call__(self, batch):
@@ -100,8 +100,7 @@ class _PolicyClient:
 
 
 class _InferenceCoordinator:
-    def __init__(self, backend, count, *, isolate_errors=False):
-        self.backend = backend
+    def __init__(self, count, *, isolate_errors=False):
         self.condition = Condition()
         self.active = set(range(count))
         self.pending = {}
@@ -222,7 +221,7 @@ class ParallelRollouts:
                 if prepare is not None:
                     prepare(chunk, self.engine)
                 policies = [self.backend if policy_factory is None else policy_factory(item) for item in chunk]
-                coordinator = _InferenceCoordinator(self.backend, len(chunk), isolate_errors=isolate_errors)
+                coordinator = _InferenceCoordinator(len(chunk), isolate_errors=isolate_errors)
 
                 def run(slot, item):
                     try:

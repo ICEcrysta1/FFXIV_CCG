@@ -29,7 +29,8 @@ public sealed class JobSimulator
         double? fightRemaining = null)
         : this(machine, machine.InitialState(fightRemaining, startTime: initialTimestamp))
     {
-}
+    }
+
     internal JobSimulator(CombatStateMachine machine, CombatState initialState, HistoryRetention? historyRetention = null)
     {
         _machine = machine;
@@ -43,18 +44,6 @@ public sealed class JobSimulator
         _timeline = timeline;
         _historyRetention = historyRetention;
     }
-
-    public static JobSimulator Create(
-        string projectRoot,
-        string jobTag,
-        double? actualBaseGcd = null,
-        int? maxHistory = null,
-        double initialTimestamp = 0,
-        double? fightRemaining = null) =>
-        new(
-            CombatStateMachine.FromDefaultConfig(projectRoot, jobTag, actualBaseGcd, maxHistory),
-            initialTimestamp,
-            fightRemaining);
 
     public string JobTag => _machine.JobTag;
     public double Time => _timeline.CurrentTime;
