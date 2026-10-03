@@ -35,7 +35,7 @@ public sealed class PolicyContextBuilder
         var output = simulator.FormatVectorState();
         var branch = simulator.Fork();
         var after = branch.ObserveAt(nextObservationTimestamp);
-        var router = simulator.Rules.OutputRouter;
+        var router = simulator.OutputRouter;
         var consumed = router.BuildNoopResourceTransition(state);
 
         var candidateSkills = (List<Dictionary<string, object?>>)
@@ -92,6 +92,7 @@ public sealed class PolicyContextBuilder
             var byTime = left.Time.CompareTo(right.Time);
             return byTime != 0 ? byTime : left.Order.CompareTo(right.Order);
         });
+        history.Retention.Trim(merged);
         skillHistory.Clear();
         skillHistory.AddRange(merged.Select(item => item.Skill));
         stateHistory.Clear();

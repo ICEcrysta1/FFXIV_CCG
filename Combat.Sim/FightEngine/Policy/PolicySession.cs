@@ -5,6 +5,7 @@
 
 using Combat.Sim.Facade;
 using Combat.Sim.Models.Policy;
+using Combat.Sim.Outputs;
 
 namespace Combat.Sim.Policy;
 
@@ -14,9 +15,9 @@ public sealed class PolicySession
     private readonly PolicyDecisionHistory _history;
     private readonly PolicyContextBuilder _contextBuilder;
 
-    private PolicySession(PolicyActionRegistry registry)
+    internal PolicySession(PolicyActionRegistry registry, HistoryRetention retention)
     {
-        _history = new PolicyDecisionHistory(registry);
+        _history = new PolicyDecisionHistory(registry, retention);
         _contextBuilder = new PolicyContextBuilder(registry);
     }
 
@@ -24,8 +25,10 @@ public sealed class PolicySession
     {
         ArgumentNullException.ThrowIfNull(simulator);
         var registry = PolicyActionRegistry.Load(projectRoot, simulator.Rules.SkillBook);
-        return new PolicySession(registry);
+        return new PolicySession(registry, simulator.HistoryRetention);
     }
+
+    internal int HistoryCount => _history.Count;
 
     public Dictionary<string, object?> BuildVectorContext(
         JobSimulator simulator,

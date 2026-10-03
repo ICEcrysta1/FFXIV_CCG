@@ -5,6 +5,7 @@
 
 using Combat.Sim.Models.Combat;
 using Combat.Sim.Models.Timeline;
+using Combat.Sim.Outputs;
 using Combat.Sim.System.Timeline;
 
 namespace Combat.Sim.Facade;
@@ -17,6 +18,10 @@ public sealed class JobSimulator
 {
     private readonly CombatStateMachine _machine;
     private readonly CombatTimelineRuntime _timeline;
+    private readonly HistoryRetention _historyRetention;
+    private StateOutputRouter? _outputRouter;
+    internal StateOutputRouter OutputRouter => _outputRouter ??= _machine.CreateOutputRouter();
+    internal HistoryRetention HistoryRetention => _historyRetention;
 
     public JobSimulator(
         CombatStateMachine machine,
@@ -25,16 +30,18 @@ public sealed class JobSimulator
         : this(machine, machine.InitialState(fightRemaining, startTime: initialTimestamp))
     {
 }
-    internal JobSimulator(CombatStateMachine machine, CombatState initialState)
+    internal JobSimulator(CombatStateMachine machine, CombatState initialState, HistoryRetention? historyRetention = null)
     {
         _machine = machine;
+        _historyRetention = historyRetention ?? new HistoryRetention(machine.MaxHistory);
         _timeline = BuildTimeline(initialState);
     }
 
-    private JobSimulator(CombatStateMachine machine, CombatTimelineRuntime timeline)
+    private JobSimulator(CombatStateMachine machine, CombatTimelineRuntime timeline, HistoryRetention historyRetention)
     {
         _machine = machine;
         _timeline = timeline;
+        _historyRetention = historyRetention;
     }
 
     public static JobSimulator Create(
@@ -102,7 +109,7 @@ public sealed class JobSimulator
             actionId,
             request,
             skill,
-            requestState.Clone(),
+            requestState.CloneWithoutHistory(),
             timing,
             submission.AcceptedTimestamp);
         _timeline.Schedule(new TimelineEvent(
@@ -181,27 +188,31 @@ public sealed class JobSimulator
 
     public void RestoreSnapshot(SimulationSnapshot snapshot) => _timeline.RestoreSnapshot(snapshot.DeepClone());
 
-    public JobSimulator Fork() => new(_machine, _timeline.Fork());
+    public JobSimulator Fork() => new(_machine, _timeline.Fork(), _historyRetention);
 
     public Dictionary<string, object?> FormatState(string mode = "seconds") =>
-        _machine.OutputRouter.Format(GetState(), mode);
+        OutputRouter.Format(GetState(), mode);
 
     public Dictionary<string, object?> FormatVectorState()
     {
         var state = GetState();
-        return _machine.OutputRouter.FormatVectors(state, BuildCandidatePreviews());
+        return OutputRouter.FormatVectors(state, BuildCandidatePreviews());
     }
 
     public object? FormatTensorState()
     {
         var state = GetState();
-        return _machine.OutputRouter.FormatTensors(state, BuildCandidatePreviews());
+        return OutputRouter.FormatTensors(state, BuildCandidatePreviews());
     }
 
     internal IReadOnlyList<CandidatePreview> BuildCandidatePreviews() =>
         CandidatePreviewBuilder.BuildEntries(this, _machine);
 
     internal CombatStateMachine Rules => _machine;
+
+    internal (int History, int PendingEvents, int QueueEntries, int PendingSettlements) GetStatistics() =>
+        (_timeline.HistoryCount, _timeline.PendingEventCount,
+            _timeline.QueueEntryCount, _timeline.PendingSettlementCount);
 
     private bool HasQueuedAction() => _timeline.PendingEvents.Any(item =>
         item.Kind == TimelineEventKind.ActionAccepted
@@ -273,6 +284,7 @@ public sealed class JobSimulator
                 payload.Request.Timestamp,
                 payload.AcceptedTimestamp + payload.Timing.ActualCastSeconds,
                 item.Timestamp);
+            _historyRetention.Trim(target.History);
         });
     }
 }

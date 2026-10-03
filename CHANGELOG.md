@@ -6,6 +6,7 @@
 
 ### Added
 
+- 新增统一多队列状态机 `SimulationEngine` / `SimulationSession` 与 Python `InProcessEngine`：默认最多容纳 16 个队列，共享同一职业的规则、配置和技能表，各队列独立保存基础 GCD、战斗状态、事件时间线、策略历史和输出缓存；支持同一 Python 进程内多线程驱动，按队列加锁并原子返回执行结果与时间游标，提供独立重置、释放和统计接口。容量耗尽立即报错，关闭后的句柄永久失效，单队列请求错误不关闭其他队列。
 - 新增 BC 与 GRPO 共用的优化器装配和独立 `optimizer.yaml`：通过 `optimizers.bc`、`optimizers.grpo` 分别选择 `adamw` 或 `muon`，集中配置各阶段的学习率、权重衰减、warmup 与 Muon 参数。`adamw` 更新全部参数；`muon` 将 Transformer 主干 Attention/FFN 矩阵交给原生 Muon，输入编码、embedding、评分头、归一化和 bias 继续使用 AdamW，并记录参数分组与更新设置。
 - 新增根目录 `.env` 配置 `MODEL_ANALYSIS_SCENE_JSON`，独立指定分析图工具的参考场景；保留自回归回放的 `AUTOREGRESSIVE_REPLAY_SCENE_JSON`，两个工具的场景配置互不影响，命令行显式参数优先。同步更新 `.env.example`。
 - 新增 `scripts.action_quality` 离线动作质量桥接入口：复用根目录 `.env` 和公共数据集目录映射，调用独立 Node 解析进程，在 `annotated/<副本>/<百分位区间>/` 保存保留原始字段与事件的 JSON，并在顶层 `analysis` 输出整场建议、动作引用、插入窗口和黑魔循环证据。按输入职业选择解析模块，补充机工证据提取；支持归因的错误类别下列出具体技能，沿用该类别的整场最终严重程度，未支持归因的类别明确标识，不将循环中的全部技能视为错误。标注产物不保存模型专属权重，明确标记 `training_ready: false`。
@@ -17,6 +18,8 @@
 
 ### Changed
 
+- 进程内独立后端与共享后端统一使用同一套队列实现，输出缓存归属单队列；真实技能和策略等待记录共用 `HistoryRetention`，支持完整历史、最近 N 条或关闭记录，合并输出后再应用窗口限制。历史保留量不改变模拟时长或累计威力，转换仍保存完整 history bank；本次提供并行调用基础，训练 GPU 批量验证与转换 CLI 线程调度尚未接入，不改变职业状态转移和现有数据契约。
+- 补充多队列并发与独立模拟器逐步等价、6 个 Python 转换线程共享引擎且保留完整历史、容量与关闭隔离、失败重置保留原上下文、长程历史与事件回收回归；有限历史的 180 秒回放使用真实状态机与固定打分测试桩，验证累计指标一致，不代表真实模型的短历史效果。同步更新项目结构与调用说明。
 - 黑魔 Artzip 的 BC 默认启用 Muon 与辅助 AdamW，GRPO 默认保留 AdamW；两个阶段共用优化器实现但独立选择方法和超参数，学习率、权重衰减与调度行为保持原设置。模型清单新增 `optimizer_config` 引用，移除 `training.yaml`、`grpo.yaml` 中重复的优化器设置，兼容旧单文件配置并拒绝同阶段重复配置。混合优化器统一调度并保存、恢复两套原生状态，校验参数名称与形状；BC 拒绝跨优化器或 Muon 参数不匹配的连续续训，GRPO 保持权重热启动及完整回滚语义。补充分组、FP32/BF16 原生更新一致性、训练入口、配置隔离和状态恢复回归测试。
 - 移除候选 Transformer 的 CLS token，直接读取各候选 hidden 生成 logits：删除 CLS 参数、role、位置与注意力分支，物理布局及容量改为 `scene + history + candidate`，评分器输入宽度由 `2 × d_model` 降至 `d_model`。prefix 保持因果，候选继续双向读取全部候选及 prefix，KV-cache 只计算候选后缀；训练、激活重算、Full AttnRes、trace 与 ONNX 路径同步更新。开场注意力图改为所有候选 query 对候选 key 的平均权重，角色汇总仅保留 scene/history/candidate；带 CLS 的旧 checkpoint 需重新训练，已按当前状态契约编译的缓存可继续复用，checkpoint 输出目录保持原样。
 - 精简模型技能、历史和候选状态输入：移除累计 GCD 步号 `gcd_index`、精确战斗剩余时间 `fight_remaining_seconds`，以及三个调度窗口 `gcd_remaining_seconds`、`weave_window_seconds`、`ogcd_window_seconds`；移除全部 GCD 单位时间字段，包括玩家停手与窗口计时、Buff 和目标 DoT 的 `remaining_gcds`，before/after 同步删除对应维度。职业资源状态仅保留 before/after，不重复输出 `consumed`，技能 token 继续携带 `job_resources_consumed`；模型输入移除 `ogcds_weaved`、`max_ogcd_per_window`，并删除黑魔已移除技能对应的 `manaward`、`surecast` 残留 Buff 定义。黑魔技能数值维度由 20 降至 19，状态维度由 147 降至 86（玩家 18、Buff 40、目标 Buff 14、职业资源 14）；保留 Buff/DoT 秒制计时及状态机内部调度、weave 计数/上限与结束边界。在线回放与历史消融的 GCD/oGCD 候选过滤改为使用调用方保存的决策阶段，清理模型向量、归一化和场景状态改写对已移除字段的依赖。
@@ -57,6 +60,7 @@
 
 ### Fixed
 
+- 修复动作事件载荷与策略等待快照继续持有旧历史列表导致的内存增长；状态快照只保留执行所需数据，已取消事件在失效堆条目超过阈值时重建队列，释放过期载荷与旧堆数组，避免长时间运行后持续积压。
 - 修复 BF16/FP16 模型直接更新低精度权重时，小增量在每一步被舍入丢失的问题：BC 与 GRPO 的共享 AdamW/Muon 装配统一使用 FP32 主权重及优化器状态累计更新，再同步至低精度模型，保持模型前向与 checkpoint 模型权重精度不变；更新后释放临时 FP32 梯度。优化器 checkpoint 保存主权重、原生状态及参数契约，续训保留尚未体现在低精度模型上的增量；旧 checkpoint 从已恢复的模型权重初始化主权重、提升动量精度，并明确提示历史舍入损失无法恢复。
 - GRPO 首轮回滚快照改为复制至 CPU，避免 FP32 主权重额外常驻一份 GPU 副本；磁盘与内存回滚同步恢复主权重、两套优化器状态和调度器。补充小更新累计、独立 FP32 参考、新旧 checkpoint 迁移、梯度生命周期、CUDA BF16 前后向及 GRPO 回滚回归，相关 409 项测试通过，并验证真实旧 AdamW checkpoint 的完整模型迁移。
 - 修复离线动作质量标记时 Node 无法写入系统临时目录 `analysis.json` 而整批失败的问题：Python 与 Node 改用标准输入/输出传递请求和结果，Node 在输出完成后退出；正式 `annotated` JSON 仍由 Python 校验并原子保存。补充进程通信测试，并用真实 FRU 日志验证标注产物保留全部原始字段。

@@ -33,10 +33,10 @@ _YAML_DOTNET_DLL = _DOTNET_OUTPUT / "YamlDotNet.dll"
 _PYTHON_BRIDGE_DLL = _DOTNET_OUTPUT / "FightEngine.PythonBridge.dll"
 
 _DOTNET_LOCK = threading.Lock()
-_DOTNET_TYPES: tuple[Any, Any, Any, Any, Any] | None = None
+_DOTNET_TYPES: tuple[Any, Any, Any] | None = None
 
 
-def _load_dotnet_types() -> tuple[Any, Any, Any, Any, Any]:
+def _load_dotnet_types() -> tuple[Any, Any, Any]:
     """只初始化一次 .NET 10，并加载 C# 状态机及其 YAML 依赖。"""
     global _DOTNET_TYPES
     if _DOTNET_TYPES is not None:
@@ -81,9 +81,8 @@ def _load_dotnet_types() -> tuple[Any, Any, Any, Any, Any]:
             clr.AddReference(str(_PYTHON_BRIDGE_DLL))
 
             from Combat.Sim.Config import SchemaConfigLoader
-            from Combat.Sim.Facade import JobSimulator
             from Combat.Sim.Models.Timeline import ExternalCombatEvent
-            from Combat.Sim.Policy import PolicySession
+            from Combat.Sim.Sessions import SimulationEngine
             from Combat.Sim.PythonBridge import NativeContextMarshaller
         except Exception as exc:
             raise RuntimeError(
@@ -92,18 +91,70 @@ def _load_dotnet_types() -> tuple[Any, Any, Any, Any, Any]:
                 "且本 Python 进程尚未加载其他版本的 .NET runtime。"
             ) from exc
 
-        _DOTNET_TYPES = (
-            JobSimulator,
-            PolicySession,
-            ExternalCombatEvent,
-            SchemaConfigLoader,
-            NativeContextMarshaller,
-        )
+        assembly_version = int(SchemaConfigLoader.AssemblySidecarContractVersion)
+        if assembly_version != SIDECAR_CONTRACT_VERSION:
+            raise RuntimeError(
+                "实际加载的 FightEngine DLL 契约版本与当前 Python schema 不匹配："
+                f"expected={SIDECAR_CONTRACT_VERSION}, dll={assembly_version}。"
+                "请使用当前工作树重新构建 PythonBridge。"
+            )
+        _DOTNET_TYPES = (SimulationEngine, ExternalCombatEvent, NativeContextMarshaller)
         return _DOTNET_TYPES
 
 
+class InProcessEngine:
+    """一个 C# 引擎管理多个独立队列，供转换、验证和回放共同使用。
+
+    同一进程的多个 Python 线程可共享引擎；每个任务持有自己的 backend。
+    capacity 限制同时存活的队列数，满载立即报错，调度和任务等待由调用方负责。
+    """
+
+    def __init__(self, job_tag: str, *, capacity: int = 16):
+        if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 1:
+            raise ValueError("capacity must be a positive integer")
+        engine_type, _, _ = _load_dotnet_types()
+        self.job_tag = job_tag
+        self._engine = engine_type(str(_PROJECT_ROOT), job_tag, capacity)
+
+    def _require_engine(self) -> Any:
+        if self._engine is None:
+            raise RuntimeError("in-process engine is closed")
+        return self._engine
+
+    @property
+    def active_count(self) -> int:
+        return int(self._require_engine().ActiveCount)
+
+    def create_backend(
+        self,
+        *,
+        max_history: int | None,
+        actual_base_gcd: float | None = None,
+        fight_remaining: float | None = None,
+        initial_timestamp: float | None = None,
+    ) -> InProcessBackend:
+        """创建队列；显式传 None 保留完整历史，整数只限制记录量，不限制回放时长。"""
+        return InProcessBackend(
+            self.job_tag, engine=self, max_history=max_history,
+            actual_base_gcd=actual_base_gcd, fight_remaining=fight_remaining,
+            initial_timestamp=initial_timestamp,
+        )
+
+    def close(self) -> None:
+        engine, self._engine = self._engine, None
+        if engine is not None:
+            engine.Dispose()
+
+    def __enter__(self) -> Self:
+        self._require_engine()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+
 class InProcessBackend:
-    """在当前 Python 进程内调用 C# 状态机，不创建子进程或传输 JSON。"""
+    """C# 引擎中的一个队列句柄；独立使用时也走同一个引擎和队列实现。"""
 
     def __init__(
         self,
@@ -113,12 +164,17 @@ class InProcessBackend:
         fight_remaining: float | None = None,
         max_history: int | None = None,
         initial_timestamp: float | None = None,
+        engine: InProcessEngine | None = None,
     ):
+        if engine is not None and engine.job_tag != job_tag:
+            raise ValueError("backend job_tag must match the shared engine")
         self.job_tag = job_tag
         self._max_history = max_history
         self._initial_timestamp = float(initial_timestamp or 0.0)
-        self._simulator: Any | None = None
-        self._policy: Any | None = None
+        self._session: Any | None = None
+        self._lifecycle_lock = threading.RLock()
+        self._owns_engine = engine is None
+        self._engine = engine if engine is not None else InProcessEngine(job_tag, capacity=1)
         self._closed = False
         try:
             self.init(
@@ -131,15 +187,19 @@ class InProcessBackend:
             self.close()
             raise
 
-    def _types(self) -> tuple[Any, Any, Any, Any, Any]:
+    def _types(self) -> tuple[Any, Any, Any]:
         return _load_dotnet_types()
 
-    def _require_simulator(self) -> Any:
-        if self._closed:
+    def _require_session(self) -> Any:
+        if self._closed or self._engine._engine is None:
             raise RuntimeError("in-process backend is closed")
-        if self._simulator is None:
+        if self._session is None:
             raise RuntimeError("in-process backend is not initialized")
-        return self._simulator
+        return self._session
+
+    @property
+    def queue_id(self) -> int:
+        return int(self._require_session().Id)
 
     def init(
         self,
@@ -150,55 +210,30 @@ class InProcessBackend:
         initial_timestamp: float | None = None,
     ) -> float:
         """初始化或重置 C# 状态机，省略的历史上限和起始时刻沿用既有值。"""
-        if self._closed:
-            raise RuntimeError("in-process backend is closed")
-        if max_history is not None:
-            self._max_history = max_history
-        if initial_timestamp is not None:
-            self._initial_timestamp = float(initial_timestamp)
-
-        job_simulator, policy_session, _, schema_loader, _ = self._types()
-        try:
-            assembly_version = int(schema_loader.AssemblySidecarContractVersion)
-        except Exception as exc:
-            self._simulator = None
-            self._policy = None
-            raise RuntimeError(
-                "实际加载的 FightEngine DLL 缺少可验证的程序集契约版本；"
-                "请使用当前工作树重新构建 PythonBridge。"
-            ) from exc
-        if assembly_version != SIDECAR_CONTRACT_VERSION:
-            self._simulator = None
-            self._policy = None
-            raise RuntimeError(
-                "实际加载的 FightEngine DLL 契约版本与当前 Python schema 不匹配："
-                f"expected={SIDECAR_CONTRACT_VERSION}, dll={assembly_version}。"
-                "请使用当前工作树重新构建 PythonBridge。"
-            )
-
-        simulator = job_simulator.Create(
-            str(_PROJECT_ROOT),
-            self.job_tag,
-            actual_base_gcd,
-            self._max_history,
-            self._initial_timestamp,
-            fight_remaining,
-        )
-        policy = policy_session.Create(str(_PROJECT_ROOT), simulator)
-        self._simulator = simulator
-        self._policy = policy
-        return float(simulator.Time)
+        with self._lifecycle_lock:
+            if self._closed:
+                raise RuntimeError("in-process backend is closed")
+            history = self._max_history if max_history is None else max_history
+            initial = self._initial_timestamp if initial_timestamp is None else float(initial_timestamp)
+            if self._session is None:
+                self._session = self._engine._require_engine().CreateSession(
+                    history, actual_base_gcd, initial, fight_remaining,
+                )
+            else:
+                self._require_session().Reset(history, actual_base_gcd, initial, fight_remaining)
+            self._max_history = history
+            self._initial_timestamp = initial
+            return initial
 
     @staticmethod
     def _optional(value: Any) -> float | None:
         return None if value is None else float(value)
 
     def advance_to(self, timestamp: float) -> TimelinePoint:
-        simulator = self._require_simulator()
-        simulator.AdvanceTo(float(timestamp))
+        result = self._require_session().AdvanceTo(float(timestamp))
         return TimelinePoint(
-            timestamp=float(simulator.Time),
-            next_scheduled_event_time=self._optional(simulator.GetNextScheduledEventTime()),
+            timestamp=float(result.Timestamp),
+            next_scheduled_event_time=self._optional(result.NextScheduledEventTime),
         )
 
     def submit_action(
@@ -208,8 +243,7 @@ class InProcessBackend:
         *,
         actual_cast_seconds: float | None = None,
     ) -> ActionSubmissionResult:
-        simulator = self._require_simulator()
-        result = simulator.SubmitAction(float(timestamp), action, actual_cast_seconds)
+        result = self._require_session().SubmitAction(float(timestamp), action, actual_cast_seconds).Value
         action_id = result.ActionInstanceId
         return ActionSubmissionResult(
             accepted=bool(result.Accepted),
@@ -223,13 +257,13 @@ class InProcessBackend:
         )
 
     def validate_at(self, timestamp: float, action: str) -> ValidationResult:
-        simulator = self._require_simulator()
-        result = simulator.ValidateActionAt(float(timestamp), action)
+        response = self._require_session().ValidateActionAt(float(timestamp), action)
+        result = response.Value
         return ValidationResult(
             legal=bool(result.Ok),
             reason=str(result.Reason),
-            timestamp=float(simulator.Time),
-            next_scheduled_event_time=self._optional(simulator.GetNextScheduledEventTime()),
+            timestamp=float(response.Timestamp),
+            next_scheduled_event_time=self._optional(response.NextScheduledEventTime),
         )
 
     def record_policy_action(
@@ -238,13 +272,11 @@ class InProcessBackend:
         action: str,
         next_observation_timestamp: float,
     ) -> PolicyDecisionResult:
-        simulator = self._require_simulator()
-        decision = self._policy.Record(
-            simulator,
+        decision = self._require_session().RecordPolicyAction(
             float(timestamp),
             action,
             float(next_observation_timestamp),
-        )
+        ).Value
         return PolicyDecisionResult(
             action=str(decision.Action.Key),
             timestamp=float(decision.Timestamp),
@@ -261,9 +293,8 @@ class InProcessBackend:
         target_count: int | None = None,
         remaining_seconds: float | None = None,
     ) -> ExternalEventResult:
-        simulator = self._require_simulator()
-        _, _, external_event, _, _ = self._types()
-        result = simulator.ApplyExternalEvent(
+        _, external_event, _ = self._types()
+        response = self._require_session().ApplyExternalEvent(
             external_event(
                 float(timestamp),
                 event_kind,
@@ -272,12 +303,13 @@ class InProcessBackend:
                 remaining_seconds,
             )
         )
+        result = response.Value
         return ExternalEventResult(
             accepted=bool(result.Accepted),
             reason=str(result.Reason),
             event_kind=event_kind,
             timestamp=float(result.Timestamp),
-            next_scheduled_event_time=self._optional(simulator.GetNextScheduledEventTime()),
+            next_scheduled_event_time=self._optional(response.NextScheduledEventTime),
         )
 
     def observe_at(
@@ -287,7 +319,6 @@ class InProcessBackend:
         format: str = "seconds",
         next_observation_timestamp: float | None = None,
     ) -> ObservationResult:
-        simulator = self._require_simulator()
         if format not in ("vector", "seconds", "gcd"):
             raise ValueError(f"unsupported observe format: {format}; supported=gcd, seconds, vector")
         if format == "vector":
@@ -298,29 +329,38 @@ class InProcessBackend:
                     "next_observation_timestamp must not precede observation timestamp"
                 )
 
-        simulator.ObserveAt(float(timestamp))
-        if format == "vector":
-            context = self._policy.BuildVectorContext(
-                simulator,
-                float(next_observation_timestamp),
-            )
-        else:
-            context = simulator.FormatState(format)
+        response = self._require_session().ObserveAt(float(timestamp), format, next_observation_timestamp)
 
         *_, native_context_marshaller = self._types()
-        python_context = native_context_marshaller.Convert(context)
+        python_context = native_context_marshaller.Convert(response.Value)
         return ObservationResult(
-            timestamp=float(simulator.Time),
+            timestamp=float(response.Timestamp),
             format=format,
-            next_scheduled_event_time=self._optional(simulator.GetNextScheduledEventTime()),
+            next_scheduled_event_time=self._optional(response.NextScheduledEventTime),
             context=python_context,
         )
 
     def close(self) -> None:
-        """释放会话对象；CoreCLR 由 Python.NET 在当前进程内共享。"""
-        self._closed = True
-        self._policy = None
-        self._simulator = None
+        """立即从引擎注销队列并释放历史；关闭共享队列不影响其余任务。"""
+        with self._lifecycle_lock:
+            self._closed = True
+            if self._session is not None:
+                self._session.Dispose()
+                self._session = None
+            if self._owns_engine:
+                self._engine.close()
+
+    def statistics(self) -> dict[str, int | float]:
+        """读取容量诊断，不复制战斗历史，也不推进时钟。"""
+        stats = self._require_session().GetStatistics()
+        return {
+            "timestamp": float(stats.Timestamp),
+            "action_history_count": int(stats.ActionHistoryCount),
+            "policy_history_count": int(stats.PolicyHistoryCount),
+            "pending_event_count": int(stats.PendingEventCount),
+            "queue_entry_count": int(stats.QueueEntryCount),
+            "pending_settlement_count": int(stats.PendingSettlementCount),
+        }
 
     def __enter__(self) -> Self:
         return self

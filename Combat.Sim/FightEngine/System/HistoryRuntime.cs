@@ -20,7 +20,7 @@ public sealed class SystemHistoryRuntime
         IReadOnlyDictionary<string, object> Before,
         IReadOnlyDictionary<string, object> After,
         IReadOnlyDictionary<string, object> Consumed)> _buildTransition;
-    private readonly int? _maxHistory;
+    private readonly HistoryRetention _retention;
 
     public SystemHistoryRuntime(
         ResourceStateRegistry resourceState,
@@ -36,7 +36,7 @@ public sealed class SystemHistoryRuntime
             throw new InvalidOperationException($"max_history must be >= 0, got {maxHistory}");
         }
         _buildTransition = buildTransition ?? resourceState.BuildJobResourceTransition;
-        _maxHistory = maxHistory;
+        _retention = new HistoryRetention(maxHistory);
     }
 
     public void RecordActionHistory(
@@ -93,13 +93,6 @@ public sealed class SystemHistoryRuntime
             EffectTimestamp: effectTimestamp,
             ActionInstanceId: actionInstanceId));
 
-        if (_maxHistory == 0)
-        {
-            nextState.History.Clear();
-        }
-        else if (_maxHistory is { } maxHistory && nextState.History.Count > maxHistory)
-        {
-            nextState.History.RemoveRange(0, nextState.History.Count - maxHistory);
-        }
+        _retention.Trim(nextState.History);
     }
 }

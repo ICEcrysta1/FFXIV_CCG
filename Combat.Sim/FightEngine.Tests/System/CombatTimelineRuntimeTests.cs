@@ -189,6 +189,45 @@ public sealed class CombatTimelineRuntimeTests
     }
 
     [Fact]
+    public void 反复取消远期事件的物理队列有界且保留同刻排序()
+    {
+        var runtime = new CombatTimelineRuntime();
+        var handled = new List<string?>();
+        runtime.RegisterHandler(TimelineEventKind.SceneChanged, (item, _) =>
+        {
+            handled.Add(item.OwnerKey);
+            return TimelineMutation.Empty;
+        });
+        runtime.Schedule(new(10, TimelineEventPriority.ExternalScene, TimelineEventKind.SceneChanged, "first"));
+        runtime.Schedule(new(10, TimelineEventPriority.ExternalScene, TimelineEventKind.SceneChanged, "second"));
+        for (var index = 0; index < 10000; index++)
+        {
+            var item = runtime.Schedule(new(100000 + index,
+                TimelineEventPriority.ExternalScene, TimelineEventKind.SceneChanged, "cancel"));
+            Assert.True(runtime.Cancel(item.Sequence));
+            Assert.InRange(runtime.QueueEntryCount, 2, 2 * runtime.PendingEventCount + 64);
+        }
+        runtime.AdvanceTo(1000000);
+        Assert.Equal(new[] { "first", "second" }, handled);
+        Assert.Equal(0, runtime.QueueEntryCount);
+    }
+
+    [Fact]
+    public void 活跃事件消耗后也会释放远期取消节点()
+    {
+        var runtime = new CombatTimelineRuntime();
+        for (var index = 1; index <= 100; index++)
+            runtime.Schedule(new(index, TimelineEventPriority.ExternalScene, TimelineEventKind.SceneChanged));
+        var canceled = Enumerable.Range(0, 100).Select(index => runtime.Schedule(new(
+            10000 + index, TimelineEventPriority.ExternalScene, TimelineEventKind.SceneChanged))).ToArray();
+        foreach (var item in canceled) runtime.Cancel(item.Sequence);
+        runtime.AdvanceTo(99);
+        Assert.Equal(1, runtime.PendingEventCount);
+        Assert.InRange(runtime.QueueEntryCount, 1, 2 * runtime.PendingEventCount + 64);
+        Assert.Equal(100, runtime.GetNextScheduledEventTime());
+    }
+
+    [Fact]
     public void 待结算队列按目标去重并在到期后取出()
     {
         var queue = new PendingSettlementQueue();

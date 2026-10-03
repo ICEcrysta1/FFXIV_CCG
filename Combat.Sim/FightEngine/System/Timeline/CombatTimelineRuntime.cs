@@ -19,7 +19,7 @@ public sealed class CombatTimelineRuntime
     public const double TimeEpsilon = 0.0000001;
 
     private readonly CombatState _state;
-    private readonly PriorityQueue<TimelineEvent, TimelineEventOrder> _queue = new();
+    private PriorityQueue<TimelineEvent, TimelineEventOrder> _queue = new();
     private readonly Dictionary<long, TimelineEvent> _scheduledEvents = new();
     private readonly Dictionary<TimelineEventKind, Func<TimelineEvent, CombatState, TimelineMutation>> _handlers = new();
     private readonly PendingSettlementQueue _pendingSettlements = new();
@@ -146,6 +146,10 @@ public sealed class CombatTimelineRuntime
 
     /// <summary>当前逻辑时间。该属性没有 setter，只有 AdvanceTo 可以修改它。</summary>
     public double CurrentTime => _state.Time;
+    public int PendingEventCount => _scheduledEvents.Count;
+    public int QueueEntryCount => _queue.Count;
+    public int PendingSettlementCount => _pendingSettlements.Count;
+    internal int HistoryCount => _state.History.Count;
 
     public IReadOnlyList<TimelineEvent> PendingEvents =>
         _scheduledEvents.Values
@@ -193,7 +197,20 @@ public sealed class CombatTimelineRuntime
     }
 
     /// <summary>取消尚未处理的事件；已处理或不存在的 sequence 返回 false。</summary>
-    public bool Cancel(long sequence) => _scheduledEvents.Remove(sequence);
+    public bool Cancel(long sequence)
+    {
+        if (!_scheduledEvents.Remove(sequence)) return false;
+        CompactQueueIfNeeded();
+        return true;
+    }
+
+    private void CompactQueueIfNeeded()
+    {
+        // 惰性取消只允许留下有限的旧节点；重建时也释放旧数组和载荷引用。
+        if (_queue.Count > 2 * _scheduledEvents.Count + 64)
+            _queue = new PriorityQueue<TimelineEvent, TimelineEventOrder>(
+                _scheduledEvents.Values.Select(item => (item, TimelineEventOrder.From(item))));
+    }
 
     public double? GetNextScheduledEventTime()
     {
@@ -391,6 +408,8 @@ public sealed class CombatTimelineRuntime
                 return false;
             }
 
+            // 活跃事件大量出队后，远期取消节点也需要压缩，不能只在 Cancel 时检查。
+            CompactQueueIfNeeded();
             timelineEvent = candidate;
             return true;
         }
@@ -432,6 +451,7 @@ public sealed class CombatTimelineRuntime
         var clone = source.Clone();
         target.SetTimelineTime(clone.Time);
         target.GcdIndex = clone.GcdIndex;
+        target.BaseGcd = clone.BaseGcd;
         target.FightEndsAt = clone.FightEndsAt;
         target.NextDowntimeStartsAt = clone.NextDowntimeStartsAt;
         target.DowntimeRemaining = clone.DowntimeRemaining;

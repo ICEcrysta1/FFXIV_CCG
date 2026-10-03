@@ -14,6 +14,7 @@ public sealed class TimelineAuthorityTests
     {
         "Combat.Sim.Facade.JobSimulator.AdvanceTo",
         "Combat.Sim.Facade.ReplayStateCache.AdvanceTo",
+        "Combat.Sim.Sessions.SimulationSession.AdvanceTo",
     };
 
     [Fact]

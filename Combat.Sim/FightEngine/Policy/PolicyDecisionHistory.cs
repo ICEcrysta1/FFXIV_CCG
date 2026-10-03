@@ -5,6 +5,7 @@
 
 using Combat.Sim.Facade;
 using Combat.Sim.Models.Policy;
+using Combat.Sim.Outputs;
 
 namespace Combat.Sim.Policy;
 
@@ -14,10 +15,14 @@ public sealed class PolicyDecisionHistory
     private readonly PolicyActionRegistry _registry;
     private readonly List<PolicyDecision> _entries = new();
 
-    public PolicyDecisionHistory(PolicyActionRegistry registry)
+    public PolicyDecisionHistory(PolicyActionRegistry registry, HistoryRetention? retention = null)
     {
         _registry = registry;
+        Retention = retention ?? new HistoryRetention(null);
     }
+
+    internal HistoryRetention Retention { get; }
+    internal int Count => _entries.Count;
 
     public IReadOnlyList<PolicyDecision> Entries => _entries.Select(item => item.DeepClone()).ToArray();
 
@@ -38,8 +43,10 @@ public sealed class PolicyDecisionHistory
             throw new ArgumentOutOfRangeException(nameof(nextObservationTimestamp));
         var branch = simulator.Fork();
         var after = branch.ObserveAt(nextObservationTimestamp);
-        var decision = new PolicyDecision(action, timestamp, before.GcdIndex, before, after);
+        var decision = new PolicyDecision(action, timestamp, before.GcdIndex,
+            before.CloneWithoutHistory(), after.CloneWithoutHistory());
         _entries.Add(decision);
+        Retention.Trim(_entries);
         return decision.DeepClone();
     }
 
@@ -47,13 +54,15 @@ public sealed class PolicyDecisionHistory
 
     public void RestoreSnapshot(IEnumerable<PolicyDecision> snapshot)
     {
+        var restored = snapshot.Select(item => item.DeepClone()).ToList();
+        Retention.Trim(restored);
         _entries.Clear();
-        _entries.AddRange(snapshot.Select(item => item.DeepClone()));
+        _entries.AddRange(restored);
     }
 
     public PolicyDecisionHistory Fork()
     {
-        var fork = new PolicyDecisionHistory(_registry);
+        var fork = new PolicyDecisionHistory(_registry, Retention);
         fork.RestoreSnapshot(_entries);
         return fork;
     }

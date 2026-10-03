@@ -349,6 +349,40 @@ def test_validation_ppg_recovers_initial_base_gcd_from_cached_candidate_token():
     ) == pytest.approx(2.4)
 
 
+def test_real_validation_runs_to_end_with_a_small_history_window():
+    """真实队列保留四条记录也必须跑完整场，最终 PPG 与完整记录相同。"""
+    from scripts.common.inprocess_backend import InProcessEngine
+    from scripts.autoregressive_replay.scheduler import gcd_request_delay
+    from tests.scripts.conftest import _require_inprocess_backend
+
+    _require_inprocess_backend()
+    results = []
+    with InProcessEngine("machinist", capacity=2) as engine:
+        for history_limit in (None, 4):
+            with engine.create_backend(max_history=history_limit, fight_remaining=180) as backend:
+                class Batcher:
+                    def build(self, state):
+                        legal = backend.validate_at(state.time, "heated_split_shot").legal
+                        wait = gcd_request_delay(state) > 1e-6
+                        return ({"candidate_legal_mask": torch.tensor([[legal, wait]])},
+                                ("heated_split_shot", "ogcd_wait"))
+
+                result = _run_rollout_until_time(
+                    _FakeModel(), backend, Batcher(), scene_provider=None,
+                    end_time=180, normalization=1000, precision="float32",
+                    device=torch.device("cpu"),
+                    expected_candidate_keys=("heated_split_shot", "ogcd_wait"),
+                    source_label="full-duration-regression",
+                )
+                assert backend.statistics()["timestamp"] == pytest.approx(180)
+                assert result.output_gcds > 40
+                if history_limit is not None:
+                    assert backend.statistics()["action_history_count"] <= history_limit
+                    assert backend.statistics()["policy_history_count"] <= history_limit
+                results.append(result)
+    assert results[0] == results[1]
+
+
 @pytest.mark.parametrize("cache_was_enabled", [False, True])
 @pytest.mark.parametrize("use_kv_cache", [False, True])
 def test_validation_ppg_reads_history_capacity_from_model_config(

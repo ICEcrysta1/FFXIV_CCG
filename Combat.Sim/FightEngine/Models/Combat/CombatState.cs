@@ -27,6 +27,8 @@ public sealed class CombatState
         foreach (var item in Cooldowns.Values) item.BindTime(Time);
     }
     public int GcdIndex { get; set; } = 0;
+    /// <summary>队列自己的基础 GCD；未指定时使用共享职业配置的默认值。</summary>
+    public double? BaseGcd { get; internal set; }
     public double FightEndsAt { get; internal set; } = 600.0;
     public double FightRemaining { get => Math.Max(0, FightEndsAt - Time); internal set => FightEndsAt = Time + value; }
     public double? NextDowntimeStartsAt { get; internal set; }
@@ -89,6 +91,7 @@ public sealed class CombatState
         var clone = new CombatState
         {
             GcdIndex = GcdIndex,
+            BaseGcd = BaseGcd,
             FightEndsAt = FightEndsAt,
             NextDowntimeStartsAt = NextDowntimeStartsAt,
             DowntimeEndsAt = DowntimeEndsAt,
@@ -116,6 +119,14 @@ public sealed class CombatState
             History = copyHistory ? new List<ActionHistoryEntry>(History) : History,
         };
         clone.SetTimelineTime(Time);
+        return clone;
+    }
+
+    /// <summary>事件载荷和策略记录只需要当时的状态，不能递归携带历史列表。</summary>
+    internal CombatState CloneWithoutHistory()
+    {
+        var clone = Clone(copyHistory: false);
+        clone.History = new();
         return clone;
     }
 
