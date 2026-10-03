@@ -14,6 +14,7 @@ from common.policy.data import Normalizer
 
 from .context import LiveBatchBuilder, SceneTemplateProvider
 from .replay import observe_replay_state, read_replay_cumulative_potency
+from .parallel import ParallelRollouts, TrainingPolicyBackend
 from .scheduler import DecisionScheduler, gcd_request_delay, is_gcd_decision
 
 PPG_TIME_EPSILON = 1e-6
@@ -67,31 +68,46 @@ def evaluate_none_ppg(
     normalizer = Normalizer()
     normalizer.configure_job_resources(data_spec.job_tag)
     normalizer.register_schema(dataset.schema)
-    with InProcessBackend(
-        job_tag=data_spec.job_tag,
-        max_history=config.model.history_capacity,
-    ) as backend:
-        batcher = LiveBatchBuilder(
-            backend=backend,
-            vocab=vocab,
-            normalizer=normalizer,
-            schema=dataset.schema,
-            skill_feature_names=dataset.skill_feature_names,
-            scene_provider=EmptySceneProvider(data_spec.scene_dim),
-            device=device,
+    model.eval()
+    policy_backend = TrainingPolicyBackend(
+        model, data_spec=data_spec, device=device, precision=config.precision,
+    )
+    cache_was_enabled = bool(getattr(model, "_kv_cache_enabled", False))
+
+    def run_empty(_item, policy, engine):
+        policy.configure_cache(cache_was_enabled)
+        with InProcessBackend(
+            job_tag=data_spec.job_tag,
             max_history=config.model.history_capacity,
-            candidate_action_keys=data_spec.candidate_action_keys,
-        )
-        result = _run_rollout(
-            model,
-            backend,
-            batcher,
-            gcd_count=ppg_config.gcd_count,
-            normalization=ppg_config.normalization,
-            precision=config.precision,
-            device=device,
-            expected_candidate_keys=data_spec.candidate_action_keys,
-        )
+            engine=engine,
+        ) as backend:
+            batcher = LiveBatchBuilder(
+                backend=backend,
+                vocab=vocab,
+                normalizer=normalizer,
+                schema=dataset.schema,
+                skill_feature_names=dataset.skill_feature_names,
+                scene_provider=EmptySceneProvider(data_spec.scene_dim),
+                device=device,
+                max_history=config.model.history_capacity,
+                candidate_action_keys=data_spec.candidate_action_keys,
+            )
+            return _run_rollout(
+                policy,
+                backend,
+                batcher,
+                gcd_count=ppg_config.gcd_count,
+                normalization=ppg_config.normalization,
+                precision=config.precision,
+                device=device,
+                expected_candidate_keys=data_spec.candidate_action_keys,
+            )
+
+    try:
+        with ParallelRollouts(policy_backend, job_tag=data_spec.job_tag, workers=1) as rollouts:
+            result, = rollouts.map(run_empty, (None,))
+    finally:
+        policy_backend.configure_cache(cache_was_enabled)
     return {
         "none_ppg": result.ppg,
         "none_ppg_normalized": result.normalized_ppg,
@@ -131,66 +147,71 @@ def evaluate_validation_ppg(
     if callable(enable_kv_cache):
         # 当前基准中 KV 路径更慢，只有显式配置才启用。
         enable_kv_cache(ppg_config.use_kv_cache)
-    try:
-        with InProcessBackend(
-            job_tag=data_spec.job_tag,
-            max_history=config.model.history_capacity,
-        ) as backend:
-            for source_index, reader in enumerate(iter_source_readers()):
-                if callable(reset_kv_cache):
-                    reset_kv_cache()
-                initial_metadata = reader.step_metadata(0)
-                initial_time = float(initial_metadata["time_offset"])
-                scene_provider = SceneTemplateProvider(
-                    reader,
-                    normalizer=normalizer,
-                    initial_sample_index=0,
-                    backend=backend,
-                )
-                fight_end_time = scene_provider.last_targetable_end()
-                if fight_end_time <= initial_time + PPG_TIME_EPSILON:
-                    raise ValueError(
-                        "validation PPG source must have a positive replay window: "
-                        f"fight={reader.fight_id!r} initial={initial_time} end={fight_end_time}"
-                    )
-                actual_base_gcd = _infer_initial_base_gcd(
-                    reader,
-                    normalizer=normalizer,
-                    skill_feature_names=dataset.skill_feature_names,
-                )
+    policy_backend = TrainingPolicyBackend(
+        model, data_spec=data_spec, device=device, precision=config.precision,
+    )
 
-                backend.init(
-                    actual_base_gcd=float(actual_base_gcd),
-                    fight_remaining=fight_end_time - initial_time,
-                    initial_timestamp=initial_time,
+    def run_source(item, policy, engine):
+        source_index, reader = item
+        policy.configure_cache(ppg_config.use_kv_cache)
+        with InProcessBackend(
+            job_tag=data_spec.job_tag, max_history=config.model.history_capacity,
+            engine=engine,
+        ) as backend:
+            initial_metadata = reader.step_metadata(0)
+            initial_time = float(initial_metadata["time_offset"])
+            scene_provider = SceneTemplateProvider(
+                reader,
+                normalizer=normalizer,
+                initial_sample_index=0,
+                backend=backend,
+            )
+            fight_end_time = scene_provider.last_targetable_end()
+            if fight_end_time <= initial_time + PPG_TIME_EPSILON:
+                raise ValueError(
+                    "validation PPG source must have a positive replay window: "
+                    f"fight={reader.fight_id!r} initial={initial_time} end={fight_end_time}"
                 )
-                state = observe_replay_state(backend, initial_time)
-                scene_provider.sync_state(state)
-                batcher = LiveBatchBuilder(
-                    backend=backend,
-                    vocab=vocab,
-                    normalizer=normalizer,
-                    schema=dataset.schema,
-                    skill_feature_names=dataset.skill_feature_names,
-                    scene_provider=scene_provider,
-                    device=device,
-                    max_history=config.model.history_capacity,
-                    candidate_action_keys=data_spec.candidate_action_keys,
-                )
-                source_results.append(
-                    _run_rollout_until_time(
-                        model,
-                        backend,
-                        batcher,
-                        scene_provider=scene_provider,
-                        end_time=fight_end_time,
-                        normalization=ppg_config.normalization,
-                        precision=config.precision,
-                        device=device,
-                        expected_candidate_keys=data_spec.candidate_action_keys,
-                        source_label=f"{source_index}:{reader.fight_id}",
-                    )
-                )
+            actual_base_gcd = _infer_initial_base_gcd(
+                reader,
+                normalizer=normalizer,
+                skill_feature_names=dataset.skill_feature_names,
+            )
+
+            backend.init(
+                actual_base_gcd=float(actual_base_gcd),
+                fight_remaining=fight_end_time - initial_time,
+                initial_timestamp=initial_time,
+            )
+            state = observe_replay_state(backend, initial_time)
+            scene_provider.sync_state(state)
+            batcher = LiveBatchBuilder(
+                backend=backend,
+                vocab=vocab,
+                normalizer=normalizer,
+                schema=dataset.schema,
+                skill_feature_names=dataset.skill_feature_names,
+                scene_provider=scene_provider,
+                device=device,
+                max_history=config.model.history_capacity,
+                candidate_action_keys=data_spec.candidate_action_keys,
+            )
+            return _run_rollout_until_time(
+                policy,
+                backend,
+                batcher,
+                scene_provider=scene_provider,
+                end_time=fight_end_time,
+                normalization=ppg_config.normalization,
+                precision=config.precision,
+                device=device,
+                expected_candidate_keys=data_spec.candidate_action_keys,
+                source_label=f"{source_index}:{reader.fight_id}",
+            )
+
+    try:
+        with ParallelRollouts(policy_backend, job_tag=data_spec.job_tag) as rollouts:
+            source_results.extend(rollouts.map(run_source, enumerate(iter_source_readers())))
     finally:
         if callable(reset_kv_cache):
             reset_kv_cache()

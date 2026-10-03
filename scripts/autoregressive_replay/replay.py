@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, is_dataclass, replace
+from collections import OrderedDict
 import logging
 from pathlib import Path
 from types import SimpleNamespace
+from threading import RLock
 
 import torch
 
 from common.config import load_precision_config, load_project_config
 from common.skills import SkillBook
-from scripts.common.inprocess_backend import InProcessBackend
+from scripts.common.inprocess_backend import InProcessBackend, InProcessEngine
 from scripts.common.json_io import read_json
 from scripts.convert_fflogs.cache import (
     load_raw_compiled_cache,
@@ -224,9 +226,13 @@ def _cache_file_fingerprint(path: Path) -> tuple[int, int] | None:
 class ReplayCacheStore:
     """跨多条 replay 轨迹复用 compiled cache reader 与 shard LRU。"""
 
-    def __init__(self, *, max_shards: int):
+    def __init__(self, *, max_shards: int, max_readers: int = 16):
+        if max_readers < 1:
+            raise ValueError("max_readers must be positive")
+        self._lock = RLock()
+        self._max_readers = max_readers
         self._shard_cache = CompiledShardCache(max_shards)
-        self._readers: dict[tuple[object, ...], CompiledCacheReader] = {}
+        self._readers: OrderedDict[tuple[object, ...], CompiledCacheReader] = OrderedDict()
         self._cache_fingerprints: dict[
             str,
             tuple[tuple[int, int], tuple[int, int] | None],
@@ -239,7 +245,11 @@ class ReplayCacheStore:
         job_tag: str,
         normalizer: Normalizer,
     ) -> CompiledCacheReader:
-        """按 source/cache 契约读取 reader，并在 cache 更新后失效旧 shard。"""
+        """共享 reader 与 shard；并发首次加载只执行一次，缓存容量有界。"""
+        with self._lock:
+            return self._load(config, job_tag=job_tag, normalizer=normalizer)
+
+    def _load(self, config, *, job_tag, normalizer):
         source_path = Path(config.scene_json_path).resolve()
         source_stat = source_path.stat()
         cache_path = cache_path_for_source(config.cache_dir, source_path).resolve()
@@ -281,6 +291,13 @@ class ReplayCacheStore:
             self._cache_fingerprints[cache_key] = (source_fingerprint, cache_fingerprint)
             reader_key = (*reader_key[:-1], cache_fingerprint)
             self._readers[reader_key] = reader
+        self._readers.move_to_end(reader_key)
+        while len(self._readers) > self._max_readers:
+            self._readers.popitem(last=False)
+        live_paths = {key[0] for key in self._readers}
+        self._cache_fingerprints = {
+            key: value for key, value in self._cache_fingerprints.items() if key in live_paths
+        }
         return reader
 
 
@@ -298,6 +315,7 @@ class AutoregressiveReplaySession:
         *,
         backend=None,
         cache_store: ReplayCacheStore | None = None,
+        engine: InProcessEngine | None = None,
     ):
         self.backend = _create_backend(config) if backend is None else backend
         self.device = self.backend.input_device
@@ -326,6 +344,7 @@ class AutoregressiveReplaySession:
             job_tag=self.data_spec.job_tag,
             actual_base_gcd=config.base_gcd,
             max_history=config.max_history,
+            engine=engine,
         )
         self._closed = False
 
@@ -557,7 +576,7 @@ class AutoregressiveReplay:
         )
 
     def run(self) -> ReplayResult:
-        rows, _snapshots, final_state = self._generate_full_trajectory()
+        rows, _snapshots, final_state = self._generate_full_trajectory(capture_snapshots=False)
         return self._build_result(
             rows,
             history_limit=self.config.max_history,
@@ -611,6 +630,8 @@ class AutoregressiveReplay:
 
     def _generate_full_trajectory(
         self,
+        *,
+        capture_snapshots: bool = True,
     ) -> tuple[list[ReplayRow], tuple[ReplaySnapshot, ...], object]:
         # 一条新轨迹必须从空缓存开始；历史消融会走独立的完整 forward。
         initial_timestamp = 0.0
@@ -711,7 +732,7 @@ class AutoregressiveReplay:
                 float(state.time),
                 format="vector",
                 next_observation_timestamp=next_observation,
-            ).context
+            ).context if capture_snapshots else None
             gcd_phase = is_gcd_decision(state.gcd_remaining)
             try:
                 row = self._predict_row(
@@ -744,13 +765,10 @@ class AutoregressiveReplay:
                     interrupt_on_scene_event=False,
                     end_time=end_time,
                 )
-                snapshots.append(
-                    ReplaySnapshot(
-                        decision_canonical,
-                        row,
-                        gcd_phase,
+                if capture_snapshots:
+                    snapshots.append(
+                        ReplaySnapshot(decision_canonical, row, gcd_phase)
                     )
-                )
                 rows.append(row)
                 continue
             selected_skill = self.skill_book.get(row.action_key)
@@ -768,13 +786,10 @@ class AutoregressiveReplay:
             if selected_skill.kind.value == GCD_ACTION_KIND:
                 gcd_step += 1
             row = replace(row, gcd_step=gcd_step)
-            snapshots.append(
-                ReplaySnapshot(
-                    decision_canonical,
-                    row,
-                    gcd_phase,
+            if capture_snapshots:
+                snapshots.append(
+                    ReplaySnapshot(decision_canonical, row, gcd_phase)
                 )
-            )
             rows.append(row)
         if max_gcds is not None and gcd_step < max_gcds:
             raise RuntimeError(
@@ -844,7 +859,9 @@ class AutoregressiveReplay:
         else:
             probabilities = torch.softmax(legal_logits / self.config.temperature, dim=-1)
             probabilities = _apply_top_p(probabilities, order, self.config.top_p)
-            selected_index = int(torch.multinomial(probabilities, 1).item())
+            selected_index = int(torch.multinomial(
+                probabilities, 1, generator=getattr(self, "_sampling_generator", None),
+            ).item())
         return ReplayRow(
             gcd_step=gcd_step,
             action_key=candidate_keys[selected_index],

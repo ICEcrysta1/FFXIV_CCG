@@ -326,7 +326,7 @@ def _run_grpo_with_backend(
             self.checkpoint = checkpoint_payload
 
     class FakeSession:
-        def __init__(self, _replay_config, *, backend, cache_store):
+        def __init__(self, _replay_config, *, backend, cache_store, engine):
             del backend, cache_store
             captured["replay_config"] = _replay_config
 
@@ -588,7 +588,7 @@ def test_grpo_training_closes_replay_session_on_outer_failure(monkeypatch, tmp_p
     class FakeSession:
         instance = None
 
-        def __init__(self, _config, *, backend, cache_store):
+        def __init__(self, _config, *, backend, cache_store, engine):
             del _config, cache_store
             self.backend = backend
             self.close_calls = 0

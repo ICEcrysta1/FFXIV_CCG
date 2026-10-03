@@ -398,7 +398,7 @@ def test_validation_ppg_reads_history_capacity_from_model_config(
             return None
 
     class FakeBackend:
-        def __init__(self, *, job_tag, max_history):
+        def __init__(self, *, job_tag, max_history, engine):
             captured["backend_max_history"] = max_history
             self.state = _FakeState()
 
@@ -524,7 +524,6 @@ def test_validation_ppg_reads_history_capacity_from_model_config(
     assert model._kv_cache_enabled is cache_was_enabled
     assert cache_events == [
         ("enable", use_kv_cache),
-        ("reset", use_kv_cache),
         ("reset", use_kv_cache),
         ("enable", cache_was_enabled),
     ]

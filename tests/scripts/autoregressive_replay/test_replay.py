@@ -426,7 +426,7 @@ def test_replay_prediction_modes_and_result_helpers(monkeypatch, tmp_path):
     )
     sampled_probabilities = []
 
-    def fake_multinomial(probabilities, count):
+    def fake_multinomial(probabilities, count, *, generator=None):
         sampled_probabilities.append(probabilities.clone())
         return torch.tensor([2])
 
@@ -918,6 +918,12 @@ def test_markdown_output_and_cli_history_ablation(monkeypatch, tmp_path):
         ],
     )
     class FakeReplay:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            calls.append("closed")
+
         def run_history_ablation(self, limits):
             calls.append(("ablation", limits))
             return (

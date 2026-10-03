@@ -9,6 +9,7 @@ from .replay import (
     ReplayResult,
 )
 from .scheduler import DecisionScheduler
+from .batch_replay import run_replays
 
 __all__ = [
     "AutoregressiveReplay",
@@ -21,4 +22,5 @@ __all__ = [
     "ReplayResult",
     "DecisionScheduler",
     "load_replay_config",
+    "run_replays",
 ]

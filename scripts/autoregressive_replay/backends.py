@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from collections import deque
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -79,7 +80,9 @@ class _MeasuredBackend:
     """集中维护延迟和进程峰值，避免两个 backend 各写一套统计。"""
 
     def __init__(self) -> None:
-        self._latencies_ms: list[float] = []
+        self._latencies_ms: deque[float] = deque(maxlen=4096)
+        self._calls = 0
+        self._max_latency_ms = 0.0
         self._process_peak_bytes = _process_peak_working_set_bytes()
         self._cuda_peak_bytes: int | None = None
 
@@ -89,7 +92,10 @@ class _MeasuredBackend:
 
     def _finish_measurement(self, started_at: float) -> None:
         self._synchronize()
-        self._latencies_ms.append((perf_counter() - started_at) * 1000.0)
+        elapsed_ms = (perf_counter() - started_at) * 1000.0
+        self._latencies_ms.append(elapsed_ms)
+        self._calls += 1
+        self._max_latency_ms = max(self._max_latency_ms, elapsed_ms)
         current_peak = _process_peak_working_set_bytes()
         if current_peak is not None:
             self._process_peak_bytes = max(self._process_peak_bytes or 0, current_peak)
@@ -98,13 +104,14 @@ class _MeasuredBackend:
         return None
 
     def metrics(self) -> BackendMetrics:
+        # 分位数只保留最近 4096 次；调用总量和最大延迟仍覆盖整个生命周期。
         values = sorted(self._latencies_ms)
         return BackendMetrics(
-            calls=len(values),
+            calls=self._calls,
             latency_ms_p50=_percentile(values, 0.50),
             latency_ms_p95=_percentile(values, 0.95),
             latency_ms_p99=_percentile(values, 0.99),
-            latency_ms_max=values[-1] if values else 0.0,
+            latency_ms_max=self._max_latency_ms,
             process_peak_working_set_bytes=self._process_peak_bytes,
             cuda_peak_allocated_bytes=self._cuda_peak_bytes,
         )
@@ -114,6 +121,7 @@ class PyTorchPolicyBackend(_MeasuredBackend):
     """加载原始 checkpoint，并返回应用重复惩罚前的 PyTorch logits。"""
 
     name = "pytorch"
+    supports_batch_inference = True
 
     def __init__(
         self,

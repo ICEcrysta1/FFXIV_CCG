@@ -32,6 +32,7 @@ from common.training.tensorboard import (
     write_scalar_metrics,
 )
 from scripts.autoregressive_replay.backends import PyTorchPolicyBackend
+from scripts.autoregressive_replay.parallel import ParallelRollouts, collate_live_batches
 from scripts.autoregressive_replay.replay import (
     AutoregressiveReplay,
     AutoregressiveReplaySession,
@@ -115,7 +116,9 @@ class _TrainableRolloutReplay(AutoregressiveReplay):
                 order,
                 self.config.top_p,
             )
-            selected_index = int(torch.multinomial(probabilities, 1).item())
+            selected_index = int(torch.multinomial(
+                probabilities, 1, generator=getattr(self, "_sampling_generator", None),
+            ).item())
 
         selected_probability = probabilities[selected_index].clamp_min(
             LOG_PROB_EPSILON
@@ -219,71 +222,10 @@ def compute_baseline_relative_advantages(
     return tuple(result)
 
 
-def _pad_sequence_field(
-    samples: Sequence[dict[str, object]],
-    key: str,
-    *,
-    pad_value=0,
-) -> torch.Tensor:
-    """把不同历史/scene 长度的单样本 live batch 进行右侧 padding。"""
-    values = [sample[key][0] for sample in samples]
-    if not all(isinstance(value, torch.Tensor) for value in values):
-        raise TypeError(f"GRPO batch field is not tensor: {key}")
-    tensors = [value for value in values if isinstance(value, torch.Tensor)]
-    if not tensors:
-        return torch.empty((0, 0), dtype=torch.float32)
-    return torch.nn.utils.rnn.pad_sequence(
-        tensors,
-        batch_first=True,
-        padding_value=pad_value,
-    )
-
-
 def collate_grpo_decisions(
     decisions: Sequence[GrpoDecision],
 ) -> dict[str, object]:
-    """组合变长 live 输入；候选维度必须保持 checkpoint 契约的固定顺序。"""
-    if not decisions:
-        raise ValueError("cannot collate an empty GRPO decision batch")
-    samples = [decision.batch for decision in decisions]
-    batch: dict[str, object] = {}
-    for key in (
-        "scene_vectors",
-        "scene_types",
-        "scene_mask",
-        "history_skill_ids",
-        "history_skill_features",
-        "history_state_vectors",
-        "history_mask",
-    ):
-        batch[key] = _pad_sequence_field(samples, key)
-    batch["history_state_null_mask"] = _pad_sequence_field(
-        samples,
-        "history_state_null_mask",
-        pad_value=True,
-    )
-    for key in (
-        "candidate_skill_ids",
-        "candidate_skill_features",
-        "candidate_state_vectors",
-        "candidate_state_null_mask",
-        "candidate_legal_mask",
-    ):
-        values = [sample[key] for sample in samples]
-        if not all(isinstance(value, torch.Tensor) for value in values):
-            raise TypeError(f"GRPO candidate field is not tensor: {key}")
-        batch[key] = torch.cat(
-            [value for value in values if isinstance(value, torch.Tensor)],
-            dim=0,
-        )
-
-    batch["history_action_keys"] = [
-        deepcopy(sample["history_action_keys"][0]) for sample in samples
-    ]
-    batch["candidate_action_keys"] = [
-        deepcopy(sample["candidate_action_keys"][0]) for sample in samples
-    ]
-    return batch
+    return collate_live_batches([decision.batch for decision in decisions])
 
 
 def _top_p_probabilities_for_actions(
@@ -379,6 +321,7 @@ def _run_scene_rollout(
     temperature: float,
     record_decisions: bool,
     session: AutoregressiveReplaySession | None = None,
+    sampling_seed: int | None = None,
 ):
     config = replace(
         replay_config,
@@ -393,6 +336,10 @@ def _run_scene_rollout(
             record_decisions=record_decisions,
             session=session,
         )
+        if sampling_seed is not None:
+            # 每条轨迹的随机流由 YAML seed 与稳定任务编号决定，不依赖线程调度。
+            replay._sampling_generator = torch.Generator(device=backend.input_device)
+            replay._sampling_generator.manual_seed(sampling_seed)
         # 自回归阶段只负责执行状态机、采样和记录标注；禁止构建任何反向图。
         # backend.raw_logits 本身也使用 no_grad，这里再用 inference_mode
         # 覆盖整条轨迹，避免 16 条样本把激活留在显存中。
@@ -689,8 +636,8 @@ def run_grpo_training(
         raise RuntimeError("CUDA is required by GRPO, but torch.cuda.is_available() is false")
     device = torch.device(device_name)
     resolved_precision = str(precision or config.precision).strip().lower()
-    # backend 与 replay session 只创建一次：模型、进程内状态机和 compiled cache
-    # 均跨场景/轨迹复用，单条轨迹开始时由 session.reset() 恢复初始状态。
+    # 只加载一份模型；各轨迹持有独立 session，共用有界引擎和 compiled cache。
+    # 所有采样完成并释放队列后才更新参数，避免推理与反向传播交错。
     backend = PyTorchPolicyBackend(
         checkpoint_path,
         device=device_name,
@@ -758,12 +705,25 @@ def run_grpo_training(
         backend="pytorch",
         policy_precision=resolved_precision,
     )
-    replay_cache_store = ReplayCacheStore(max_shards=config.compiled_cache_max_shards)
-    replay_session = AutoregressiveReplaySession(
-        replay_config,
-        backend=backend,
-        cache_store=replay_cache_store,
+    rollouts = ParallelRollouts(backend, job_tag=data_spec.job_tag)
+    replay_cache_store = ReplayCacheStore(
+        max_shards=config.compiled_cache_max_shards, max_readers=rollouts.workers,
     )
+
+    def run_rollout_task(task, policy, engine):
+        scene_path, temperature, record_decisions, sampling_seed = task
+        session = AutoregressiveReplaySession(
+            replay_config, backend=policy, cache_store=replay_cache_store, engine=engine,
+        )
+        try:
+            return _run_scene_rollout(
+                replay_config, scene_json_path=scene_path, backend=policy,
+                temperature=temperature, record_decisions=record_decisions,
+                session=session, sampling_seed=sampling_seed,
+            )
+        finally:
+            session.close()
+
     tensorboard_writer = None
     try:
         tensorboard_writer = create_tensorboard_writer(
@@ -821,55 +781,39 @@ def run_grpo_training(
             rollout_store = GrpoRolloutStore(rollout_root, iteration=iteration)
             # 阶段一：完整自回归采样并用 C# 状态机完成 PPG/奖励标注。
             # 这一步完全 inference-only；所有 decisions 在 _score_row 中已脱离到 CPU。
-            with torch.inference_mode():
-                for scene_path in selected_scenes:
-                    greedy_result, _ = _run_scene_rollout(
-                        replay_config,
-                        scene_json_path=scene_path,
-                        backend=backend,
-                        temperature=0.0,
-                        record_decisions=False,
-                        session=replay_session,
-                    )
-                    greedy_ppg = _ppg_from_result(greedy_result)
-                    del greedy_result
-                    baseline_ppgs.append(greedy_ppg)
-
-                    scene_trajectories: list[GrpoTrajectory] = []
-                    scene_deltas: list[float] = []
-                    for _ in range(grpo.group_size):
-                        sampled_result, decisions = _run_scene_rollout(
-                            replay_config,
-                            scene_json_path=scene_path,
-                            backend=backend,
-                            temperature=grpo.temperature,
-                            record_decisions=True,
-                            session=replay_session,
-                        )
-                        sampled_ppg = _ppg_from_result(sampled_result)
-                        delta = sampled_ppg - greedy_ppg
-                        scene_deltas.append(delta)
-                        stored_trajectory = rollout_store.write_trajectory(
-                            scene_json_path=scene_path,
-                            decisions=decisions,
-                            ppg=sampled_ppg,
-                            greedy_ppg=greedy_ppg,
-                            reward=delta,
-                        )
-                        del decisions, sampled_result
-                        scene_trajectories.append(
-                            GrpoTrajectory(
-                                scene_json_path=scene_path,
-                                decision_path=stored_trajectory.path,
-                                decision_count=stored_trajectory.decision_count,
-                                ppg=sampled_ppg,
-                                greedy_ppg=greedy_ppg,
-                                reward=delta,
-                            )
-                        )
-                    trajectories.extend(scene_trajectories)
-                    group_trajectories.append(scene_trajectories)
-                    reward_groups.append(scene_deltas)
+            baseline_tasks = ((path, 0.0, False, None) for path in selected_scenes)
+            for result, _ in rollouts.map(run_rollout_task, baseline_tasks):
+                baseline_ppgs.append(_ppg_from_result(result))
+            group_trajectories = [[] for _ in selected_scenes]
+            reward_groups = [[] for _ in selected_scenes]
+            sampling_tasks = (
+                (path, grpo.temperature, True,
+                 config.seed + (((iteration - 1) * grpo.prompt_batch_size + scene_index)
+                                * grpo.group_size + sample_index))
+                for scene_index, path in enumerate(selected_scenes)
+                for sample_index in range(grpo.group_size)
+            )
+            for task_index, (sampled_result, decisions) in enumerate(
+                rollouts.map(run_rollout_task, sampling_tasks)
+            ):
+                scene_index = task_index // grpo.group_size
+                scene_path = selected_scenes[scene_index]
+                greedy_ppg = baseline_ppgs[scene_index]
+                sampled_ppg = _ppg_from_result(sampled_result)
+                delta = sampled_ppg - greedy_ppg
+                reward_groups[scene_index].append(delta)
+                stored_trajectory = rollout_store.write_trajectory(
+                    scene_json_path=scene_path, decisions=decisions,
+                    ppg=sampled_ppg, greedy_ppg=greedy_ppg, reward=delta,
+                )
+                del decisions, sampled_result
+                trajectory = GrpoTrajectory(
+                    scene_json_path=scene_path, decision_path=stored_trajectory.path,
+                    decision_count=stored_trajectory.decision_count,
+                    ppg=sampled_ppg, greedy_ppg=greedy_ppg, reward=delta,
+                )
+                group_trajectories[scene_index].append(trajectory)
+                trajectories.append(trajectory)
 
             # 阶段二：所有场景/样本均已标注后，才组装优势并执行真实 GRPO 反向更新。
             group_advantages = compute_baseline_relative_advantages(
@@ -922,15 +866,9 @@ def run_grpo_training(
 
             model.eval()
             post_update_greedy = []
-            for scene_path in selected_scenes:
-                result, _ = _run_scene_rollout(
-                    replay_config,
-                    scene_json_path=scene_path,
-                    backend=backend,
-                    temperature=0.0,
-                    record_decisions=False,
-                    session=replay_session,
-                )
+            for result, _ in rollouts.map(
+                run_rollout_task, ((path, 0.0, False, None) for path in selected_scenes),
+            ):
                 post_update_greedy.append(_ppg_from_result(result))
             pre_mean = sum(baseline_ppgs) / len(baseline_ppgs)
             post_mean = sum(post_update_greedy) / len(post_update_greedy)
@@ -1080,4 +1018,4 @@ def run_grpo_training(
         try:
             close_tensorboard_writer(tensorboard_writer)
         finally:
-            replay_session.close()
+            rollouts.close()
