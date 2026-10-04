@@ -27,7 +27,7 @@ from common.torch_serialization import safe_torch_load
 from common.policy.data import Normalizer, SkillVocab
 from training import TrainingCollator, TrainingDataset
 from common.policy.data.policy_actions import load_policy_actions
-from common.policy.data import DataSpec
+from common.policy.data import ActionSpace, DataSpec
 from common.policy.model import (
     CausalPolicyModel,
     repetition_config_from_checkpoint,
@@ -334,9 +334,11 @@ def _load_model_analysis_context(
             f"configured job_tag {job_tag!r} does not match checkpoint job_tag {data_spec.job_tag!r}"
         )
     vocab = SkillVocab.build_from_job_tag(job_tag)
+    action_space = ActionSpace.from_data_spec(data_spec)
     source_path = _resolve_analysis_source(
         source_path, raw_root=raw_root, cache_dir=cache_dir,
         job_tag=job_tag, cache_shard_size=cache_shard_size,
+        expected_action_space=action_space,
     )
     repetition_config = repetition_config_from_checkpoint(checkpoint)
     model = CausalPolicyModel(
@@ -357,6 +359,7 @@ def _load_model_analysis_context(
         cache_max_shards=cache_max_shards,
         job_tag=job_tag,
         skill_vocab=vocab,
+        expected_action_space=action_space,
     )
     if len(dataset) == 0:
         raise ValueError("dataset is empty, cannot load model analysis context")
@@ -505,6 +508,7 @@ def save_figure(fig: Figure, path: Path, *, dpi: int | None = None) -> None:
 def _resolve_analysis_source(
     explicit: Path | None, *, raw_root: Path, cache_dir: Path,
     job_tag: str, cache_shard_size: int,
+    expected_action_space: ActionSpace,
 ) -> Path:
     """显式参数优先，其次分析专用环境变量，最后选择已有缓存。"""
     raw = explicit or os.environ.get(MODEL_ANALYSIS_SCENE_JSON_ENV, "").strip()
@@ -513,6 +517,7 @@ def _resolve_analysis_source(
     return find_prepared_scene_source(
         raw_root, cache_dir=cache_dir, job_tag=job_tag,
         cache_shard_size=cache_shard_size,
+        expected_action_space=expected_action_space,
     )
 
 
@@ -525,6 +530,7 @@ def _load_analysis_dataset(
     cache_max_shards: int,
     job_tag: str,
     skill_vocab: SkillVocab,
+    expected_action_space: ActionSpace,
 ) -> TrainingDataset:
     """读取分析用 cache；缺失或过期时调用转换 CLI 后重试。"""
     normalizer = Normalizer()
@@ -534,6 +540,7 @@ def _load_analysis_dataset(
         "normalizer": normalizer,
         "job_tag": job_tag,
         "skill_vocab": skill_vocab,
+        "expected_action_space": expected_action_space,
         "max_history": max_history,
         "int_dtype": precision.resolve_int_dtype(),
         "float_dtype": precision.resolve_float_dtype(),
@@ -550,6 +557,7 @@ def _load_analysis_dataset(
             cache_dir=cache_dir,
             cache_shard_size=cache_shard_size,
             job_tag=job_tag,
+            expected_action_space=expected_action_space,
         )
         return TrainingDataset([source_path], **dataset_kwargs)
 

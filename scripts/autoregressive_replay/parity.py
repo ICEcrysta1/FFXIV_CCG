@@ -8,6 +8,7 @@ import logging
 from dataclasses import replace
 from pathlib import Path
 
+from common.policy.data import ActionSpace
 from scripts.onnx_export.release.release import (
     RELEASE_GATE_VERSION,
     package_runtime_targets,
@@ -61,6 +62,7 @@ def run_rollout_parities(
                 cache.prepare(
                     [config for config, _ in items], job_tag=reference.data_spec.job_tag,
                     normalizer=reference.input_contract.create_normalizer(), engine=engine, workers=pool.workers,
+                    expected_action_space=ActionSpace.from_data_spec(reference.data_spec),
                 )
             except Exception:
                 # 每个会话仍使用本引擎重试自己的来源，并将失败写入独立报告。

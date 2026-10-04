@@ -144,14 +144,19 @@ def test_replay_compiles_missing_cache_and_retries(monkeypatch, tmp_path):
     )
 
     engine = object()
-    assert replay_module._load_replay_cache(config, "black_mage", normalizer, engine=engine) is reader
+    action_space = replay_module.ActionSpace.from_job_tag("black_mage")
+    assert replay_module._load_replay_cache(
+        config, "black_mage", normalizer, engine=engine, expected_action_space=action_space,
+    ) is reader
     assert len(load_calls) == 2
+    assert all(call[1]["expected_action_space"] == action_space for call in load_calls)
     assert compile_calls == [
         (
             ([config.scene_json_path],),
             {
                 "job_tag": "black_mage",
                 "normalizer": normalizer,
+                "expected_action_space": action_space,
                 "int_dtype": torch.int32,
                 "float_dtype": torch.float32,
                 "cache_dir": config.cache_dir,
@@ -186,10 +191,17 @@ def test_replay_cache_store_reuses_reader_for_unchanged_scene(monkeypatch, tmp_p
 
     store = ReplayCacheStore(max_shards=2)
     engine = object()
-    assert store.load(config, job_tag="black_mage", normalizer=normalizer, engine=engine) is reader
-    assert store.load(config, job_tag="black_mage", normalizer=normalizer, engine=engine) is reader
+    action_space = replay_module.ActionSpace.from_job_tag("black_mage")
+    kwargs = dict(job_tag="black_mage", normalizer=normalizer, engine=engine, expected_action_space=action_space)
+    assert store.load(config, **kwargs) is reader
+    assert store.load(config, **kwargs) is reader
     assert len(load_calls) == 1
     assert load_calls[0][1]["shard_cache"] is store._shard_cache
+    # 同一 source 的 reader 不能跨模型动作契约复用。
+    changed = replace(action_space, action_is_gcd=(not action_space.action_is_gcd[0], *action_space.action_is_gcd[1:]))
+    assert store.load(config, **{**kwargs, "expected_action_space": changed}) is reader
+    assert len(load_calls) == 2
+    assert load_calls[-1][1]["expected_action_space"] == changed
 
 
 def test_replay_session_reset_reinitializes_backend_and_state_machine():

@@ -9,6 +9,7 @@ from dataclasses import replace
 from itertools import islice
 from pathlib import Path
 
+from common.policy.data.action_space import ActionSpace
 from common.policy.data.compiled_cache import (
     DEFAULT_CACHE_MAX_SHARDS,
     DEFAULT_CACHE_SHARD_SIZE,
@@ -171,6 +172,7 @@ def _compile_training_path_groups(
     """先复用整组已有缓存，再逐轮编译缺额并从同副本候选补位。"""
     if cache_dir is None:
         raise ValueError("compiled cache directory is required for training selection")
+    action_space = ActionSpace.from_job_tag(job_tag)
     shard_cache = CompiledShardCache(max_shards)
     states = [
         {
@@ -178,6 +180,7 @@ def _compile_training_path_groups(
             "valid": {
                 path.resolve() for path in cached_candidates_for_group(
                     group, job_tag=job_tag, normalizer=normalizer,
+                    expected_action_space=action_space,
                     int_dtype=int_dtype, float_dtype=float_dtype,
                     cache_dir=cache_dir, shard_size=shard_size, shard_cache=shard_cache,
                 )
@@ -215,6 +218,7 @@ def _compile_training_path_groups(
             job_tag=job_tag,
             downtime_gap_seconds=downtime_gap_seconds,
             normalizer=normalizer,
+            expected_action_space=action_space,
             int_dtype=int_dtype,
             float_dtype=float_dtype,
             cache_dir=cache_dir,
@@ -264,6 +268,7 @@ def precompile_raw_training_caches(
     encounter: str | None = None,
     downtime_gap_seconds: float = DEFAULT_DOWNTIME_GAP_SECONDS,
     normalizer: Normalizer,
+    expected_action_space: ActionSpace | None = None,
     int_dtype,
     float_dtype,
     cache_dir: Path | None,
@@ -272,7 +277,7 @@ def precompile_raw_training_caches(
     max_shards: int = DEFAULT_CACHE_MAX_SHARDS,
     engine: InProcessEngine | None = None,
 ) -> list[Path]:
-    """读取 raw JSON，并把结果直接写入最终 compiled cache。"""
+    """默认按当前配置编译；模型调用方可指定保存的动作契约来复用缓存。"""
     if cache_dir is None or not raw_paths:
         return []
     if max_workers < 1:
@@ -280,6 +285,10 @@ def precompile_raw_training_caches(
     if engine is not None and engine.job_tag != job_tag:
         raise ValueError("cache compilation job must match the shared engine")
 
+    conversion_action_space = None
+    if expected_action_space is None:
+        conversion_action_space = ActionSpace.from_job_tag(job_tag)
+        expected_action_space = conversion_action_space
     normalizer.ensure_job_resources(job_tag)
     cache_dir = Path(cache_dir).resolve()
     shard_cache = CompiledShardCache(max_shards)
@@ -290,6 +299,7 @@ def precompile_raw_training_caches(
             source_path,
             cache_dir=cache_dir,
             normalizer=normalizer,
+            expected_action_space=expected_action_space,
             int_dtype=int_dtype,
             float_dtype=float_dtype,
             shard_size=shard_size,
@@ -302,6 +312,16 @@ def precompile_raw_training_caches(
 
     if not missing:
         return sorted(set(valid_paths), key=lambda path: str(path).casefold())
+
+    # 已有模型兼容缓存无需读取当前动作配置；只有补编译前才核对转换器契约。
+    # 不兼容时在创建目录或启动 worker 前失败，避免覆盖仍可被原模型使用的缓存。
+    if conversion_action_space is None:
+        conversion_action_space = ActionSpace.from_job_tag(job_tag)
+    if conversion_action_space != expected_action_space:
+        raise ValueError(
+            "cache compilation action space mismatch: current YAML differs from the expected "
+            "model action contract; restore the matching configuration before recompiling"
+        )
 
     # 在启动工作线程前建立公共目录，避免并发首次创建改变 Windows 路径解析结果。
     cache_dir.mkdir(parents=True, exist_ok=True)

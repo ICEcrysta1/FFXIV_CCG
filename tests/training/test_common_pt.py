@@ -183,6 +183,7 @@ def test_previous_state_layout_cache_is_rejected(tmp_path, old_contract):
 
     assert load_compiled_cache(
         cache_path, source_path, signature=signature, shard_cache=CompiledShardCache(),
+        expected_action_space=ActionSpace.from_job_tag("black_mage"),
     ) is None
 
 
@@ -317,6 +318,7 @@ def test_corrupt_history_bank_manifest_falls_back_to_recompile(
         cache_path,
         tmp_path / "source.json",
         signature={},
+        expected_action_space=ActionSpace.from_job_tag("black_mage"),
         shard_cache=CompiledShardCache(),
     ) is None
 
@@ -363,6 +365,7 @@ def test_empty_compiled_cache_accepts_sentinel_history_bank(tmp_path, monkeypatc
         cache_path,
         tmp_path / "source.json",
         signature={},
+        expected_action_space=ActionSpace.from_job_tag("black_mage"),
         shard_cache=CompiledShardCache(),
     )
 
@@ -405,6 +408,7 @@ def test_compiled_cache_reader_does_not_swallow_memory_error(tmp_path, monkeypat
             cache_path,
             tmp_path / "source.json",
             signature={},
+            expected_action_space=ActionSpace.from_job_tag("black_mage"),
             shard_cache=CompiledShardCache(),
         )
 

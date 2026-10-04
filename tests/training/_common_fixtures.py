@@ -12,7 +12,7 @@ from scripts.convert_fflogs.source.source_reader import TrainingSourceReader
 from scripts.convert_fflogs.training.history_bank import build_history_bank
 from scripts.convert_fflogs.training.sample_builder import TrainingSampleBuilder
 from scripts.convert_fflogs.utils import build_skill_book, load_job_project_config
-from common.policy.data import Normalizer, NormalizerConfig, SkillVocab
+from common.policy.data import ActionSpace, Normalizer, NormalizerConfig, SkillVocab
 from training import TrainingDataset
 from common.policy.data.compiled_cache import build_cache_signature, cache_path_for_source
 from common.policy.data.schema import SceneWindowSchema
@@ -46,6 +46,7 @@ def make_dataset(source_paths: list[Path], **kwargs) -> TrainingDataset:
     kwargs.setdefault("float_dtype", precision.resolve_float_dtype())
     kwargs.setdefault("normalizer", Normalizer())
     kwargs.setdefault("job_tag", "black_mage")
+    kwargs.setdefault("expected_action_space", ActionSpace.from_job_tag(kwargs["job_tag"]))
     if "cache_dir" not in kwargs:
         kwargs["cache_dir"] = source_paths[0].parents[1] / ".cache"
     for source_path in source_paths:

@@ -9,6 +9,7 @@ from pathlib import Path
 
 from common.torch_serialization import safe_torch_load
 
+from .action_space import ActionSpace
 from .compiled_cache import (
     CACHE_FORMAT,
     DEFAULT_CACHE_MAX_SHARDS,
@@ -36,6 +37,7 @@ def cached_candidates_for_group(
     *,
     job_tag: str,
     normalizer: Normalizer,
+    expected_action_space: ActionSpace,
     int_dtype,
     float_dtype,
     cache_dir: Path,
@@ -57,6 +59,7 @@ def cached_candidates_for_group(
         )
         cached = load_compiled_cache_for_source(
             cache_dir, source, signature=signature, shard_cache=shard_cache,
+            expected_action_space=expected_action_space,
         )
         if cached is not None and cached.num_samples > 0 and cached.job_tag == job_tag:
             cached_paths.append(source)
@@ -89,12 +92,14 @@ def select_prepared_training_sources(
         raise FileNotFoundError(f"没有训练 JSON：{data_dir}")
     normalizer = Normalizer()
     normalizer.ensure_job_resources(job_tag)
+    action_space = ActionSpace.from_job_tag(job_tag)
     shard_cache = CompiledShardCache(max_shards)
     selected: list[Path] = []
     missing: list[str] = []
     for group in groups:
         cached_paths = cached_candidates_for_group(
             group, job_tag=job_tag, normalizer=normalizer,
+            expected_action_space=action_space,
             int_dtype=int_dtype, float_dtype=float_dtype,
             cache_dir=cache_dir, shard_size=shard_size, shard_cache=shard_cache,
         )
@@ -130,6 +135,7 @@ def select_prepared_validation_sources(
 
     normalizer = Normalizer()
     normalizer.ensure_job_resources(job_tag)
+    action_space = ActionSpace.from_job_tag(job_tag)
     shard_cache = CompiledShardCache(max_shards)
     selected: list[Path] = []
     shortages: list[str] = []
@@ -165,6 +171,7 @@ def select_prepared_validation_sources(
         candidate_group = RawTrainingPathGroup(group.directory_name, len(candidates), tuple(candidates))
         valid = cached_candidates_for_group(
             candidate_group, job_tag=job_tag, normalizer=normalizer,
+            expected_action_space=action_space,
             int_dtype=int_dtype, float_dtype=float_dtype,
             cache_dir=cache_dir, shard_size=shard_size, shard_cache=shard_cache,
         )

@@ -38,7 +38,7 @@ from common.policy.config import (
 )
 from training.config import RunConfig
 from common.project_config import load_root_dotenv
-from common.policy.data import DataSpec, ModelInputContract, Normalizer
+from common.policy.data import ActionSpace, DataSpec, ModelInputContract, Normalizer
 from common.policy.data.schema import TrainingSchema
 from training.loop import _save_checkpoint
 
@@ -48,7 +48,8 @@ def test_analysis_scene_uses_independent_env_and_cli_override(monkeypatch, tmp_p
     monkeypatch.setenv("MODEL_ANALYSIS_SCENE_JSON", "analysis.json.br")
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_SCENE_JSON", "replay.json.br")
     kwargs = dict(raw_root=tmp_path, cache_dir=tmp_path / ".cache",
-                  job_tag="black_mage", cache_shard_size=768)
+                  job_tag="black_mage", cache_shard_size=768,
+                  expected_action_space=ActionSpace(("a", "b"), (1, 2), (True, False)))
     assert analysis_common._resolve_analysis_source(None, **kwargs) == tmp_path / "analysis.json.br"
     assert analysis_common._resolve_analysis_source(Path("cli.json.br"), **kwargs) == tmp_path / "cli.json.br"
 
@@ -64,12 +65,15 @@ def test_analysis_scene_defaults_to_prepared_cache(monkeypatch, tmp_path):
         return expected
 
     monkeypatch.setattr(analysis_common, "find_prepared_scene_source", select)
+    action_space = ActionSpace(("a", "b"), (1, 2), (True, False))
     assert analysis_common._resolve_analysis_source(
         None, raw_root=tmp_path, cache_dir=tmp_path / ".cache",
         job_tag="black_mage", cache_shard_size=768,
+        expected_action_space=action_space,
     ) == expected
     assert calls == [(tmp_path, dict(cache_dir=tmp_path / ".cache",
-                                   job_tag="black_mage", cache_shard_size=768))]
+                                   job_tag="black_mage", cache_shard_size=768,
+                                   expected_action_space=action_space))]
 
 
 def test_pca_projection_returns_coordinates_and_explained_variance():
@@ -581,6 +585,7 @@ def test_model_analysis_retries_after_compiling_missing_cache(monkeypatch, tmp_p
 
     source_path = tmp_path / "source.json"
     cache_dir = tmp_path / "cache"
+    action_space = ActionSpace(("a", "b"), (1, 2), (True, False))
     result = analysis_common._load_analysis_dataset(
         source_path=source_path,
         cache_dir=cache_dir,
@@ -589,17 +594,20 @@ def test_model_analysis_retries_after_compiling_missing_cache(monkeypatch, tmp_p
         cache_max_shards=24,
         job_tag="black_mage",
         skill_vocab=object(),
+        expected_action_space=action_space,
     )
 
     assert result is sentinel_dataset
     assert len(dataset_calls) == 2
     assert all(call[1]["max_history"] == 240 for call in dataset_calls)
+    assert all(call[1]["expected_action_space"] == action_space for call in dataset_calls)
     assert compiled_calls == [
         {
             "source_paths": [source_path],
             "cache_dir": cache_dir,
             "cache_shard_size": 768,
             "job_tag": "black_mage",
+            "expected_action_space": action_space,
         }
     ]
 

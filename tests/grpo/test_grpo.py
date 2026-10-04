@@ -14,6 +14,7 @@ import pytest
 import torch
 
 from common.policy.config import resolve_policy_grpo_dir
+from common.policy.data import ActionSpace
 from common.policy.model import repetition as repetition_module
 from grpo.config import GrpoConfig, GrpoRunConfig, load_grpo_config
 from grpo.storage import GrpoRolloutStore
@@ -301,7 +302,11 @@ def _run_grpo_with_backend(
     """在只跑到 setup 阶段的环境里执行 run_grpo_training，返回输出目录。"""
     scene_path = tmp_path / "scene.json"
     scene_path.write_text("{}", encoding="utf-8", newline="\n")
-    monkeypatch.setattr("grpo.trainer.ReplayCacheStore.prepare", lambda *_a, **_k: None)
+    prepared_actions = []
+    monkeypatch.setattr(
+        "grpo.trainer.ReplayCacheStore.prepare",
+        lambda *_a, **kwargs: prepared_actions.append(kwargs["expected_action_space"]),
+    )
     captured: dict[str, object] = {}
     Path(checkpoint_path).parent.mkdir(parents=True, exist_ok=True)
     torch.save(checkpoint_payload, checkpoint_path)
@@ -319,6 +324,7 @@ def _run_grpo_with_backend(
                 job_tag="black_mage",
                 num_actions=1,
                 action_keys=("fire",),
+                action_to_vocab_id=(1,),
                 action_is_gcd=(True,),
             )
             self.input_contract = SimpleNamespace(create_normalizer=lambda: object())
@@ -370,6 +376,8 @@ def _run_grpo_with_backend(
             output_dir=run_output_dir,
             device_name="cpu",
         )
+    assert prepared_actions
+    assert all(space == ActionSpace(("fire",), (1,), (True,)) for space in prepared_actions)
     if capture_output is not None:
         capture_output.update(captured)
     return captured["replay_config"].output_path.parent
@@ -579,6 +587,7 @@ def test_grpo_training_closes_replay_session_on_outer_failure(monkeypatch, tmp_p
                 job_tag="black_mage",
                 num_actions=1,
                 action_keys=("fire",),
+                action_to_vocab_id=(1,),
                 action_is_gcd=(True,),
             )
             self.input_contract = SimpleNamespace(create_normalizer=lambda: object())

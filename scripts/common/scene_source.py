@@ -6,7 +6,7 @@ from pathlib import Path
 
 from common.config import load_precision_config
 from common.dataset_layout import PERCENTILE_BUCKETS, find_dataset_json_files
-from common.policy.data import Normalizer
+from common.policy.data import ActionSpace, Normalizer
 from common.policy.data.compiled_cache import (
     CompiledShardCache,
     build_cache_signature,
@@ -23,6 +23,7 @@ def find_prepared_scene_source(
     cache_dir: Path,
     job_tag: str,
     cache_shard_size: int,
+    expected_action_space: ActionSpace,
     normalizer: Normalizer | None = None,
 ) -> Path:
     """优先从高百分位选择有效缓存对应的源文件，不触发编译。"""
@@ -45,6 +46,7 @@ def find_prepared_scene_source(
         )
         reader = load_compiled_cache_for_source(
             cache_dir, source, signature=signature, shard_cache=shard_cache,
+            expected_action_space=expected_action_space,
         )
         if reader is None or reader.num_samples <= 0 or reader.job_tag != job_tag:
             continue

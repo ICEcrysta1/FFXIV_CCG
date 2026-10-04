@@ -12,6 +12,7 @@ except ModuleNotFoundError:  # pragma: no cover
     class Dataset:  # type: ignore[no-redef]
         pass
 
+from common.policy.data.action_space import ActionSpace
 from common.policy.data.compiled_cache import (
     DEFAULT_CACHE_MAX_SHARDS,
     DEFAULT_CACHE_SHARD_SIZE,
@@ -31,6 +32,7 @@ class TrainingDataset(Dataset):
         self,
         source_paths: list[Path],
         *,
+        expected_action_space: ActionSpace,
         normalizer: Normalizer | None = None,
         job_tag: str | None = None,
         skill_vocab: SkillVocab | None = None,
@@ -50,6 +52,7 @@ class TrainingDataset(Dataset):
         self._int_dtype = int_dtype
         self._float_dtype = float_dtype
         self._normalizer = normalizer
+        self._expected_action_space = expected_action_space
         if job_tag is not None and normalizer is not None:
             normalizer.ensure_job_resources(job_tag)
         if max_history is not None and max_history < 0:
@@ -206,6 +209,7 @@ class TrainingDataset(Dataset):
             self._cache_dir,
             source_path,
             signature=signature,
+            expected_action_space=self._expected_action_space,
             shard_cache=self._shard_cache,
         )
 

@@ -1,6 +1,8 @@
 """参考场景只读选择与缓存有效性回归测试。"""
 
 from pathlib import Path
+from dataclasses import replace
+from types import SimpleNamespace
 import json
 
 import pytest
@@ -8,7 +10,7 @@ import torch
 
 from common.config import load_precision_config
 from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
-from common.policy.data import ModelInputContract, Normalizer
+from common.policy.data import DataSpec, ModelInputContract, Normalizer, SkillVocab
 from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION, TRAINING_SOURCE_FORMAT, TrainingSchema
 from common.policy.data.action_space import ActionSpace
 from common.policy.data.compiled_cache import (
@@ -29,6 +31,12 @@ def _scene_data_spec():
         "action_keys": list(actions.action_keys), "action_to_vocab_id": list(actions.action_to_vocab_id),
         "action_is_gcd": list(actions.action_is_gcd), "skill_feature_names": ["potency"],
     }
+
+
+def _changed_actions(space, drift):
+    if drift == "enabled":
+        return ActionSpace(space.action_keys[1:], space.action_to_vocab_id[1:], space.action_is_gcd[1:])
+    return replace(space, action_is_gcd=(not space.action_is_gcd[0], *space.action_is_gcd[1:]))
 
 
 def _scene_schema():
@@ -95,6 +103,7 @@ def scene_cache(tmp_path):
             "action_keys": actions["action_keys"], "action_to_vocab_id": actions["action_to_vocab_id"],
             "action_is_gcd": actions["action_is_gcd"], "shard_size": 768,
             "history_bank": bank, "shard_files": [shard.name],
+            "vocab_signature": tuple(SkillVocab.build_from_job_tag("black_mage")),
         }
         if invalid == "stale":
             signature["source_size"] += 1
@@ -117,6 +126,7 @@ def scene_cache(tmp_path):
 def _select(root: Path, cache_dir: Path) -> Path:
     return find_prepared_scene_source(
         root, cache_dir=cache_dir, job_tag="black_mage", cache_shard_size=768,
+        expected_action_space=ActionSpace.from_job_tag("black_mage"),
     )
 
 
@@ -223,8 +233,9 @@ def test_scene_source_does_not_hide_memory_error(scene_cache, monkeypatch):
 
 @pytest.mark.parametrize("backend", ["pytorch", "onnxruntime"])
 @pytest.mark.parametrize("current_cache_exists", [False, True])
+@pytest.mark.parametrize("action_drift", [None, "enabled", "kind"])
 def test_default_replay_uses_saved_contract_without_recompiling(
-    scene_cache, monkeypatch, tmp_path, backend, current_cache_exists,
+    scene_cache, monkeypatch, tmp_path, backend, current_cache_exists, action_drift,
 ):
     from scripts.autoregressive_replay import config as config_module
     from scripts.autoregressive_replay import replay as replay_module
@@ -237,8 +248,10 @@ def test_default_replay_uses_saved_contract_without_recompiling(
     saved_normalizer["resource_limits"] = {
         key: value * 2 for key, value in saved_normalizer["resource_limits"].items()
     }
+    saved_spec = _scene_data_spec()
+    saved_actions = ActionSpace.from_data_spec(DataSpec.from_dict(saved_spec))
     contract = ModelInputContract(
-        job_tag="black_mage", data_spec=_scene_data_spec(),
+        job_tag="black_mage", data_spec=saved_spec,
         schema=_scene_schema(),
         normalizer_contract=saved_normalizer,
     )
@@ -248,7 +261,7 @@ def test_default_replay_uses_saved_contract_without_recompiling(
         "ZZZ/80-90/saved.json.br", cache_normalizer=contract.create_normalizer(),
     )
     checkpoint = tmp_path / "model.pt"
-    torch.save({"data_spec": _scene_data_spec(), "model_variant": "artzip",
+    torch.save({"data_spec": saved_spec, "model_variant": "artzip",
                 "input_contract": contract.to_dict()}, checkpoint)
     package = tmp_path / "deployment"
     package.mkdir()
@@ -275,6 +288,9 @@ def test_default_replay_uses_saved_contract_without_recompiling(
         replay_module, "precompile_raw_training_caches",
         lambda *_args, **_kwargs: pytest.fail("默认场景必须直接复用模型兼容缓存"),
     )
+    if action_drift is not None:
+        changed = _changed_actions(saved_actions, action_drift)
+        monkeypatch.setattr(ActionSpace, "from_job_tag", lambda _job: changed)
     config = config_module.load_replay_config(
         checkpoint=checkpoint, backend=backend, onnx_package=package,
         scene_mode="cache", device="cpu", use_kv_cache=False,
@@ -282,11 +298,109 @@ def test_default_replay_uses_saved_contract_without_recompiling(
     assert config.scene_json_path == expected
     reader = replay_module._load_replay_cache(
         config, "black_mage", contract.create_normalizer(), engine=object(),
+        expected_action_space=saved_actions,
     )
     sample = reader.sample(0)
-    assert sample["action_keys"] == _scene_data_spec()["action_keys"]
+    assert sample["action_keys"] == saved_spec["action_keys"]
     assert sample["label_action_key"] == sample["action_keys"][sample["label_index"]]
     assert torch.equal(sample["current_state_vectors"], torch.zeros(1))
+
+
+@pytest.mark.parametrize("drift", ["enabled", "kind"])
+def test_model_cache_prepare_reuses_saved_actions_and_training_rejects_drift(scene_cache, monkeypatch, drift):
+    from scripts.autoregressive_replay.replay import ReplayCacheStore
+    from scripts.convert_fflogs.cache import cache_compile
+    from common.policy.data.prepared_sources import select_prepared_training_sources
+    from training.loop.dataloaders import _build_dataset
+    from training import TrainingDataset
+
+    root, cache_dir, create = scene_cache
+    source = create("FRU/90-100/saved.json.br")
+    saved_actions = ActionSpace.from_job_tag("black_mage")
+    normalizer = Normalizer()
+    normalizer.ensure_job_resources("black_mage")
+    changed = _changed_actions(saved_actions, drift)
+    engine = SimpleNamespace(job_tag="black_mage", capacity=2)
+    config = SimpleNamespace(
+        scene_json_path=source, cache_dir=cache_dir, job_tag="black_mage",
+        cache_shard_size=768, cache_max_shards=2,
+        compiled_cache_shard_size=768, compiled_cache_max_shards=2,
+        model=SimpleNamespace(history_capacity=4),
+    )
+    before = {path: path.read_bytes() for path in cache_dir.rglob("*.pt")}
+    monkeypatch.setattr(ActionSpace, "from_job_tag", lambda _job: changed)
+    with pytest.raises(FileNotFoundError, match="cache not found or stale"):
+        _build_dataset([source], config, normalizer, torch.int32, torch.float32, cache_dir)
+    with pytest.raises(FileNotFoundError, match="训练缓存缺失或已过期"):
+        select_prepared_training_sources(
+            root, job_tag="black_mage", max_files=1, cache_dir=cache_dir,
+            int_dtype=torch.int32, float_dtype=torch.float32, shard_size=768,
+        )
+    # 正式转换入口未指定模型契约时，仍须按当前 YAML 判定旧 cache 需要重编译。
+    compiled = []
+    monkeypatch.setattr(
+        cache_compile, "_compile_raw_source_worker",
+        lambda task, **_kw: compiled.append(task[0]) or (str(task[0]), 1, 1),
+    )
+    assert cache_compile.precompile_raw_training_caches(
+        [source], job_tag="black_mage", normalizer=normalizer, cache_dir=cache_dir,
+        int_dtype=torch.int32, float_dtype=torch.float32, shard_size=768, engine=engine,
+    ) == [source]
+    assert compiled == [source]
+
+    # checkpoint caller 提供保存的契约后，不应重新读取当前动作配置或启动转换器。
+    monkeypatch.setattr(ActionSpace, "from_job_tag", lambda _job: pytest.fail("已有模型兼容缓存不应重建动作空间"))
+    monkeypatch.setattr(cache_compile, "_compile_raw_source_worker", lambda *_a, **_kw: pytest.fail("不应补编译"))
+    store = ReplayCacheStore(max_shards=2)
+    kwargs = dict(job_tag="black_mage", normalizer=normalizer, expected_action_space=saved_actions, engine=engine)
+    store.prepare([config], workers=2, **kwargs)
+    reader = store.load(config, **kwargs)
+    assert reader.action_keys == saved_actions.action_keys
+    assert reader.action_to_vocab_id == saved_actions.action_to_vocab_id
+    assert reader.action_is_gcd == saved_actions.action_is_gcd
+    dataset = TrainingDataset(
+        [source], normalizer=normalizer, expected_action_space=saved_actions,
+        skill_vocab=SkillVocab.build_from_job_tag("black_mage"), job_tag="black_mage",
+        int_dtype=torch.int32, float_dtype=torch.float32, cache_dir=cache_dir,
+        compiled_cache_shard_size=768,
+    )
+    assert ActionSpace.from_data_spec(DataSpec.from_dataset(dataset)) == saved_actions
+    assert before == {path: path.read_bytes() for path in cache_dir.rglob("*.pt")}
+
+
+@pytest.mark.parametrize("existing_cache", [False, True])
+@pytest.mark.parametrize("drift", ["enabled", "kind"])
+def test_model_cache_recompile_rejects_current_actions_before_writing(scene_cache, monkeypatch, existing_cache, drift):
+    from scripts.autoregressive_replay.replay import ReplayCacheStore
+    from scripts.convert_fflogs.cache import cache_compile
+
+    _, cache_dir, create = scene_cache
+    source = create("FRU/90-100/saved.json.br", invalid=None if existing_cache else "missing")
+    saved_actions = ActionSpace.from_job_tag("black_mage")
+    changed = _changed_actions(saved_actions, drift)
+    if existing_cache:
+        # 请求旧模型契约，但已有 cache 是当前 YAML 的另一套动作契约。
+        manifest = cache_path_for_source(cache_dir, source)
+        payload = safe_torch_load(manifest, safe_globals=(TrainingSchema,))
+        payload.update(action_keys=changed.action_keys, action_to_vocab_id=changed.action_to_vocab_id,
+                       action_is_gcd=changed.action_is_gcd, num_actions=len(changed.action_keys))
+        torch.save(payload, manifest)
+    before = {path: path.read_bytes() for path in cache_dir.rglob("*.pt")}
+    monkeypatch.setattr(ActionSpace, "from_job_tag", lambda _job: changed)
+    monkeypatch.setattr(cache_compile, "InProcessEngine", lambda *_a, **_kw: pytest.fail("应在启动引擎前拒绝"))
+    monkeypatch.setattr(cache_compile, "_compile_raw_source_worker", lambda *_a, **_kw: pytest.fail("应在写 cache 前拒绝"))
+    config = SimpleNamespace(scene_json_path=source, cache_dir=cache_dir, cache_shard_size=768, cache_max_shards=2)
+    normalizer = Normalizer()
+    engine = SimpleNamespace(job_tag="black_mage", capacity=2)
+    kwargs = dict(job_tag="black_mage", normalizer=normalizer, expected_action_space=saved_actions, engine=engine)
+    store = ReplayCacheStore(max_shards=2)
+    with pytest.raises(ValueError, match="current YAML differs.*model action contract"):
+        store.prepare([config], workers=2, **kwargs)
+    with pytest.raises(ValueError, match="current YAML differs.*model action contract"):
+        store.load(config, **kwargs)
+    assert before == {path: path.read_bytes() for path in cache_dir.rglob("*.pt")}
+    if not existing_cache:
+        assert not cache_dir.exists()
 
 
 @pytest.mark.parametrize("payload", [None, {"version": 1}])

@@ -16,7 +16,7 @@ from common.policy.config import (
     resolve_policy_grpo_dir,
     validate_policy_model_variant,
 )
-from common.policy.data import DataSpec
+from common.policy.data import ActionSpace, DataSpec
 from common.policy.model.repetition import (
     apply_repetition_penalty,
     prepare_repetition_penalty,
@@ -716,6 +716,7 @@ def run_grpo_training(
         replay_cache_store.prepare(
             [replace(replay_config, scene_json_path=task[0]) for task in tasks],
             job_tag=data_spec.job_tag, normalizer=input_contract.create_normalizer(),
+            expected_action_space=ActionSpace.from_data_spec(data_spec),
             engine=engine, workers=rollouts.workers,
         )
 

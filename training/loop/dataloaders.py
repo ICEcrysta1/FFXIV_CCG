@@ -7,7 +7,7 @@ from pathlib import Path
 
 from torch.utils.data import DataLoader
 
-from common.policy.data import DataSpec, Normalizer
+from common.policy.data import ActionSpace, DataSpec, Normalizer
 from training.data import (
     ShardBatchSampler,
     TrainingCollator,
@@ -138,6 +138,7 @@ def _build_dataset(paths, config, normalizer, int_dtype, float_dtype, cache_dir)
         paths,
         normalizer=normalizer,
         job_tag=config.job_tag,
+        expected_action_space=ActionSpace.from_job_tag(config.job_tag),
         max_history=config.model.history_capacity,
         int_dtype=int_dtype,
         float_dtype=float_dtype,

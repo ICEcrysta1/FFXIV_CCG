@@ -9,6 +9,7 @@ import pytest
 import torch
 
 from common.policy.model import RepetitionConfig
+from common.policy.data import ActionSpace, DataSpec
 from scripts.autoregressive_replay import main as replay_main_module
 from scripts.autoregressive_replay import parity as parity_module
 from scripts.autoregressive_replay.backends import compare_backend_logits
@@ -188,7 +189,10 @@ def test_parity_failure_writes_auditable_partial_report(monkeypatch, tmp_path):
             self.logits = logits
             self.source_path = tmp_path / f"{name}.model"
             self.input_device = torch.device("cpu")
-            self.data_spec = SimpleNamespace(job_tag="black_mage")
+            self.data_spec = DataSpec(
+                "black_mage", 3, 1, 1, 1, 1, ("fire_iii", "fire_iv", "blizzard_iii"),
+                ("kind",), (1, 2, 3), (True, True, True),
+            )
             self.input_contract = SimpleNamespace(to_dict=lambda: {"version": 1}, create_normalizer=lambda: object())
             self.repetition = RepetitionConfig()
             self.vocab_entries = ((100, 1), (200, 2), (300, 3))
@@ -224,7 +228,11 @@ def test_parity_failure_writes_auditable_partial_report(monkeypatch, tmp_path):
 
     monkeypatch.setattr(parity_module, "OrtPolicyBackend", lambda *_args, **_kwargs: compared)
     monkeypatch.setattr(parity_module, "PyTorchPolicyBackend", lambda *_args, **_kwargs: reference)
-    monkeypatch.setattr(parity_module.ReplayCacheStore, "prepare", lambda *_args, **_kwargs: None)
+    prepared_actions = []
+    monkeypatch.setattr(
+        parity_module.ReplayCacheStore, "prepare",
+        lambda *_args, **kwargs: prepared_actions.append(kwargs["expected_action_space"]),
+    )
 
     closed = []
     class FakeSession:
@@ -283,6 +291,7 @@ def test_parity_failure_writes_auditable_partial_report(monkeypatch, tmp_path):
         )
 
     report = json.loads(output.read_text(encoding="utf-8"))
+    assert prepared_actions == [ActionSpace.from_data_spec(reference.data_spec)]
     assert report["status"] == "failed"
     assert report["release_gate"] == {"enabled": False, "version": 1}
     assert report["error"]["type"] == "AssertionError"

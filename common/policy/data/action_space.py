@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from common.config import load_project_config
 from common.models import ActionKind
 
 from .policy_actions import load_policy_actions
 from .skill_vocab import SkillVocab
+
+if TYPE_CHECKING:
+    from .spec import DataSpec
 
 
 @dataclass(frozen=True)
@@ -18,6 +22,11 @@ class ActionSpace:
     action_keys: tuple[str, ...]
     action_to_vocab_id: tuple[int, ...]
     action_is_gcd: tuple[bool, ...]
+
+    @classmethod
+    def from_data_spec(cls, data_spec: DataSpec) -> "ActionSpace":
+        """恢复模型保存的动作契约，不读取当前职业 YAML。"""
+        return cls(data_spec.action_keys, data_spec.action_to_vocab_id, data_spec.action_is_gcd)
 
     @classmethod
     def from_job_tag(cls, job_tag: str) -> "ActionSpace":

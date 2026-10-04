@@ -19,7 +19,7 @@ from scripts.convert_fflogs.cache import (
     load_raw_compiled_cache,
     precompile_raw_training_caches,
 )
-from common.policy.data import Normalizer, SkillVocab
+from common.policy.data import ActionSpace, Normalizer, SkillVocab
 from common.policy.data.compiled_cache import (
     CompiledCacheReader,
     CompiledShardCache,
@@ -174,10 +174,11 @@ def _load_replay_cache(
     job_tag: str,
     normalizer: Normalizer,
     *,
+    expected_action_space: ActionSpace,
     shard_cache: CompiledShardCache | None = None,
     engine: InProcessEngine,
 ) -> CompiledCacheReader:
-    """读取 replay cache；缺失或过期时用 checkpoint 契约重建后重试。"""
+    """按模型保存的契约读取 cache；兼容当前转换配置时才允许补编译。"""
     if engine is None:
         raise ValueError("replay cache loading requires a shared engine")
     normalizer.ensure_job_resources(job_tag)
@@ -185,6 +186,7 @@ def _load_replay_cache(
     load_kwargs = {
         "cache_dir": config.cache_dir,
         "normalizer": normalizer,
+        "expected_action_space": expected_action_space,
         "int_dtype": precision.resolve_int_dtype(),
         "float_dtype": precision.resolve_float_dtype(),
         "shard_size": config.cache_shard_size,
@@ -201,6 +203,7 @@ def _load_replay_cache(
         [config.scene_json_path],
         job_tag=job_tag,
         normalizer=normalizer,
+        expected_action_space=expected_action_space,
         int_dtype=load_kwargs["int_dtype"],
         float_dtype=load_kwargs["float_dtype"],
         cache_dir=config.cache_dir,
@@ -248,13 +251,17 @@ class ReplayCacheStore:
         *,
         job_tag: str,
         normalizer: Normalizer,
+        expected_action_space: ActionSpace,
         engine: InProcessEngine,
     ) -> CompiledCacheReader:
         """共享 reader 与 shard；并发首次加载只执行一次，缓存容量有界。"""
         with self._lock:
-            return self._load(config, job_tag=job_tag, normalizer=normalizer, engine=engine)
+            return self._load(
+                config, job_tag=job_tag, normalizer=normalizer,
+                expected_action_space=expected_action_space, engine=engine,
+            )
 
-    def prepare(self, configs, *, job_tag, normalizer, engine, workers):
+    def prepare(self, configs, *, job_tag, normalizer, expected_action_space, engine, workers):
         """按缓存契约集中补编译；使用尚未被回放占用的共享队列容量。"""
         groups = {}
         for config in configs:
@@ -264,12 +271,13 @@ class ReplayCacheStore:
         for (cache_dir, shard_size, max_shards), paths in groups.items():
             precompile_raw_training_caches(
                 paths, job_tag=job_tag, normalizer=normalizer,
+                expected_action_space=expected_action_space,
                 int_dtype=precision.resolve_int_dtype(), float_dtype=precision.resolve_float_dtype(),
                 cache_dir=cache_dir, shard_size=shard_size, max_shards=max_shards,
                 max_workers=workers, engine=engine,
             )
 
-    def _load(self, config, *, job_tag, normalizer, engine):
+    def _load(self, config, *, job_tag, normalizer, expected_action_space, engine):
         source_path = Path(config.scene_json_path).resolve()
         source_stat = source_path.stat()
         cache_path = cache_path_for_source(config.cache_dir, source_path).resolve()
@@ -296,6 +304,7 @@ class ReplayCacheStore:
             config.cache_shard_size,
             config.cache_max_shards,
             repr(normalizer_signature),
+            expected_action_space,
             cache_fingerprint,
         )
         reader = self._readers.get(reader_key)
@@ -304,6 +313,7 @@ class ReplayCacheStore:
                 config,
                 job_tag,
                 normalizer,
+                expected_action_space=expected_action_space,
                 shard_cache=self._shard_cache,
                 engine=engine,
             )
@@ -395,6 +405,7 @@ class AutoregressiveReplaySession:
             config,
             job_tag=self.data_spec.job_tag,
             normalizer=self.normalizer,
+            expected_action_space=ActionSpace.from_data_spec(self.data_spec),
             engine=self._engine,
         )
 

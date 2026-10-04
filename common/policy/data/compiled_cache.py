@@ -367,6 +367,7 @@ def load_compiled_cache_for_source(
     source_path: Path,
     *,
     signature: dict[str, object],
+    expected_action_space: ActionSpace,
     shard_cache: CompiledShardCache,
 ) -> CompiledCacheReader | None:
     """统一定位新布局缓存，签名一致时也复用旧的平铺 manifest 和分片。"""
@@ -374,7 +375,10 @@ def load_compiled_cache_for_source(
     legacy_path = Path(cache_dir).resolve() / _cache_filename_for_source(source_path)
     paths = (cache_path,) if cache_path == legacy_path else (cache_path, legacy_path)
     for path in paths:
-        cached = load_compiled_cache(path, source_path, signature=signature, shard_cache=shard_cache)
+        cached = load_compiled_cache(
+            path, source_path, signature=signature,
+            expected_action_space=expected_action_space, shard_cache=shard_cache,
+        )
         if cached is not None:
             return cached
     return None
@@ -411,9 +415,10 @@ def load_compiled_cache(
     source_path: Path,
     *,
     signature: dict[str, object],
+    expected_action_space: ActionSpace,
     shard_cache: CompiledShardCache,
 ) -> CompiledCacheReader | None:
-    """读取仍对应当前 raw JSON 和编译参数的 manifest。"""
+    """按 raw 签名和调用方指定的动作契约校验 manifest，不读取本机 YAML。"""
     del source_path
     cache_path = Path(cache_path)
     if not cache_path.is_file():
@@ -431,15 +436,13 @@ def load_compiled_cache(
         return None
     if payload.get("cache_signature") != signature:
         return None
-    # 仅 raw 数据缓存对照当前启用配置；checkpoint 自描述输入契约不走这里。
-    # SkillVocab 仍保留禁用技能行，因此不能只靠 vocab_signature 捕获 enabled 漂移。
     job_tag = payload.get("job_tag")
     if not isinstance(job_tag, str) or not job_tag:
         return None
-    action_space = ActionSpace.from_job_tag(job_tag)
-    if (tuple(payload.get("action_keys", ())) != action_space.action_keys
-            or tuple(payload.get("action_to_vocab_id", ())) != action_space.action_to_vocab_id
-            or tuple(payload.get("action_is_gcd", ())) != action_space.action_is_gcd):
+    # 新训练由调用方提供当前配置，离线恢复由调用方提供模型保存的 DataSpec。
+    if (tuple(payload.get("action_keys", ())) != expected_action_space.action_keys
+            or tuple(payload.get("action_to_vocab_id", ())) != expected_action_space.action_to_vocab_id
+            or tuple(payload.get("action_is_gcd", ())) != expected_action_space.action_is_gcd):
         return None
     shard_files = payload.get("shard_files")
     if not isinstance(shard_files, list):

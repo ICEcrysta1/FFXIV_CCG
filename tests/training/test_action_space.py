@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from types import SimpleNamespace
 
 import pytest
 import torch
@@ -59,14 +58,16 @@ def test_data_spec_rejects_invalid_shared_vocabulary_mapping(rows):
                  skill_feature_names=("kind",), action_to_vocab_id=rows, action_is_gcd=(True, False))
 
 
-@pytest.mark.parametrize("drift", ["enabled", "kind"])
-def test_cache_rejects_action_space_drift_even_when_input_vocabulary_is_unchanged(tmp_path, monkeypatch, drift):
+@pytest.mark.parametrize("drift", ["enabled", "kind", "order", "mapping"])
+def test_cache_uses_caller_action_contract_when_current_configuration_changes(tmp_path, monkeypatch, drift):
     import common.policy.data.compiled_cache as cache_module
 
     space = ActionSpace.from_job_tag("black_mage")
     path = tmp_path / "manifest.pt"
     path.write_bytes(b"placeholder")
-    # 先提供符合当前契约的有效 manifest，后续只改变动作空间来验证失效原因。
+    # 先提供有效 manifest；随后只改变当前配置，保留模型保存的 DataSpec。
+    spec = DataSpec("black_mage", len(space.action_keys), 0, 0, 0, 0,
+                    space.action_keys, (), space.action_to_vocab_id, space.action_is_gcd)
     schema = TrainingSchema(
         serialization_format=TRAINING_SOURCE_FORMAT,
         sample_schema_version=TRAINING_SAMPLE_SCHEMA_VERSION,
@@ -85,15 +86,27 @@ def test_cache_rejects_action_space_drift_even_when_input_vocabulary_is_unchange
                          "action_keys": ("",), "skill_potencies": torch.zeros(1), "cumulative_dot_potencies": torch.zeros(1)},
     }
     monkeypatch.setattr(cache_module, "safe_torch_load", lambda *_args, **_kwargs: payload)
-    assert load_compiled_cache(path, tmp_path / "raw", signature={}, shard_cache=CompiledShardCache()) is not None
+    def load(expected):
+        return load_compiled_cache(
+            path, tmp_path / "raw", signature={}, shard_cache=CompiledShardCache(),
+            expected_action_space=expected,
+        )
+
+    assert load(space) is not None
     if drift == "enabled":
-        changed = SimpleNamespace(action_keys=space.action_keys[1:], action_to_vocab_id=space.action_to_vocab_id[1:], action_is_gcd=space.action_is_gcd[1:])
+        changed = ActionSpace(space.action_keys[1:], space.action_to_vocab_id[1:], space.action_is_gcd[1:])
+    elif drift == "kind":
+        changed = replace(space, action_is_gcd=(not space.action_is_gcd[0], *space.action_is_gcd[1:]))
+    elif drift == "order":
+        changed = ActionSpace(space.action_keys[::-1], space.action_to_vocab_id[::-1], space.action_is_gcd[::-1])
     else:
-        changed = SimpleNamespace(action_keys=space.action_keys, action_to_vocab_id=space.action_to_vocab_id,
-                                  action_is_gcd=(not space.action_is_gcd[0], *space.action_is_gcd[1:]))
+        changed = replace(space, action_to_vocab_id=space.action_to_vocab_id[::-1])
     monkeypatch.setattr(ActionSpace, "from_job_tag", lambda _job: changed)
-    # 原缓存的 vocab_signature 与嵌入行都没变，仅启用输出集发生变化仍必须重编译。
-    assert load_compiled_cache(path, tmp_path / "raw", signature={}, shard_cache=CompiledShardCache()) is None
+    # 新训练使用当前动作配置时仍拒绝漂移；模型恢复则继续使用保存的契约。
+    assert load(ActionSpace.from_job_tag("black_mage")) is None
+    assert load(ActionSpace.from_data_spec(spec)) is not None
+    monkeypatch.setattr(ActionSpace, "from_job_tag", lambda _job: pytest.fail("通用 loader 不应读取 YAML"))
+    assert load(ActionSpace.from_data_spec(spec)) is not None
 
 
 @pytest.mark.parametrize("flags", [(), (True,), (True, 0)])

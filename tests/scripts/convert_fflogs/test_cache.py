@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from common.policy.data import Normalizer, prepared_sources
+from common.policy.data import ActionSpace, Normalizer, prepared_sources
 from common.policy.data.compiled_cache import CACHE_FORMAT, cache_path_for_source
 from common.policy.data.prepared_sources import select_prepared_training_sources
 from scripts.common.json_io import atomic_write_json
@@ -380,6 +380,7 @@ def test_raw_cache_compiler_only_writes_compiled_cache(
     valid_paths = precompile_raw_training_caches(
         [raw_path],
         job_tag="black_mage",
+        expected_action_space=ActionSpace.from_job_tag("black_mage"),
         normalizer=Normalizer(),
         int_dtype=torch.int32,
         float_dtype=torch.float32,
@@ -423,6 +424,7 @@ def test_raw_cache_compiler_only_writes_compiled_cache(
     assert manifest.is_file() is not legacy_layout
     dataset = TrainingDataset(
         [raw_path],
+        expected_action_space=ActionSpace.from_job_tag("black_mage"),
         normalizer=Normalizer(),
         job_tag="black_mage",
         max_history=128,
@@ -437,6 +439,7 @@ def test_raw_cache_compiler_only_writes_compiled_cache(
     raw_path.write_text('{"changed": true}', encoding="utf-8", newline="\n")
     assert load_raw_compiled_cache(
         raw_path, cache_dir=cache_dir, normalizer=Normalizer(),
+        expected_action_space=ActionSpace.from_job_tag("black_mage"),
         int_dtype=torch.int32, float_dtype=torch.float32, shard_size=1,
     ) is None
 

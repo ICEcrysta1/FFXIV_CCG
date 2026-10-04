@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import asdict
 from types import SimpleNamespace
 
 import pytest
 import torch
 
+from common.policy.data import ActionSpace, DataSpec
 from scripts.autoregressive_replay import config as replay_config_module
 from scripts.autoregressive_replay.config import load_replay_config
 from scripts.common.json_io import atomic_write_json
@@ -26,16 +28,17 @@ def test_replay_scene_defaults_to_prepared_cache(monkeypatch, tmp_path):
 
     monkeypatch.setattr(replay_config_module, "find_prepared_scene_source", select)
     normalizer = object()
+    spec = DataSpec("black_mage", 2, 1, 1, 1, 1, ("a", "b"), ("kind",), (1, 2), (True, False))
     monkeypatch.setattr(
         replay_config_module.ModelInputContract, "from_dict",
-        lambda _payload: SimpleNamespace(create_normalizer=lambda: normalizer),
+        lambda _payload: SimpleNamespace(data_spec=asdict(spec), create_normalizer=lambda: normalizer),
     )
     kwargs = dict(raw_root=tmp_path, cache_dir=tmp_path / ".cache",
                   job_tag="black_mage", cache_shard_size=768, input_contract_payload={})
     assert replay_config_module._resolve_scene_json(None, **kwargs) == scene
     assert calls == [(tmp_path, dict(cache_dir=tmp_path / ".cache",
                                    job_tag="black_mage", cache_shard_size=768,
-                                   normalizer=normalizer))]
+                                   normalizer=normalizer, expected_action_space=ActionSpace.from_data_spec(spec)))]
 
     explicit = tmp_path / "explicit.json.br"
     atomic_write_json(explicit, {})

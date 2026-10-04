@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from common.policy.data.action_space import ActionSpace
 from common.policy.data.compiled_cache import (
     DEFAULT_CACHE_MAX_SHARDS,
     DEFAULT_CACHE_SHARD_SIZE,
@@ -22,6 +23,7 @@ def load_raw_compiled_cache(
     *,
     cache_dir: Path,
     normalizer: Normalizer,
+    expected_action_space: ActionSpace,
     int_dtype,
     float_dtype,
     shard_size: int = DEFAULT_CACHE_SHARD_SIZE,
@@ -33,6 +35,7 @@ def load_raw_compiled_cache(
         Path(source_path),
         cache_dir=Path(cache_dir),
         normalizer=normalizer,
+        expected_action_space=expected_action_space,
         int_dtype=int_dtype,
         float_dtype=float_dtype,
         shard_size=shard_size,
@@ -49,6 +52,7 @@ def _load_cache(
     *,
     cache_dir: Path,
     normalizer: Normalizer,
+    expected_action_space: ActionSpace,
     int_dtype,
     float_dtype,
     shard_size: int,
@@ -66,5 +70,6 @@ def _load_cache(
         Path(cache_dir),
         source_path,
         signature=signature,
+        expected_action_space=expected_action_space,
         shard_cache=shard_cache,
     )
