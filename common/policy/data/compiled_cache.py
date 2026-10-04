@@ -43,7 +43,8 @@ CACHE_FORMAT = "raw_json_compiled_samples_v20_causal_state"
 # v19：按精简后的状态 token 契约重建完整 history bank，技能侧继续保留资源消耗。
 # v20：当前请求状态和只读合法性/value 直接生成，不进行未来动作预演。
 # v21：状态使用上一动作后与当前请求快照；wait 不预演未来，场景按各段自身时间查询。
-DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v21_causal_state"
+# v22：真实技能与等待按统一历史写入序号合并，并拒绝不稳定的历史前缀。
+DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v22_stable_history"
 # `weights_only=True` 的安全 unpickler 对 protocol 2 支持最稳定；compiled
 # cache 的样本数据只需要普通 mapping 和 tensor，不需要更高协议。
 CACHE_PICKLE_PROTOCOL = 2

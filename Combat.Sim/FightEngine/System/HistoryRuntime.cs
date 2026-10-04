@@ -93,7 +93,8 @@ public sealed class SystemHistoryRuntime
             CastCompletedTimestamp: castCompletedTimestamp,
             EffectTimestamp: effectTimestamp,
             ActionInstanceId: actionInstanceId,
-            ModelState: modelState));
+            ModelState: modelState,
+            HistorySequence: nextState.ReserveHistorySequence()));
 
         _retention.Trim(nextState.History);
     }

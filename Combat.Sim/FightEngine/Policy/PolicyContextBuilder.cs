@@ -4,6 +4,7 @@
 // See LICENSE and LICENSE-FightEngine-Linking-Exception in the repository root.
 
 using Combat.Sim.Facade;
+using Combat.Sim.Models.Combat;
 using Combat.Sim.Models.Policy;
 using Combat.Sim.Outputs;
 using Combat.Sim.Outputs.TokenBuilders;
@@ -30,11 +31,11 @@ public sealed class PolicyContextBuilder
         PolicyDecisionHistory history,
         double nextObservationTimestamp)
     {
-        var state = simulator.GetStateWithoutHistory();
+        var state = simulator.GetState();
         if (nextObservationTimestamp < state.Time)
             throw new ArgumentOutOfRangeException(nameof(nextObservationTimestamp));
 
-        var output = simulator.FormatVectorState();
+        var output = simulator.FormatVectorState(state);
         var router = simulator.OutputRouter;
         var keys = (List<string>)output[OutputContextSchema.ActionKeysKey]!;
         var legalMask = (List<bool>)output[OutputContextSchema.ActionLegalMaskKey]!;
@@ -46,14 +47,15 @@ public sealed class PolicyContextBuilder
         output[OutputContextSchema.ActionLegalMaskKey] = actions.Select(action => action.Legal).ToList();
         output[OutputContextSchema.ActionValuesKey] = actions.Select(action => action.Value).ToList();
 
-        MergePolicyHistory(output, history, router);
+        MergePolicyHistory(output, history, router, state.History);
         return output;
     }
 
     private void MergePolicyHistory(
         Dictionary<string, object?> output,
         PolicyDecisionHistory history,
-        StateOutputRouter router)
+        StateOutputRouter router,
+        IReadOnlyList<ActionHistoryEntry> realHistory)
     {
         var skillHistory = (List<Dictionary<string, object?>>)
             output[OutputContextSchema.SkillHistoryContextKey]!;
@@ -62,15 +64,18 @@ public sealed class PolicyContextBuilder
         var stateHistory = (List<Dictionary<string, double[]>>)stateHistoryContext["tokens"]!;
         var executionMetrics = (List<Dictionary<string, double>>)stateHistoryContext["execution_metrics"]!;
 
-        var merged = new List<(double Time, int Order, Dictionary<string, object?> Skill,
+        var entries = realHistory.TakeLast(skillHistory.Count).ToArray();
+        if (entries.Length != skillHistory.Count || stateHistory.Count != skillHistory.Count
+            || executionMetrics.Count != skillHistory.Count)
+            throw new InvalidOperationException("real history and output tokens must be aligned");
+
+        var merged = new List<(long Sequence, Dictionary<string, object?> Skill,
             Dictionary<string, double[]> State, Dictionary<string, double> Metrics)>();
         for (var index = 0; index < skillHistory.Count; index++)
         {
-            var time = Convert.ToDouble(skillHistory[index]["time_seconds"]);
-            merged.Add((time, index, skillHistory[index], stateHistory[index], executionMetrics[index]));
+            merged.Add((entries[index].HistorySequence, skillHistory[index], stateHistory[index], executionMetrics[index]));
         }
 
-        var order = skillHistory.Count;
         var retainedTokens = new Dictionary<PolicyDecision,
             (Dictionary<string, object?> Skill, Dictionary<string, double[]> State)>(ReferenceEqualityComparer.Instance);
         foreach (var decision in history.ReadEntries)
@@ -83,8 +88,7 @@ public sealed class PolicyContextBuilder
             }
             retainedTokens.Add(decision, token);
             merged.Add((
-                decision.Timestamp,
-                order++,
+                decision.HistorySequence,
                 token.Skill,
                 token.State,
                 new Dictionary<string, double>
@@ -96,11 +100,13 @@ public sealed class PolicyContextBuilder
         // 只保留当前窗口中的条目，重置、恢复及滑动淘汰都不累积旧快照。
         _historyTokens = retainedTokens;
 
-        merged.Sort((left, right) =>
+        // 同一单调战斗游标上的真实效果与等待共用实际写入顺序，展示用时间不参与排序。
+        merged.Sort((left, right) => left.Sequence.CompareTo(right.Sequence));
+        for (var index = 0; index < merged.Count; index++)
         {
-            var byTime = left.Time.CompareTo(right.Time);
-            return byTime != 0 ? byTime : left.Order.CompareTo(right.Order);
-        });
+            if (merged[index].Sequence <= 0 || (index > 0 && merged[index - 1].Sequence == merged[index].Sequence))
+                throw new InvalidOperationException("history sequence must be positive and unique");
+        }
         history.Retention.Trim(merged);
         skillHistory.Clear();
         skillHistory.AddRange(merged.Select(item => item.Skill));

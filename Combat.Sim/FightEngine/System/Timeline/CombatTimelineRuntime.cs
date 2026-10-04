@@ -491,6 +491,7 @@ public sealed class CombatTimelineRuntime
         target.History = clone.History;
         target.LastDecisionId = clone.LastDecisionId;
         target.LastDecisionAfter = clone.LastDecisionAfter;
+        target.LastHistorySequence = clone.LastHistorySequence;
     }
 
     private static void ValidateTime(double timestamp)

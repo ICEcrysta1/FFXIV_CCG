@@ -15,7 +15,8 @@ public sealed record PolicyDecision(
     int GcdIndex,
     CombatState StateBefore,
     CombatState StateAfter,
-    ModelStateSnapshot ModelState)
+    ModelStateSnapshot ModelState,
+    long HistorySequence)
 {
     internal PolicyDecision DeepClone() => this with
     {

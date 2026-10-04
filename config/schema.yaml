@@ -20,7 +20,8 @@ contracts:
   # 11：状态 token 移除资源 consumed、weave 计数/上限与黑魔残留辅助 Buff。
   # 12：移除候选预演，增加真实当前状态与固定动作空间元数据。
   # 13：模型状态为上一动作后快照与请求快照，统一冻结真实和 policy 请求状态。
-  sidecar_contract_version: 13
+  # 14：真实效果与 policy 等待共用历史写入序号，不以舍入的 token 时间合并历史。
+  sidecar_contract_version: 14
   scene_context_absolute_mode: "absolute_from_fight_scene_context"
   scene_context_keys:
     targetable: "targetable_window_context"

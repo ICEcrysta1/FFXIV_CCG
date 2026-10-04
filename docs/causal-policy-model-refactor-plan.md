@@ -1,6 +1,6 @@
 # 完全因果策略模型修改计划
 
-记录日期：2026-10-04。状态：阶段 1、2 已完成；阶段 3 的状态语义已实现并通过单元与导出验证，但真实日志 compiled 历史输入验收发现错行，尚待修复；实施分支为 `ice/codex/causal-policy-stage1`；阶段 4～6 尚未实施。
+记录日期：2026-10-04。状态：阶段 1～3 已实现；阶段 3 的历史缓存错行已修复，并通过同刻边界回归与指定 M5s 真实转换验收；实施分支为 `ice/codex/causal-policy-stage1`；阶段 4～6 尚未实施。
 
 本计划将现有候选评分模型改为只读取场景、历史状态和历史技能的因果策略模型。按用户最新决定，实施顺序固定为：彻底移除候选、拆分 embedding、调整状态语义、由用户确认技能和状态字段并完成字段删减、重建历史上下文并保留最多 300 组“状态＋技能”（600 个历史 token），再追加最新状态，非场景容量合计 601，最后由用户执行 100 份训练数据的小规模训练。
 
@@ -283,9 +283,9 @@ GELU、SwiGLU 各完成 FP32 CPU 和 BF16 CUDA 的小模型真实导出，共四
 
 `val_ppg`、`none_ppg` 继续使用真实执行直接威力、DoT 和执行 GCD 数。验证回放无合法动作时先由 DecisionScheduler 推进，无法推进时该副本全部返回零并仍计入副本平均；不改变场景终止条件、平均规则或 teacher-forced Top-1/Top-3 的角色。
 
-### 阶段 3 实际交付与验收（缓存链路待修复）
+### 阶段 3 实际交付与验收
 
-阶段 3 的跨步状态装配已实现，compiled 历史输入整链路验收尚未通过。真实动作在请求被接受时创建不可变的 `ModelStateSnapshot`，以动作实例 ID 记录最近一次真实或 policy 请求。动作生效时只更新与当前请求身份相符的后状态；较早请求后来生效不会覆盖较新的请求。排队动作的输入冻结在原始请求时刻，不改用排队接受或生效时刻。
+阶段 3 的跨步状态装配已实现，历史缓存错行修复后，指定 M5s 的 compiled 历史输入整链路验收已通过。真实动作在请求被接受时创建不可变的 `ModelStateSnapshot`，以动作实例 ID 记录最近一次真实或 policy 请求。动作生效时只更新与当前请求身份相符的后状态；较早请求后来生效不会覆盖较新的请求。排队动作的输入冻结在原始请求时刻，不改用排队接受或生效时刻。
 
 `LastDecisionAfter` 独立于历史保留窗口，并随 snapshot、fork 和 restore 保存。历史模型状态保持请求时的快照，真实历史 `StateBefore` / `StateAfter` 继续供技能威力、耗蓝及资源消耗计算。无法取得前一步快照时，两段逐字段复制本次请求状态，低层外部历史缺少模型快照也使用同一回退。
 
@@ -305,9 +305,13 @@ GELU 与 SwiGLU 各通过 FP32 CPU 和 BF16 严格 CUDA 的小模型真实导出
 
 2026-10-04 按用户指定，将 `data/human/job/black_mage/raw/VAL/M5s/fflogs_2CHK3gRfrNJxhmwb_f1_Arcadia_Petralia.json.br` 通过正式入口转换到隔离审计目录，生成 491 个样本，其中真实技能 273 个、`ogcd_wait` 218 个、排队请求 46 个。原始历史状态与各自请求时最新状态共完成 120295 次逐字段对照，全部一致；218 次等待后的两段状态符合统一语义，109 个样本的两段累计 DoT 威力因时间推进而增加，首步回退与最新状态的同构字段也正确。
 
-实际 compiled bank 验收发现 9 次历史前缀重排：真实技能使用输出 token 中已舍入到四位小数的时间排序，policy 等待使用内部原始浮点时间排序。同刻的 `10.160499999999999` 与 `10.1605` 可能改变已输出的技能/等待先后，bank 却仅按上一历史长度截取增量，最终遗漏 9 个等待并重复 9 个真实技能记录。样本 13～491 共 479 个样本的完整历史与正式 384 条动作窗口均与原始转换上下文不一致；491 个最新状态仍一致。因此此前“阶段 3 已完成验收”的结论更正为状态语义已实现、缓存链路待修复。
+首次实际 compiled bank 验收发现 9 次历史前缀重排：真实技能使用输出 token 中已舍入到四位小数的时间排序，policy 等待使用内部原始浮点时间排序。同刻的 `10.160499999999999` 与 `10.1605` 可能改变已输出的技能/等待先后，bank 却仅按上一历史长度截取增量，最终遗漏 9 个等待并重复 9 个真实技能记录。样本 13～491 共 479 个样本的完整历史与正式 384 条动作窗口均与原始转换上下文不一致；491 个最新状态仍一致。该问题已按下述方式修复；原审计作为修复前对照保留。
 
-继续实施前需统一使用内部精确时间与稳定的动作先后关系合并历史，并在增量写入 bank 前校验既有前缀身份；补齐同刻真实技能/等待与本次真实日志回归后重新转换验收。本次记录问题，不包含该修复。审计明细见 [audit.json](../.tmp/context-audit-m5s-20261004/audit.json) 与 [bank_diff.json](../.tmp/context-audit-m5s-20261004/bank_diff.json)。
+修复后，真实技能在生效写入时、policy 等待在决策落实时，从同一个战斗状态领取递增 `HistorySequence`。合并只按真实写入顺序，不依赖展示用的舍入时间；序号随 clone、fork 和 restore 保存，历史裁剪不重置游标。bank 每次追加前，校验完整已有技能、状态与执行统计前缀，拒绝相同长度重排或旧行回填，避免静默生成错误缓存。
+
+修复后的 Python 关联回归为 **199 passed、0 failed、0 errors**，C# 全量为 **290 passed、0 failed**，覆盖两种同刻记录先后、浮点舍入、fork/恢复和历史裁剪；PythonBridge 同一工作树重建为 0 warning、0 error。重新转换同一 M5s 文件后，491 个样本全部通过：完整历史 120295 行访问及正式 384 动作窗口 114624 行访问均逐项一致，前缀重排、遗漏等待、重复真实技能和历史输入错行全部为 0；491 个最新状态与修复前也逐字段一致，原始文件未改动。旧 v21 审计缓存被当前转换签名拒绝。
+
+当前桥接版本为 14、转换版本为 v22，缓存存储格式仍为 v20；canonical、checkpoint 输入、样本、归一化与部署契约保留原版本，技能与状态字段及容量单位未变。修复后明细见 [audit.json](../.tmp/context-history-fix-20261004/audit.json)、[bank_diff.json](../.tmp/context-history-fix-20261004/bank_diff.json) 与 [Python 回归报告](../.tmp/history-fix-python.xml)。
 
 旧格式 cache 需重编译，旧 checkpoint 与 ONNX 包不可静默复用；本阶段没有批量重建用户的生产 cache、训练 checkpoint 或部署包。实现和验证使用独立临时目录，未修改 `training.yaml`，未启动训练或推送；阶段 3 的提交变更说明按用户要求写入 CHANGELOG 的 `Unreleased`。
 
@@ -448,10 +452,10 @@ ONNX 的输入、容量公式、padding、输出动作顺序、manifest、golden
 | 契约 | 阶段 1 | 阶段 2 | 阶段 3 | 阶段 3 处理原因 |
 | --- | --- | --- | --- | --- |
 | canonical 输出 schema | 11 | 11 | 12 | 状态字段改为跨步语义，并增加独立执行 metadata |
-| `sidecar_contract_version` | 12 | 12 | 13 | 真实/policy 请求冻结与 Python 观测语义改变 |
+| `sidecar_contract_version` | 12 | 12 | 14 | 先升级请求冻结，再以共享历史写入顺序修复同刻合并；拒绝旧 DLL |
 | `INPUT_CONTRACT_VERSION` | 10 | 11 | 12 | 同宽状态含义改变，明确快照类型与请求冻结规则 |
 | `CACHE_FORMAT` | v19 causal_policy | v19 causal_policy | `raw_json_compiled_samples_v20_causal_state` | 旧状态 bank 不可复用，执行统计独立于模型状态 |
-| `DEFAULT_CONVERSION_VERSION` | v20 causal_policy | v20 causal_policy | `raw_json_to_compiled_v21_causal_state` | 快照来源、wait 和场景查询时刻改变 |
+| `DEFAULT_CONVERSION_VERSION` | v20 causal_policy | v20 causal_policy | `raw_json_to_compiled_v22_stable_history` | 跨步快照与历史稳定性校验；旧错行缓存必须重编译 |
 | normalizer 契约 | 2 | 2 | 保持 2 | 新前缀仍映射同一底层字段，归一化数值规则未变 |
 | `DEPLOYMENT_CONTRACT_VERSION` | 14 | 15 | 16 | 相同张量宽度下输入状态语义已改变 |
 | manifest | 8 | 9 | 10 | 部署包绑定新的输入与状态语义契约 |
@@ -521,7 +525,7 @@ dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj --configuration Debug
 - [x] 阶段 1 正式链路完全移除候选，残留扫描和旧契约拒绝检查完成。
 - [x] 阶段 2 独立技能与状态 embedding 及技能输入输出共享参数完成，pair fusion 和旧配置删除。
 - [x] 阶段 3 状态跨步语义、统一回退、历史冻结与 policy wait 处理完成。
-- [ ] 阶段 3 同刻历史排序与 compiled bank 前缀一致性问题修复，真实日志整链路验收通过。
+- [x] 阶段 3 同刻历史排序与 compiled bank 前缀一致性问题修复，指定 M5s 真实日志整链路验收通过。
 - [ ] 阶段 4 用户确认技能、状态字段和待生效动作处理规则；技能 `time_seconds` 完全删除并完成消费者迁移。
 - [ ] 阶段 5 单一交错因果上下文、600 个历史状态与技能 token 加一个最新状态（共 601 token）和逐 token 顺序 RoPE 完成。
 - [ ] 阶段 5 最终契约下的 Python、C#、PPG、GRPO 输入、KV-cache、分析和 ONNX 验证通过。

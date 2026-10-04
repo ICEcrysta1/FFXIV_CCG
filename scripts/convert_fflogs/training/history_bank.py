@@ -29,6 +29,7 @@ def build_history_bank(
     """
     skill_rows: list[dict[str, object]] = []
     state_tokens: list[dict[str, object]] = []
+    execution_metrics: list[dict[str, object]] = []
     action_keys = [""]
     skill_potencies = [0.0]
     cumulative_dot_potencies = [0.0]
@@ -41,10 +42,23 @@ def build_history_bank(
                 "training history length moved backwards: "
                 f"sample={sample_idx} actual={actual_length} previous={previous_length}"
             )
-        new_skill_rows, new_state_tokens = reader.history_delta(sample_idx, previous_length)
-        new_metrics = reader.history_execution_metrics(sample_idx)[previous_length:]
-        for delta_index, (skill_row, state_token) in enumerate(
-            zip(new_skill_rows, new_state_tokens, strict=True)
+        current_skill_rows, current_state_tokens = reader.history_delta(sample_idx, 0)
+        current_metrics = reader.history_execution_metrics(sample_idx)
+        # 长度递增不能证明历史只追加；相同长度的重排或旧行回填同样必须拒绝。
+        for field, previous_rows, current_rows in (
+            ("skill", skill_rows, current_skill_rows),
+            ("state", state_tokens, current_state_tokens),
+            ("execution_metrics", execution_metrics, current_metrics),
+        ):
+            for row_index, previous_row in enumerate(previous_rows):
+                if current_rows[row_index] != previous_row:
+                    raise ValueError(
+                        "training history prefix changed: "
+                        f"sample={sample_idx} row={row_index} field={field} fight={reader.fight_id}"
+                    )
+        for delta_index, (skill_row, state_token, metric) in enumerate(
+            zip(current_skill_rows[previous_length:], current_state_tokens[previous_length:],
+                current_metrics[previous_length:], strict=True)
         ):
             context = (
                 f"history bank sample={sample_idx} delta={delta_index} "
@@ -53,11 +67,12 @@ def build_history_bank(
             require_numeric_skill_kind(skill_row, context=context)
             skill_rows.append(skill_row)
             state_tokens.append(state_token)
+            execution_metrics.append(dict(metric))
             action_keys.append(str(skill_row.get("skill_key", "")))
             skill_potencies.append(float(skill_row.get("potency", 0.0)))
             cumulative_dot_potencies.append(
                 extract_execution_metric(
-                    new_metrics[delta_index],
+                    metric,
                     feature_name="cumulative_dot_potency",
                     context=context,
                 )

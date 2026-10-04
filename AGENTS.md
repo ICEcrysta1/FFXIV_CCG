@@ -58,7 +58,7 @@
 - 技能 token 不保留原始 `kind` 字符串：状态机内部仍使用 `gcd` / `ogcd` 语义，输出 token 只写数值维度，`gcd=1`、`ogcd=0`。该维度同时进入模型 `skill_features`，并由验证 PPG 统计历史 GCD 数。
 - `val_ppg` 是模型在真实验证副本上的自回归表现：每个验证 source 从首个缓存样本的初始状态和完整 scene token 开始，由模型 Top-1 自循环到最后一个 `targetable=true` Boss 窗口结束；按该次回放的 `(历史 GCD 直接威力 + 历史 oGCD 直接威力 + 历史累计 DoT 威力) / 执行 GCD 数` 得到单副本 PPG，最后对副本平均。固定动作价值元数据、label 和 teacher-forced logits 不参与该指标。回放中动作全非法时先由 `DecisionScheduler` 推进到下一可决策事件；若已无法推进，则该副本按正式失败语义返回全 0（包括此前已执行的伤害），仍计入副本平均。“跳过本副本并记 0”只表示返回零结果，不表示从平均值排除。
 - `none_ppg` 是模型相关指标：训练验证完成后，使用当前 checkpoint 在空场景中由 C# 状态机驱动自回归 Top-1 回放，再按累计直接/DoT 威力除以执行 GCD 数计算。`top1` / `top3` 仍单独使用人类前上下文评估。
-- compiled cache 的 v20 / 转换版本 v21 保存跨步模型状态、真实当前请求状态、固定动作监督及历史 bank 中已有的技能直接威力、累计 DoT 威力和数值化 `kind` 维度；真实执行统计从独立 metadata 读取，不从请求状态推导，并固定保存完整 history bank；验证 PPG 从现有 cache reader、保存的归一化契约和 scene 恢复回放所需信息，不为副本时长或基础 GCD 增加重复 manifest 字段。状态机语义变化导致历史状态转移结果不可复用时，必须提升转换版本并让旧 cache 自动回到重编译路径。
+- compiled cache 的 v20 / 转换版本 v22 保存跨步模型状态、真实当前请求状态、固定动作监督及历史 bank 中已有的技能直接威力、累计 DoT 威力和数值化 `kind` 维度；真实执行统计从独立 metadata 读取，不从请求状态推导，并固定保存完整 history bank；验证 PPG 从现有 cache reader、保存的归一化契约和 scene 恢复回放所需信息，不为副本时长或基础 GCD 增加重复 manifest 字段。状态机语义变化导致历史状态转移结果不可复用时，必须提升转换版本并让旧 cache 自动回到重编译路径。
 
 - 固定动作 `action_keys`、`action_to_vocab_id` 和 `action_is_gcd` 随 checkpoint 输入契约保存；离线恢复不得从本机当前 YAML 重建。技能输入和输出共享唯一的语义 embedding 参数表，合法性与价值元数据不进入 Transformer token。
 
@@ -71,7 +71,7 @@
 dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj --configuration Debug
 ```
 
-Python 客户端会将程序集嵌入的契约版本与 `config/schema.yaml`（当前 `sidecar_contract_version: 13`）比较，拒绝旧 DLL；新版 DLL 使用缺少
+Python 客户端会将程序集嵌入的契约版本与 `config/schema.yaml`（当前 `sidecar_contract_version: 14`）比较，拒绝旧 DLL；新版 DLL 使用缺少
 `contracts.scene_epsilon` 或 `contracts.sidecar_contract_version` 的旧 schema 则会在 C# 配置加载时失败。
 FightEngine DLL、`config/schema.yaml` 与输出 token 契约必须作为同一版本构建和使用。自回归回放把移动事实直接提交给状态机，训练样本转换仍可在输出层合成移动字段。
 

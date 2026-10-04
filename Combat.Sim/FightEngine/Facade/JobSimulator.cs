@@ -96,7 +96,7 @@ public sealed class JobSimulator
             requestState,
             skill,
             actualCastSeconds);
-        var modelState = RecordModelDecision(actionId, requestState, completed: false);
+        var modelState = RecordModelDecision(actionId, requestState, completed: false).Snapshot;
         var payload = new ActionLifecyclePayload(
             actionId,
             request,
@@ -187,9 +187,10 @@ public sealed class JobSimulator
     public Dictionary<string, object?> FormatState(string mode = "seconds") =>
         OutputRouter.Format(GetState(), mode);
 
-    public Dictionary<string, object?> FormatVectorState()
+    public Dictionary<string, object?> FormatVectorState() => FormatVectorState(GetState());
+
+    internal Dictionary<string, object?> FormatVectorState(CombatState state)
     {
-        var state = GetState();
         var actions = BuildActionOutput(state);
         return OutputRouter.FormatVectors(state, actions.Keys, actions.LegalMask, actions.Values);
     }
@@ -214,16 +215,20 @@ public sealed class JobSimulator
     internal CombatStateMachine Rules => _machine;
 
     /// <summary>真实动作和 policy 动作共用请求关联与状态冻结；不改变战斗时钟。</summary>
-    internal ModelStateSnapshot RecordModelDecision(Guid decisionId, CombatState requestState, bool completed)
+    internal (ModelStateSnapshot Snapshot, long HistorySequence) RecordModelDecision(
+        Guid decisionId, CombatState requestState, bool completed)
     {
         var modelState = ModelStateSnapshot.Capture(
             requestState.LastDecisionAfter, OutputRouter.BuildStateContext(requestState));
+        long historySequence = 0;
         _timeline.ApplyMutation(new TimelineMutation(ApplyState: state =>
         {
             state.LastDecisionId = decisionId;
             state.LastDecisionAfter = completed ? modelState.RequestState : null;
+            // 等待在决策落实时进入历史；真实技能在后续生效记录时领取序号。
+            if (completed) historySequence = state.ReserveHistorySequence();
         }));
-        return modelState;
+        return (modelState, historySequence);
     }
 
     internal (int History, int PendingEvents, int QueueEntries, int PendingSettlements) GetStatistics() =>

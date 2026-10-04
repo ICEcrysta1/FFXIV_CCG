@@ -174,3 +174,49 @@ def test_execution_metrics_are_independent_of_model_state_and_not_model_features
                               skill_feature_names=reader.skill_feature_names,
                               int_dtype=torch.int32, float_dtype=torch.float32)
     assert bank["cumulative_dot_potencies"].tolist() == [0.0, 123.0]
+
+
+def _bank_for_payload(payload):
+    reader = TrainingSourceReader(payload)
+    return build_history_bank(
+        reader, torch=torch, normalizer=None,
+        skill_vocab=SkillVocab.build_from_job_tag(reader.job_tag),
+        skill_feature_names=reader.skill_feature_names,
+        int_dtype=torch.int32, float_dtype=torch.float32,
+    )
+
+
+@pytest.mark.parametrize("field", ["skill", "state", "execution_metrics"])
+@pytest.mark.parametrize("same_length", [False, True])
+def test_history_bank_rejects_changed_prefix_before_appending(field, same_length):
+    payload = _source(history_length=2)
+    if same_length:
+        payload["samples"].insert(2, deepcopy(payload["samples"][1]))
+    context = payload["samples"][2]["context"]
+    if field == "skill":
+        context["skill_history_context"][0]["time_seconds"] = 99.0
+    elif field == "state":
+        context["state_history_context"]["tokens"][0]["player_state"][1] = 9000.0
+    else:
+        context["state_history_context"]["execution_metrics"][0]["cumulative_dot_potency"] = 60.0
+    with pytest.raises(ValueError, match=rf"history prefix changed: sample=2 row=0 field={field}"):
+        _bank_for_payload(payload)
+
+
+def test_history_bank_rejects_reordered_prefix_when_history_grows():
+    payload = _source(history_length=3)
+    rows = payload["samples"][3]["context"]["skill_history_context"]
+    rows[0], rows[1] = rows[1], rows[0]
+    with pytest.raises(ValueError, match="history prefix changed: sample=3 row=0 field=skill"):
+        _bank_for_payload(payload)
+
+
+def test_history_bank_accepts_unchanged_history_between_multiple_settlements():
+    payload = _source(history_length=3)
+    # 相邻请求历史长度可以相同；之后一次结算两行仍逐行追加，不按请求数截取尾部。
+    payload["samples"].insert(2, deepcopy(payload["samples"][1]))
+    del payload["samples"][3]
+    bank = _bank_for_payload(payload)
+    assert bank["action_keys"] == ("", "ogcd_wait", "ogcd_wait", "ogcd_wait")
+    assert bank["state_vectors"].shape[0] == 4
+    assert bank["cumulative_dot_potencies"].tolist() == [0.0, 0.0, 0.0, 0.0]

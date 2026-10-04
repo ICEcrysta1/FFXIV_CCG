@@ -153,7 +153,7 @@ def test_compiled_history_and_current_state_use_compact_state_contract(tmp_path)
         assert sample[f"{prefix}_state_null_mask"].shape == sample[f"{prefix}_state_vectors"].shape
 
 
-@pytest.mark.parametrize("old_contract", ["cache_format", "conversion_version"])
+@pytest.mark.parametrize("old_contract", ["cache_format", "conversion_version", "unstable_history_order"])
 def test_previous_state_layout_cache_is_rejected(tmp_path, old_contract):
     """旧输入字段缓存不可复用，即使 raw 文件身份和其余编译参数一致。"""
     torch = pytest.importorskip("torch")
@@ -167,8 +167,11 @@ def test_previous_state_layout_cache_is_rejected(tmp_path, old_contract):
     signature = dict(payload["cache_signature"])
     if old_contract == "cache_format":
         payload["cache_format"] = "raw_json_compiled_samples_v17_seconds_only_state"
-    else:
+    elif old_contract == "conversion_version":
         payload["cache_signature"]["conversion_version"] = "raw_json_to_compiled_v18_seconds_only_state"
+    else:
+        # 字段宽度与存储格式相同，但旧版本可能遗漏等待或重复真实技能。
+        payload["cache_signature"]["conversion_version"] = "raw_json_to_compiled_v21_causal_state"
     torch.save(payload, cache_path)
 
     assert load_compiled_cache(

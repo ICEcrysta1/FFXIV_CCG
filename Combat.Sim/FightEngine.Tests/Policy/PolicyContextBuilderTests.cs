@@ -41,6 +41,93 @@ public sealed class PolicyContextBuilderTests
         return (new JobSimulator(machine), PolicyActionRegistry.Load(root, machine.SkillBook));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void 同刻真实技能与等待保留记录顺序且历史前缀不变(bool waitFirst)
+    {
+        var (simulator, registry) = CreateRuntime();
+        Assert.True(simulator.SubmitAction(0, "fire_iii", actualCastSeconds: 0).Accepted);
+        const double timestamp = 0.16049999999999998;
+        simulator.AdvanceTo(timestamp);
+        var history = new PolicyDecisionHistory(registry);
+        var builder = new PolicyContextBuilder(registry);
+
+        if (waitFirst) history.Record(simulator, timestamp, "ogcd_wait", 1);
+        else Assert.True(simulator.SubmitAction(timestamp, "lucid_dreaming").Accepted);
+        var prefix = HistoryRows(builder.BuildVectorContext(simulator, history, 1));
+
+        if (waitFirst) Assert.True(simulator.SubmitAction(timestamp, "lucid_dreaming").Accepted);
+        else history.Record(simulator, timestamp, "ogcd_wait", 1);
+        var output = builder.BuildVectorContext(simulator, history, 1);
+        var rows = HistoryRows(output);
+        Assert.Equal(prefix, rows.Take(prefix.Length));
+        var skills = Assert.IsType<List<Dictionary<string, object?>>>(output[OutputContextSchema.SkillHistoryContextKey]);
+        Assert.Equal(waitFirst
+            ? new[] { "fire_iii", "ogcd_wait", "lucid_dreaming" }
+            : new[] { "fire_iii", "lucid_dreaming", "ogcd_wait" }, skills.Select(skill => (string)skill["skill_key"]!));
+        // 展示时间仍舍入为 0.1605，合并顺序不再依赖它。
+        Assert.Equal(0.1605, skills[^1]["time_seconds"]);
+    }
+
+    [Fact]
+    public void 历史序号随Fork与恢复保存且重新记录后不重复()
+    {
+        var (simulator, registry) = CreateRuntime();
+        Assert.True(simulator.SubmitAction(0, "fire_iii", actualCastSeconds: 0).Accepted);
+        simulator.AdvanceTo(0.5);
+        var history = new PolicyDecisionHistory(registry);
+        var wait = history.Record(simulator, 0.5, "ogcd_wait", 1);
+        Assert.Equal(2, wait.HistorySequence);
+        var snapshot = simulator.CreateSnapshot();
+        var historySnapshot = history.CreateSnapshot();
+        var fork = simulator.Fork();
+        var forkHistory = history.Fork();
+        var builder = new PolicyContextBuilder(registry);
+
+        Assert.True(simulator.SubmitAction(0.5, "lucid_dreaming").Accepted);
+        var expected = HistoryRows(builder.BuildVectorContext(simulator, history, 1));
+        Assert.Equal(3, simulator.GetState().History[^1].HistorySequence);
+        Assert.True(fork.SubmitAction(0.5, "lucid_dreaming").Accepted);
+        Assert.Equal(3, fork.GetState().History[^1].HistorySequence);
+        Assert.Equal(expected, HistoryRows(new PolicyContextBuilder(registry).BuildVectorContext(fork, forkHistory, 1)));
+
+        simulator.RestoreSnapshot(snapshot);
+        history.RestoreSnapshot(historySnapshot);
+        Assert.True(simulator.SubmitAction(0.5, "lucid_dreaming").Accepted);
+        Assert.Equal(3, simulator.GetState().History[^1].HistorySequence);
+        Assert.Equal(expected, HistoryRows(builder.BuildVectorContext(simulator, history, 1)));
+    }
+
+    [Fact]
+    public void 同刻历史裁剪保留最后记录的真实技能()
+    {
+        var root = RepoRootLocator.Find();
+        var machine = CombatStateMachine.FromDefaultConfig(root, "black_mage", maxHistory: 1);
+        var simulator = new JobSimulator(machine);
+        var registry = PolicyActionRegistry.Load(root, machine.SkillBook);
+        var history = new PolicyDecisionHistory(registry, new HistoryRetention(1));
+        Assert.True(simulator.SubmitAction(0, "fire_iii", actualCastSeconds: 0).Accepted);
+        simulator.AdvanceTo(0.5);
+        history.Record(simulator, 0.5, "ogcd_wait", 1);
+        Assert.True(simulator.SubmitAction(0.5, "lucid_dreaming").Accepted);
+
+        var output = new PolicyContextBuilder(registry).BuildVectorContext(simulator, history, 1);
+        var skill = Assert.Single(Assert.IsType<List<Dictionary<string, object?>>>(output[OutputContextSchema.SkillHistoryContextKey]));
+        Assert.Equal("lucid_dreaming", skill["skill_key"]);
+        Assert.Equal(3, Assert.Single(simulator.GetState().History).HistorySequence);
+    }
+
+    private static string[] HistoryRows(Dictionary<string, object?> output)
+    {
+        var skills = (List<Dictionary<string, object?>>)output[OutputContextSchema.SkillHistoryContextKey]!;
+        var context = (Dictionary<string, object?>)output[OutputContextSchema.StateHistoryContextKey]!;
+        var states = (List<Dictionary<string, double[]>>)context["tokens"]!;
+        var metrics = (List<Dictionary<string, double>>)context["execution_metrics"]!;
+        return skills.Select((skill, index) => global::System.Text.Json.JsonSerializer.Serialize(
+            new object[] { skill, states[index], metrics[index] })).ToArray();
+    }
+
     [Fact]
     public void Wait只存在于Policy层且固定词表包含25个动作()
     {

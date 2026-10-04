@@ -73,7 +73,7 @@ public class SchemaConfigContentTests
     public void SidecarContractVersion_来自共享Schema()
     {
         // 契约版本来自 schema，构建时同时嵌入 FightEngine 程序集供运行时识别旧 DLL。
-        Assert.Equal(13, SchemaConfigLoader.Instance.SidecarContractVersion);
+        Assert.Equal(14, SchemaConfigLoader.Instance.SidecarContractVersion);
         Assert.Equal(
             SchemaConfigLoader.Instance.SidecarContractVersion,
             SchemaConfigLoader.AssemblySidecarContractVersion);
