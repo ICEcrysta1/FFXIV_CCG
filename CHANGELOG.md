@@ -9,7 +9,7 @@
 - 新增请求时冻结的 `ModelStateSnapshot`，以动作实例身份关联上一动作后与本次请求快照；历史裁剪、fork 和 restore 保留已知前序状态，真实执行前后快照仍独立保存。
 - 新增独立历史技能与状态 embedding 的 PCA 视图，分别拟合有效 token、排除 padding，并支持空历史与单条历史；原始技能词表 embedding 图继续保留。
 - 新增固定动作词表 `ActionSpace`，将启用的真实技能与 policy 动作按稳定 Ordinal 顺序合并；`action_keys`、`action_to_vocab_id` 和 `action_is_gcd` 随缓存与 checkpoint 输入契约保存，离线恢复不依赖本机当前 YAML 重建输出顺序或动作类型。
-- 新增完全因果策略模型的六阶段修改计划，记录已完成的候选移除与独立 embedding，明确后续用户字段确认、跨步状态语义及回退规则、601 个非场景 token 与顺序 RoPE；100 份数据训练由用户本人执行。
+- 新增完全因果策略模型的六阶段修改计划，记录已完成的候选移除、独立 embedding、跨步状态语义及回退规则，明确后续用户字段确认、601 个非场景 token 与顺序 RoPE；100 份数据训练由用户本人执行。
 - 新增共享模型和多队列引擎的批量回放入口 `run_replays()`，以及命令行 `--scenes` / `--workers`；各场景使用独立会话与随机流，按输入顺序输出独立报告。根目录 `.env` 的 `AUTOREGRESSIVE_REPLAY_WORKERS` 统一限制验证 PPG、GRPO 和普通回放的存活队列数及 PyTorch 推理 batch，未配置时为 1，示例配置为 4，可设置为 16。
 - 新增统一多队列状态机 `SimulationEngine` / `SimulationSession` 与 Python `InProcessEngine`：默认最多容纳 16 个队列，共享同一职业的规则、配置和技能表，各队列独立保存基础 GCD、战斗状态、事件时间线、策略历史和输出缓存；支持同一 Python 进程内多线程驱动，按队列加锁并原子返回执行结果与时间游标，提供独立重置、释放和统计接口。容量耗尽立即报错，关闭后的句柄永久失效，单队列请求错误不关闭其他队列。
 - 新增 BC 与 GRPO 共用的优化器装配和独立 `optimizer.yaml`：通过 `optimizers.bc`、`optimizers.grpo` 分别选择 `adamw` 或 `muon`，集中配置各阶段的学习率、权重衰减、warmup 与 Muon 参数。`adamw` 更新全部参数；`muon` 将 Transformer 主干 Attention/FFN 矩阵交给原生 Muon，输入编码、embedding、评分头、归一化和 bias 继续使用 AdamW，并记录参数分组与更新设置。
@@ -26,12 +26,12 @@
 - 实现因果策略模型阶段 3 的跨步状态语义：历史与最新状态统一使用 `previous_action_after.*`、`request_state.*`，分别表示上一步动作后与当前请求时状态；无法取得前序后状态时，两段均复制本次请求状态。两段继续保留累计直接与 DoT 威力，黑魔状态 86 维、技能数值特征 19 维不变。
 - `ogcd_wait` 与真实技能共用状态字段、编码和回退规则，等待决策落实时保存真实后状态，删除 fork 推进到未来观测时刻的预演；排队动作冻结原始请求快照，较早动作后来生效不能覆盖较新的等待或动作后基准。
 - 场景字段改写按两段状态自身的原始秒数与 feature keys 查询，不再从技能生效时间减读条时长推算请求时刻。历史真实执行统计通过独立 `execution_metrics` 保存且不进入 embedding；回放最终累计威力、基础 GCD 和黑魔状态分析读取当前 `request_state`。
-- 跨步状态契约同步升级为 PythonBridge 13、canonical 12、checkpoint 输入 12、训练样本 9、compiled cache v20/转换 v21、ONNX 部署 16/manifest 10、GRPO 轨迹 3；归一化契约保持 2。旧状态语义缓存需要重编译，旧 checkpoint、轨迹与部署包明确拒绝。技能时间字段和 384 条动作的过渡布局暂时保留，字段删减与最终 601 token 布局属于后续阶段。
-- 阶段 3 单元与导出验证为 Python 1340 项通过、4 项按条件跳过，清理复验 48 项通过，C# 286 项通过，PythonBridge 重建无 warning/error；GELU/SwiGLU 的 FP32 CPU 与严格 BF16 CUDA 四套小模型 ONNX 导出通过。真实日志的 compiled 历史输入验收发现下述未修复问题，阶段 3 尚未完成整链路验收。
-- 完成无候选因果策略模型迁移的阶段 1、2：技能、状态和场景分别直接编码到 `d_model`（当前黑魔配置为 768）并独立 LayerNorm，历史与当前状态共用状态投影、null 投影、归一化和 state 类型；正式输入暂为 `scene, skill_i, state_i, ..., current_state`，全部采用因果注意力。保留黑魔技能 19 维、状态 86 维、原 before/after 语义、null masks 与合法性字段；跨步状态语义和最终 601 token 交错上下文仍属于后续阶段。
+- 跨步状态与稳定历史契约同步升级为 PythonBridge 14、canonical 12、checkpoint 输入 12、训练样本 9、compiled cache v20/转换 v22、ONNX 部署 16/manifest 10、GRPO 轨迹 3；归一化契约保持 2。旧状态语义或历史错行缓存需要重编译，旧 checkpoint、轨迹与部署包明确拒绝。技能时间字段和 384 条动作的过渡布局暂时保留，字段删减与最终 601 token 布局属于后续阶段。
+- 阶段 3 初始单元与导出验证为 Python 1340 项通过、4 项按条件跳过，清理复验 48 项通过，C# 286 项通过，PythonBridge 重建无 warning/error；GELU/SwiGLU 的 FP32 CPU 与严格 BF16 CUDA 四套小模型 ONNX 导出通过。历史缓存修复后，关联 Python 回归 199 项、C# 全量 290 项通过，指定 M5s 的 491 个样本通过 compiled 历史输入整链路验收。
+- 完成无候选因果策略模型迁移的阶段 1、2：技能、状态和场景分别直接编码到 `d_model`（当前黑魔配置为 768）并独立 LayerNorm，历史与当前状态共用状态投影、null 投影、归一化和 state 类型；正式输入暂为 `scene, skill_i, state_i, ..., current_state`，全部采用因果注意力。阶段 1、2 交付时保留黑魔技能 19 维、状态 86 维、原 before/after 语义、null masks 与合法性字段；跨步状态语义已在阶段 3 完成，最终 601 token 交错上下文属于后续阶段。
 - `CausalPolicyModel` 从最新状态 hidden 预测固定动作词表：删除 `output_adapter`，直接与 `input_encoder.skill_embed.weight[action_to_vocab_id]` 点积。技能输入和输出共用唯一的 d_model 维语义参数表及 FP32 主权重，输出映射支持非 identity 索引，不扩大 Muon 参数范围。
 - 历史读取窗口仍为 384 条动作，每条展开为技能与状态两个 token；场景容量 200 时最多为 `200 + 2×384 + 1 = 969` 个物理 token。有效技能和状态使用各自连续的 RoPE 位置，padding 不占逻辑位置；KV-cache 分别记录动作数与 token 数，训练诊断、trace、分析和 ONNX 同步消费新布局。模型分析按显式位置识别当前状态 query，避免将历史状态混入决策 PCA 或错误绑定技能身份。
-- C# canonical 输出改为单个 `current_state_context` 与 `action_keys/action_legal_mask/action_values`：当前状态两段均取请求时快照，合法性按真实动作提交与排队语义校验；动作 mask 和动态 value 只用于执行或监督，不生成 Transformer token。转换、缓存、BC、GRPO、回放、根 CLI、分析和 ONNX 同步使用新契约，回放保留 GCD/oGCD 阶段筛选，ONNX 输入由 12 项改为 10 项。
+- 阶段 1 将 C# canonical 输出改为单个 `current_state_context` 与 `action_keys/action_legal_mask/action_values`：当时的过渡状态两段均取请求时快照，阶段 3 已统一改为“上一步动作后＋当前请求时”的跨步语义。合法性按真实动作提交与排队语义校验；动作 mask 和动态 value 只用于执行或监督，不生成 Transformer token。转换、缓存、BC、GRPO、回放、根 CLI、分析和 ONNX 同步使用新契约，回放保留 GCD/oGCD 阶段筛选，ONNX 输入由 12 项改为 10 项。
 - 验证 PPG 从初始当前状态和保存的归一化契约恢复基础 GCD，处理黑魔魔纹加速，拒绝缺失、null 或零 GCD；继续只统计实际执行历史的直接与 DoT 威力，保留无法推进时全零失败及逐副本平均规则。compiled cache 继续保存完整 history bank，读取窗口调整复用同一新格式缓存。
 - 阶段 2 的 checkpoint 输入契约升级为 11，保存严格的独立 token 编码描述；ONNX 部署契约升级为 15、manifest 升级为 9，明确历史容量单位、每动作两个 token、顺序和长度关系，外部输入保持 10 项。桥接 12、canonical 11、训练样本 8、compiled cache v19/转换 v20、GRPO 轨迹 2 与归一化契约保持阶段 1 版本，原始字段和完整 bank 未变，因此阶段 1 缓存继续复用；旧候选或融合 checkpoint、部署包和配置明确拒绝。
 - 补充独立编码公式与隔离、共享状态参数、共享技能 embedding 梯度与优化器唯一性、因果顺序、padding 逻辑位置、KV-cache 复用与失效、旧融合契约拒绝、分析和 ONNX 回归。阶段 2 全量 Python 验证为 1329 项通过、4 项按条件跳过；GELU/SwiGLU 的 FP32 CPU 和 BF16 CUDA 四套小模型真实 ONNX 导出通过，CUDA 禁止 CPU 算子 fallback。C# 与转换语义沿用阶段 1 已验证的实现，真实新 checkpoint 的完整部署回放及 100 份数据训练留待后续阶段。
@@ -93,6 +93,8 @@
 
 ### Fixed
 
+- 修复同刻真实技能与 `ogcd_wait` 因时间舍入改变历史前缀的问题：真实技能生效和等待决策落实时共用递增 `HistorySequence`，按实际写入顺序合并；序号随 clone、fork 和 restore 保存，历史裁剪不重置。compiled bank 追加前校验已有技能、状态与执行统计前缀，拒绝重排或回填。
+- 重新转换 M5s 的 `fflogs_2CHK3gRfrNJxhmwb_f1_Arcadia_Petralia.json.br`，491 个样本全部通过验收：原有 9 个等待遗漏、9 个真实技能重复及 479 个样本历史输入错行均降为 0；完整历史 120295 行访问和 384 条动作窗口 114624 行访问逐项一致，491 个最新状态与修复前保持一致。
 - 清理六处仍描述候选职责的陈旧注释，并将随机回放异常提示改为“合法动作”；算法、技能字段与状态契约不变。
 - 修复动作事件载荷与策略等待快照继续持有旧历史列表导致的内存增长；状态快照只保留执行所需数据，已取消事件在失效堆条目超过阈值时重建队列，释放过期载荷与旧堆数组，避免长时间运行后持续积压。
 - 修复 BF16/FP16 模型直接更新低精度权重时，小增量在每一步被舍入丢失的问题：BC 与 GRPO 的共享 AdamW/Muon 装配统一使用 FP32 主权重及优化器状态累计更新，再同步至低精度模型，保持模型前向与 checkpoint 模型权重精度不变；更新后释放临时 FP32 梯度。优化器 checkpoint 保存主权重、原生状态及参数契约，续训保留尚未体现在低精度模型上的增量；旧 checkpoint 从已恢复的模型权重初始化主权重、提升动量精度，并明确提示历史舍入损失无法恢复。
@@ -109,10 +111,6 @@
 
 - 移除历史技能/状态 pair fusion、`pair_embedding_dim` 配置、公共二次 token 投影、重复 segment embedding、输出维度适配和旧 pair embedding 分析模块，旧布局仅保留明确拒绝检查。
 - 彻底移除 C# 候选预演、候选上下文 builder 与非法候选状态生成，以及 Python 候选字段、候选顺序模块/YAML、shuffle、split attention 双向块、候选 scorer 和相关测试 helper；正式链路只保留固定输出动作词表，不保留候选 token、伪候选或候选空数组入口。
-
-### Known issues
-
-- 2026-10-04 转换 M5s 的 `fflogs_2CHK3gRfrNJxhmwb_f1_Arcadia_Petralia.json.br` 得到 491 个样本（273 个真实技能、218 个等待）。真实技能按四位小数时间排序、等待按原始浮点时间排序，同刻动作可能改变已有历史前缀，而 compiled bank 只按历史长度追加，导致 9 个等待记录遗漏、9 个真实技能记录重复；从样本 13 起，479 个样本的模型历史输入与原始转换上下文不一致。491 个最新状态和原始历史的请求冻结语义均正确，但缓存错行尚未修复，阶段 3 的整链路验收待完成。
 
 ## [0.1.1] - 2026-09-26
 
