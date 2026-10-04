@@ -38,6 +38,7 @@ def _make_model(
     full_attention_residuals: bool = False,
     activation: str = "gelu",
     action_to_vocab_id: tuple[int, ...] = (1, 2, 3),
+    history_capacity: int = 384,
 ):
     data_spec = DataSpec(
         job_tag="black_mage",
@@ -59,7 +60,7 @@ def _make_model(
             n_heads=2,
             ff_dim=32,
             dropout=0.0,
-            history_capacity=384,
+            history_capacity=history_capacity,
             scene_capacity=200,
             full_attention_residuals=full_attention_residuals,
             transformer_activation=activation,
@@ -191,28 +192,31 @@ def test_raw_head_directly_matches_shared_d_model_skill_vectors():
     torch.testing.assert_close(policy(*_tensor_args(batch)), expected, rtol=1e-5, atol=1e-6)
     assert model.input_encoder.skill_embed.embedding_dim == model.config.d_model
     assert not hasattr(model, "output_adapter")
-    assert trace.encoded["history_skill_positions"].tolist() == [[4, 6]]
-    assert trace.encoded["history_state_positions"].tolist() == [[5, 7]]
+    assert trace.encoded["history_skill_positions"].tolist() == [[5, 7]]
+    assert trace.encoded["history_state_positions"].tolist() == [[4, 6]]
     assert trace.encoded["current_state_position"] == 8
-    assert trace.encoded["role_ids"].tolist() == [[0, 0, 0, 0, 2, 1, 2, 1, 1]]
+    assert trace.encoded["role_ids"].tolist() == [[0, 0, 0, 0, 1, 2, 1, 2, 1]]
 
 
-def test_maximum_action_window_uses_two_independent_tokens_per_action():
-    model = _make_model()
-    batch = _make_batch((0,) * 200, history_length=384)
+@pytest.mark.parametrize("history_capacity", (300, 384))
+def test_maximum_action_window_uses_two_independent_tokens_per_action(history_capacity):
+    model = _make_model(history_capacity=history_capacity)
+    batch = _make_batch((0,) * 200, history_length=history_capacity)
     encoded = model.input_encoder(batch)
-    assert model.input_encoder.max_token_count == 969
-    assert encoded["tokens"].shape == (1, 969, model.config.d_model)
-    assert encoded["current_state_position"] == 968
-    assert encoded["history_skill_positions"][0, -1].item() == 966
-    assert encoded["history_state_positions"][0, -1].item() == 967
+    total_token_count = 200 + 2 * history_capacity + 1
+    assert model.input_encoder.max_token_count == total_token_count
+    assert encoded["tokens"].shape == (1, total_token_count, model.config.d_model)
+    assert encoded["current_state_position"] == total_token_count - 1
+    assert encoded["history_skill_positions"][0, -1].item() == total_token_count - 2
+    assert encoded["history_state_positions"][0, -1].item() == total_token_count - 3
+    assert encoded["position_ids"].tolist() == [list(range(total_token_count))]
     with torch.no_grad():
         assert torch.isfinite(OnnxPolicy(model)(*_tensor_args(batch))).all()
 
 
 @pytest.mark.parametrize("padding_key", (3, 4))
 def test_padding_validation_checks_both_skill_and_state_keys(padding_key):
-    # scene=1、历史容量=2、有效历史=1；无效技能和状态位于物理列 3/4。
+    # scene=1、历史容量=2、有效历史=1；无效状态和技能位于物理列 3/4。
     attention = torch.zeros((1, 1, 6, 6))
     attention[0, 0, 5, padding_key] = 1.0
     trace = SimpleNamespace(hidden=torch.zeros((1, 6, 2)), attentions=(attention,))

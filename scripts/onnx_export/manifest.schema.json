@@ -229,7 +229,7 @@
       ],
       "properties": {
         "contract_version": {
-          "const": 17
+          "const": 18
         },
         "job_tag": {
           "type": "string",
@@ -262,7 +262,7 @@
             "over_capacity": {"const": "reject"},
             "history_capacity_unit": {"const": "actions"},
             "history_tokens_per_action": {"const": 2},
-            "token_order": {"const": "scene, (skill_i, state_i)*H, current_state"},
+            "token_order": {"const": "scene, (state_i, skill_i)*H, current_state"},
             "total_token_count": {"type": "integer", "minimum": 4},
             "effective_sequence_length": {"const": "scene_valid + 2 * history_valid + 1"}
           }

@@ -81,9 +81,10 @@ def test_model_input_contract_rejects_checkpoint_without_contract():
         ModelInputContract.from_checkpoint({"data_spec": {}})
 
 
-def test_model_input_contract_rejects_previous_skill_time_contract():
+def test_model_input_contract_rejects_previous_skill_first_contract():
     payload = _build_contract().to_dict()
     payload["version"] = INPUT_CONTRACT_VERSION - 1
+    payload["token_encoding"]["token_order"] = "scene, (skill_i, state_i)*H, current_state"
 
     with pytest.raises(ValueError, match="unsupported input contract version"):
         ModelInputContract.from_dict(payload)
@@ -100,6 +101,8 @@ def test_model_input_contract_requires_exact_independent_token_descriptor(change
         payload["token_encoding"]["role_ids"]["state"] = 2
     elif change == "state_encoder":
         payload["token_encoding"]["current_state_encoder"] = "separate_current_state_encoder"
+    elif change == "token_order":
+        payload["token_encoding"][change] = "scene, (skill_i, state_i)*H, current_state"
     else:
         payload["token_encoding"][change] = "legacy_fused_tokens"
     with pytest.raises(ValueError, match="token_encoding"):

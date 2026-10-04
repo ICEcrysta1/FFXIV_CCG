@@ -267,7 +267,7 @@ def test_default_replay_uses_saved_contract_without_recompiling(
     package.mkdir()
     (package / "manifest.json").write_text(json.dumps({
         "model": {"model_variant": "artzip"},
-        "contract": {"job_tag": "black_mage", "capacity": {"history_capacity": 384},
+        "contract": {"job_tag": "black_mage", "capacity": {"history_capacity": 300},
                      "model_input_contract": contract.to_dict()},
     }), encoding="utf-8", newline="\n")
 

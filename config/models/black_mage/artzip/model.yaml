@@ -54,7 +54,7 @@ model:
 
   # 模型最多接收的历史动作条数；每条拆成技能、状态两个 token，末尾追加当前状态。
   # 当前总物理容量为 scene_capacity + 2 * history_capacity + 1；601 的新单位留后续阶段。
-  history_capacity: 384
+  history_capacity: 300
 
   # 部署侧 scene 容量上限；必须不小于语料实测 scene 长度最大值。
   scene_capacity: 200

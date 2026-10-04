@@ -1,4 +1,4 @@
-"""阶段 2 独立技能/状态 token 的语义、位置和共享参数验收。"""
+"""独立状态/技能 token 的因果顺序、位置和共享参数验收。"""
 
 from __future__ import annotations
 
@@ -62,8 +62,29 @@ def test_current_and_history_state_share_encoder_and_role():
 
 
 @pytest.mark.parametrize("full_attention_residuals", [False, True])
-def test_same_step_state_cannot_leak_after_effect_into_preceding_skill(full_attention_residuals):
+@pytest.mark.parametrize("changed_field", ["history_skill_ids", "history_skill_features"])
+def test_skill_cannot_change_its_preceding_request_state(full_attention_residuals, changed_field):
     torch.manual_seed(913)
+    model = _model(full_attention_residuals=full_attention_residuals)
+    batch = make_batch(model.data_spec)
+    original = model.trace(batch)
+    changed = dict(batch)
+    changed[changed_field] = batch[changed_field].clone()
+    if changed_field == "history_skill_ids":
+        changed[changed_field][:, 0] = 2
+    else:
+        changed[changed_field][:, 0] = torch.tensor([3.0, -4.0])
+    updated = model.trace(changed)
+    skill_position = original.encoded["history_skill_positions"][0, 0].item()
+    state_position = original.encoded["history_state_positions"][0, 0].item()
+    assert skill_position == state_position + 1
+    torch.testing.assert_close(original.hidden[:, :skill_position], updated.hidden[:, :skill_position], atol=0, rtol=0)
+    assert not torch.allclose(original.hidden[:, skill_position], updated.hidden[:, skill_position])
+
+
+@pytest.mark.parametrize("full_attention_residuals", [False, True])
+def test_request_state_is_visible_to_its_skill_and_later_tokens(full_attention_residuals):
+    torch.manual_seed(914)
     model = _model(full_attention_residuals=full_attention_residuals)
     batch = make_batch(model.data_spec)
     original = model.trace(batch)
@@ -71,11 +92,12 @@ def test_same_step_state_cannot_leak_after_effect_into_preceding_skill(full_atte
     changed["history_state_vectors"] = batch["history_state_vectors"].clone()
     changed["history_state_vectors"][:, 0] = torch.tensor([3.0, -4.0, 5.0, 2.0])
     updated = model.trace(changed)
-    skill_position = original.encoded["history_skill_positions"][0, 0].item()
     state_position = original.encoded["history_state_positions"][0, 0].item()
-    assert state_position == skill_position + 1
+    skill_position = original.encoded["history_skill_positions"][0, 0].item()
     torch.testing.assert_close(original.hidden[:, :state_position], updated.hidden[:, :state_position], atol=0, rtol=0)
     assert not torch.allclose(original.hidden[:, state_position], updated.hidden[:, state_position])
+    assert not torch.allclose(original.hidden[:, skill_position], updated.hidden[:, skill_position])
+    assert not torch.allclose(original.hidden[:, -1], updated.hidden[:, -1])
 
 
 def test_interleaved_layout_keeps_action_positions_and_excludes_padding_from_rope():
@@ -89,25 +111,26 @@ def test_interleaved_layout_keeps_action_positions_and_excludes_padding_from_rop
     assert encoded["history_token_length"] == 6
     assert encoded["prefix_length"] == encoded["current_state_position"] == 9
     assert encoded["current_state_positions"].tolist() == [9, 9]
-    assert encoded["history_skill_positions"].tolist() == [[3, 5, 7]] * 2
-    assert encoded["history_state_positions"].tolist() == [[4, 6, 8]] * 2
-    assert encoded["role_ids"].tolist() == [[ROLE_SCENE] * 3 + [ROLE_SKILL, ROLE_STATE] * 3 + [ROLE_STATE]] * 2
+    assert encoded["history_skill_positions"].tolist() == [[4, 6, 8]] * 2
+    assert encoded["history_state_positions"].tolist() == [[3, 5, 7]] * 2
+    assert encoded["role_ids"].tolist() == [[ROLE_SCENE] * 3 + [ROLE_STATE, ROLE_SKILL] * 3 + [ROLE_STATE]] * 2
     assert encoded["position_ids"].tolist() == [[0, 0, 1, 0, 0, 2, 3, 0, 0, 4],
                                                 [0, 1, 2, 3, 4, 5, 6, 0, 0, 7]]
     assert encoded["valid"].tolist() == [[True, False, True, False, False, True, True, False, False, True],
                                         [True, True, True, True, True, True, True, False, False, True]]
 
 
-def test_history_capacity_still_counts_384_actions():
-    model = _model(history_capacity=384, scene_capacity=4)
-    batch = make_batch(model.data_spec, history_length=384, scene_length=4)
+@pytest.mark.parametrize("history_capacity", [300, 384])
+def test_history_capacity_still_counts_actions(history_capacity):
+    model = _model(history_capacity=history_capacity, scene_capacity=4)
+    batch = make_batch(model.data_spec, history_length=history_capacity, scene_length=4)
     encoded = model.input_encoder(batch)
-    assert model.config.history_capacity == 384
-    assert model.input_encoder.max_token_count == 4 + 2 * 384 + 1
-    assert encoded["history_length"] == 384
-    assert encoded["history_token_length"] == 768
-    assert encoded["tokens"].shape[1] == 773
-    excessive = make_batch(model.data_spec, history_length=385, scene_length=4)
+    assert model.config.history_capacity == history_capacity
+    assert model.input_encoder.max_token_count == 4 + 2 * history_capacity + 1
+    assert encoded["history_length"] == history_capacity
+    assert encoded["history_token_length"] == 2 * history_capacity
+    assert encoded["tokens"].shape[1] == 4 + 2 * history_capacity + 1
+    excessive = make_batch(model.data_spec, history_length=history_capacity + 1, scene_length=4)
     with pytest.raises(ValueError, match="model.history_capacity"):
         model.input_encoder(excessive)
 

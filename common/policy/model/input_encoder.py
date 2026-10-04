@@ -81,9 +81,8 @@ class CausalInputEncoder(nn.Module):
         scene_embeds = self.scene_norm(scene_embeds)
 
         history = self.embed_history(batch)
-        # 阶段 3 已冻结跨步状态，仍沿用阶段 2 的技能、状态过渡顺序。
-        # 最终状态、技能顺序与容量单位在阶段 5 同步迁移。
-        history_tokens = torch.stack((history["skill"], history["state"]), dim=2).reshape(
+        # 请求时冻结的状态位于该次技能之前；技能只能读取此前已知的状态。
+        history_tokens = torch.stack((history["state"], history["skill"]), dim=2).reshape(
             batch_size, history_token_length, d_model,
         )
         # 历史与最新状态使用同一个投影和归一化，不增加特殊当前状态参数。
@@ -127,7 +126,7 @@ class CausalInputEncoder(nn.Module):
             device=device,
         )
         valid = torch.cat((prefix_valid, current_state_valid), dim=1)
-        history_skill_positions = (
+        history_state_positions = (
             scene_length + 2 * torch.arange(history_length, device=device, dtype=torch.long)
         ).unsqueeze(0).expand(batch_size, -1)
         return {
@@ -141,8 +140,8 @@ class CausalInputEncoder(nn.Module):
             "prefix_length": scene_length + history_token_length,
             "position_ids": position_ids,
             "role_ids": role_ids,
-            "history_skill_positions": history_skill_positions,
-            "history_state_positions": history_skill_positions + 1,
+            "history_skill_positions": history_state_positions + 1,
+            "history_state_positions": history_state_positions,
             "current_state_position": current_state_position,
             "current_state_positions": current_state_positions,
         }
@@ -270,7 +269,7 @@ def build_position_ids(
     """构造按样本有效长度生成的 RoPE 逻辑位置编号。
 
     物理布局可以包含任意位置的 padding，但有效 token 的编号始终遵循：
-    ``scene -> skill, state -> current state``。scene/history 的位置按各自
+    ``scene -> state, skill -> current state``。scene/history 的位置按各自
     mask 的有效计数生成，不依赖有效 token 是否位于物理布局前段；无效
     scene/history token 的位置固定为 0，并由 attention mask 完全排除。
     """
@@ -320,11 +319,11 @@ def build_position_ids(
 def build_role_ids(
     *, batch_size: int, scene_length: int, history_length: int, device
 ) -> torch.Tensor:
-    """按 scene、skill、state 类型编号；最新状态不拥有单独的类型。"""
+    """按场景、状态、技能顺序编号；最新状态不拥有单独的类型。"""
     history_roles = torch.stack(
         (
-            torch.full((history_length,), ROLE_SKILL, dtype=torch.long, device=device),
             torch.full((history_length,), ROLE_STATE, dtype=torch.long, device=device),
+            torch.full((history_length,), ROLE_SKILL, dtype=torch.long, device=device),
         ),
         dim=1,
     ).reshape(2 * history_length)

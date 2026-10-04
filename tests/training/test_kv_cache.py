@@ -122,6 +122,51 @@ def test_kv_cache_matches_full_forward_when_history_appends(norm_first: bool, ac
     assert not hasattr(model._kv_cache, "layer_outputs")
 
 
+@pytest.mark.parametrize("full_attention_residuals", (False, True))
+def test_kv_cache_keeps_frozen_request_state_before_the_appended_skill(full_attention_residuals):
+    """上次最新状态进入历史后仍是同一 token，后续技能不能反向改变该状态。"""
+    torch.manual_seed(914)
+    model, full_model = _make_model_pair(full_attention_residuals=full_attention_residuals)
+    model.enable_kv_cache(True)
+    previous = _make_batch(0)
+    previous["current_state_null_mask"][0, 1] = True
+    previous_trace = full_model.trace(previous)
+    model(previous)
+
+    following = _make_batch(1, current_state_offset=10.0)
+    following["history_state_vectors"][:, 0] = previous["current_state_vectors"]
+    following["history_state_null_mask"][:, 0] = previous["current_state_null_mask"]
+    following_trace = full_model.trace(following)
+    state_position = following_trace.encoded["history_state_positions"][0, 0].item()
+    skill_position = following_trace.encoded["history_skill_positions"][0, 0].item()
+    assert state_position == previous_trace.encoded["current_state_position"]
+    assert skill_position == state_position + 1
+    torch.testing.assert_close(
+        following_trace.encoded["tokens"][:, state_position],
+        previous_trace.encoded["tokens"][:, state_position], atol=0, rtol=0,
+    )
+    torch.testing.assert_close(
+        following_trace.hidden[:, state_position],
+        previous_trace.hidden[:, state_position], rtol=1e-5, atol=1e-6,
+    )
+    torch.testing.assert_close(
+        model(following)["logits"], full_model(following)["logits"], rtol=1e-5, atol=1e-6,
+    )
+    cache = model._kv_cache
+
+    # 新请求和缺失值标记只更新末尾最新状态，不回填已冻结的历史状态。
+    following["current_state_vectors"][0, 1] += 20.0
+    following["current_state_null_mask"][0, 2] = True
+    torch.testing.assert_close(
+        model(following)["logits"], full_model(following)["logits"], rtol=1e-5, atol=1e-6,
+    )
+    assert model._kv_cache is cache
+    torch.testing.assert_close(
+        cache.prefix_tokens[:, state_position], previous_trace.encoded["tokens"][:, state_position],
+        atol=0, rtol=0,
+    )
+
+
 def test_kv_cache_recomputes_current_state_without_rebuilding_prefix():
     model, full_model = _make_model_pair()
     prefix_batch = _make_batch(2)

@@ -356,7 +356,7 @@ def test_causal_model_appends_one_current_state_token():
     assert encoded["prefix_length"] == 5
     assert encoded["current_state_position"] == 5
     assert encoded["tokens"].shape == (1, 6, 8)
-    assert encoded["role_ids"].tolist() == [[0, 2, 1, 2, 1, 1]]
+    assert encoded["role_ids"].tolist() == [[0, 1, 2, 1, 2, 1]]
     assert encoded["position_ids"].tolist() == [[0, 1, 2, 3, 4, 5]]
     assert not any(key.startswith("cls_") for key in encoded)
 
@@ -503,8 +503,8 @@ def test_history_uses_independent_tokens_and_current_state_has_no_skill():
     assert encoded["tokens"].shape[1] == 1 + 2 * 2 + 1
     assert set(model.input_encoder.embed_history(batch)) == {"skill", "state"}
     assert encoded["current_state_position"] == 5
-    assert encoded["history_skill_positions"].tolist() == [[1, 3]]
-    assert encoded["history_state_positions"].tolist() == [[2, 4]]
+    assert encoded["history_skill_positions"].tolist() == [[2, 4]]
+    assert encoded["history_state_positions"].tolist() == [[1, 3]]
 
 
 def test_input_encoder_routes_each_token_source_through_its_own_norm():
@@ -665,7 +665,7 @@ def test_black_mage_artzip_uses_current_mainline_architecture():
     assert config.model.num_kv_heads == 1
     assert config.model.ff_dim == 3072
     assert config.model.transformer_activation == "swiglu"
-    assert config.model.history_capacity == 384
+    assert config.model.history_capacity == 300
     assert config.model.full_attention_residuals is False
     assert "candidate_shuffle_enabled" not in config.__dict__
     assert "candidate_order_file" not in config.__dict__

@@ -9,7 +9,7 @@
 - 新增请求时冻结的 `ModelStateSnapshot`，以动作实例身份关联上一动作后与本次请求快照；历史裁剪、fork 和 restore 保留已知前序状态，真实执行前后快照仍独立保存。
 - 新增独立历史技能与状态 embedding 的 PCA 视图，分别拟合有效 token、排除 padding，并支持空历史与单条历史；原始技能词表 embedding 图继续保留。
 - 新增固定动作词表 `ActionSpace`，将启用的真实技能与 policy 动作按稳定 Ordinal 顺序合并；`action_keys`、`action_to_vocab_id` 和 `action_is_gcd` 随缓存与 checkpoint 输入契约保存，离线恢复不依赖本机当前 YAML 重建输出顺序或动作类型。
-- 新增完全因果策略模型的六阶段修改计划，记录已完成的候选移除、独立 embedding、跨步状态语义、回退规则与技能时间字段删除，补齐最终字段及归一化对照；后续实施状态在前的 601 个非场景 token 布局，100 份数据训练由用户本人执行。
+- 新增完全因果策略模型的六阶段修改计划，记录已完成的候选移除、独立 embedding、跨步状态语义、回退规则、技能时间字段删除和状态在前的 601 个非场景 token 布局，补齐最终字段及归一化对照；100 份数据训练由用户本人执行。
 - 新增共享模型和多队列引擎的批量回放入口 `run_replays()`，以及命令行 `--scenes` / `--workers`；各场景使用独立会话与随机流，按输入顺序输出独立报告。根目录 `.env` 的 `AUTOREGRESSIVE_REPLAY_WORKERS` 统一限制验证 PPG、GRPO 和普通回放的存活队列数及 PyTorch 推理 batch，未配置时为 1，示例配置为 4，可设置为 16。
 - 新增统一多队列状态机 `SimulationEngine` / `SimulationSession` 与 Python `InProcessEngine`：默认最多容纳 16 个队列，共享同一职业的规则、配置和技能表，各队列独立保存基础 GCD、战斗状态、事件时间线、策略历史和输出缓存；支持同一 Python 进程内多线程驱动，按队列加锁并原子返回执行结果与时间游标，提供独立重置、释放和统计接口。容量耗尽立即报错，关闭后的句柄永久失效，单队列请求错误不关闭其他队列。
 - 新增 BC 与 GRPO 共用的优化器装配和独立 `optimizer.yaml`：通过 `optimizers.bc`、`optimizers.grpo` 分别选择 `adamw` 或 `muon`，集中配置各阶段的学习率、权重衰减、warmup 与 Muon 参数。`adamw` 更新全部参数；`muon` 将 Transformer 主干 Attention/FFN 矩阵交给原生 Muon，输入编码、embedding、评分头、归一化和 bias 继续使用 AdamW，并记录参数分组与更新设置。
@@ -23,7 +23,10 @@
 
 ### Changed
 
-- 完成因果策略模型阶段 4：黑魔技能数值输入由 19 维减为 18 维，其余技能字段（包括合法性）、取值与归一化保持；历史和最新状态仍为 86 维，保留两段各自的时间、累计直接与 DoT 威力。技能输入输出继续共享语义 embedding，主干宽度保持 768；当前 384 条动作的技能在前布局不变，状态在前的 601 个非场景 token 布局留在阶段 5。
+- 完成因果策略模型阶段 5：正式输入改为 `scene, S1, A1, ..., SH, AH, S_current`，历史状态位于对应技能之前，最新状态沿用普通状态的字段、编码参数与类型；每个有效 token 独立使用连续 RoPE 位置，padding 不占逻辑位置。黑魔 Artzip 采用用户设置的 `history_capacity: 300`，单位仍为动作条数，600 个历史 token 加最新状态共 601 个非场景 token，场景容量 200 时最大物理容量为 801。
+- 同步调整状态与技能的显式位置、角色编号、因果方向测试、KV-cache、分析及 ONNX 校验；checkpoint 输入契约升级为 14、ONNX 部署契约升级为 18，manifest 保持 11，明确拒绝技能在前的旧 checkpoint 与部署包。原始字段与完整 history bank 未变，compiled cache v21/转换 v23 继续复用，历史窗口不进入缓存身份。
+- 阶段 5 全量 Python 验证为 1392 项通过、4 项按条件跳过，包含 GELU/SwiGLU 的 FP32 CPU 与严格 BF16 CUDA 四套小模型 ONNX 导出。指定 M5s 的 491 个样本、102150 行历史访问通过最终顺序检查；直接初始化 768 维、12 层 BF16 完整模型，真实状态机驱动 M5s Top-1 216 次及空场景采样 330 次决策，共核对 77070 行历史，覆盖 `ogcd_wait`、两段累计 DoT 推进和 300 对历史滑窗，违例为 0。模型未加载 checkpoint、未训练，权重哈希前后相同；本阶段未修改 C# 状态机或桥接契约。
+- 完成因果策略模型阶段 4：黑魔技能数值输入由 19 维减为 18 维，其余技能字段（包括合法性）、取值与归一化保持；历史和最新状态仍为 86 维，保留两段各自的时间、累计直接与 DoT 威力。技能输入输出继续共享语义 embedding，主干宽度保持 768；阶段 4 验收时仍为 384 条动作、技能在前的过渡布局，最终顺序和容量见阶段 5。
 - 在线历史缓存使用状态的 `request_state.time_seconds` 和技能身份定位，并继续逐字段比较完整技能与状态；转换、缓存、checkpoint 与在线输入明确拒绝旧技能时间字段和不匹配的技能宽度。同步升级为 PythonBridge 15、canonical 13、checkpoint 输入 13、训练样本 10、compiled cache v21/转换 v23、ONNX 部署 17/manifest 11、GRPO 轨迹 4；归一化契约保持 2，旧产物需重建。
 - 阶段 4 全量 Python 验证为 1367 项通过、4 项按条件跳过，C# 为 292 项通过，PythonBridge 重建成功；GELU/SwiGLU 的 FP32 CPU 与严格 BF16 CUDA 四套小模型 ONNX 导出及对齐验证通过。指定 M5s 的 491 个样本对照中，旧技能矩阵删除时间列后与新 18 维矩阵完全相同，其余 bank 和样本字段一致；完整历史 120295 行及 384 动作窗口 114624 行访问均无错行。未启动训练，真实已训练 checkpoint 的完整部署验收留待后续。
 - 实现因果策略模型阶段 3 的跨步状态语义：历史与最新状态统一使用 `previous_action_after.*`、`request_state.*`，分别表示上一步动作后与当前请求时状态；无法取得前序后状态时，两段均复制本次请求状态。两段继续保留累计直接与 DoT 威力，黑魔状态 86 维、技能数值特征 19 维不变。
@@ -33,7 +36,7 @@
 - 阶段 3 初始单元与导出验证为 Python 1340 项通过、4 项按条件跳过，清理复验 48 项通过，C# 286 项通过，PythonBridge 重建无 warning/error；GELU/SwiGLU 的 FP32 CPU 与严格 BF16 CUDA 四套小模型 ONNX 导出通过。历史缓存修复后，关联 Python 回归 199 项、C# 全量 290 项通过，指定 M5s 的 491 个样本通过 compiled 历史输入整链路验收。
 - 完成无候选因果策略模型迁移的阶段 1、2：技能、状态和场景分别直接编码到 `d_model`（当前黑魔配置为 768）并独立 LayerNorm，历史与当前状态共用状态投影、null 投影、归一化和 state 类型；正式输入暂为 `scene, skill_i, state_i, ..., current_state`，全部采用因果注意力。阶段 1、2 交付时保留黑魔技能 19 维、状态 86 维、原 before/after 语义、null masks 与合法性字段；跨步状态语义已在阶段 3 完成，最终 601 token 交错上下文属于后续阶段。
 - `CausalPolicyModel` 从最新状态 hidden 预测固定动作词表：删除 `output_adapter`，直接与 `input_encoder.skill_embed.weight[action_to_vocab_id]` 点积。技能输入和输出共用唯一的 d_model 维语义参数表及 FP32 主权重，输出映射支持非 identity 索引，不扩大 Muon 参数范围。
-- 历史读取窗口仍为 384 条动作，每条展开为技能与状态两个 token；场景容量 200 时最多为 `200 + 2×384 + 1 = 969` 个物理 token。有效技能和状态使用各自连续的 RoPE 位置，padding 不占逻辑位置；KV-cache 分别记录动作数与 token 数，训练诊断、trace、分析和 ONNX 同步消费新布局。模型分析按显式位置识别当前状态 query，避免将历史状态混入决策 PCA 或错误绑定技能身份。
+- 阶段 2 的历史读取窗口为 384 条动作，每条展开为技能与状态两个 token；场景容量 200 时最多为 `200 + 2×384 + 1 = 969` 个物理 token。有效技能和状态使用各自连续的 RoPE 位置，padding 不占逻辑位置；KV-cache 分别记录动作数与 token 数，训练诊断、trace、分析和 ONNX 同步消费新布局。模型分析按显式位置识别当前状态 query，避免将历史状态混入决策 PCA 或错误绑定技能身份。
 - 阶段 1 将 C# canonical 输出改为单个 `current_state_context` 与 `action_keys/action_legal_mask/action_values`：当时的过渡状态两段均取请求时快照，阶段 3 已统一改为“上一步动作后＋当前请求时”的跨步语义。合法性按真实动作提交与排队语义校验；动作 mask 和动态 value 只用于执行或监督，不生成 Transformer token。转换、缓存、BC、GRPO、回放、根 CLI、分析和 ONNX 同步使用新契约，回放保留 GCD/oGCD 阶段筛选，ONNX 输入由 12 项改为 10 项。
 - 验证 PPG 从初始当前状态和保存的归一化契约恢复基础 GCD，处理黑魔魔纹加速，拒绝缺失、null 或零 GCD；继续只统计实际执行历史的直接与 DoT 威力，保留无法推进时全零失败及逐副本平均规则。compiled cache 继续保存完整 history bank，读取窗口调整复用同一新格式缓存。
 - 阶段 2 的 checkpoint 输入契约升级为 11，保存严格的独立 token 编码描述；ONNX 部署契约升级为 15、manifest 升级为 9，明确历史容量单位、每动作两个 token、顺序和长度关系，外部输入保持 10 项。桥接 12、canonical 11、训练样本 8、compiled cache v19/转换 v20、GRPO 轨迹 2 与归一化契约保持阶段 1 版本，原始字段和完整 bank 未变，因此阶段 1 缓存继续复用；旧候选或融合 checkpoint、部署包和配置明确拒绝。

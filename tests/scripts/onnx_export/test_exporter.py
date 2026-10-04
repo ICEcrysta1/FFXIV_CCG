@@ -104,6 +104,7 @@ def test_capacity_contract_rejects_invalid_or_oversized_layout():
     contract = CapacityContract(3, 8)
     contract.validate()
     assert contract.total_token_count == 20
+    assert CapacityContract(200, 300).total_token_count == 801
     assert CapacityContract(200, 384).total_token_count == 969
     assert CapacityContract.from_dict(contract.to_dict()) == contract
 
@@ -111,7 +112,7 @@ def test_capacity_contract_rejects_invalid_or_oversized_layout():
 @pytest.mark.parametrize(("field", "value", "message"), (
     ("history_tokens_per_action", 1, "two tokens per action"),
     ("history_capacity_unit", "tokens", "two tokens per action"),
-    ("token_order", "scene, state_i, skill_i, current_state", "token order"),
+    ("token_order", "scene, (skill_i, state_i)*H, current_state", "token order"),
     ("total_token_count", 12, "total token count"),
 ))
 def test_capacity_contract_rejects_old_fusion_or_wrong_token_semantics(field, value, message):
@@ -125,6 +126,7 @@ def test_capacity_contract_rejects_old_fusion_or_wrong_token_semantics(field, va
     ("history_tokens_per_action", 1),
     ("history_capacity_unit", "tokens"),
     ("token_order", "scene, fused_pair_i, current_state"),
+    ("token_order", "scene, (skill_i, state_i)*H, current_state"),
     ("effective_sequence_length", "scene_valid + history_valid + 1"),
     ("unsupported_capacity", 10),
 ))
@@ -497,7 +499,7 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
     assert manifest["contract"]["capacity"]["history_capacity_unit"] == "actions"
     assert manifest["contract"]["capacity"]["history_tokens_per_action"] == 2
     assert manifest["contract"]["capacity"]["total_token_count"] == 12
-    assert manifest["contract"]["capacity"]["token_order"] == "scene, (skill_i, state_i)*H, current_state"
+    assert manifest["contract"]["capacity"]["token_order"] == "scene, (state_i, skill_i)*H, current_state"
     provenance = manifest["contract"]["capacity_provenance"]
     assert provenance["history_capacity_source"] == (
         "checkpoint.model_config.history_capacity"

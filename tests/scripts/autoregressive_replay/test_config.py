@@ -51,7 +51,7 @@ def test_replay_config_loads_dotenv_before_resolving_backend(monkeypatch, tmp_pa
     package = tmp_path / "deployment"
     package.mkdir()
     (package / "manifest.json").write_text(
-        '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":384}},"model":{"model_variant":"artzip"}}',
+        '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":300}},"model":{"model_variant":"artzip"}}',
         encoding="utf-8",
     )
     scene = tmp_path / "scene.json.br"
@@ -121,7 +121,7 @@ def test_replay_config_reads_env_overrides(monkeypatch, tmp_path):
     assert config.top_k == 6
     assert config.top_p == 0.9
     assert config.temperature == 0.8
-    assert config.max_history == 384
+    assert config.max_history == 300
     assert config.device == "cpu"
     assert config.job_tag == "black_mage"
     assert config.initial_action == "fire_iii"
@@ -165,7 +165,7 @@ def test_replay_config_routes_onnx_job_from_manifest(monkeypatch, tmp_path):
     package = tmp_path / "deployment"
     package.mkdir()
     (package / "manifest.json").write_text(
-        '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":384}},"model":{"model_variant":"artzip"}}',
+        '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":300}},"model":{"model_variant":"artzip"}}',
         encoding="utf-8",
     )
     scene = tmp_path / "scene.json.br"
@@ -183,7 +183,7 @@ def test_replay_config_routes_onnx_job_from_manifest(monkeypatch, tmp_path):
     assert config.onnx_package_path == package.resolve()
     assert config.checkpoint_path is None
     assert config.job_tag == "black_mage"
-    assert config.max_history == 384
+    assert config.max_history == 300
     assert config.cache_shard_size == 768
     assert config.cache_max_shards == 16
     assert config.device == "cpu"
@@ -204,7 +204,7 @@ def test_replay_config_derives_onnx_package_from_explicit_checkpoint(monkeypatch
     package = tmp_path / "artifacts" / "exports" / "black_mage" / "artzip_hotstart"
     package.mkdir(parents=True)
     (package / "manifest.json").write_text(
-        '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":384}},'
+        '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":300}},'
         '"model":{"model_variant":"artzip"}}',
         encoding="utf-8",
     )

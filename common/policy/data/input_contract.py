@@ -23,7 +23,8 @@ from .spec import DataSpec
 # 11：技能和状态拆为独立 d_model 维 token，共享技能词表直接输出；旧融合权重不兼容。
 # 12：状态两段改为上一动作后与当前请求快照，历史输入在请求时冻结。
 # 13：技能数值特征完全移除绝对时间，状态时间与其余技能字段口径保持。
-INPUT_CONTRACT_VERSION = 13
+# 14：历史顺序改为状态在技能之前，因果可见范围变化，旧顺序权重不兼容。
+INPUT_CONTRACT_VERSION = 14
 
 # 描述固定的输入结构，不作为可调运行参数；d_model 仍由保存的 model_config 提供。
 # 数据 bank 的字段与时间语义由 schema 与转换版本负责，不把读取窗口加入 cache 身份。
@@ -36,7 +37,7 @@ TOKEN_ENCODING_CONTRACT = {
     "state_snapshots": ["previous_action_after", "request_state"],
     "history_state_frozen_at": "request",
     "output_projection": "hidden @ E[action_to_vocab_id].T",
-    "token_order": "scene, (skill_i, state_i)*H, current_state",
+    "token_order": "scene, (state_i, skill_i)*H, current_state",
     "history_capacity_unit": "actions",
     "history_tokens_per_action": 2,
 }
