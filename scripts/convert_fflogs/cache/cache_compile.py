@@ -423,7 +423,7 @@ def _compile_raw_source_worker(task, *, engine: InProcessEngine) -> tuple[str, i
         skill_feature_names=reader.skill_feature_names,
         int_dtype=int_dtype,
         float_dtype=float_dtype,
-        num_candidates=reader.num_candidates,
+        num_actions=reader.num_actions,
         history_bank=history_bank,
         ranking=ranking,
         annotation_status=reader.annotation_status,

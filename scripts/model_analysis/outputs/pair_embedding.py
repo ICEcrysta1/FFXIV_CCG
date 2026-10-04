@@ -1,4 +1,4 @@
-"""真实候选技能-状态 pair embedding 的 PCA 投影。"""
+"""真实历史技能-状态 pair embedding 的 PCA 投影。"""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ def plot_pair_embedding(
     batch_size: int = 16,
     max_points: int = 6000,
 ) -> Path:
-    """使用真实候选状态，绘制 pair fusion 输出的 PCA。"""
+    """使用真实历史状态，绘制 pair fusion 输出的 PCA。"""
     if batch_size <= 0:
         raise ValueError("pair embedding batch size must be positive")
     if max_points < 2:
@@ -47,11 +47,20 @@ def plot_pair_embedding(
                 context.device,
             )
             with context.autocast():
-                pair_embeddings = context.model.input_encoder.embed_pairs(batch)["candidate"]
-            embedding_rows.append(pair_embeddings.float().cpu().numpy().reshape(-1, pair_embeddings.shape[-1]))
-            skill_id_rows.append(batch["candidate_skill_ids"].detach().cpu().numpy().reshape(-1))
+                pair_embeddings = context.model.input_encoder.embed_pairs(batch)["history"]
+            valid = batch["history_mask"]
+            if bool(valid.any()):
+                embedding_rows.append(pair_embeddings[valid].float().cpu().numpy())
+                skill_id_rows.append(batch["history_skill_ids"][valid].detach().cpu().numpy())
             del batch, pair_embeddings
 
+    if not embedding_rows:
+        fig, ax = create_figure((15.0, 10.0))
+        ax.text(0.5, 0.5, "No valid history pairs in this context", ha="center", va="center")
+        ax.set_axis_off()
+        path = context.output_dir / "05_pair_embedding_pca.png"
+        save_figure(fig, path)
+        return path
     embeddings = np.concatenate(embedding_rows, axis=0)
     skill_ids = np.concatenate(skill_id_rows, axis=0).astype(np.int64, copy=False)
     if len(embeddings) > max_points:
@@ -59,7 +68,10 @@ def plot_pair_embedding(
         embeddings = embeddings[indices]
         skill_ids = skill_ids[indices]
 
-    coordinates, explained = pca_projection(embeddings, 2)
+    if len(embeddings) < 2:
+        coordinates, explained = np.zeros((len(embeddings), 2)), np.zeros(2)
+    else:
+        coordinates, explained = pca_projection(embeddings, 2)
     unique_skill_ids = sorted(int(value) for value in np.unique(skill_ids) if int(value) > 0)
     color_map = plt.get_cmap(ATTENTION_CMAP_NAME, max(1, len(unique_skill_ids)))
     skill_names = skill_name_by_vocab_id(context)
@@ -91,8 +103,8 @@ def plot_pair_embedding(
     ax.set_xlabel(f"PC1 ({explained[0]:.1%})")
     ax.set_ylabel(f"PC2 ({explained[1]:.1%})")
     ax.set_title(
-        "Candidate Pair Embedding PCA "
-        f"({pair_dim}D skill + state fusion; {len(embeddings)} real candidate pairs)"
+        "History Pair Embedding PCA "
+        f"({pair_dim}D skill + state fusion; {len(embeddings)} real history pairs)"
     )
     ax.legend(
         loc="upper left",

@@ -18,7 +18,8 @@ contracts:
   # 9：模型 token 移除累计 GCD 索引、精确战斗剩余时间和冗余 GCD 窗口字段。
   # 10：模型 token 移除调用方调度窗口与所有 GCD 单位的时间字段。
   # 11：状态 token 移除资源 consumed、weave 计数/上限与黑魔残留辅助 Buff。
-  sidecar_contract_version: 11
+  # 12：移除候选预演，增加真实当前状态与固定动作空间元数据。
+  sidecar_contract_version: 12
   scene_context_absolute_mode: "absolute_from_fight_scene_context"
   scene_context_keys:
     targetable: "targetable_window_context"
@@ -47,7 +48,7 @@ scene_context:
       - "target_count"
 
 canonical_output:
-  schema_version: 10
+  schema_version: 11
   token_key: "tokens"
   top_level_keys:
     - "job_tag"
@@ -55,8 +56,10 @@ canonical_output:
     - "scene_context"
     - "skill_history_context"
     - "state_history_context"
-    - "candidate_skill_context"
-    - "candidate_state_context"
+    - "current_state_context"
+    - "action_keys"
+    - "action_legal_mask"
+    - "action_values"
   state_vector_groups:
     player_state:
       feature_keys_field: "player_state_feature_keys"

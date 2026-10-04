@@ -29,7 +29,8 @@ def test_runtime_debug_writes_batch_context_and_aggregates(tmp_path):
         "label_index": torch.zeros(2, dtype=torch.int64),
         "history_skill_ids": torch.zeros((2, 5), dtype=torch.int64),
         "scene_vectors": torch.zeros((2, 3, 4)),
-        "candidate_skill_ids": torch.zeros((2, 7), dtype=torch.int64),
+        "current_state_vectors": torch.zeros((2, 4)),
+        "action_legal_mask": torch.ones((2, 7), dtype=torch.bool),
     }
 
     recorder.begin_step(epoch=2, step=4, batch=batch)
@@ -50,14 +51,14 @@ def test_runtime_debug_writes_batch_context_and_aggregates(tmp_path):
     assert report["batch"]["batch_size"] == 2
     assert report["batch"]["history_length"] == 5
     assert report["batch"]["scene_length"] == 3
-    assert report["batch"]["candidate_count"] == 7
-    assert report["batch"]["sequence_length"] == 16
+    assert report["batch"]["action_count"] == 7
+    assert report["batch"]["sequence_length"] == 9
     assert report["aggregates"]["input_encoder"]["calls"] == 2
     assert report["step_peak_allocated_mib"] == 0.0
 
 
 def test_runtime_debug_records_transformer_attention_and_ffn(tmp_path):
-    from common.policy.model.split_encoder import run_split_encoder
+    from common.policy.model.causal_encoder import run_causal_encoder
 
     output_path = tmp_path / "runtime_memory.jsonl"
     recorder = RuntimeDebugRecorder(
@@ -93,13 +94,11 @@ def test_runtime_debug_records_transformer_attention_and_ffn(tmp_path):
     )
     encoded = {
         "tokens": source,
-        "prefix_length": 2,
-        "candidate_count": 2,
-        "prefix_valid": torch.ones((2, 2), dtype=torch.bool),
-        "candidate_valid": torch.ones((2, 2), dtype=torch.bool),
+        "valid": torch.cat((torch.ones((2, 2), dtype=torch.bool), torch.ones((2, 2), dtype=torch.bool)), dim=1),
+        "position_ids": torch.arange(4).expand(2, -1),
     }
-    outputs = run_split_encoder(encoder, encoded)
-    sum(value.square().mean() for value in outputs[:2]).backward()
+    outputs = run_causal_encoder(encoder, encoded)
+    outputs[0].square().mean().backward()
     recorder.end_step()
 
     report = _read_report(output_path)[0]

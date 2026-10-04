@@ -27,30 +27,14 @@ public static class OutputsTestKit
         return tokens[tokenIndex][groupKey][featureKeys.IndexOf(featureKey)];
     }
 
-    /// <summary>按技能 key 与 feature key 取候选状态 token 的向量值（对照 candidate_state_vector_value）。</summary>
-    public static double? CandidateStateVectorValue(
+    /// <summary>按 feature key 取请求时的当前状态向量。</summary>
+    public static double CurrentStateVectorValue(
         Dictionary<string, object?> payload,
-        string skillKey,
         string groupKey,
         string featureKey)
     {
-        var candidateSkillContext = (List<Dictionary<string, object?>>)payload["candidate_skill_context"];
-        var candidateStateContext = (Dictionary<string, object?>)payload["candidate_state_context"];
-        var tokens = (List<object>)candidateStateContext["tokens"];
-        var index = candidateSkillContext.FindIndex(token => (string)token["skill_key"] == skillKey);
-        var vector = VectorOf(tokens[index], groupKey);
-        var featureKeys = (List<string>)candidateStateContext[$"{groupKey}_feature_keys"];
-        return vector[featureKeys.IndexOf(featureKey)];
+        return HistoryVectorValue((Dictionary<string, object?>)payload["current_state_context"]!, groupKey, featureKey);
     }
-
-    /// <summary>取候选状态 token 某个分组的向量（合法/非法 token 统一转 double? 列表）。</summary>
-    public static IReadOnlyList<double?> VectorOf(object token, string groupKey) =>
-        token switch
-        {
-            Dictionary<string, double[]> legal => legal[groupKey].Select(value => (double?)value).ToList(),
-            Dictionary<string, double?[]> illegal => illegal[groupKey].ToList(),
-            _ => throw new InvalidOperationException($"unsupported token type: {token.GetType().Name}"),
-        };
 
     private static string FindRepoRoot()
     {

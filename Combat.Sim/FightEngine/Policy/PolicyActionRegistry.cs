@@ -27,9 +27,9 @@ public sealed class PolicyActionRegistry
                 throw new InvalidOperationException($"duplicate policy action raw_id: {action.RawId}");
             if (skillBook.Contains(action.Key) || skillBook.Contains(action.RawId))
                 throw new InvalidOperationException($"policy action conflicts with game skill: {action.Key}");
-            if (action.CandidateKind is not ("gcd" or "ogcd"))
+            if (action.Kind is not ("gcd" or "ogcd"))
                 throw new InvalidOperationException(
-                    $"unsupported policy candidate kind for {action.Key}: {action.CandidateKind}");
+                    $"unsupported policy action kind for {action.Key}: {action.Kind}");
         }
     }
 

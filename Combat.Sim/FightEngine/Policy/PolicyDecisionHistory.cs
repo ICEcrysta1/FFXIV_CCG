@@ -43,7 +43,7 @@ public sealed class PolicyDecisionHistory
         var before = simulator.GetStateWithoutHistory();
         if (nextObservationTimestamp < timestamp)
             throw new ArgumentOutOfRangeException(nameof(nextObservationTimestamp));
-        var branch = simulator.ForkForPreview();
+        var branch = simulator.ForkWithoutHistory();
         branch.AdvanceClockTo(nextObservationTimestamp);
         var after = branch.GetStateWithoutHistory();
         var decision = new PolicyDecision(action, timestamp, before.GcdIndex,

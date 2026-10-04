@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import math
+
 from common.contracts import SCENE_CONTEXT_ABSOLUTE_MODE
-from common.output_context_schema import build_output_context_schema_metadata
+from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION, build_output_context_schema_metadata
 from common.torch_dependencies import import_torch
+from common.policy.data.action_space import ActionSpace
 
 from .source_helpers import (
     SKILL_ID_FIELD,
+    SKILL_HISTORY_FIELDS,
     build_skill_feature_matrix,
     derive_skill_feature_names,
     extract_history_after_value,
@@ -18,6 +22,7 @@ from common.policy.data.schema import (
     SCENE_WINDOW_ORDER,
     SceneWindowSchema,
     TRAINING_SOURCE_FORMAT,
+    TRAINING_SAMPLE_SCHEMA_VERSION,
     TrainingSchema,
 )
 
@@ -27,6 +32,8 @@ class TrainingSourceReader:
 
     def __init__(self, payload: dict[str, object]):
         self._torch = import_torch()
+        if payload.get("sample_schema_version") != TRAINING_SAMPLE_SCHEMA_VERSION:
+            raise ValueError("unsupported training sample schema version; recompile raw source")
         self._payload = payload
         samples = payload.get("samples")
         if not isinstance(samples, list) or not samples:
@@ -36,29 +43,46 @@ class TrainingSourceReader:
         self._job_tag = str(payload["job_tag"])
         self._fight_id = str(payload["fight_id"])
         self._num_samples = len(samples)
-        first_context = self._sample_context(0)
-        candidate_rows = first_context["candidate_skill_context"]
-        if not isinstance(candidate_rows, list) or not candidate_rows:
-            raise ValueError("training payload must contain candidate skill rows")
-        self._num_candidates = len(candidate_rows)
+        action_space = ActionSpace.from_job_tag(self._job_tag)
+        self._action_keys = action_space.action_keys
+        self._action_to_vocab_id = action_space.action_to_vocab_id
+        self._action_is_gcd = action_space.action_is_gcd
         for sample_index in range(self._num_samples):
             context = self._sample_context(sample_index)
-            rows = context.get("candidate_skill_context")
-            if not isinstance(rows, list) or len(rows) != self._num_candidates:
-                raise ValueError("candidate count must stay stable across a training payload")
-            for candidate_index, row in enumerate(rows):
-                if not isinstance(row, dict):
-                    raise ValueError(
-                        f"candidate skill row must be a mapping: sample={sample_index} "
-                        f"index={candidate_index}"
-                    )
-                require_numeric_skill_kind(
-                    row,
-                    context=(
-                        f"candidate sample={sample_index} index={candidate_index} "
-                        f"fight={self.fight_id}"
-                    ),
-                )
+            if context.get("schema_version") != CANONICAL_CONTEXT_SCHEMA_VERSION:
+                raise ValueError("unsupported canonical context schema version; recompile raw source")
+            if tuple(context.get("action_keys", ())) != self._action_keys:
+                raise ValueError("training output action space must match enabled configured actions")
+            for key in ("action_legal_mask", "action_values"):
+                values = context.get(key)
+                if not isinstance(values, list) or len(values) != self.num_actions:
+                    raise ValueError(f"{key} must match the fixed output action space")
+            if any(not isinstance(value, bool) for value in context["action_legal_mask"]):
+                raise ValueError("action_legal_mask must contain booleans")
+            values = context["action_values"]
+            if any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) for value in values):
+                raise ValueError("action_values must contain numeric request-time values")
+            current = context.get("current_state_context")
+            if not isinstance(current, dict) or len(current.get("tokens", ())) != 1:
+                raise ValueError("current_state_context must contain exactly one request state token")
+            current_metadata = build_output_context_schema_metadata(context)
+            if current_metadata["current_state_feature_keys"] != current_metadata["state_history_feature_keys"]:
+                raise ValueError("current request and history state feature keys must match")
+            if any(tuple(keys) != self.schema.state_group_feature_keys[group] for group, keys in current_metadata["current_state_feature_keys"].items()):
+                raise ValueError("state feature layout must stay stable across a training payload")
+            token = current["tokens"][0]
+            if not isinstance(token, dict):
+                raise ValueError("current request state token must be a mapping")
+            for group, keys in self.schema.state_group_feature_keys.items():
+                group_values = token.get(group)
+                if not isinstance(group_values, (list, tuple)) or len(group_values) != len(keys):
+                    raise ValueError(f"current request state group width mismatch: {group}")
+                positions = {key: index for index, key in enumerate(keys)}
+                for key, index in positions.items():
+                    if key.startswith("before."):
+                        after = positions.get("after." + key.removeprefix("before."))
+                        if after is None or group_values[index] != group_values[after]:
+                            raise ValueError("phase 1 current request before/after must be identical")
         self._skill_feature_names = derive_skill_feature_names(self)
 
     @property
@@ -86,8 +110,20 @@ class TrainingSourceReader:
         return self._num_samples
 
     @property
-    def num_candidates(self) -> int:
-        return self._num_candidates
+    def num_actions(self) -> int:
+        return len(self._action_keys)
+
+    @property
+    def action_keys(self) -> tuple[str, ...]:
+        return self._action_keys
+
+    @property
+    def action_to_vocab_id(self) -> tuple[int, ...]:
+        return self._action_to_vocab_id
+
+    @property
+    def action_is_gcd(self) -> tuple[bool, ...]:
+        return self._action_is_gcd
 
     @property
     def skill_feature_names(self) -> tuple[str, ...]:
@@ -258,49 +294,17 @@ class TrainingSourceReader:
         """把已经选好的状态 token 批量转为向量；供增量历史 bank 一次性构建。"""
         return self._build_state_matrix(tokens, dtype=dtype, normalizer=normalizer)
 
-    def candidate_action_keys(self, sample_idx: int) -> list[str]:
-        return [
-            str(row.get("skill_key", ""))
-            for row in self.candidate_skill_rows(sample_idx)
-        ]
-
-    def candidate_skill_ids(self, sample_idx: int) -> list[int | None]:
-        return [
-            to_optional_int(row.get(SKILL_ID_FIELD))
-            for row in self.candidate_skill_rows(sample_idx)
-        ]
-
-    def candidate_invalid_reasons(self, sample_idx: int) -> list[str]:
-        return [
-            str(row.get("invalid_reason", ""))
-            for row in self.candidate_skill_rows(sample_idx)
-        ]
-
-    def candidate_skill_rows(self, sample_idx: int) -> list[dict[str, object]]:
-        context = self._sample_context(sample_idx)
-        rows = context["candidate_skill_context"]
-        if not isinstance(rows, list):
-            raise ValueError("candidate_skill_context must be a list")
-        return [dict(row) for row in rows]
-
-    def candidate_skill_feature_matrix(self, sample_idx: int, *, dtype):
-        return build_skill_feature_matrix(
-            self.candidate_skill_rows(sample_idx),
-            feature_names=self.skill_feature_names,
-            torch=self._torch,
-            dtype=dtype,
-        )
-
-    def candidate_legal_mask(self, sample_idx: int):
+    def action_legal_mask(self, sample_idx: int):
         return self._torch.tensor(
-            [bool(row.get("is_legal", True)) for row in self.candidate_skill_rows(sample_idx)],
+            self._sample_context(sample_idx)["action_legal_mask"],
             dtype=self._torch.bool,
         )
 
-    def candidate_state_matrix(self, sample_idx: int, *, dtype, normalizer=None):
-        context = self._sample_context(sample_idx)
-        state_context = context["candidate_state_context"]
-        tokens = state_context.get("tokens", []) if isinstance(state_context, dict) else []
+    def action_values(self, sample_idx: int, *, dtype):
+        return self._torch.tensor(self._sample_context(sample_idx)["action_values"], dtype=dtype)
+
+    def current_state_matrix(self, sample_idx: int, *, dtype, normalizer=None):
+        tokens = self._sample_context(sample_idx)["current_state_context"]["tokens"]
         return self._build_state_matrix(tokens, dtype=dtype, normalizer=normalizer)
 
     def scene_tokens(self, sample_idx: int, *, float_dtype, int_dtype):
@@ -442,12 +446,14 @@ def _build_training_source_schema(payload: dict[str, object]) -> TrainingSchema:
     first_context = first_sample.get("context")
     if not isinstance(first_context, dict):
         raise ValueError("first training sample context must be a mapping")
+    if first_context.get("schema_version") != CANONICAL_CONTEXT_SCHEMA_VERSION:
+        raise ValueError("unsupported canonical context schema version; recompile raw source")
 
     context_schema = build_output_context_schema_metadata(first_context)
     history_state_keys = context_schema["state_history_feature_keys"]
-    candidate_state_keys = context_schema["candidate_state_feature_keys"]
-    if history_state_keys != candidate_state_keys:
-        raise ValueError("state history and candidate state feature keys must match")
+    current_state_keys = context_schema["current_state_feature_keys"]
+    if history_state_keys != current_state_keys:
+        raise ValueError("state history and current state feature keys must match")
 
     fight_scene_context = payload.get("fight_scene_context", {})
     if not isinstance(fight_scene_context, dict):
@@ -466,21 +472,6 @@ def _build_training_source_schema(payload: dict[str, object]) -> TrainingSchema:
             )
         )
 
-    candidate_fields = set()
-    history_fields = set()
-    for sample in samples:
-        if not isinstance(sample, dict) or not isinstance(sample.get("context"), dict):
-            continue
-        context = sample["context"]
-        candidate_rows = context.get("candidate_skill_context", [])
-        history_rows = context.get("skill_history_context", [])
-        for row in candidate_rows if isinstance(candidate_rows, list) else []:
-            if isinstance(row, dict):
-                candidate_fields.update(row)
-        for row in history_rows if isinstance(history_rows, list) else []:
-            if isinstance(row, dict):
-                history_fields.update(row)
-
     return TrainingSchema(
         serialization_format=TRAINING_SOURCE_FORMAT,
         sample_schema_version=int(payload.get("sample_schema_version", 0)),
@@ -491,6 +482,5 @@ def _build_training_source_schema(payload: dict[str, object]) -> TrainingSchema:
             str(group_key): tuple(feature_keys)
             for group_key, feature_keys in history_state_keys.items()
         },
-        candidate_skill_fields=tuple(sorted(candidate_fields)),
-        skill_history_fields=tuple(sorted(history_fields)),
+        skill_history_fields=SKILL_HISTORY_FIELDS,
     )

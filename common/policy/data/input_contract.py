@@ -7,9 +7,10 @@ from dataclasses import asdict, dataclass
 
 from .normalizer import Normalizer
 from .schema import TrainingSchema
+from .spec import DataSpec
 
 
-# 候选合法性与执行语义变化时必须升级，拒绝旧 checkpoint 静默复用。
+# 输入或执行语义变化时必须升级，拒绝旧 checkpoint 静默复用。
 # 5：黑魔模型移除 retrace、manaward、surecast 候选并更新模型结构，候选布局与
 #    输入张量形状均已变化，旧 checkpoint 的输入分布不可复用。
 # 6：技能和状态输入移除累计 GCD 索引；状态输入同时移除精确战斗剩余时间
@@ -17,7 +18,8 @@ from .schema import TrainingSchema
 # 7：状态输入移除调用方调度窗口与所有 GCD 单位的时间字段，旧权重不兼容。
 # 8：状态输入移除资源 consumed、weave 计数/上限和黑魔残留辅助 Buff。
 # 9：移除 CLS token，评分器直接读取候选 hidden，旧模型权重不兼容。
-INPUT_CONTRACT_VERSION = 9
+# 10：固定动作输出词表与显式当前状态取代候选输入；旧模型必须重新训练。
+INPUT_CONTRACT_VERSION = 10
 
 
 @dataclass(frozen=True)
@@ -78,6 +80,10 @@ class ModelInputContract:
                 f"{normalizer.configured_job_tag!r} != {job_tag!r}"
             )
         normalized_data_spec = dict(data_spec)
+        try:
+            DataSpec.from_dict(normalized_data_spec)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("input contract data_spec is missing the fixed action output mapping") from exc
         if str(normalized_data_spec.get("job_tag", "")) != job_tag:
             raise ValueError("input contract data_spec job_tag mismatch")
         return cls(

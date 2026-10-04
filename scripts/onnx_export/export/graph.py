@@ -71,7 +71,7 @@ def export_and_stamp(
             "ffxiv.job_tag": contracts.data_spec.job_tag,
             "ffxiv.history_capacity": str(contracts.contract.history_capacity),
             "ffxiv.scene_capacity": str(contracts.contract.scene_capacity),
-            "ffxiv.candidate_count": str(contracts.data_spec.num_candidates),
+            "ffxiv.action_count": str(contracts.data_spec.num_actions),
             "ffxiv.state_dim": str(contracts.data_spec.state_dim),
             "ffxiv.skill_feature_dim": str(contracts.data_spec.skill_feature_dim),
             "ffxiv.scene_dim": str(contracts.data_spec.scene_dim),

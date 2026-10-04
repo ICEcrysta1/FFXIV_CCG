@@ -13,7 +13,7 @@ from scripts.onnx_export.runtime.validation import validate_pytorch_matrix
 from common.policy.config import ModelConfig
 from common.policy.data import DataSpec
 from common.policy.model import (
-    CandidateTransformerModel,
+    CausalPolicyModel,
     RepetitionConfig,
 )
 
@@ -27,10 +27,8 @@ TENSOR_INPUT_KEYS = (
     "history_state_vectors",
     "history_state_null_mask",
     "history_mask",
-    "candidate_skill_ids",
-    "candidate_skill_features",
-    "candidate_state_vectors",
-    "candidate_state_null_mask",
+    "current_state_vectors",
+    "current_state_null_mask",
 )
 
 
@@ -42,15 +40,17 @@ def _make_model(
 ):
     data_spec = DataSpec(
         job_tag="black_mage",
-        num_candidates=3,
+        num_actions=3,
         state_dim=3,
         scene_dim=2,
         skill_feature_dim=2,
         num_scene_types=4,
-        candidate_action_keys=("fire_iii", "fire_iv", "blizzard_iii"),
+        action_keys=("fire_iii", "fire_iv", "blizzard_iii"),
+        action_to_vocab_id=(1, 2, 3),
+        action_is_gcd=(True, True, True),
         skill_feature_names=("potency", "cast_time.seconds"),
     )
-    return CandidateTransformerModel(
+    return CausalPolicyModel(
         data_spec,
         ModelConfig(
             d_model=16,
@@ -94,15 +94,9 @@ def _make_batch(
             dtype=torch.bool,
         ),
         "history_mask": torch.ones((1, history_length), dtype=torch.bool),
-        "candidate_skill_ids": torch.tensor([[1, 2, 3]], dtype=torch.long),
-        "candidate_skill_features": torch.tensor(
-            [[[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]],
-        ),
-        "candidate_state_vectors": torch.tensor(
-            [[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6], [0.7, 0.8, 0.9]]],
-        ),
-        "candidate_state_null_mask": torch.zeros((1, 3, 3), dtype=torch.bool),
-        "candidate_legal_mask": torch.ones((1, 3), dtype=torch.bool),
+        "current_state_vectors": torch.tensor([[0.1, 0.2, 0.3]]),
+        "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
+        "action_legal_mask": torch.ones((1, 3), dtype=torch.bool),
     }
 
 
@@ -211,7 +205,7 @@ def test_onnx_policy_matches_raw_model_logits_and_ignores_string_policy_metadata
     raw_model.load_state_dict(policy_model.state_dict())
     batch = _make_batch()
     batch["history_action_keys"] = [["fire_iii"]]
-    batch["candidate_action_keys"] = [["fire_iii", "fire_iv", "blizzard_iii"]]
+    batch["action_keys"] = [["fire_iii", "fire_iv", "blizzard_iii"]]
 
     with torch.no_grad():
         raw_logits = raw_model(batch)["logits"]
@@ -245,7 +239,7 @@ def test_onnx_policy_exports_with_tensor_only_user_inputs(full_attention_residua
     ]
     assert user_inputs == list(TENSOR_INPUT_KEYS)
     assert "history_action_keys" not in exported.graph_module.code
-    assert "candidate_action_keys" not in exported.graph_module.code
+    assert "action_keys" not in exported.graph_module.code
 
 
 def test_masked_softmax_returns_zero_for_fully_blocked_rows():
@@ -274,8 +268,7 @@ def test_padded_context_is_finite_for_empty_or_short_context(
     scene_capacity,
     history_capacity,
 ):
-    # 完全因果布局下 position id 按容量生成，固定容量输入与动态长度
-    # 输入不再逐 token 等价；这里只验证边界上下文不会产生 NaN/Inf。
+    # 每个有效 token 的逻辑位置相同，padding 不改变当前状态输出。
     model = _make_model()
     policy = OnnxPolicy(model)
     dynamic_batch = _make_batch(scene_types, history_length=history_length)
@@ -292,6 +285,7 @@ def test_padded_context_is_finite_for_empty_or_short_context(
 
     assert torch.isfinite(dynamic_logits).all()
     assert torch.isfinite(padded_logits).all()
+    torch.testing.assert_close(padded_logits, dynamic_logits, rtol=1e-5, atol=1e-6)
 
 
 def test_padding_values_do_not_affect_logits():
@@ -325,7 +319,6 @@ def test_padding_matrix_validates_hidden_attention_logits_and_argmax():
         CapacityContract(
             scene_capacity=3,
             history_capacity=4,
-            candidate_count=model.data_spec.num_candidates,
         ),
         vocab_size=8,
         dtype=torch.float32,
@@ -342,17 +335,13 @@ def test_padding_matrix_validates_hidden_attention_logits_and_argmax():
     }
 
 
-class _PathSeparatedScorer(torch.nn.Module):
-    """为门禁回归测试提供固定的 raw logits。"""
-
-    def forward(self, **_kwargs):
-        return torch.tensor([[2.0, 1.0, 0.0]])
-
-
 class _PathSeparatedModel(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        self.scorer = _PathSeparatedScorer()
+        self.input_encoder = SimpleNamespace(skill_embed=torch.nn.Embedding(3, 1))
+        self.input_encoder.skill_embed.weight.data.copy_(torch.tensor([[2.0], [1.0], [0.0]]))
+        self.output_adapter = torch.nn.Identity()
+        self.action_to_vocab_id = torch.arange(3)
 
     def trace(self, _batch):
         return _path_separated_trace()
@@ -361,10 +350,10 @@ class _PathSeparatedModel(torch.nn.Module):
 def _path_separated_trace():
     return SimpleNamespace(
         encoded={
-            "candidate_positions": torch.tensor([0, 1, 2]),
+            "current_state_position": 2,
         },
         layer_hidden=(),
-        hidden=torch.zeros((1, 3, 1)),
+        hidden=torch.ones((1, 3, 1)),
         attentions=(),
         logits=torch.tensor([[2.0, 1.0, 0.0]]),
     )
@@ -394,7 +383,6 @@ def test_padding_matrix_does_not_compare_trace_with_forward_argmax():
         CapacityContract(
             scene_capacity=1,
             history_capacity=1,
-            candidate_count=3,
         ),
         vocab_size=8,
         dtype=torch.float32,

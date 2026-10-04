@@ -13,6 +13,7 @@ from common.torch_dependencies import import_torch
 from common.torch_serialization import safe_torch_load
 
 from .schema import SceneWindowSchema, TrainingSchema
+from .action_space import ActionSpace
 
 # v15：样本只保存配置无关的动作质量等级代码 1/2/3；旧权重缓存必须重编译。
 # v14：样本新增排名区间、标注状态和配置映射后的数值等级权重；旧缓存必须重编译。
@@ -22,7 +23,8 @@ from .schema import SceneWindowSchema, TrainingSchema
 # v16：技能和状态 bank 移除累计 GCD 索引、精确战斗剩余时间及冗余 GCD 窗口。
 # v17：状态 bank 移除三个调度窗口秒数字段以及全部 GCD 单位时间字段。
 # v18：状态 bank 只保留资源 before/after，移除 weave 字段与黑魔残留辅助 Buff。
-CACHE_FORMAT = "raw_json_compiled_samples_v18_compact_state"
+# v19：固定动作词表和当前请求状态；不保存任何候选输入，旧缓存必须重编译。
+CACHE_FORMAT = "raw_json_compiled_samples_v19_causal_policy"
 # v11：C# 状态机把硬读条的服务器效果结算与完整读条锁结束拆开；转换请求时刻
 # 仍按统一滑步窗口恢复，日志抖动只由容量一动作队列吸收。旧缓存的效果状态时序不可复用。
 # v10：硬读条请求时刻改由 `cast − 实际读条时长 + 0.5 秒滑步窗口` 解析，
@@ -38,7 +40,8 @@ CACHE_FORMAT = "raw_json_compiled_samples_v18_compact_state"
 # v17：按新的模型 token 契约重建完整 history bank；读取窗口仍不影响缓存身份。
 # v18：按纯秒制时间输入重建完整 history bank，调度窗口不进入模型。
 # v19：按精简后的状态 token 契约重建完整 history bank，技能侧继续保留资源消耗。
-DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v19_compact_state"
+# v20：当前请求状态和只读合法性/value 直接生成，不进行未来动作预演。
+DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v20_causal_policy"
 # `weights_only=True` 的安全 unpickler 对 protocol 2 支持最稳定；compiled
 # cache 的样本数据只需要普通 mapping 和 tensor，不需要更高协议。
 CACHE_PICKLE_PROTOCOL = 2
@@ -104,6 +107,8 @@ class CompiledCacheReader:
         shard_cache: CompiledShardCache,
     ):
         self._payload = payload
+        if payload.get("cache_format") != CACHE_FORMAT:
+            raise ValueError("unsupported compiled cache format")
         self._cache_path = Path(cache_path)
         self._shard_cache = shard_cache
         self._schema = payload["schema"]
@@ -112,9 +117,17 @@ class CompiledCacheReader:
         self._num_samples = int(payload["num_samples"])
         if self._num_samples < 0:
             raise ValueError("compiled cache num_samples must be >= 0")
-        self._num_candidates = int(payload["num_candidates"])
+        self._num_actions = int(payload["num_actions"])
         self._skill_feature_names = tuple(payload["skill_feature_names"])
-        self._candidate_action_keys = tuple(payload["candidate_action_keys"])
+        self._action_keys = tuple(payload["action_keys"])
+        self._action_to_vocab_id = tuple(int(value) for value in payload["action_to_vocab_id"])
+        self._action_is_gcd = tuple(payload["action_is_gcd"])
+        if self._num_actions < 1 or len(self._action_keys) != self._num_actions or len(set(self._action_keys)) != self._num_actions:
+            raise ValueError("compiled cache action_keys must match the fixed output space")
+        if len(self._action_to_vocab_id) != self._num_actions or any(value <= 0 for value in self._action_to_vocab_id) or len(set(self._action_to_vocab_id)) != self._num_actions:
+            raise ValueError("compiled cache output mapping must contain distinct non-padding vocabulary rows")
+        if len(self._action_is_gcd) != self._num_actions or any(type(value) is not bool for value in self._action_is_gcd):
+            raise ValueError("compiled cache action_is_gcd must contain one boolean per output action")
         self._vocab_signature = tuple(payload.get("vocab_signature", ()))
         self._shard_size = int(payload["shard_size"])
         self._history_bank_id = str(
@@ -189,8 +202,20 @@ class CompiledCacheReader:
         return self._num_samples
 
     @property
-    def num_candidates(self) -> int:
-        return self._num_candidates
+    def num_actions(self) -> int:
+        return self._num_actions
+
+    @property
+    def action_keys(self) -> tuple[str, ...]:
+        return self._action_keys
+
+    @property
+    def action_to_vocab_id(self) -> tuple[int, ...]:
+        return self._action_to_vocab_id
+
+    @property
+    def action_is_gcd(self) -> tuple[bool, ...]:
+        return self._action_is_gcd
 
     @property
     def shard_size(self) -> int:
@@ -213,9 +238,6 @@ class CompiledCacheReader:
     def history_bank_id(self) -> str:
         """返回 source bank 的稳定身份标识，供 batch 合并去重。"""
         return self._history_bank_id
-
-    def candidate_action_keys(self, _sample_idx: int) -> list[str]:
-        return list(self._candidate_action_keys)
 
     def step_metadata(self, sample_idx: int) -> dict[str, object]:
         sample = self.sample(sample_idx)
@@ -291,6 +313,21 @@ class CompiledCacheReader:
         samples = payload.get("samples")
         if not isinstance(samples, list):
             raise ValueError(f"compiled cache shard samples must be a list: {shard_path}")
+        torch = import_torch()
+        for sample in samples:
+            if not isinstance(sample, dict) or tuple(sample.get("action_keys", ())) != self.action_keys:
+                raise ValueError("compiled sample output action order mismatch")
+            for key in ("current_state_vectors", "current_state_null_mask"):
+                value = sample.get(key)
+                if not isinstance(value, torch.Tensor) or value.shape != (self.schema.state_vector_dim(),):
+                    raise ValueError(f"compiled sample {key} shape mismatch")
+            for key in ("action_values", "action_legal_mask"):
+                value = sample.get(key)
+                if not isinstance(value, torch.Tensor) or value.shape != (self.num_actions,):
+                    raise ValueError(f"compiled sample {key} shape mismatch")
+            index = int(sample.get("label_index", -1))
+            if not 0 <= index < self.num_actions or sample.get("label_action_key") != self.action_keys[index]:
+                raise ValueError("compiled sample label must match its fixed output action index")
         return samples
 
 
@@ -376,6 +413,16 @@ def load_compiled_cache(
     if not isinstance(payload, dict) or payload.get("cache_format") != CACHE_FORMAT:
         return None
     if payload.get("cache_signature") != signature:
+        return None
+    # 仅 raw 数据缓存对照当前启用配置；checkpoint 自描述输入契约不走这里。
+    # SkillVocab 仍保留禁用技能行，因此不能只靠 vocab_signature 捕获 enabled 漂移。
+    job_tag = payload.get("job_tag")
+    if not isinstance(job_tag, str) or not job_tag:
+        return None
+    action_space = ActionSpace.from_job_tag(job_tag)
+    if (tuple(payload.get("action_keys", ())) != action_space.action_keys
+            or tuple(payload.get("action_to_vocab_id", ())) != action_space.action_to_vocab_id
+            or tuple(payload.get("action_is_gcd", ())) != action_space.action_is_gcd):
         return None
     shard_files = payload.get("shard_files")
     if not isinstance(shard_files, list):

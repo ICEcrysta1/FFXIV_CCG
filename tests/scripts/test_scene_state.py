@@ -161,3 +161,33 @@ def test_scene_facts_only_cover_injected_kinds():
 def _target_count_facts(scene_context: dict[str, object]):
     facts = SceneFactScheduler(scene_context).pop_facts_through(1_000.0)
     return [fact for fact in facts if fact.event_kind == TARGET_COUNT_CHANGED]
+
+
+def test_scene_rewrite_current_state_uses_request_time_for_both_snapshots():
+    """当前输入两段取同一请求时刻；旧历史仍按自身生效与读条时刻改写。"""
+    from types import SimpleNamespace
+    from scripts.common.scene_state import _player_state_fields, rewrite_scene_player_state
+
+    fields = _player_state_fields()
+    width = len(fields)
+    current = {"player_state": [0.0] * (2 * width)}
+    history = {"player_state": [0.0] * (2 * width)}
+    canonical = {
+        "current_state_context": {"tokens": [current]},
+        "state_history_context": {"tokens": [history]},
+        "skill_history_context": [{"time_seconds": 11.0, "cast_time": {"seconds": 3.0}}],
+    }
+    rewrite_scene_player_state(
+        canonical, observation_timestamp=12.0, next_observation_timestamp=20.0,
+        scene_state_at=lambda timestamp: SimpleNamespace(
+            is_moving=timestamp >= 10.0, next_downtime_eta=30.0 - timestamp, downtime_remaining=0.0,
+        ),
+    )
+    assert current["player_state"][:width] == current["player_state"][width:]
+    eta = fields.index("next_untargetable_in_seconds")
+    moving = fields.index("is_moving")
+    assert current["player_state"][eta] == pytest.approx(18.0)
+    assert history["player_state"][eta] == pytest.approx(22.0)
+    assert history["player_state"][width + eta] == pytest.approx(19.0)
+    assert history["player_state"][moving] == 0.0
+    assert history["player_state"][width + moving] == 1.0

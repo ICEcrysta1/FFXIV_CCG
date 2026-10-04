@@ -32,10 +32,9 @@ class _FakeBackend:
         if format == "vector":
             return SimpleNamespace(
                 context={
-                    "candidate_skill_context": [
-                        {"skill_key": "fire_iii", "is_legal": True},
-                        {"skill_key": "fire_iv", "is_legal": False},
-                    ]
+                    "action_keys": ["fire_iii", "fire_iv"],
+                    "action_legal_mask": [True, False],
+                    "action_values": [1.0, 1.0],
                 }
             )
         return SimpleNamespace(

@@ -25,12 +25,12 @@ POLICY_MODEL_CHECKPOINT_ENV = "TRAINING_MODEL_CHECKPOINT"
 POLICY_DEVICE_ENV = "TRAINING_DEVICE"
 POLICY_CACHE_ROOT_ENV = "TRAINING_CACHE_ROOT"
 
-# 全模型共用的激活选项：主干 FFN、候选打分头与 pair 融合都按该取值解析。
+# 全模型共用的激活选项：主干 FFN 与历史 pair 融合都按该取值解析。
 TRANSFORMER_ACTIVATIONS = ("gelu", "relu", "swiglu")
 
 
 _DATA_DERIVED_KEYS = {
-    "num_candidates",
+    "num_actions",
     "state_dim",
     "scene_dim",
     "skill_feat_dim",
@@ -113,20 +113,16 @@ class ModelConfig:
         if "max_sequence_length" in values:
             raise ValueError(
                 "model.max_sequence_length is removed; physical token capacity is derived "
-                "from scene_capacity, history_capacity and candidates"
+                "from scene_capacity, history_capacity and the current state"
             )
         if "max_history" in values:
             raise ValueError("model.max_history is removed; configure model.history_capacity")
-        if "scorer_use_raw_projection" in values:
-            scorer_use_raw_projection = _parse_strict_bool(
-                values["scorer_use_raw_projection"],
-                field_name="model.scorer_use_raw_projection",
-            )
-            if scorer_use_raw_projection:
-                raise ValueError(
-                    "model.scorer_use_raw_projection is removed; "
-                    "candidate scoring always uses Transformer representations"
-                )
+        removed = {
+            "num_candidates", "scorer_use_raw_projection",
+            "scorer_use_candidate_hidden", "position_id_semantics",
+        }.intersection(values)
+        if removed:
+            raise ValueError("removed model options: " + ", ".join(sorted(removed)))
         derived_keys = sorted(_DATA_DERIVED_KEYS.intersection(values))
         if derived_keys:
             raise ValueError(

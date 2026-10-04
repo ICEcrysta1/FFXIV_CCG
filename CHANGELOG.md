@@ -6,6 +6,8 @@
 
 ### Added
 
+- 新增固定动作词表 `ActionSpace`，将启用的真实技能与 policy 动作按稳定 Ordinal 顺序合并；`action_keys`、`action_to_vocab_id` 和 `action_is_gcd` 随缓存与 checkpoint 输入契约保存，离线恢复不依赖本机当前 YAML 重建输出顺序或动作类型。
+- 新增完全因果策略模型的六阶段修改计划，明确阶段 1 的交付边界、后续技能与状态独立 embedding、用户字段确认、跨步状态语义及回退规则、601 个非场景 token 与顺序 RoPE；100 份数据训练由用户本人执行。
 - 新增共享模型和多队列引擎的批量回放入口 `run_replays()`，以及命令行 `--scenes` / `--workers`；各场景使用独立会话与随机流，按输入顺序输出独立报告。根目录 `.env` 的 `AUTOREGRESSIVE_REPLAY_WORKERS` 统一限制验证 PPG、GRPO 和普通回放的存活队列数及 PyTorch 推理 batch，未配置时为 1，示例配置为 4，可设置为 16。
 - 新增统一多队列状态机 `SimulationEngine` / `SimulationSession` 与 Python `InProcessEngine`：默认最多容纳 16 个队列，共享同一职业的规则、配置和技能表，各队列独立保存基础 GCD、战斗状态、事件时间线、策略历史和输出缓存；支持同一 Python 进程内多线程驱动，按队列加锁并原子返回执行结果与时间游标，提供独立重置、释放和统计接口。容量耗尽立即报错，关闭后的句柄永久失效，单队列请求错误不关闭其他队列。
 - 新增 BC 与 GRPO 共用的优化器装配和独立 `optimizer.yaml`：通过 `optimizers.bc`、`optimizers.grpo` 分别选择 `adamw` 或 `muon`，集中配置各阶段的学习率、权重衰减、warmup 与 Muon 参数。`adamw` 更新全部参数；`muon` 将 Transformer 主干 Attention/FFN 矩阵交给原生 Muon，输入编码、embedding、评分头、归一化和 bias 继续使用 AdamW，并记录参数分组与更新设置。
@@ -19,6 +21,12 @@
 
 ### Changed
 
+- 完成无候选因果策略模型迁移的阶段 1：正式输入改为 `scene + 历史 skill/state 融合 pair + 唯一真实当前状态`，全部采用因果注意力；KV-cache 只缓存稳定场景与历史，每次请求重新编码当前状态。历史融合、before/after 语义及 384 条历史动作读取窗口保留，独立 embedding、跨步状态语义与 601 token 交错上下文仍属于后续阶段。
+- `CausalPolicyModel` 从最新状态 hidden 预测固定动作词表：通过 `output_adapter` 适配现有技能 embedding 维度后，直接与 `input_encoder.skill_embed.weight[action_to_vocab_id]` 点积。技能输入和输出共用唯一参数表及 FP32 主权重，输出映射支持非 identity 索引，不扩大 Muon 参数范围。
+- C# canonical 输出改为单个 `current_state_context` 与 `action_keys/action_legal_mask/action_values`：当前状态两段均取请求时快照，合法性按真实动作提交与排队语义校验；动作 mask 和动态 value 只用于执行或监督，不生成 Transformer token。转换、缓存、BC、GRPO、回放、根 CLI、分析和 ONNX 同步使用新契约，回放保留 GCD/oGCD 阶段筛选，ONNX 输入由 12 项改为 10 项。
+- 验证 PPG 从初始当前状态和保存的归一化契约恢复基础 GCD，处理黑魔魔纹加速，拒绝缺失、null 或零 GCD；继续只统计实际执行历史的直接与 DoT 威力，保留无法推进时全零失败及逐副本平均规则。compiled cache 继续保存完整 history bank，读取窗口调整复用同一新格式缓存。
+- 无候选契约升级为桥接 12、canonical 11、checkpoint 输入 10、训练样本 8、compiled cache v19/转换 v20、GRPO 轨迹 2、ONNX 部署 14/manifest 8；旧候选缓存回到重编译路径，旧 checkpoint、部署包和候选配置明确拒绝，不通过空字段或兼容分支静默复用。
+- 补充固定动作映射、共享 embedding 梯度与优化器唯一性、完整 bank 复用、当前状态因果性、PPG 初态、KV-cache、分析和 ONNX 回归。契约迁移后的全仓 Python 验证为 1279 项通过、4 项条件跳过，C# 277 项通过；GELU/SwiGLU 的 FP32 CPU 与 BF16 CUDA 四套小模型真实 ONNX 导出通过。随后七处文字收尾完成桥接重建和 2 项随机回放回归，不代表已执行 100 份数据训练效果评估。
 - 将剩余回放入口接入共享多队列：历史消融支持跨场景并行并保留各场景独立参考轨迹；ONNX `workflow all` 的空场景与真实场景验收共用一份 PyTorch 模型、一份 ORT 后端和一个状态机引擎，每条轨迹独立记录报告，失败后继续完成其他验收，发布状态由调用线程串行登记。正式 PT/ORT 对比仍保持固定 batch=1；普通 ONNX 回放也统一使用批量入口。
 - 回放与 GRPO 在每批轨迹启动前，借用同一引擎并行补齐缺失缓存，再申请回放队列；缓存编译的并发数受宿主引擎容量限制，任务只释放自己的队列，不关闭借用的引擎。模型分析缓存补编译从 Python 子进程改为进程内批量 API，并提前建立公共缓存目录，避免 Windows 并发首次创建目录时的路径解析差异；转换继续保存完整 history bank。
 - 移除单条调用自动创建独立引擎或会话的兼容路径，以及 `build_backend`、`compile_raw_training_cache`、`run_rollout_parity` 等单条包装入口。底层队列、转换任务和 replay session 必须显式接收共享引擎，回放必须接收已有 session；单条任务也通过 `run_replays`、`run_rollout_parities` 或 `compile_raw_training_caches` 提交单元素序列。同步更新调用方、公共导出和接口说明。
@@ -77,6 +85,7 @@
 
 ### Fixed
 
+- 清理六处仍描述候选职责的陈旧注释，并将随机回放异常提示改为“合法动作”；算法、技能字段与状态契约不变。
 - 修复动作事件载荷与策略等待快照继续持有旧历史列表导致的内存增长；状态快照只保留执行所需数据，已取消事件在失效堆条目超过阈值时重建队列，释放过期载荷与旧堆数组，避免长时间运行后持续积压。
 - 修复 BF16/FP16 模型直接更新低精度权重时，小增量在每一步被舍入丢失的问题：BC 与 GRPO 的共享 AdamW/Muon 装配统一使用 FP32 主权重及优化器状态累计更新，再同步至低精度模型，保持模型前向与 checkpoint 模型权重精度不变；更新后释放临时 FP32 梯度。优化器 checkpoint 保存主权重、原生状态及参数契约，续训保留尚未体现在低精度模型上的增量；旧 checkpoint 从已恢复的模型权重初始化主权重、提升动量精度，并明确提示历史舍入损失无法恢复。
 - GRPO 首轮回滚快照改为复制至 CPU，避免 FP32 主权重额外常驻一份 GPU 副本；磁盘与内存回滚同步恢复主权重、两套优化器状态和调度器。补充小更新累计、独立 FP32 参考、新旧 checkpoint 迁移、梯度生命周期、CUDA BF16 前后向及 GRPO 回滚回归，相关 409 项测试通过，并验证真实旧 AdamW checkpoint 的完整模型迁移。
@@ -87,6 +96,10 @@
 - PowerShell 菜单的 FFLogs 下载改用模块入口，URL 下载显式传入 `single` 子命令，修复旧调用与参数解析器不匹配的问题；CLI 示例同步修正。
 - 下载命令在事件数量或分页超限、分页时间不前进、响应缺失时拒绝保存不完整分析输入；JSON 使用 UTF-8/LF 和原子替换写入，序列化失败保留已有文件，不留下会被批量任务误跳过的半文件。
 - 战斗选择按真实 fight ID 匹配，不再把不存在的 ID 当成列表序号；`fight=last` 保存实际战斗 ID，并校验选定玩家属于下载战斗。
+
+### Removed
+
+- 彻底移除 C# 候选预演、候选上下文 builder 与非法候选状态生成，以及 Python 候选字段、候选顺序模块/YAML、shuffle、split attention 双向块、候选 scorer 和相关测试 helper；正式链路只保留固定输出动作词表，不保留候选 token、伪候选或候选空数组入口。
 
 ## [0.1.1] - 2026-09-26
 

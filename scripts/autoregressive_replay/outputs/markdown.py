@@ -38,7 +38,7 @@ SKILL_NAMES = {
 
 
 def write_markdown(result: ReplayResult, output_path: Path) -> Path:
-    """写出动作序列和每一步合法 Top-K 候选。"""
+    """写出动作序列和每一步合法 Top-K 动作。"""
     metadata = [
         f"- backend: `{result.backend_name}`",
         f"- execution provider: `{result.execution_provider}`",
@@ -73,9 +73,9 @@ def write_markdown(result: ReplayResult, output_path: Path) -> Path:
         *metadata,
         "",
         (
-            "|Step|截断历史后的技能|完整轨迹技能|Top-1 概率|Top-K 合法候选|"
+            "|Step|截断历史后的技能|完整轨迹技能|Top-1 概率|Top-K 合法动作|"
             if result.is_history_ablation
-            else "|Step|技能|Top-1 概率|Top-K 合法候选|"
+            else "|Step|技能|Top-1 概率|Top-K 合法动作|"
         ),
         (
             "|---:|---|---|---:|---|"
@@ -89,7 +89,7 @@ def write_markdown(result: ReplayResult, output_path: Path) -> Path:
             if row.forced
             else " / ".join(
                 f"{SKILL_NAMES.get(key, key)} {prob:.3f}"
-                for key, _, prob, _ in row.top_candidates
+                for key, _, prob, _ in row.top_actions
             )
         )
         action_name = SKILL_NAMES.get(row.action_key, row.action_key)

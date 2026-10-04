@@ -40,18 +40,3 @@ def build_test_scene_context(
 def history_vector_value(history_payload, group_key: str, feature_key: str, *, token_index: int = 0) -> float:
     index = history_payload[f"{group_key}_feature_keys"].index(feature_key)
     return history_payload["tokens"][token_index][group_key][index]
-
-
-def candidate_state_token_by_skill(payload, skill_key: str) -> dict[str, list[float]]:
-    index = next(
-        index
-        for index, token in enumerate(payload["candidate_skill_context"])
-        if token["skill_key"] == skill_key
-    )
-    return payload["candidate_state_context"]["tokens"][index]
-
-
-def candidate_state_vector_value(payload, skill_key: str, group_key: str, feature_key: str) -> float:
-    candidate_state_context = payload["candidate_state_context"]
-    index = candidate_state_context[f"{group_key}_feature_keys"].index(feature_key)
-    return candidate_state_token_by_skill(payload, skill_key)[group_key][index]

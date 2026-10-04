@@ -16,22 +16,24 @@ from common.policy.model.activation import (
     resolve_pointwise_activation,
     uses_gate,
 )
-from common.policy.model.candidate_scorer import CandidateScorer
-from common.policy.model.input_encoder import CandidateInputEncoder
-from common.policy.model.model import CandidateTransformerModel
+from common.policy.model.input_encoder import CausalInputEncoder
+from common.policy.model.model import CausalPolicyModel
 from common.policy.model.trace import TraceableTransformerEncoderLayer
+from tests.training._causal_fixtures import make_checkpoint
 
 
 def _activation_spec() -> DataSpec:
     return DataSpec(
         job_tag="black_mage",
-        num_candidates=2,
+        num_actions=2,
         state_dim=3,
         scene_dim=2,
         skill_feature_dim=1,
         num_scene_types=1,
-        candidate_action_keys=("fire_iii", "fire_iv"),
+        action_keys=("fire_iii", "fire_iv"),
         skill_feature_names=("potency",),
+        action_to_vocab_id=(1, 2),
+        action_is_gcd=(True, True),
     )
 
 
@@ -53,11 +55,11 @@ def _activation_batch() -> dict[str, torch.Tensor]:
         "history_skill_ids": torch.ones((1, 1), dtype=torch.long),
         "history_skill_features": torch.zeros((1, 1, 1)),
         "history_state_vectors": torch.zeros((1, 1, 3)),
+        "history_state_null_mask": torch.zeros((1, 1, 3), dtype=torch.bool),
         "history_mask": torch.ones((1, 1), dtype=torch.bool),
-        "candidate_skill_ids": torch.ones((1, 2), dtype=torch.long),
-        "candidate_skill_features": torch.zeros((1, 2, 1)),
-        "candidate_state_vectors": torch.zeros((1, 2, 3)),
-        "candidate_legal_mask": torch.ones((1, 2), dtype=torch.bool),
+        "current_state_vectors": torch.zeros((1, 3)),
+        "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
+        "action_legal_mask": torch.ones((1, 2), dtype=torch.bool),
         "scene_vectors": torch.zeros((1, 1, 2)),
         "scene_types": torch.zeros((1, 1), dtype=torch.long),
         "scene_mask": torch.ones((1, 1), dtype=torch.bool),
@@ -174,98 +176,68 @@ def test_activation_config_and_checkpoint_roundtrip(tmp_path, activation):
     config = load_run_config(path).model
     assert config.transformer_activation == activation
     assert config.ff_dim == 3072
-    assert CandidateTransformerModel.checkpoint_model_config(
-        {"model_config": asdict(config)}
+    assert CausalPolicyModel.checkpoint_model_config(
+        make_checkpoint(config=config)
     ) == config
 
 
-def test_legacy_checkpoint_without_activation_retains_gelu_default():
-    config = asdict(ModelConfig())
-    config.pop("transformer_activation")
-    assert CandidateTransformerModel.checkpoint_model_config(
-        {"model_config": config}
-    ).transformer_activation == "gelu"
+def test_checkpoint_without_new_input_contract_is_rejected():
+    with pytest.raises(ValueError, match="missing input_contract"):
+        CausalPolicyModel.checkpoint_model_config({"model_config": asdict(ModelConfig())})
 
 
 def test_checkpoint_rejects_unknown_activation():
-    config = asdict(ModelConfig())
-    config["transformer_activation"] = "swish"
+    checkpoint = make_checkpoint()
+    checkpoint["model_config"]["transformer_activation"] = "swish"
     with pytest.raises(ValueError, match="transformer_activation must be"):
-        CandidateTransformerModel.checkpoint_model_config({"model_config": config})
+        CausalPolicyModel.checkpoint_model_config(checkpoint)
 
 
 def test_checkpoint_rejects_removed_cls_architecture():
-    checkpoint = {
-        "model_config": asdict(ModelConfig()),
-        "model_state_dict": {"input_encoder.cls_token": torch.zeros(1, 1, 4)},
-    }
-    with pytest.raises(ValueError, match="checkpoint with CLS token is unsupported"):
-        CandidateTransformerModel.checkpoint_model_config(checkpoint)
+    checkpoint = make_checkpoint(model_state_dict={"input_encoder.cls_token": torch.zeros(1, 1, 4)})
+    with pytest.raises(ValueError, match="unsupported scoring architecture"):
+        CausalPolicyModel.checkpoint_model_config(checkpoint)
 
 
 @pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
-def test_candidate_scorer_matches_explicit_formula_and_gradients(activation):
+def test_shared_skill_head_matches_explicit_dot_product_and_gradients(activation):
     torch.manual_seed(23)
-    scorer = CandidateScorer(
-        d_model=8, dropout=0.0, activation=activation
-    ).double().eval()
-    reference = deepcopy(scorer)
-    candidate_hidden = torch.randn(2, 3, 8, dtype=torch.float64, requires_grad=True)
-    reference_candidates = candidate_hidden.detach().clone().requires_grad_(True)
-
-    actual = scorer(candidate_hidden=candidate_hidden)
-    paired = reference_candidates
-    up = F.linear(paired, reference.up_proj.weight, reference.up_proj.bias)
-    if uses_gate(activation):
-        # 展开 sigmoid 门控公式，独立验证门控、逐元素乘法与三个投影的梯度。
-        gate = F.linear(paired, reference.gate_proj.weight, reference.gate_proj.bias)
-        hidden = (gate * torch.sigmoid(gate)) * up
-        projection_names = ("gate_proj", "up_proj", "down_proj")
-    else:
-        hidden = resolve_pointwise_activation(activation)(up)
-        projection_names = ("up_proj", "down_proj")
-    expected = F.linear(
-        hidden,
-        reference.down_proj.weight,
-        reference.down_proj.bias,
-    ).squeeze(-1)
+    model = CausalPolicyModel(_activation_spec(), _activation_config(activation), vocab_size=4).double().eval()
+    reference = deepcopy(model)
+    current_hidden = torch.randn(2, 8, dtype=torch.float64, requires_grad=True)
+    reference_hidden = current_hidden.detach().clone().requires_grad_(True)
+    actual = model._score_current_hidden(current_hidden, {})
+    projected = F.linear(reference_hidden, reference.output_adapter.weight)
+    expected = projected @ reference.input_encoder.skill_embed.weight[reference.action_to_vocab_id].T
     torch.testing.assert_close(actual, expected, atol=1e-12, rtol=1e-12)
     gradient = torch.randn_like(actual)
     actual.backward(gradient)
     expected.backward(gradient)
     torch.testing.assert_close(
-        candidate_hidden.grad, reference_candidates.grad, atol=1e-12, rtol=1e-12,
+        current_hidden.grad, reference_hidden.grad, atol=1e-12, rtol=1e-12,
     )
-    for name in projection_names:
-        for parameter_name, parameter in getattr(scorer, name).named_parameters():
-            reference_parameter = getattr(getattr(reference, name), parameter_name)
-            assert parameter.grad is not None
-            torch.testing.assert_close(
-                parameter.grad, reference_parameter.grad, atol=1e-12, rtol=1e-12,
-            )
+    for actual_parameter, reference_parameter in ((model.output_adapter.weight, reference.output_adapter.weight),
+                                                  (model.input_encoder.skill_embed.weight, reference.input_encoder.skill_embed.weight)):
+        assert actual_parameter.grad is not None
+        torch.testing.assert_close(actual_parameter.grad, reference_parameter.grad, atol=1e-12, rtol=1e-12)
 
 
 @pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
-def test_candidate_scorer_keeps_two_layer_mlp_matrix_parameter_budget(activation):
-    """折算后打分头矩阵参数量与候选 hidden 单独输入的两层 MLP 近似相等。"""
-    scorer = CandidateScorer(d_model=768, dropout=0.1, activation=activation)
-    reference_parameters = 768 * 768 + 768 + 768 + 1
-    scorer_parameters = sum(parameter.numel() for parameter in scorer.parameters())
-
-    assert abs(scorer_parameters - reference_parameters) / reference_parameters < 0.01
-    if uses_gate(activation):
-        assert scorer.gate_proj.out_features == 384
-        assert scorer.up_proj.out_features == 384
-        assert scorer.down_proj.in_features == 384
-    else:
-        assert scorer_parameters == reference_parameters
-        assert not hasattr(scorer, "gate_proj")
+def test_shared_skill_head_has_one_semantic_parameter_table(activation):
+    """输出只用输入 embedding 原参数，阶段 1 仅多一条维度适配。"""
+    model = CausalPolicyModel(_activation_spec(), _activation_config(activation), vocab_size=4)
+    names = dict(model.named_parameters())
+    assert not hasattr(model, "scorer")
+    assert model.output_adapter.weight.numel() == 8 * 4
+    semantic = model.input_encoder.skill_embed.weight
+    assert sum(parameter is semantic for parameter in names.values()) == 1
+    assert "input_encoder.skill_embed.weight" in names
 
 
 @pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
 def test_pair_fusion_follows_configured_activation(activation):
     torch.manual_seed(29)
-    encoder = CandidateInputEncoder(
+    encoder = CausalInputEncoder(
         _activation_spec(),
         _activation_config(activation),
         vocab_size=4,
@@ -292,8 +264,8 @@ def test_pair_fusion_follows_configured_activation(activation):
 
 @pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
 def test_model_resolves_one_activation_for_every_activation_site(activation):
-    """主干 FFN、候选打分头与 pair 融合必须解析出同一个配置激活。"""
-    model = CandidateTransformerModel(
+    """主干 FFN 与阶段 1 历史 pair 融合使用同一个配置激活。"""
+    model = CausalPolicyModel(
         _activation_spec(),
         _activation_config(activation),
         vocab_size=4,
@@ -301,9 +273,7 @@ def test_model_resolves_one_activation_for_every_activation_site(activation):
     expected = resolve_pointwise_activation(activation)
 
     assert model.encoder.layers[0].activation is expected
-    assert model.scorer.activation is expected
     assert model.input_encoder.pair_fusion_activation is expected
-    assert model.scorer.gated is uses_gate(activation)
     assert model.input_encoder.pair_fusion_gated is uses_gate(activation)
     model.eval()
     assert model(_activation_batch())["logits"].shape == (1, 2)
@@ -333,19 +303,9 @@ def test_activation_hidden_merges_gate_and_pointwise_paths():
     )
 
 
-def test_checkpoint_rejects_removed_candidate_scorer_layout():
-    config = asdict(ModelConfig())
-    with pytest.raises(ValueError, match="removed candidate scorer layout"):
-        CandidateTransformerModel.checkpoint_model_config(
-            {
-                "model_config": config,
-                "model_state_dict": {"scorer.network.0.weight": torch.zeros(1)},
-            }
+@pytest.mark.parametrize("key", ["scorer.network.0.weight", "scorer.up_proj.weight"])
+def test_checkpoint_rejects_removed_candidate_scorer_layout(key):
+    with pytest.raises(ValueError, match="unsupported scoring architecture"):
+        CausalPolicyModel.checkpoint_model_config(
+            make_checkpoint(model_state_dict={key: torch.zeros(1)})
         )
-    # 当前打分头的 checkpoint 仍然可以被正常解析。
-    assert CandidateTransformerModel.checkpoint_model_config(
-        {
-            "model_config": config,
-            "model_state_dict": {"scorer.up_proj.weight": torch.zeros(1)},
-        }
-    ).transformer_activation == ModelConfig.transformer_activation

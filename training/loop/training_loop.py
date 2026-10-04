@@ -14,7 +14,7 @@ import torch
 from common.config import load_precision_config
 from common.policy.config import PROJECT_ROOT, resolve_policy_cache_dir
 from common.policy.data import DataSpec, ModelInputContract, SkillVocab
-from common.policy.model import CandidateTransformerModel
+from common.policy.model import CausalPolicyModel
 from common.policy.model.repetition import RepetitionConfig, prepare_repetition_penalty
 from common.project_config import resolve_registered_job_tags
 from common.torch_runtime import autocast_context, model_dtype, move_batch
@@ -85,7 +85,7 @@ def run_training(
     resolve_cache_dir_fn = _resolve_cache_dir or resolve_policy_cache_dir
     registered_job_tags_fn = _registered_job_tags or (lambda: resolve_registered_job_tags(PROJECT_ROOT))
     skill_vocab_cls = _skill_vocab or SkillVocab
-    model_cls = _model_class or CandidateTransformerModel
+    model_cls = _model_class or CausalPolicyModel
 
     tensorboard_output_dir = config.output_dir
     if output_dir is not None:
@@ -184,10 +184,10 @@ def run_training(
     if callable(set_runtime_debug):
         set_runtime_debug(debug_recorder)
     logger.info(
-        "模型: job=%s model_variant=%s candidates=%d state=%d scene=%d skill_features=%d layers=%d d_model=%d activation=%s ff_dim=%d precision=%s ffn_checkpoint=%s attention_checkpoint=%s device=%s",
+        "模型: job=%s model_variant=%s actions=%d state=%d scene=%d skill_features=%d layers=%d d_model=%d activation=%s ff_dim=%d precision=%s ffn_checkpoint=%s attention_checkpoint=%s device=%s",
         data_spec.job_tag,
         config.model_variant,
-        data_spec.num_candidates,
+        data_spec.num_actions,
         data_spec.state_dim,
         data_spec.scene_dim,
         data_spec.skill_feature_dim,

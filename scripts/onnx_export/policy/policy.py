@@ -1,4 +1,4 @@
-"""复用 checkpoint 模型权重的纯 Tensor ONNX 候选打分入口。"""
+"""复用 checkpoint 模型权重的纯 Tensor ONNX 动作打分入口。"""
 
 from __future__ import annotations
 
@@ -8,12 +8,12 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 
-from common.policy.model.split_encoder import run_split_encoder
+from common.policy.model.causal_encoder import run_causal_encoder
 from common.policy.model.trace import trace_encoder
 
 
 class OnnxPolicy(nn.Module):
-    """只接收张量并输出策略后处理前的候选 ``raw_logits``。"""
+    """只接收张量并输出策略后处理前的动作 ``raw_logits``。"""
 
     def __init__(self, model: nn.Module, *, bf16_float_compute: bool = False):
         super().__init__()
@@ -50,12 +50,10 @@ class OnnxPolicy(nn.Module):
         history_state_vectors: torch.Tensor,
         history_state_null_mask: torch.Tensor,
         history_mask: torch.Tensor,
-        candidate_skill_ids: torch.Tensor,
-        candidate_skill_features: torch.Tensor,
-        candidate_state_vectors: torch.Tensor,
-        candidate_state_null_mask: torch.Tensor,
+        current_state_vectors: torch.Tensor,
+        current_state_null_mask: torch.Tensor,
     ) -> torch.Tensor:
-        """执行无字符串、无策略后处理、无内部 KV cache 的候选打分。"""
+        """执行无字符串、无策略后处理、无内部 KV cache 的动作打分。"""
         batch = _build_batch(
             scene_vectors,
             scene_types,
@@ -65,10 +63,8 @@ class OnnxPolicy(nn.Module):
             history_state_vectors,
             history_state_null_mask,
             history_mask,
-            candidate_skill_ids,
-            candidate_skill_features,
-            candidate_state_vectors,
-            candidate_state_null_mask,
+            current_state_vectors,
+            current_state_null_mask,
         )
         compute_model = self.compute_model or self.model
         if self.compute_model is not None:
@@ -77,14 +73,12 @@ class OnnxPolicy(nn.Module):
                 for key, value in batch.items()
             }
         encoded = compute_model.input_encoder(batch)
-        _prefix_hidden, candidate_hidden, _layers, _attentions = run_split_encoder(
+        hidden, _, _ = run_causal_encoder(
             compute_model.encoder,
             encoded,
             force_explicit_mask=True,
         )
-        logits = compute_model.scorer(
-            candidate_hidden=candidate_hidden,
-        )
+        logits = _raw_logits(compute_model, encoded, hidden)
         return logits.to(torch.bfloat16) if self.compute_model is not None else logits
 
     @torch.no_grad()
@@ -94,10 +88,7 @@ class OnnxPolicy(nn.Module):
         encoded = self.model.input_encoder(batch)
         trace = trace_encoder(self.model.encoder, encoded)
         hidden = trace.hidden
-        candidate_hidden = hidden[:, encoded["candidate_positions"], :]
-        logits = self.model.scorer(
-            candidate_hidden=candidate_hidden,
-        )
+        logits = _raw_logits(self.model, encoded, hidden)
         return OnnxPolicyTrace(
             encoded=trace.encoded,
             layer_hidden=trace.layer_hidden,
@@ -128,10 +119,8 @@ def _build_batch(*inputs: torch.Tensor) -> dict[str, torch.Tensor]:
         history_state_vectors,
         history_state_null_mask,
         history_mask,
-        candidate_skill_ids,
-        candidate_skill_features,
-        candidate_state_vectors,
-        candidate_state_null_mask,
+        current_state_vectors,
+        current_state_null_mask,
     ) = inputs
     return {
         "scene_vectors": scene_vectors,
@@ -142,16 +131,16 @@ def _build_batch(*inputs: torch.Tensor) -> dict[str, torch.Tensor]:
         "history_state_vectors": history_state_vectors,
         "history_state_null_mask": history_state_null_mask,
         "history_mask": history_mask,
-        "candidate_skill_ids": candidate_skill_ids,
-        "candidate_skill_features": candidate_skill_features,
-        "candidate_state_vectors": candidate_state_vectors,
-        "candidate_state_null_mask": candidate_state_null_mask,
-        # 合法性属于宿主后处理；该占位张量只满足共享 encoder 的 shape 契约。
-        "candidate_legal_mask": torch.ones_like(
-            candidate_skill_ids,
-            dtype=torch.bool,
-        ),
+        "current_state_vectors": current_state_vectors,
+        "current_state_null_mask": current_state_null_mask,
     }
+
+
+def _raw_logits(model, encoded, hidden):
+    """共享输入技能 embedding，输出不包含宿主合法性或重复惩罚。"""
+    current_hidden = hidden[:, encoded["current_state_position"], :]
+    semantic_hidden = model.output_adapter(current_hidden)
+    return semantic_hidden @ model.input_encoder.skill_embed.weight[model.action_to_vocab_id].T
 
 
 def stable_masked_softmax(

@@ -27,7 +27,7 @@ class TrainingSampleBuilder:
         skill_feature_names: tuple[str, ...],
         int_dtype,
         float_dtype,
-        num_candidates: int,
+        num_actions: int,
         history_bank: dict[str, object] | None = None,
         ranking: dict[str, object] | None = None,
         annotation_status: str = "unannotated",
@@ -38,7 +38,7 @@ class TrainingSampleBuilder:
         self._skill_feature_names = skill_feature_names
         self._int_dtype = int_dtype
         self._float_dtype = float_dtype
-        self._num_candidates = num_candidates
+        self._num_actions = num_actions
         self._history_bank = history_bank
         self._ranking = ranking or {"percentile": None, "percentile_bucket": None}
         self._annotation_status = annotation_status
@@ -79,43 +79,10 @@ class TrainingSampleBuilder:
                 normalizer=self._normalizer,
             )
 
-        candidate_rows = reader.candidate_skill_rows(sample_idx)
-        candidate_action_keys = [str(row.get("skill_key", "")) for row in candidate_rows]
-        candidate_raw_skill_ids = [
-            to_optional_int(row.get(SKILL_ID_FIELD))
-            for row in candidate_rows
-        ]
-        candidate_invalid_reasons = [
-            str(row.get("invalid_reason", ""))
-            for row in candidate_rows
-        ]
-        candidate_skill_ids = self._encode_skill_ids(
-            candidate_raw_skill_ids,
-            context=f"candidate sample={sample_idx} fight={reader.fight_id}",
-        )
-        candidate_skill_features = build_skill_feature_matrix(
-            candidate_rows,
-            feature_names=reader.skill_feature_names,
-            torch=self._torch,
-            dtype=self._float_dtype,
-        )
-        if self._normalizer is not None:
-            candidate_skill_features = self._normalizer.normalize_skill_features(
-                candidate_skill_features,
-                self._skill_feature_names,
-            )
-        candidate_state = reader.candidate_state_matrix(
+        current_state = reader.current_state_matrix(
             sample_idx,
             dtype=self._float_dtype,
             normalizer=self._normalizer,
-        )
-        candidate_legal_mask = self._torch.tensor(
-            [bool(row.get("is_legal", True)) for row in candidate_rows],
-            dtype=self._torch.bool,
-        )
-        candidate_values = self._torch.tensor(
-            [float(row.get("value", 1.0)) for row in candidate_rows],
-            dtype=self._float_dtype,
         )
         scene_vectors, scene_types = reader.scene_tokens(
             sample_idx,
@@ -129,17 +96,17 @@ class TrainingSampleBuilder:
                 reader.schema,
             )
         label = reader.label(sample_idx)
-        label_index = int(label.get("candidate_index", -1))
-        if not 0 <= label_index < self._num_candidates:
+        label_index = int(label.get("action_index", -1))
+        if not 0 <= label_index < self._num_actions:
             raise ValueError(
-                f"training label candidate index out of range: {label_index} "
-                f"for {self._num_candidates} candidates"
+                f"training label action index out of range: {label_index} "
+                f"for {self._num_actions} output actions"
             )
-        if str(label.get("action_key", "")) != str(candidate_action_keys[label_index]):
+        if str(label.get("action_key", "")) != str(reader.action_keys[label_index]):
             raise ValueError(
-                "training label action does not match candidate index: "
+                "training label action does not match output index: "
                 f"index={label_index} label={label.get('action_key')!r} "
-                f"candidate={candidate_action_keys[label_index]!r}"
+                f"action={reader.action_keys[label_index]!r}"
             )
 
         quality_labels = list(label.get("quality_labels", []))
@@ -168,18 +135,17 @@ class TrainingSampleBuilder:
                 **self._ranking,
                 "quality_label_status": quality_status,
             },
-            "candidate_action_keys": candidate_action_keys,
-            "candidate_skill_ids": candidate_skill_ids,
-            "candidate_invalid_reasons": candidate_invalid_reasons,
-            "candidate_skill_features": candidate_skill_features,
-            "candidate_values": candidate_values,
-            "candidate_state_vectors": candidate_state.values,
-            "candidate_state_null_mask": candidate_state.null_mask,
-            "candidate_legal_mask": candidate_legal_mask,
+            "action_keys": list(reader.action_keys),
+            "action_values": reader.action_values(sample_idx, dtype=self._float_dtype),
+            "current_state_vectors": current_state.values[0],
+            "current_state_null_mask": current_state.null_mask[0],
+            "action_legal_mask": reader.action_legal_mask(sample_idx),
             "scene_vectors": scene_vectors,
             "scene_types": scene_types,
             "label_index": label_index,
             "label_action_key": str(label.get("action_key", "")),
+            # 实际读条只用于监督侧序列采样，不进入模型输入。
+            "label_cast_time_seconds": label.get("cast_time_seconds"),
             "raw_event_index": label.get("raw_event_index"),
             "quality_labels": quality_labels,
             "quality_label_levels": self._torch.tensor(severity_levels, dtype=self._int_dtype),

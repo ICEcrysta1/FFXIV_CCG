@@ -6,167 +6,100 @@ using Xunit;
 namespace FightEngine.Tests.Outputs;
 
 /// <summary>
-/// 输出层候选上下文测试。
+/// 因果上下文与固定动作输出契约测试。
 /// </summary>
 public class OutputsTokensTests
 {
     [Fact]
-    public void VectorStateOutputContainsSplitCandidateContexts()
+    public void 当前状态与历史共用字段且两段逐值相同()
     {
         var machine = OutputsTestKit.BuildMachine();
         var state = TimelineTestDriver.Execute(machine, machine.InitialState(), "fire_iii").NextState;
         var payload = TimelineTestDriver.FormatVectorState(machine, state);
-
-        var candidateSkill = (List<Dictionary<string, object?>>)payload["candidate_skill_context"];
-        var candidateState = (Dictionary<string, object?>)payload["candidate_state_context"];
-        var expectedSkillKeys = machine.SkillBook.EnabledSkills().Select(skill => skill.Key).ToHashSet();
-
-        Assert.Equal(expectedSkillKeys, candidateSkill.Select(token => (string)token["skill_key"]!).ToHashSet());
-        Assert.Equal(candidateSkill.Count, ((List<object>)candidateState["tokens"]).Count);
-        var historyState = (Dictionary<string, object?>)payload["state_history_context"];
-        foreach (var groupKey in new[] { "player_state", "buff_state", "target_buff_state", "resource_state" })
+        var current = (Dictionary<string, object?>)payload["current_state_context"]!;
+        var history = (Dictionary<string, object?>)payload["state_history_context"]!;
+        var token = Assert.Single((List<Dictionary<string, double[]>>)current["tokens"]!);
+        foreach (var group in new[] { "player_state", "buff_state", "target_buff_state", "resource_state" })
         {
-            Assert.Equal(historyState[$"{groupKey}_feature_keys"], candidateState[$"{groupKey}_feature_keys"]);
+            Assert.Equal(history[$"{group}_feature_keys"], current[$"{group}_feature_keys"]);
+            var values = token[group];
+            Assert.Equal(values.Take(values.Length / 2), values.Skip(values.Length / 2));
+        }
+        Assert.Equal(8000, OutputsTestKit.CurrentStateVectorValue(payload, "player_state", "before.mp"));
+        Assert.Equal(state.Time, OutputsTestKit.CurrentStateVectorValue(payload, "player_state", "after.time_seconds"));
+    }
+
+    [Fact]
+    public void 动作词表排序稳定且合法性等于真实提交()
+    {
+        var simulator = new Combat.Sim.Facade.JobSimulator(OutputsTestKit.BuildMachine());
+        simulator.SubmitAction(0, "fire_iii");
+        foreach (var time in new[] { 0.0, 0.2, 2.2, 3.0, 6.0 })
+        {
+            simulator.AdvanceTo(time);
+            var output = simulator.FormatVectorState();
+            var keys = (List<string>)output["action_keys"]!;
+            var mask = (List<bool>)output["action_legal_mask"]!;
+            var values = (List<double>)output["action_values"]!;
+            Assert.Equal(keys.OrderBy(key => key, StringComparer.Ordinal), keys);
+            Assert.Equal(keys.Count, mask.Count);
+            Assert.Equal(keys.Count, values.Count);
+            for (var index = 0; index < keys.Count; index++)
+                Assert.Equal(simulator.Fork().SubmitAction(time, keys[index]).Accepted, mask[index]);
         }
     }
 
     [Fact]
-    public void CandidatePreviewPayloadDoesNotMutateSourceState()
+    public void 输出不提交动作不推进未来也不污染主时间线()
     {
-        var machine = OutputsTestKit.BuildMachine();
-        var state = TimelineTestDriver.Execute(machine, machine.InitialState(), "fire_iii").NextState;
-        var before = state.Clone();
-
-        TimelineTestDriver.BuildCandidatePreviews(machine, state);
-
-        Assert.Equal(
-            JsonSerializer.Serialize(before, Options),
-            JsonSerializer.Serialize(state, Options));
+        var simulator = new Combat.Sim.Facade.JobSimulator(OutputsTestKit.BuildMachine());
+        simulator.SubmitAction(0, "fire_iii");
+        var before = simulator.CreateSnapshot();
+        var output = simulator.FormatVectorState();
+        Assert.DoesNotContain("candidate_skill_context", output.Keys);
+        Assert.DoesNotContain("candidate_state_context", output.Keys);
+        Assert.Empty((List<Dictionary<string, object?>>)output["skill_history_context"]!);
+        Assert.Equal(JsonSerializer.Serialize(before), JsonSerializer.Serialize(simulator.CreateSnapshot()));
+        Assert.Equal(0, OutputsTestKit.CurrentStateVectorValue(output, "player_state", "after.time_seconds"));
     }
 
     [Fact]
-    public void CandidatePreviewChecksOgcdCooldownAtCurrentTime()
+    public void 非法动作只影响合法性不再生成空状态段()
     {
-        var machine = OutputsTestKit.BuildMachine();
-        var state = machine.InitialState();
-        state.SetJobResource("astral_fire", 3);
-
-        state = TimelineTestDriver.Execute(machine, state, "despair").NextState;
-        var transpose = TimelineTestDriver.Execute(machine, state, "transpose");
-        state = TimelineTestDriver.AdvanceBy(machine, transpose.NextState, transpose.ActualOccupancySeconds);
-        state = TimelineTestDriver.AdvanceBy(machine, state, state.GcdRemaining);
-        state = TimelineTestDriver.Execute(machine, state, "paradox").NextState;
-
-        var actualValidation = machine.ValidateAction(state, "transpose");
-        Assert.False(actualValidation.Ok);
-        Assert.Equal("cooldown_locked", actualValidation.Reason);
-
-        var preview = TimelineTestDriver.BuildCandidatePreviews(machine, state)
-            .Single(candidate => candidate.Skill.Key == "transpose");
-
-        Assert.False(preview.IsLegal);
-        Assert.Equal("cooldown_locked", preview.InvalidReason);
-        Assert.Equal(2.5, preview.NextCooldownSeconds, 5);
+        var payload = TimelineTestDriver.FormatVectorState(OutputsTestKit.BuildMachine(), OutputsTestKit.BuildMachine().InitialState());
+        var keys = (List<string>)payload["action_keys"]!;
+        var mask = (List<bool>)payload["action_legal_mask"]!;
+        Assert.False(mask[keys.IndexOf("flare_star")]);
+        var current = (Dictionary<string, object?>)payload["current_state_context"]!;
+        Assert.Single((List<Dictionary<string, double[]>>)current["tokens"]!);
+        Assert.All(((List<Dictionary<string, double[]>>)current["tokens"]!)[0].Values.SelectMany(vector => vector),
+            value => Assert.True(double.IsFinite(value)));
     }
 
     [Fact]
-    public void CandidateSkillAndStateTokensReuseSameSchema()
-    {
-        var machine = OutputsTestKit.BuildMachine();
-        var state = TimelineTestDriver.Execute(machine, machine.InitialState(), "fire_iii").NextState;
-        var payload = TimelineTestDriver.FormatVectorState(machine, state);
-
-        var skillHistory = (List<Dictionary<string, object?>>)payload["skill_history_context"];
-        var candidateSkill = (List<Dictionary<string, object?>>)payload["candidate_skill_context"];
-        var historyToken = skillHistory[^1];
-        var highThunder = candidateSkill.First(token => (string)token["skill_key"] == "high_thunder");
-
-        Assert.Equal(historyToken.Keys.OrderBy(k => k), highThunder.Keys.OrderBy(k => k));
-        Assert.True((bool)historyToken["is_legal"]!);
-        Assert.Equal(1, historyToken["kind"]);
-        Assert.Equal("", historyToken["invalid_reason"]);
-        Assert.Equal(0.0, (double)historyToken["next_cooldown_seconds"]!, 5);
-        Assert.True((bool)highThunder["is_legal"]!);
-        Assert.Equal(1, highThunder["kind"]);
-        Assert.Equal("", highThunder["invalid_reason"]);
-        Assert.Equal(0.0, (double)highThunder["next_cooldown_seconds"]!, 5);
-        Assert.Equal(1, highThunder["available_charges"]);
-        Assert.Equal(1, highThunder["max_charges"]);
-        Assert.Equal(0, highThunder["actual_mp_cost"]);
-        Assert.Equal(8000.0,
-            (double)OutputsTestKit.CandidateStateVectorValue(payload, "high_thunder", "player_state", "before.mp")!, 5);
-        Assert.Equal(8000.0,
-            (double)OutputsTestKit.CandidateStateVectorValue(payload, "high_thunder", "player_state", "after.mp")!, 5);
-        Assert.Equal(1.0,
-            (double)OutputsTestKit.CandidateStateVectorValue(payload, "high_thunder", "buff_state",
-                "before.resource.thundercloud_ready")!, 5);
-    }
-
-    [Fact]
-    public void IllegalCandidateKeepsBeforeStateAndMarksAfterWithNull()
-    {
-        var machine = OutputsTestKit.BuildMachine();
-        var state = TimelineTestDriver.Execute(machine, machine.InitialState(), "fire_iii").NextState;
-        var payload = TimelineTestDriver.FormatVectorState(machine, state);
-
-        var candidateSkill = (List<Dictionary<string, object?>>)payload["candidate_skill_context"];
-        var candidateState = (Dictionary<string, object?>)payload["candidate_state_context"];
-        var tokens = (List<object>)candidateState["tokens"];
-        var index = candidateSkill.FindIndex(token => (string)token["skill_key"] == "flare_star");
-        var flareStar = candidateSkill[index];
-
-        Assert.False((bool)flareStar["is_legal"]!);
-        Assert.Equal("insufficient_astral_soul", flareStar["invalid_reason"]);
-        Assert.Equal(8000.0,
-            (double)OutputsTestKit.CandidateStateVectorValue(payload, "flare_star", "player_state", "before.mp")!, 5);
-
-        var playerAfterStart = ((List<string>)candidateState["player_state_feature_keys"]).Count / 2;
-        var buffAfterStart = ((List<string>)candidateState["buff_state_feature_keys"]).Count / 2;
-        var targetAfterStart = ((List<string>)candidateState["target_buff_state_feature_keys"]).Count / 2;
-        var resourceKeys = (List<string>)candidateState["resource_state_feature_keys"];
-        Assert.Equal(14, resourceKeys.Count);
-        var resourceAfterStart = resourceKeys.Count / 2;
-
-        Assert.All(OutputsTestKit.VectorOf(tokens[index], "player_state").Skip(playerAfterStart), value => Assert.Null(value));
-        Assert.All(OutputsTestKit.VectorOf(tokens[index], "buff_state").Skip(buffAfterStart), value => Assert.Null(value));
-        Assert.All(OutputsTestKit.VectorOf(tokens[index], "target_buff_state").Skip(targetAfterStart), value => Assert.Null(value));
-        Assert.All(OutputsTestKit.VectorOf(tokens[index], "resource_state").Skip(resourceAfterStart), value => Assert.Null(value));
-        Assert.All(OutputsTestKit.VectorOf(tokens[index], "resource_state").Take(resourceAfterStart), value => Assert.NotNull(value));
-    }
-
-    [Fact]
-    public void SkillTokensExposeCooldownAndChargeSnapshot()
+    public void 历史技能继续保留技能种类冷却和充能字段()
     {
         var machine = OutputsTestKit.BuildMachine();
         var state = OutputsTestKit.ReadyAfterGcd(machine, TimelineTestDriver.Execute(machine, machine.InitialState(), "fire_iii").NextState);
         var result = TimelineTestDriver.Execute(machine, state, "ley_lines");
         var payload = TimelineTestDriver.FormatResult(machine, result);
-        var skillHistory = (List<Dictionary<string, object?>>)payload["skill_history_context"];
-        var historyToken = skillHistory[^1];
-
-        Assert.Equal("ley_lines", historyToken["skill_key"]);
-        Assert.Equal(0, historyToken["kind"]);
-        Assert.True((bool)historyToken["is_legal"]!);
-        Assert.Equal(120.0, (double)historyToken["next_cooldown_seconds"]!, 5);
-        Assert.Equal(1, historyToken["available_charges"]);
-        Assert.Equal(2, historyToken["max_charges"]);
-
-        var readyState = result.NextState;
-        var readyPayload = TimelineTestDriver.FormatVectorState(machine, readyState);
-        var candidateSkill = (List<Dictionary<string, object?>>)readyPayload["candidate_skill_context"];
-        var leyLines = candidateSkill.First(token => (string)token["skill_key"] == "ley_lines");
-
-        Assert.False((bool)leyLines["is_legal"]!);
-        Assert.Equal("status_already_active", leyLines["invalid_reason"]);
-        Assert.Equal(120.0, (double)leyLines["next_cooldown_seconds"]!, 5);
-        Assert.Equal(1, leyLines["available_charges"]);
-        Assert.Equal(2, leyLines["max_charges"]);
+        var history = (List<Dictionary<string, object?>>)payload["skill_history_context"]!;
+        var token = history[^1];
+        Assert.Equal("ley_lines", token["skill_key"]);
+        Assert.Equal(0, token["kind"]);
+        Assert.True((bool)token["is_legal"]!);
+        Assert.Equal(120, (double)token["next_cooldown_seconds"]!, 5);
+        Assert.Equal(1, token["available_charges"]);
+        Assert.Equal(2, token["max_charges"]);
+        var keys = (List<string>)payload["action_keys"]!;
+        var mask = (List<bool>)payload["action_legal_mask"]!;
+        Assert.False(mask[keys.IndexOf("ley_lines")]);
     }
 
     [Fact]
     public void SkillTokenBuilderIsSingleReusableFunction()
     {
-        // 技能历史与候选技能共用同一个 build 函数：相同输入产出相同 token，
+        // 技能历史与策略动作历史共用同一个 build 函数：相同输入产出相同 token，
         // 可选的秒制时间按来源注入；累计 GCD 索引不进入模型 token。
         var token1 = SkillTokenBuilder.Build(
             skillId: 152, skillKey: "fire_iii", skillName: "爆炎", potency: 290,

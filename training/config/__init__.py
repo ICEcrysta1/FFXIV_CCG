@@ -67,9 +67,6 @@ class RunConfig:
     history_truncation_enabled: bool = False
     history_truncation_probability: float = 0.0
     history_min_recent: int = 1
-    candidate_order_file: Path | None = None
-    candidate_shuffle_enabled: bool = False
-    candidate_shuffle_probability: float = 0.0
     learning_rate: float = 1e-4
     weight_decay: float = 0.01
     warmup_steps: int = 500
@@ -176,23 +173,9 @@ def load_run_config(path: Path) -> RunConfig:
         raise ValueError("training.history_truncation_probability must be between 0 and 1")
     if history_min_recent < 1:
         raise ValueError("training.history_min_recent must be >= 1")
-    candidate_order_raw = training_raw.get("candidate_order_file")
-    candidate_order_file = None
-    if candidate_order_raw is not None:
-        candidate_order_file = Path(str(candidate_order_raw))
-        if not candidate_order_file.is_absolute():
-            candidate_order_file = (path.parent / candidate_order_file).resolve()
-        if not candidate_order_file.is_file():
-            raise FileNotFoundError(
-                f"training.candidate_order_file not found: {candidate_order_file}"
-            )
-    candidate_shuffle_raw = training_raw.get("candidate_shuffle", {}) or {}
-    if not isinstance(candidate_shuffle_raw, dict):
-        raise ValueError("training.candidate_shuffle must be a mapping")
-    candidate_shuffle_enabled = bool(candidate_shuffle_raw.get("enabled", False))
-    candidate_shuffle_probability = float(candidate_shuffle_raw.get("probability", 0.0))
-    if not 0.0 <= candidate_shuffle_probability <= 1.0:
-        raise ValueError("training.candidate_shuffle.probability must be between 0 and 1")
+    removed = {"candidate_order_file", "candidate_shuffle"}.intersection(training_raw)
+    if removed:
+        raise ValueError("removed training options: " + ", ".join(sorted(removed)))
     value_preference_raw = training_raw.get("value_preference", {}) or {}
     if not isinstance(value_preference_raw, dict):
         raise ValueError("training.value_preference must be a mapping")
@@ -266,9 +249,6 @@ def load_run_config(path: Path) -> RunConfig:
         history_truncation_enabled=history_truncation_enabled,
         history_truncation_probability=history_truncation_probability,
         history_min_recent=history_min_recent,
-        candidate_order_file=candidate_order_file,
-        candidate_shuffle_enabled=candidate_shuffle_enabled,
-        candidate_shuffle_probability=candidate_shuffle_probability,
         **parse_optimizer_settings(
             raw,
             stage="bc",

@@ -68,8 +68,6 @@ class SequenceOversampler:
     def build_source_weights(
         self,
         samples: Sequence[dict[str, object]],
-        *,
-        skill_feature_names: Sequence[str],
     ) -> tuple[int, ...]:
         """为单一 raw source 的连续样本生成权重。
 
@@ -80,7 +78,6 @@ class SequenceOversampler:
             _build_action_event(
                 sample,
                 sample_offset=sample_offset,
-                skill_feature_names=skill_feature_names,
             )
             for sample_offset, sample in enumerate(samples)
         )
@@ -197,7 +194,6 @@ def build_sample_weights(dataset, oversampler: SequenceOversampler | None) -> tu
             _build_action_event(
                 dataset[index],
                 sample_offset=sample_offset,
-                skill_feature_names=dataset.skill_feature_names,
             )
             for sample_offset, index in enumerate(source_indices)
         )
@@ -238,18 +234,11 @@ def _build_action_event(
     sample: dict[str, object],
     *,
     sample_offset: int,
-    skill_feature_names: Sequence[str],
 ) -> _ActionEvent:
-    cast_time_index = _feature_index(skill_feature_names, "cast_time.seconds")
-    label_index = sample.get("label_index")
-    label_row = _row_value(
-        sample.get("candidate_skill_features"),
-        None if label_index is None else int(label_index),
-    )
     return _ActionEvent(
         sample_offset=sample_offset,
         action_key=str(sample.get("label_action_key", "")),
-        cast_time_seconds=_row_value(label_row, cast_time_index),
+        cast_time_seconds=sample.get("label_cast_time_seconds"),
     )
 
 
@@ -267,19 +256,3 @@ def _cast_time_is_mode(cast_time: object, mode: int) -> bool:
         return False
     is_instant = float(cast_time) <= _CAST_TIME_EPSILON
     return is_instant if mode == 0 else not is_instant
-
-
-def _feature_index(feature_names: Sequence[str], feature_name: str) -> int | None:
-    try:
-        return list(feature_names).index(feature_name)
-    except ValueError:
-        return None
-
-
-def _row_value(row: object, index: int | None) -> object:
-    if index is None or row is None:
-        return None
-    try:
-        return row[index]
-    except (IndexError, KeyError, TypeError):
-        return None

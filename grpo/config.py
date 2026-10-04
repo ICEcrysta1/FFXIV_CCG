@@ -27,7 +27,7 @@ class GrpoConfig:
     max_iterations: int = 10
     # None 表示跟随每个 raw 场景自身的战斗结束时间；也可配置统一秒数上限。
     max_duration_seconds: float | None = None
-    # 提高 rollout 的采样温度，避免候选分布过早塌缩到少数动作。
+    # 提高 rollout 的采样温度，避免动作分布过早塌缩到少数动作。
     temperature: float = 1.3
     top_p: float = 1.0
     inner_updates: int = 1

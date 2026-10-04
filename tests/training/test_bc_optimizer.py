@@ -12,7 +12,7 @@ from torch import nn
 
 from common.policy.config import ModelConfig
 from common.policy.data import DataSpec
-from common.policy.model import CandidateTransformerModel
+from common.policy.model import CausalPolicyModel
 from common.training.optimizer import build_optimizer
 from common.training.optimizer_config import OptimizerConfig
 
@@ -27,19 +27,21 @@ def _build_optimizer(model, config=None, *, weight_decay=0.03):
     )
 
 
-def _model(*, num_kv_heads=1, dtype=torch.float32) -> CandidateTransformerModel:
+def _model(*, num_kv_heads=1, dtype=torch.float32) -> CausalPolicyModel:
     spec = DataSpec(
-        job_tag="black_mage", num_candidates=2, state_dim=3, scene_dim=2,
+        job_tag="black_mage", num_actions=2, state_dim=3, scene_dim=2,
         skill_feature_dim=2, num_scene_types=1,
-        candidate_action_keys=("first", "second"),
+        action_keys=("first", "second"),
         skill_feature_names=("kind", "potency"),
+        action_to_vocab_id=(1, 2),
+        action_is_gcd=(True, True),
     )
     config = ModelConfig(
         d_model=8, pair_embedding_dim=4, n_layers=1, n_heads=2,
         num_kv_heads=num_kv_heads, ff_dim=12, transformer_activation="swiglu",
         dropout=0.0, full_attention_residuals=True,
     )
-    return CandidateTransformerModel(spec, config, vocab_size=3).to(dtype=dtype)
+    return CausalPolicyModel(spec, config, vocab_size=3).to(dtype=dtype)
 
 
 def _set_gradients(model: nn.Module, step: int) -> None:
@@ -98,7 +100,7 @@ def test_muon_groups_only_transformer_projection_matrices(num_kv_heads):
     assert "encoder.attention_residual.pseudo_queries" in adamw_names
     assert "encoder.layers.0.norm1.weight" in adamw_names
     assert all(name in adamw_names for name, _ in model.named_parameters() if (
-        name.startswith(("input_encoder.", "scorer.")) or name.endswith(".bias")
+        name.startswith(("input_encoder.", "output_adapter.")) or name.endswith(".bias")
     ))
 
 
@@ -219,6 +221,39 @@ def test_muon_keeps_weights_shared_with_input_encoder_in_adamw():
     assert owners == ["adamw"]
 
 
+def test_input_and_output_gradients_accumulate_on_one_embedding_parameter():
+    model = _model()
+    weight = model.input_encoder.skill_embed.weight
+    input_loss = model.input_encoder.skill_embed(torch.tensor([1, 2])).sum()
+    output_loss = model._score_current_hidden(torch.ones(1, model.config.d_model), {}).square().sum()
+    input_grad = torch.autograd.grad(input_loss, weight, retain_graph=True)[0]
+    output_grad = torch.autograd.grad(output_loss, weight, retain_graph=True)[0]
+    (input_loss + output_loss).backward()
+    torch.testing.assert_close(weight.grad, input_grad + output_grad)
+    optimizer = _build_optimizer(model)
+    assert sum(parameter is weight for group in optimizer.param_groups for parameter in group["params"]) == 1
+    assert next(group["optimizer_name"] for group in optimizer.param_groups if any(parameter is weight for parameter in group["params"])) == "adamw"
+
+
+@pytest.mark.parametrize("name", ["adamw", "muon"])
+def test_shared_skill_embedding_has_exactly_one_fp32_master_across_restore(name):
+    model = _model(dtype=torch.bfloat16)
+    optimizer = _build_optimizer(model, _config(name))
+    weight = model.input_encoder.skill_embed.weight
+    assert sum(parameter is weight for parameter, _ in optimizer._master_pairs) == 1
+    state = deepcopy(optimizer.state_dict())
+    assert len(state["master_weights"]) == len(list(model.parameters()))
+    embedding = [parameter for group in state["parameter_contract"] for parameter in group["parameters"]
+                 if parameter["name"] == "input_encoder.skill_embed.weight"]
+    assert len(embedding) == 1
+    restored = _model(dtype=torch.bfloat16)
+    restored_optimizer = _build_optimizer(restored, _config(name))
+    restored_optimizer.load_state_dict(state)
+    restored_weight = restored.input_encoder.skill_embed.weight
+    assert sum(parameter is restored_weight for parameter, _ in restored_optimizer._master_pairs) == 1
+    torch.testing.assert_close(weight, restored_weight, atol=0, rtol=0)
+
+
 def test_muon_fails_clearly_without_native_support(monkeypatch):
     monkeypatch.delattr(torch.optim, "Muon")
     with pytest.raises(RuntimeError, match="torch.optim.Muon"):
@@ -243,11 +278,11 @@ def test_train_epoch_updates_both_parameter_groups_with_real_gradients(name, pre
         "history_skill_ids": torch.ones((1, 1), dtype=torch.long),
         "history_skill_features": torch.zeros((1, 1, 2)),
         "history_state_vectors": torch.zeros((1, 1, 3)),
+        "history_state_null_mask": torch.zeros((1, 1, 3), dtype=torch.bool),
         "history_mask": torch.ones((1, 1), dtype=torch.bool),
-        "candidate_skill_ids": torch.tensor([[1, 2]], dtype=torch.long),
-        "candidate_skill_features": torch.randn((1, 2, 2)),
-        "candidate_state_vectors": torch.randn((1, 2, 3)),
-        "candidate_legal_mask": torch.ones((1, 2), dtype=torch.bool),
+        "current_state_vectors": torch.randn((1, 3)),
+        "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
+        "action_legal_mask": torch.ones((1, 2), dtype=torch.bool),
         "scene_vectors": torch.zeros((1, 1, 2)),
         "scene_types": torch.zeros((1, 1), dtype=torch.long),
         "scene_mask": torch.ones((1, 1), dtype=torch.bool),

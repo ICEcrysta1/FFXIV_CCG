@@ -181,7 +181,6 @@ def test_normalizer_scales_scene_time_to_1800_seconds_and_preserves_other_fields
         scene_context_mode="test",
         scene_windows=(targetable_schema, target_count_schema),
         state_group_feature_keys={},
-        candidate_skill_fields=(),
         skill_history_fields=(),
     )
     values = torch.tensor(

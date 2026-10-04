@@ -12,10 +12,6 @@ except ModuleNotFoundError:  # pragma: no cover
     class Dataset:  # type: ignore[no-redef]
         pass
 
-from common.policy.data.candidate_order import (
-    candidate_permutation,
-    load_candidate_order,
-)
 from common.policy.data.compiled_cache import (
     DEFAULT_CACHE_MAX_SHARDS,
     DEFAULT_CACHE_SHARD_SIZE,
@@ -44,7 +40,6 @@ class TrainingDataset(Dataset):
         cache_dir: Path | None = None,
         compiled_cache_shard_size: int = DEFAULT_CACHE_SHARD_SIZE,
         compiled_cache_max_shards: int = DEFAULT_CACHE_MAX_SHARDS,
-        candidate_order_file: Path | None = None,
     ):
         if not source_paths:
             raise ValueError("TrainingDataset requires at least one raw source path")
@@ -82,17 +77,11 @@ class TrainingDataset(Dataset):
                 reference_reader = reader
                 self._schema = reader.schema
                 self._job_tag = reader.job_tag
-                self._num_candidates = reader.num_candidates
+                self._num_actions = reader.num_actions
                 self._skill_feature_names = reader.skill_feature_names
-                self._cache_candidate_action_keys = tuple(reader.candidate_action_keys(0))
-                self._candidate_action_keys = (
-                    load_candidate_order(
-                        candidate_order_file,
-                        expected_action_keys=self._cache_candidate_action_keys,
-                    )
-                    if candidate_order_file is not None
-                    else self._cache_candidate_action_keys
-                )
+                self._action_keys = reader.action_keys
+                self._action_to_vocab_id = reader.action_to_vocab_id
+                self._action_is_gcd = reader.action_is_gcd
                 self._skill_vocab = skill_vocab or SkillVocab.build_from_job_tag(self._job_tag)
                 vocab_signature = tuple(self._skill_vocab)
 
@@ -131,9 +120,9 @@ class TrainingDataset(Dataset):
         return self._normalizer
 
     @property
-    def num_candidates(self) -> int:
-        """训练数据定义的候选数量。"""
-        return self._num_candidates
+    def num_actions(self) -> int:
+        """固定动作输出词表的宽度。"""
+        return self._num_actions
 
     @property
     def state_dim(self) -> int:
@@ -153,9 +142,17 @@ class TrainingDataset(Dataset):
         return max(window.scene_type_id for window in self._schema.scene_windows) + 1
 
     @property
-    def candidate_action_keys(self) -> tuple[str, ...]:
-        """训练数据定义的稳定候选顺序。"""
-        return self._candidate_action_keys
+    def action_keys(self) -> tuple[str, ...]:
+        """固定动作输出词表的索引顺序。"""
+        return self._action_keys
+
+    @property
+    def action_to_vocab_id(self) -> tuple[int, ...]:
+        return self._action_to_vocab_id
+
+    @property
+    def action_is_gcd(self) -> tuple[bool, ...]:
+        return self._action_is_gcd
 
     def __len__(self) -> int:
         return self._sample_offsets[-1]
@@ -224,19 +221,19 @@ class TrainingDataset(Dataset):
         self._schema.assert_compatible_with(reader.schema)
         if reader.job_tag != self._job_tag:
             raise ValueError(f"compiled cache job_tag mismatch: {reader.job_tag!r} != {self._job_tag!r}")
-        if reader.num_candidates != self._num_candidates:
+        if reader.num_actions != self._num_actions:
             raise ValueError(
-                f"compiled cache candidate count mismatch: {reader.num_candidates} != {self._num_candidates}"
+                f"compiled cache action count mismatch: {reader.num_actions} != {self._num_actions}"
             )
         if reader.skill_feature_names != self._skill_feature_names:
             raise ValueError("compiled cache skill numeric feature layout mismatch")
-        if tuple(reader.candidate_action_keys(0)) != self._cache_candidate_action_keys:
-            raise ValueError("compiled cache candidate action order mismatch")
+        if reader.action_keys != self._action_keys or reader.action_to_vocab_id != self._action_to_vocab_id or reader.action_is_gcd != self._action_is_gcd:
+            raise ValueError("compiled cache action output mapping mismatch")
 
     def __getitem__(self, index: int) -> dict[str, object]:
         reader_index, sample_idx = self._resolve_sample_ref(index)
         reader = self._readers[reader_index]
-        return self._reorder_sample(reader.sample(sample_idx), reader)
+        return self._prepare_sample(reader.sample(sample_idx), reader)
 
     def __getitems__(self, indices: list[int]) -> list[dict[str, object]]:
         """批量读取 DataLoader 请求，避免同一 shard 重复执行单样本查找。"""
@@ -252,12 +249,12 @@ class TrainingDataset(Dataset):
             reader = self._readers[reader_index]
             samples = reader.samples([sample_idx for _, sample_idx in grouped_indices])
             for (output_index, _), sample in zip(grouped_indices, samples):
-                results[output_index] = self._reorder_sample(sample, reader)
+                results[output_index] = self._prepare_sample(sample, reader)
         if any(sample is None for sample in results):
             raise RuntimeError("compiled batch fetch returned an incomplete sample batch")
         return [sample for sample in results if sample is not None]
 
-    def _reorder_sample(
+    def _prepare_sample(
         self,
         sample: dict[str, object],
         reader: CompiledCacheReader | None = None,
@@ -265,32 +262,9 @@ class TrainingDataset(Dataset):
         if reader is not None:
             sample = self._attach_history_bank(sample, reader)
             sample = self._apply_history_limit(sample)
-        source_action_keys = tuple(str(key) for key in sample["candidate_action_keys"])
-        if source_action_keys == self._candidate_action_keys:
-            return sample
-        permutation = candidate_permutation(source_action_keys, self._candidate_action_keys)
-        permutation_tensor = sample["candidate_skill_ids"].new_tensor(permutation)
-        reordered = dict(sample)
-        for key in (
-            "candidate_skill_ids",
-            "candidate_skill_features",
-            "candidate_values",
-            "candidate_state_vectors",
-            "candidate_state_null_mask",
-            "candidate_legal_mask",
-        ):
-            if key in sample:
-                reordered[key] = sample[key].index_select(0, permutation_tensor)
-        reordered["candidate_action_keys"] = [
-            sample["candidate_action_keys"][index] for index in permutation
-        ]
-        if "candidate_invalid_reasons" in sample:
-            reordered["candidate_invalid_reasons"] = [
-                sample["candidate_invalid_reasons"][index] for index in permutation
-            ]
-        source_label_key = source_action_keys[int(sample["label_index"])]
-        reordered["label_index"] = self._candidate_action_keys.index(source_label_key)
-        return reordered
+        if tuple(sample["action_keys"]) != self._action_keys:
+            raise ValueError("compiled sample action output order mismatch")
+        return sample
 
     def _apply_history_limit(self, sample: dict[str, object]) -> dict[str, object]:
         """在读取时裁剪完整历史 bank 的引用窗口，不改变磁盘 cache。"""

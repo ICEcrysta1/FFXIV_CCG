@@ -9,7 +9,6 @@ import torch
 
 from common.contracts import SLIDECAST_WINDOW_SECONDS
 from common.numeric import flatten_numeric_mapping
-from common.policy.data.candidate_order import candidate_permutation
 from common.policy.data.schema import (
     SCENE_TYPE_MOVEMENT,
     SCENE_TYPE_RAID_BUFF,
@@ -280,7 +279,7 @@ class SceneTemplateProvider:
         )
 
     def next_state_event_after(self, time_seconds: float) -> float | None:
-        """返回下一次会改变状态向量或候选合法性的 scene 边界。"""
+        """返回下一次会改变状态向量或动作合法性的 scene 边界。"""
         current_time = float(time_seconds)
         return next(
             (
@@ -443,7 +442,7 @@ class _CachedHistoryFeatureRow:
 class LiveBatchBuilder:
     """使用 compiled cache 的 schema 和 scene 模板构造 live 推理输入。
 
-    上下文原料（历史/候选）统一来自 C# 后端 observe_at(format="vector"),
+    上下文原料（历史/动作）统一来自 C# 后端 observe_at(format="vector"),
     scene 向量来自 scene provider（模型输入，与状态机解耦）。
     """
 
@@ -458,7 +457,8 @@ class LiveBatchBuilder:
         scene_provider,
         device,
         max_history: int,
-        candidate_action_keys=None,
+        action_keys=None,
+        action_is_gcd=None,
     ):
         self._backend = backend
         self._vocab = vocab
@@ -468,11 +468,17 @@ class LiveBatchBuilder:
         self._scene_provider = scene_provider
         self._device = device
         self._max_history = max_history
-        self._candidate_action_keys = (
+        self._action_keys = (
             None
-            if candidate_action_keys is None
-            else tuple(str(key) for key in candidate_action_keys)
+            if action_keys is None
+            else tuple(str(key) for key in action_keys)
         )
+        if self._action_keys is None or action_is_gcd is None:
+            raise ValueError("live batch requires the saved action vocabulary and kinds")
+        kinds = tuple(action_is_gcd)
+        if len(kinds) != len(self._action_keys) or any(type(value) is not bool for value in kinds):
+            raise ValueError("saved action kinds must be boolean and align with action vocabulary")
+        self._action_kinds = dict(zip(self._action_keys, kinds, strict=True))
         self._state_groups = tuple(schema.state_group_feature_keys)
         self._state_dim = schema.state_vector_dim()
         self._scene_dim = schema.scene_feature_dim()
@@ -532,26 +538,14 @@ class LiveBatchBuilder:
         gcd_phase: bool,
         max_history: int,
     ):
-        candidate_context = canonical["candidate_skill_context"]
-        candidate_state_context = canonical["candidate_state_context"]
-        if not candidate_context:
-            raise RuntimeError("no candidate actions in live state")
-        source_candidate_keys = tuple(
-            str(token.get("skill_key", "")) for token in candidate_context
-        )
-        if self._candidate_action_keys is not None:
-            permutation = candidate_permutation(
-                source_candidate_keys,
-                self._candidate_action_keys,
-            )
-            candidate_context = [candidate_context[index] for index in permutation]
-            state_tokens = candidate_state_context.get("tokens", [])
-            if len(state_tokens) != len(permutation):
-                raise ValueError("candidate skill/state rows must have the same length")
-            candidate_state_context = dict(candidate_state_context)
-            candidate_state_context["tokens"] = [
-                state_tokens[index] for index in permutation
-            ]
+        action_keys = tuple(str(key) for key in canonical["action_keys"])
+        if not action_keys or len(set(action_keys)) != len(action_keys):
+            raise ValueError("live action vocabulary must be nonempty and unique")
+        if self._action_keys is not None and action_keys != self._action_keys:
+            raise ValueError("live action order differs from policy DataSpec")
+        current_tokens = canonical["current_state_context"]["tokens"]
+        if len(current_tokens) != 1:
+            raise ValueError("live context must contain exactly one current state")
         skill_history = _tail_history(canonical["skill_history_context"], max_history)
         state_history = canonical["state_history_context"]
         state_history_tokens = _tail_history(state_history["tokens"], max_history)
@@ -567,22 +561,15 @@ class LiveBatchBuilder:
             max_history=max_history,
         )
         scene_vectors, scene_types, scene_mask = self._scene_batch_tensors()
-        candidate_skill_ids = torch.tensor(
-            [self._map_skill_id(token.get("skill_id")) for token in candidate_context],
-            dtype=torch.int32,
-        )
-        candidate_skill_features = self._build_skill_features(candidate_context)
-        candidate_state_vectors, candidate_state_null_mask = self._build_state_tensors(
-            candidate_state_context["tokens"]
-        )
-        candidate_legal_mask = torch.tensor(
-            [
-                bool(token.get("is_legal", False))
-                and ((int(token["kind"]) == 1) == gcd_phase)
-                for token in candidate_context
-            ],
-            dtype=torch.bool,
-        )
+        current_state_vectors, current_state_null_mask = self._build_state_tensors(current_tokens)
+        action_legal_mask = torch.tensor(canonical["action_legal_mask"], dtype=torch.bool)
+        if action_legal_mask.shape != (len(action_keys),):
+            raise ValueError("live action legality width differs from action vocabulary")
+        try:
+            phase_mask = torch.tensor([self._action_kinds[key] == gcd_phase for key in action_keys], dtype=torch.bool)
+        except KeyError as exc:
+            raise ValueError("live action is absent from the configured action space") from exc
+        action_legal_mask &= phase_mask
 
         history_length = len(history_action_keys)
         batch = {
@@ -598,22 +585,18 @@ class LiveBatchBuilder:
                 dtype=torch.bool,
                 device=self._device,
             ),
-            "candidate_skill_ids": candidate_skill_ids.unsqueeze(0),
-            "candidate_skill_features": candidate_skill_features.unsqueeze(0),
-            "candidate_state_vectors": candidate_state_vectors.unsqueeze(0),
-            "candidate_state_null_mask": candidate_state_null_mask.unsqueeze(0),
-            "candidate_legal_mask": candidate_legal_mask.unsqueeze(0),
+            "current_state_vectors": current_state_vectors,
+            "current_state_null_mask": current_state_null_mask,
+            "action_legal_mask": action_legal_mask.unsqueeze(0),
             "history_action_keys": [history_action_keys],
-            "candidate_action_keys": [
-                [str(token.get("skill_key", "")) for token in candidate_context]
-            ],
+            "action_keys": [list(action_keys)],
         }
         return (
             {
                 key: value.to(self._device) if isinstance(value, torch.Tensor) else value
                 for key, value in batch.items()
             },
-            [str(token.get("skill_key", "")) for token in candidate_context],
+            list(action_keys),
         )
 
     def _build_history_batch(

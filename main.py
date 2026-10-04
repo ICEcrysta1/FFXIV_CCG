@@ -55,7 +55,13 @@ def _check_actions(backend):
     context = backend.observe_at(0.0, format="vector", next_observation_timestamp=0.0).context
     if not isinstance(context, dict):
         raise RuntimeError("C# vector observation must return a mapping context")
-    return [str(token["skill_key"]) for token in context["candidate_skill_context"] if token.get("is_legal", False)]
+    return [
+        str(action_key)
+        for action_key, is_legal in zip(
+            context["action_keys"], context["action_legal_mask"], strict=True,
+        )
+        if is_legal
+    ]
 
 
 def _check_smoke(backend):

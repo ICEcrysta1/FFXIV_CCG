@@ -96,7 +96,7 @@ def make_demo_pt(
     return source_path
 
 
-def make_illegal_candidate_pt(tmp_path: Path) -> Path:
+def make_illegal_action_pt(tmp_path: Path) -> Path:
     from tests.helpers import (
         build_test_scene_context,
         forced_movement_window_token,
@@ -105,7 +105,7 @@ def make_illegal_candidate_pt(tmp_path: Path) -> Path:
     )
 
     fight_payload = {
-        "fight_id": "illegal_candidate_demo",
+        "fight_id": "illegal_action_demo",
         "job_tag": "black_mage",
         "player": "Tester",
         "encounter": "Demo",
@@ -133,7 +133,7 @@ def make_illegal_candidate_pt(tmp_path: Path) -> Path:
         ],
     }
     payload = _build_training_samples(fight_payload)
-    source_path = tmp_path / "raw" / "illegal_candidate_demo.json"
+    source_path = tmp_path / "raw" / "illegal_action_demo.json"
     source_path.parent.mkdir(parents=True, exist_ok=True)
     source_path.write_text("{}", encoding="utf-8", newline="\n")
     _TEST_TRAINING_PAYLOADS[source_path.resolve()] = payload
@@ -213,7 +213,7 @@ def write_test_compiled_cache(
         skill_feature_names=reader.skill_feature_names,
         int_dtype=int_dtype,
         float_dtype=float_dtype,
-        num_candidates=reader.num_candidates,
+        num_actions=reader.num_actions,
         history_bank=history_bank,
     )
     signature = build_cache_signature(

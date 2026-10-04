@@ -119,7 +119,7 @@ def read_replay_cumulative_potency(backend: InProcessBackend, timestamp: float) 
         raise RuntimeError("C# vector observation lacks cumulative potency fields") from None
 
 
-class NoLegalCandidateError(RuntimeError):
+class NoLegalActionError(RuntimeError):
     """当前时刻没有合法动作，但时间推进后可能恢复。"""
 
 
@@ -130,7 +130,7 @@ class ReplayRow:
     gcd_step: int
     action_key: str
     probability: float
-    top_candidates: tuple[tuple[str, float, float, bool], ...]
+    top_actions: tuple[tuple[str, float, float, bool], ...]
     forced: bool = False
     reference_action_key: str | None = None
 
@@ -145,7 +145,7 @@ class ReplaySnapshot:
 
     canonical: dict[str, object]
     reference_row: ReplayRow
-    # 调度阶段只用于调用方候选过滤，不作为模型数值输入。
+    # 调度阶段只用于调用方动作过滤，不作为模型数值输入。
     gcd_phase: bool
 
 
@@ -501,7 +501,8 @@ class AutoregressiveReplay:
             scene_provider=scene_provider,
             device=self.device,
             max_history=config.max_history,
-            candidate_action_keys=self.data_spec.candidate_action_keys,
+            action_keys=self.data_spec.action_keys,
+            action_is_gcd=self.data_spec.action_is_gcd,
         )
 
     def _sync_scene_state(self, state) -> object:
@@ -699,7 +700,7 @@ class AutoregressiveReplay:
                     gcd_step=gcd_step,
                     action_key=self.config.initial_action,
                     probability=1.0,
-                    top_candidates=(
+                    top_actions=(
                         (self.config.initial_action, 0.0, 1.0, True),
                     ),
                     forced=True,
@@ -743,14 +744,14 @@ class AutoregressiveReplay:
                     state,
                     gcd_step=gcd_step,
                 )
-            except NoLegalCandidateError:
+            except NoLegalActionError:
                 advanced = DecisionScheduler(
                     self._state_machine, self._observe_state, self.scene_provider,
                 ).advance_to_next_decision(state, end_time=end_time)
                 if advanced is None:
                     if end_time is not None and float(state.time) >= end_time - EVENT_TIME_EPSILON:
                         break
-                    raise RuntimeError("live state has no legal candidate and no future time event") from None
+                    raise RuntimeError("live state has no legal action and no future time event") from None
                 state = advanced
                 continue
             if row.action_key == OGCD_WAIT_ACTION_KEY:
@@ -811,10 +812,10 @@ class AutoregressiveReplay:
         gcd_step: int,
         max_history: int | None = None,
     ) -> ReplayRow:
-        batch, candidate_keys = self.batcher.build(state, max_history=max_history)
+        batch, action_keys = self.batcher.build(state, max_history=max_history)
         return self._score_row(
             batch,
-            candidate_keys,
+            action_keys,
             gcd_step=gcd_step,
         )
 
@@ -826,35 +827,35 @@ class AutoregressiveReplay:
         gcd_step: int,
         max_history: int,
     ) -> ReplayRow:
-        batch, candidate_keys = self.batcher.build_from_canonical(
+        batch, action_keys = self.batcher.build_from_canonical(
             canonical,
             gcd_phase=gcd_phase,
             max_history=max_history,
         )
         return self._score_row(
             batch,
-            candidate_keys,
+            action_keys,
             gcd_step=gcd_step,
         )
 
     def _score_row(
         self,
         batch,
-        candidate_keys: list[str],
+        action_keys: list[str],
         *,
         gcd_step: int,
     ) -> ReplayRow:
-        raw_logits = self.backend.raw_logits(batch, candidate_keys)
+        raw_logits = self.backend.raw_logits(batch, action_keys)
         logits = apply_repetition_penalty(
             raw_logits,
             batch,
             self.backend.repetition,
         )[0].float()
 
-        legal_mask = batch["candidate_legal_mask"][0].bool()
+        legal_mask = batch["action_legal_mask"][0].bool()
         legal_indices = legal_mask.nonzero(as_tuple=True)[0]
         if legal_indices.numel() == 0:
-            raise NoLegalCandidateError("live state has no legal candidate")
+            raise NoLegalActionError("live state has no legal action")
         legal_logits = logits.masked_fill(~legal_mask, float("-inf"))
         order = torch.argsort(legal_logits, descending=True)
         if self.config.temperature == 0.0:
@@ -868,11 +869,11 @@ class AutoregressiveReplay:
             ).item())
         return ReplayRow(
             gcd_step=gcd_step,
-            action_key=candidate_keys[selected_index],
+            action_key=action_keys[selected_index],
             probability=float(probabilities[selected_index].item()),
-            top_candidates=tuple(
+            top_actions=tuple(
                 (
-                    candidate_keys[index],
+                    action_keys[index],
                     float(logits[index].item()),
                     float(probabilities[index].item()),
                     bool(legal_mask[index].item()),
@@ -953,7 +954,7 @@ def _apply_top_p(
     descending_order: torch.Tensor,
     top_p: float,
 ) -> torch.Tensor:
-    """保留累计概率达到 top-p 的最小候选集合，并重新归一化。"""
+    """保留累计概率达到 top-p 的最小动作集合，并重新归一化。"""
     if top_p >= 1.0:
         return probabilities
 

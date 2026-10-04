@@ -9,13 +9,46 @@ import torch
 from common.config import load_precision_config
 from common.policy.data import ModelInputContract, Normalizer
 from common.policy.data.schema import TrainingSchema
+from common.policy.data.action_space import ActionSpace
 from common.policy.data.compiled_cache import (
     CACHE_FORMAT,
     build_cache_signature,
     cache_path_for_source,
 )
+from common.torch_serialization import safe_torch_load
 from scripts.common.json_io import atomic_write_json
 from scripts.common.scene_source import find_prepared_scene_source
+
+
+def _scene_data_spec():
+    actions = ActionSpace.from_job_tag("black_mage")
+    return {
+        "job_tag": "black_mage", "num_actions": len(actions.action_keys), "state_dim": 1,
+        "scene_dim": 0, "skill_feature_dim": 1, "num_scene_types": 0,
+        "action_keys": list(actions.action_keys), "action_to_vocab_id": list(actions.action_to_vocab_id),
+        "action_is_gcd": list(actions.action_is_gcd), "skill_feature_names": ["potency"],
+    }
+
+
+def _scene_schema():
+    return TrainingSchema(
+        serialization_format="test", sample_schema_version=1,
+        context_schema_version=1, scene_context_mode="absolute", scene_windows=(),
+        state_group_feature_keys={"player_state": ("before.time_seconds",)},
+        skill_history_fields=("potency",),
+    )
+
+
+def _scene_sample():
+    actions = _scene_data_spec()
+    return {
+        "action_keys": actions["action_keys"],
+        "current_state_vectors": torch.zeros(1),
+        "current_state_null_mask": torch.zeros(1, dtype=torch.bool),
+        "action_values": torch.ones(actions["num_actions"]),
+        "action_legal_mask": torch.ones(actions["num_actions"], dtype=torch.bool),
+        "label_index": 0, "label_action_key": actions["action_keys"][0],
+    }
 
 
 @pytest.fixture
@@ -37,7 +70,7 @@ def scene_cache(tmp_path):
             manifest = cache_dir / manifest.name
         manifest.parent.mkdir(parents=True, exist_ok=True)
         shard = manifest.with_suffix(".shard.pt")
-        torch.save({"cache_format": CACHE_FORMAT, "samples": [{}]}, shard)
+        torch.save({"cache_format": CACHE_FORMAT, "samples": [_scene_sample()]}, shard)
         signature = build_cache_signature(
             source, normalizer=normalizer if cache_normalizer is None else cache_normalizer,
             int_dtype=precision.resolve_int_dtype(),
@@ -48,11 +81,13 @@ def scene_cache(tmp_path):
             "skill_potencies", "cumulative_dot_potencies",
         )}
         bank["action_keys"] = [""]
+        actions = _scene_data_spec()
         payload = {
             "cache_format": CACHE_FORMAT, "cache_signature": signature,
-            "schema": {}, "job_tag": "black_mage", "num_samples": 1,
-            "num_candidates": 1, "skill_feature_names": [],
-            "candidate_action_keys": ["fire"], "shard_size": 768,
+            "schema": _scene_schema(), "job_tag": "black_mage", "num_samples": 1,
+            "num_actions": actions["num_actions"], "skill_feature_names": ["potency"],
+            "action_keys": actions["action_keys"], "action_to_vocab_id": actions["action_to_vocab_id"],
+            "action_is_gcd": actions["action_is_gcd"], "shard_size": 768,
             "history_bank": bank, "shard_files": [shard.name],
         }
         if invalid == "stale":
@@ -125,17 +160,17 @@ def test_scene_source_skips_damaged_shard(scene_cache, later_shard, damage, capl
     broken = create("AAA/90-100/a.json.br")
     expected = create("ZZZ/80-90/a.json.br")
     manifest = cache_path_for_source(cache_dir, broken)
-    payload = torch.load(manifest, weights_only=True)
+    payload = safe_torch_load(manifest, safe_globals=(TrainingSchema,))
     shard = manifest.parent / payload["shard_files"][0]
     if later_shard:
         # 第一片完整且可读，损坏只发生在后续分片。
-        torch.save({"cache_format": CACHE_FORMAT, "samples": [{}] * 768}, shard)
+        torch.save({"cache_format": CACHE_FORMAT, "samples": [_scene_sample()] * 768}, shard)
         shard = manifest.with_suffix(".second.pt")
         payload["num_samples"] = 769
         payload["shard_files"].append(shard.name)
         torch.save(payload, manifest)
 
-    shard_payload = {"cache_format": CACHE_FORMAT, "samples": [{}]}
+    shard_payload = {"cache_format": CACHE_FORMAT, "samples": [_scene_sample()]}
     if damage == "missing_format":
         del shard_payload["cache_format"]
     elif damage == "missing_samples":
@@ -197,13 +232,8 @@ def test_default_replay_uses_saved_contract_without_recompiling(
         key: value * 2 for key, value in saved_normalizer["resource_limits"].items()
     }
     contract = ModelInputContract(
-        job_tag="black_mage", data_spec={"job_tag": "black_mage"},
-        schema=TrainingSchema(
-            serialization_format="test", sample_schema_version=1,
-            context_schema_version=1, scene_context_mode="absolute", scene_windows=(),
-            state_group_feature_keys={"player_state": ("before.time_seconds",)},
-            candidate_skill_fields=("potency",), skill_history_fields=("skill_key",),
-        ),
+        job_tag="black_mage", data_spec=_scene_data_spec(),
+        schema=_scene_schema(),
         normalizer_contract=saved_normalizer,
     )
     if current_cache_exists:
@@ -212,7 +242,7 @@ def test_default_replay_uses_saved_contract_without_recompiling(
         "ZZZ/80-90/saved.json.br", cache_normalizer=contract.create_normalizer(),
     )
     checkpoint = tmp_path / "model.pt"
-    torch.save({"data_spec": {"job_tag": "black_mage"}, "model_variant": "artzip",
+    torch.save({"data_spec": _scene_data_spec(), "model_variant": "artzip",
                 "input_contract": contract.to_dict()}, checkpoint)
     package = tmp_path / "deployment"
     package.mkdir()
@@ -247,7 +277,10 @@ def test_default_replay_uses_saved_contract_without_recompiling(
     reader = replay_module._load_replay_cache(
         config, "black_mage", contract.create_normalizer(), engine=object(),
     )
-    assert reader.sample(0) == {}
+    sample = reader.sample(0)
+    assert sample["action_keys"] == _scene_data_spec()["action_keys"]
+    assert sample["label_action_key"] == sample["action_keys"][sample["label_index"]]
+    assert torch.equal(sample["current_state_vectors"], torch.zeros(1))
 
 
 @pytest.mark.parametrize("payload", [None, {"version": 1}])

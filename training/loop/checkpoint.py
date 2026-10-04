@@ -11,7 +11,7 @@ from pathlib import Path
 import torch
 
 from common.policy.data import DataSpec, ModelInputContract
-from common.policy.model import CandidateTransformerModel
+from common.policy.model import CausalPolicyModel
 from common.torch_serialization import safe_torch_load
 
 from ..config import RunConfig
@@ -248,7 +248,7 @@ def _validate_resume_checkpoint(
     if not isinstance(checkpoint_model_config, Mapping):
         raise ValueError("resume checkpoint missing model_config")
     normalized_model_config = asdict(
-        CandidateTransformerModel.checkpoint_model_config(dict(checkpoint))
+        CausalPolicyModel.checkpoint_model_config(dict(checkpoint))
     )
     if normalized_model_config != asdict(config.model):
         raise ValueError("resume checkpoint model config mismatch")

@@ -81,7 +81,7 @@ def test_grpo_checkpoint_save_rejects_missing_model_variant(tmp_path):
 
 
 def _decision(*, history_length: int, scene_length: int, action_index: int) -> GrpoDecision:
-    candidate_keys = ["fire_iii", "blizzard_iii", "ogcd_wait"]
+    action_keys = ["fire_iii", "blizzard_iii", "ogcd_wait"]
     batch = {
         "scene_vectors": torch.zeros((1, scene_length, 2), dtype=torch.float32),
         "scene_types": torch.zeros((1, scene_length), dtype=torch.int32),
@@ -100,17 +100,15 @@ def _decision(*, history_length: int, scene_length: int, action_index: int) -> G
             dtype=torch.bool,
         ),
         "history_mask": torch.ones((1, history_length), dtype=torch.bool),
-        "candidate_skill_ids": torch.zeros((1, 3), dtype=torch.int32),
-        "candidate_skill_features": torch.zeros((1, 3, 2), dtype=torch.float32),
-        "candidate_state_vectors": torch.zeros((1, 3, 3), dtype=torch.float32),
-        "candidate_state_null_mask": torch.zeros((1, 3, 3), dtype=torch.bool),
-        "candidate_legal_mask": torch.ones((1, 3), dtype=torch.bool),
+        "current_state_vectors": torch.zeros((1, 3), dtype=torch.float32),
+        "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
+        "action_legal_mask": torch.ones((1, 3), dtype=torch.bool),
         "history_action_keys": [["fire_iii"] * history_length],
-        "candidate_action_keys": [candidate_keys],
+        "action_keys": [action_keys],
     }
     return GrpoDecision(
         batch=batch,
-        candidate_keys=tuple(candidate_keys),
+        action_keys=tuple(action_keys),
         action_index=action_index,
         old_logprob=-1.0986122886681098,
     )
@@ -213,7 +211,7 @@ def test_collate_grpo_decisions_right_pads_scene_and_history():
         [[False, False, False], [True, True, True], [True, True, True]],
         [[False, False, False], [False, False, False], [False, False, False]],
     ]
-    assert batch["candidate_legal_mask"].shape == (2, 3)
+    assert batch["action_legal_mask"].shape == (2, 3)
 
 
 def test_rollout_decision_copy_leaves_inference_mode():
@@ -231,7 +229,7 @@ def test_compute_grpo_loss_is_finite_and_differentiable(monkeypatch):
             self.logits = torch.nn.Parameter(torch.zeros(3))
 
         def forward(self, batch):
-            return {"logits": self.logits.unsqueeze(0).expand(batch["candidate_skill_ids"].shape[0], -1)}
+            return {"logits": self.logits.unsqueeze(0).expand(batch["current_state_vectors"].shape[0], -1)}
 
     policy = ToyPolicy()
     batch = collate_grpo_decisions(
@@ -319,8 +317,9 @@ def _run_grpo_with_backend(
             self.model = FakeModel()
             self.data_spec = SimpleNamespace(
                 job_tag="black_mage",
-                num_candidates=1,
-                candidate_action_keys=("fire",),
+                num_actions=1,
+                action_keys=("fire",),
+                action_is_gcd=(True,),
             )
             self.input_contract = SimpleNamespace(create_normalizer=lambda: object())
             self.repetition = SimpleNamespace()
@@ -525,7 +524,7 @@ def test_grpo_temperature_default_is_higher_and_increases_entropy():
         def forward(self, batch):
             return {
                 "logits": self.logits.unsqueeze(0).expand(
-                    batch["candidate_skill_ids"].shape[0], -1
+                    batch["current_state_vectors"].shape[0], -1
                 )
             }
 
@@ -578,8 +577,9 @@ def test_grpo_training_closes_replay_session_on_outer_failure(monkeypatch, tmp_p
             self.model = FakeModel()
             self.data_spec = SimpleNamespace(
                 job_tag="black_mage",
-                num_candidates=1,
-                candidate_action_keys=("fire",),
+                num_actions=1,
+                action_keys=("fire",),
+                action_is_gcd=(True,),
             )
             self.input_contract = SimpleNamespace(create_normalizer=lambda: object())
             self.repetition = SimpleNamespace()
@@ -835,6 +835,18 @@ def test_grpo_rollout_store_persists_and_streams_cpu_decisions(tmp_path):
     assert loaded_advantages.tolist() == [1.25]
 
 
+def test_grpo_rollout_store_rejects_previous_input_format(tmp_path):
+    """动作输入改为固定词表后，旧轨迹不能按新输入格式继续更新策略。"""
+    store = GrpoRolloutStore(tmp_path / "grpo", iteration=1, run_id="old-format")
+    entry = store.write_trajectory(
+        scene_json_path=tmp_path / "scene.json", decisions=(_decision(history_length=0, scene_length=0, action_index=0),),
+        ppg=1.0, greedy_ppg=1.0, reward=0.0,
+    )
+    torch.save({"format": 1, "decisions": []}, entry.path)
+    with pytest.raises(ValueError, match="unsupported GRPO trajectory format"):
+        store._load_decisions(entry.path)
+
+
 def test_grpo_update_keeps_minibatch_weighting_and_defers_host_reads(monkeypatch):
     policy = torch.nn.Linear(1, 1)
     optimizer = torch.optim.SGD(policy.parameters(), lr=0)
@@ -843,7 +855,7 @@ def test_grpo_update_keeps_minibatch_weighting_and_defers_host_reads(monkeypatch
 
     def loss_fn(model, batch, **kwargs):
         assert "repetition_penalty_mask" in batch
-        size = batch["candidate_skill_ids"].shape[0]
+        size = batch["current_state_vectors"].shape[0]
         loss = model.weight.sum() * size
         return loss, {key: loss.detach() * 0 + size for key in ("loss", "policy_loss", "kl", "entropy", "clip_fraction", "mean_ratio")}
 
@@ -873,7 +885,7 @@ def test_grpo_update_streams_disk_rollouts_without_full_decision_buffer(monkeypa
     store.set_advantages((1.0, -1.0, 0.5))
 
     def loss_fn(model, batch, **kwargs):
-        size = batch["candidate_skill_ids"].shape[0]
+        size = batch["current_state_vectors"].shape[0]
         loss = model.weight.sum() * size
         return loss, {
             key: loss.detach() * 0 + size

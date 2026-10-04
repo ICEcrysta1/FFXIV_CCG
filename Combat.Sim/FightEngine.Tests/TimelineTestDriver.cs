@@ -67,10 +67,6 @@ internal static class TimelineTestDriver
         return timeline.AdvanceTo(state.Time + seconds);
     }
 
-    public static IReadOnlyList<CandidatePreview> BuildCandidatePreviews(
-        CombatStateMachine machine,
-        CombatState state) => new JobSimulator(machine, state).BuildCandidatePreviews();
-
     public static Dictionary<string, object?> FormatVectorState(
         CombatStateMachine machine,
         CombatState state) => new JobSimulator(machine, state).FormatVectorState();

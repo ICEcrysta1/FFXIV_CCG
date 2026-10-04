@@ -25,19 +25,20 @@ def resume_context(tmp_path):
         scene_context_mode="absolute",
         scene_windows=(),
         state_group_feature_keys={"player_state": ("a", "b", "c")},
-        candidate_skill_fields=("potency",),
         skill_history_fields=(),
     )
     normalizer = Normalizer()
     normalizer.configure_job_resources("black_mage")
     dataset = SimpleNamespace(
         job_tag="black_mage",
-        num_candidates=2,
+        num_actions=2,
         state_dim=3,
         scene_dim=0,
         num_scene_types=0,
-        candidate_action_keys=("a", "b"),
+        action_keys=("a", "b"),
         skill_feature_names=("potency",),
+        action_to_vocab_id=(1, 2),
+        action_is_gcd=(True, True),
         schema=schema,
         normalizer=normalizer,
     )

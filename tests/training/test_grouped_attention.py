@@ -11,9 +11,9 @@ from common.policy.model.grouped_attention import (
     scaled_dot_product_attention,
 )
 from common.policy.model.position_encoding import RotaryPositionEncoding
-from common.policy.model.split_encoder import (
+from common.policy.model.causal_encoder import (
     project_qkv,
-    run_split_encoder,
+    run_causal_encoder,
 )
 from common.policy.model.trace import TraceableTransformerEncoderLayer
 
@@ -44,10 +44,7 @@ def _make_encoder(
 def _make_encoded(tokens: torch.Tensor) -> dict[str, torch.Tensor | int]:
     return {
         "tokens": tokens,
-        "prefix_length": 2,
-        "candidate_count": 2,
-        "prefix_valid": torch.ones((tokens.shape[0], 2), dtype=torch.bool),
-        "candidate_valid": torch.ones((tokens.shape[0], 2), dtype=torch.bool),
+        "valid": torch.ones(tokens.shape[:2], dtype=torch.bool, device=tokens.device),
     }
 
 
@@ -127,19 +124,18 @@ def test_grouped_attention_accepts_configured_divisor_kv_head_counts():
 
         assert query.shape[-1] == 8
         assert key.shape[-1] == value.shape[-1] == 2 * num_kv_heads
-        prefix_output, candidate_output, _, _ = run_split_encoder(
+        output, _, _ = run_causal_encoder(
             encoder,
             _make_encoded(values),
         )
-        assert prefix_output.shape == (1, 2, 8)
-        assert candidate_output.shape == (1, 2, 8)
+        assert output.shape == (1, 4, 8)
 
 
 @pytest.mark.parametrize("training", (False, True))
-@pytest.mark.parametrize("split", (False, True))
+@pytest.mark.parametrize("encoder_path", (False, True))
 @pytest.mark.parametrize("num_kv_heads", (1, 2, 4))
 def test_sdpa_batches_query_heads_with_compressed_kv_storage(
-    monkeypatch, training, split, num_kv_heads,
+    monkeypatch, training, encoder_path, num_kv_heads,
 ):
     encoder = _make_encoder(num_kv_heads=num_kv_heads).train(training)
     attention = GroupedQueryAttention(
@@ -171,8 +167,8 @@ def test_sdpa_batches_query_heads_with_compressed_kv_storage(
 
     monkeypatch.setattr(torch.nn.functional, "scaled_dot_product_attention", capture)
     with torch.set_grad_enabled(training):
-        if split:
-            outputs = run_split_encoder(encoder, _make_encoded(values))[:2]
+        if encoder_path:
+            outputs = (run_causal_encoder(encoder, _make_encoded(values))[0],)
         else:
             output, weights = attention(
                 values, values, values, need_weights=False,
@@ -186,7 +182,7 @@ def test_sdpa_batches_query_heads_with_compressed_kv_storage(
             assert torch.isfinite(values.grad).all()
 
     # MQA 和 MHA 每个区域一次调用；GQA 每个 KV 组一次调用。
-    assert call_count == (2 if split else 1) * (num_kv_heads if num_kv_heads < 4 else 1)
+    assert call_count == (num_kv_heads if num_kv_heads < 4 else 1)
     assert len(key_storages) == len(value_storages) == 1
 
 
@@ -206,7 +202,7 @@ def test_grouped_sdpa_matches_explicit_kv_forward_and_gradients(
     num_kv_heads, mask_kind, device, dtype, rtol, atol,
 ):
     torch.manual_seed(42)
-    # 非连续 Q/K/V 与投影后的布局一致；Q/K 长度不同，覆盖候选及 cache 使用场景。
+    # 非连续 Q/K/V 与投影后的布局一致；Q/K 长度不同，覆盖因果后缀及 cache 使用场景。
     query = torch.randn(2, 5, 4, 16, device=device, dtype=dtype).transpose(1, 2).requires_grad_()
     key = torch.randn(2, 7, num_kv_heads, 16, device=device, dtype=dtype).transpose(1, 2).requires_grad_()
     value = torch.randn_like(key).requires_grad_()
@@ -239,7 +235,7 @@ def test_mqa_trace_expands_only_the_explicit_attention_weight_result():
     encoder = _make_encoder()
     encoded = _make_encoded(torch.randn(1, 4, 8))
 
-    *_, attentions = run_split_encoder(encoder, encoded, collect_attention=True)
+    *_, attentions = run_causal_encoder(encoder, encoded, collect_attention=True)
 
     assert len(attentions) == 1
     assert attentions[0].shape == (1, 4, 4, 4)

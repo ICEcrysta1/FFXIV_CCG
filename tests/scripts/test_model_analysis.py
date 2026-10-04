@@ -16,7 +16,7 @@ from torch import nn
 
 import common.cache_compilation as cache_compilation
 from common.torch_serialization import safe_torch_load
-from common.policy.model.input_encoder import ROLE_CANDIDATE, ROLE_HISTORY
+from common.policy.model.input_encoder import ROLE_CURRENT_STATE, ROLE_HISTORY
 from scripts.model_analysis.common import pca_projection, skill_name_by_vocab_id
 from scripts.model_analysis import common as analysis_common
 from scripts.model_analysis.job_labels import decision_state_labels
@@ -120,9 +120,9 @@ def test_model_analysis_decodes_mp_as_linear_0_to_10000_value():
             }
 
     batch = {
-        "candidate_state_vectors": torch.tensor([[[2.0, 0.0, 0.5]]]),
-        "candidate_state_null_mask": torch.zeros((1, 1, 3), dtype=torch.bool),
-        "candidate_legal_mask": torch.tensor([[True]]),
+        "current_state_vectors": torch.tensor([[2.0, 0.0, 0.5]]),
+        "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
+        "action_legal_mask": torch.tensor([[True]]),
     }
 
     elemental_state, mp = decision_state_labels("black_mage", 0, batch=batch, schema=Schema())
@@ -177,12 +177,14 @@ def test_checkpoint_exposes_job_tag_at_top_level(tmp_path: Path):
     )
     data_spec = DataSpec(
         job_tag="black_mage",
-        num_candidates=1,
+        num_actions=1,
         state_dim=1,
         scene_dim=0,
         skill_feature_dim=1,
         num_scene_types=0,
-        candidate_action_keys=("fire",),
+        action_keys=("fire",),
+        action_to_vocab_id=(1,),
+        action_is_gcd=(True,),
         skill_feature_names=("id",),
     )
     normalizer = Normalizer()
@@ -196,8 +198,7 @@ def test_checkpoint_exposes_job_tag_at_top_level(tmp_path: Path):
             scene_context_mode="absolute",
             scene_windows=(),
             state_group_feature_keys={"player_state": ("value",)},
-            candidate_skill_fields=("id",),
-            skill_history_fields=(),
+            skill_history_fields=("id",),
         ),
         normalizer=normalizer,
     )
@@ -251,36 +252,17 @@ def test_skill_labels_use_chinese_names_from_project_config():
 
 
 def test_sample_token_count_requires_mapping_and_sums_distinct_token_groups():
-    sample = {
-        "scene_vectors": [[0.0]],
-        "history_skill_ids": [1, 2],
-        "candidate_skill_ids": [3, 4, 5],
-    }
-
-    assert attention_output._sample_token_count(sample) == 6
-
+    sample = {"scene_vectors": [[0.0]], "history_skill_ids": [1, 2]}
+    assert attention_output._sample_token_count(sample) == 4
     with pytest.raises(TypeError, match="expected mapping sample"):
         attention_output._sample_token_count(object())
-
     with pytest.raises(TypeError, match="scene_vectors"):
         attention_output._sample_token_count({"scene_vectors": 1})
 
 
 def test_sample_token_count_supports_compact_history_bank_samples():
-    samples = [
-        {
-            "scene_vectors": [[0.0]],
-            "history_length": history_length,
-            "candidate_skill_ids": [3, 4, 5],
-        }
-        for history_length in (0, 2, 5)
-    ]
-
-    assert [attention_output._sample_token_count(sample) for sample in samples] == [
-        4,
-        6,
-        9,
-    ]
+    samples = [{"scene_vectors": [[0.0]], "history_length": value} for value in (0, 2, 5)]
+    assert [attention_output._sample_token_count(sample) for sample in samples] == [2, 4, 7]
     assert max(samples, key=attention_output._sample_token_count)["history_length"] == 5
 
 
@@ -307,8 +289,8 @@ def _analysis_schema():
 
 
 def _analysis_context(tmp_path):
-    candidate_mask = np.array([False, False, True, True, True, True, False, False])
-    roles = np.array([0, ROLE_HISTORY, ROLE_CANDIDATE, ROLE_CANDIDATE, ROLE_CANDIDATE, ROLE_CANDIDATE, ROLE_HISTORY, 0])
+    current_mask = np.array([False, False, True, True, True, True, False, False])
+    roles = np.array([0, ROLE_HISTORY, ROLE_CURRENT_STATE, ROLE_CURRENT_STATE, ROLE_CURRENT_STATE, ROLE_CURRENT_STATE, ROLE_HISTORY, 0])
     vectors = np.array(
         [
             [0.0, 0.0, 0.0, 1.0],
@@ -325,10 +307,10 @@ def _analysis_context(tmp_path):
     features = {
         "fight_id": np.array(["f"] * 8),
         "step_index": np.arange(8, dtype=float),
-        "candidate_index": np.array([-1.0, -1.0, 0.0, 1.0, 2.0, 3.0, -1.0, -1.0]),
+        "label_index": np.array([-1.0, -1.0, 0.0, 1.0, 2.0, 3.0, -1.0, -1.0]),
+        "prediction_index": np.array([-1.0, -1.0, 1.0, 1.0, 0.0, 3.0, -1.0, -1.0]),
         "skill_id": np.array([-1.0, -1.0, 1.0, 2.0, 3.0, 4.0, -1.0, -1.0]),
-        "legal": np.array(["non_candidate", "non_candidate", "legal", "illegal", "legal", "legal", "non_candidate", "non_candidate"]),
-        "invalid_reason": np.array(["", "", "", "requires_mp", "", "", "", ""]),
+        "label_legal": np.array(["not_decision", "not_decision", "legal", "illegal", "legal", "legal", "not_decision", "not_decision"]),
         "elemental_state": np.array(["unknown", "unknown", "UI3", "UI3", "AF1", "AF1", "unknown", "unknown"]),
         "mp_bucket": np.array([np.nan, np.nan, 0.0, 2500.0, 5000.0, 10000.0, np.nan, np.nan]),
         "label_rank": np.array([np.nan, np.nan, 1.0, 2.0, 3.0, 4.0, np.nan, np.nan]),
@@ -353,7 +335,7 @@ def _analysis_context(tmp_path):
         output_dir=tmp_path / "plots",
         model=model,
         dataset=[object(), object()],
-        data_spec=SimpleNamespace(job_tag="black_mage"),
+        data_spec=SimpleNamespace(job_tag="black_mage", action_keys=("fire_iii", "fire_iv")),
         vocab=SkillVocab(),
         device=torch.device("cpu"),
         precision="float32",
@@ -366,48 +348,36 @@ def _analysis_context(tmp_path):
 
 def test_model_analysis_metadata_and_black_mage_fallbacks():
     schema = _analysis_schema()
-    samples = [{
-        "metadata": {"fight_id": "fight-1", "step": 7},
-        "candidate_invalid_reasons": ["", "requires_mp"],
-    }]
+    samples = [{"metadata": {"fight_id": "fight-1", "step": 7}}]
     batch = {
         "history_skill_ids": torch.tensor([[9]], dtype=torch.int32),
-        "candidate_skill_ids": torch.tensor([[10, 11]], dtype=torch.int32),
-        "candidate_legal_mask": torch.tensor([[True, False]]),
-        "candidate_state_vectors": torch.tensor([[[0.0, 1.0, 0.5], [0.0, 1.0, 0.5]]]),
-        "candidate_state_null_mask": torch.zeros((1, 2, 3), dtype=torch.bool),
+        "action_legal_mask": torch.tensor([[True, False]]),
+        "current_state_vectors": torch.tensor([[0.0, 1.0, 0.5]]),
+        "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
         "label_index": torch.tensor([0]),
     }
     encoded = {
-        "role_ids": torch.tensor([[0, ROLE_HISTORY, ROLE_CANDIDATE, ROLE_CANDIDATE]]),
-        "candidate_positions": torch.tensor([2, 3]),
+        "role_ids": torch.tensor([[0, ROLE_HISTORY, ROLE_CURRENT_STATE]]),
+        "current_state_position": 2,
     }
     metadata = build_token_metadata(
-        samples,
-        batch=batch,
-        encoded=encoded,
-        schema=schema,
-        job_tag="black_mage",
-        logits=np.array([[3.0, 1.0]]),
+        samples, batch=batch, encoded=encoded, schema=schema,
+        job_tag="black_mage", logits=np.array([[3.0, 1.0]]),
     )
     assert metadata["fight_id"][0, 0] == "fight-1"
     assert metadata["skill_id"][0, 1] == 9
-    assert metadata["legal"][0, 2] == "legal"
-    assert metadata["invalid_reason"][0, 3] == "requires_mp"
+    assert metadata["skill_id"][0, 2] == -1
+    assert metadata["label_legal"][0, 2] == "legal"
     assert metadata["label_rank"][0, 2] == 1.0
-
-    unknown = decision_state_labels("machinist", 0, batch=batch, schema=schema)
-    assert unknown[0] == "unknown"
-    missing_schema = SimpleNamespace(
-        state_group_slices=lambda: {},
-        state_group_feature_keys={},
-    )
+    assert metadata["model_logit"][0, 2] == 3.0
+    assert metadata["prediction_index"][0, 2] == 0
+    assert np.isnan(metadata["label_rank"][0, 1])
+    assert decision_state_labels("machinist", 0, batch=batch, schema=schema)[0] == "unknown"
+    missing_schema = SimpleNamespace(state_group_slices=lambda: {}, state_group_feature_keys={})
     assert black_mage_labels(0, batch=batch, schema=missing_schema)[0] == "unknown"
-
-    no_legal = dict(batch)
-    no_legal["candidate_legal_mask"] = torch.zeros((1, 2), dtype=torch.bool)
-    no_legal["candidate_state_null_mask"] = torch.ones((1, 2, 3), dtype=torch.bool)
-    elemental, mp = black_mage_labels(0, batch=no_legal, schema=schema)
+    missing_values = dict(batch)
+    missing_values["current_state_null_mask"] = torch.ones((1, 3), dtype=torch.bool)
+    elemental, mp = black_mage_labels(0, batch=missing_values, schema=schema)
     assert elemental == "neutral"
     assert np.isnan(mp)
 
@@ -478,12 +448,14 @@ def test_model_analysis_common_helpers_and_context_loading(monkeypatch, tmp_path
         {
             "data_spec": {
                 "job_tag": "black_mage",
-                "num_candidates": 2,
+                "num_actions": 2,
                 "state_dim": 1,
                 "scene_dim": 1,
                 "skill_feature_dim": 1,
                 "num_scene_types": 1,
-                "candidate_action_keys": ["a", "b"],
+                "action_keys": ["a", "b"],
+                "action_to_vocab_id": [1, 2],
+                "action_is_gcd": [True, False],
                 "skill_feature_names": ["potency"],
             },
             "model_state_dict": {},
@@ -502,11 +474,13 @@ def test_model_analysis_common_helpers_and_context_loading(monkeypatch, tmp_path
 
     class FakeDataset:
         job_tag = "black_mage"
-        num_candidates = 2
+        num_actions = 2
         state_dim = 1
         scene_dim = 1
         num_scene_types = 1
-        candidate_action_keys = ("a", "b")
+        action_keys = ("a", "b")
+        action_to_vocab_id = (1, 2)
+        action_is_gcd = (True, False)
         skill_feature_names = ("potency",)
         schema = SimpleNamespace()
 
@@ -538,7 +512,7 @@ def test_model_analysis_common_helpers_and_context_loading(monkeypatch, tmp_path
         def trace(self, _batch):
             encoded = {
                 "padding_mask": torch.zeros((1, 4), dtype=torch.bool),
-                "role_ids": torch.tensor([[0, 1, ROLE_CANDIDATE, ROLE_CANDIDATE]]),
+                "role_ids": torch.tensor([[0, 1, ROLE_CURRENT_STATE, ROLE_CURRENT_STATE]]),
             }
             return SimpleNamespace(
                 encoded=encoded,
@@ -557,7 +531,7 @@ def test_model_analysis_common_helpers_and_context_loading(monkeypatch, tmp_path
 
     monkeypatch.setattr(analysis_common, "resolve_project_job_tag", lambda **_kwargs: "black_mage")
     monkeypatch.setattr(analysis_common, "SkillVocab", FakeVocab)
-    monkeypatch.setattr(analysis_common, "CandidateTransformerModel", FakeModel)
+    monkeypatch.setattr(analysis_common, "CausalPolicyModel", FakeModel)
     monkeypatch.setattr(analysis_common, "TrainingDataset", lambda *_args, **_kwargs: FakeDataset())
     monkeypatch.setattr(analysis_common, "Normalizer", FakeNormalizer)
     monkeypatch.setattr(analysis_common, "TrainingCollator", lambda: (lambda samples: {}))
@@ -567,7 +541,7 @@ def test_model_analysis_common_helpers_and_context_loading(monkeypatch, tmp_path
         for feature in analysis_common.ANALYSIS_FEATURES
     })
     monkeypatch.setattr(analysis_common.DataSpec, "from_dataset", lambda _dataset: analysis_common.DataSpec(
-        "black_mage", 2, 1, 1, 1, 1, ("a", "b"), ("potency",)
+        "black_mage", 2, 1, 1, 1, 1, ("a", "b"), ("potency",), (1, 2), (True, False)
     ))
     monkeypatch.setattr(analysis_common.DataSpec, "assert_compatible_with", lambda self, other: None)
     monkeypatch.setattr(analysis_common, "move_batch", lambda batch, device: batch)
@@ -608,17 +582,13 @@ def test_model_analysis_retries_after_compiling_missing_cache(monkeypatch, tmp_p
         max_history=240,
         cache_shard_size=768,
         cache_max_shards=24,
-        candidate_order_file=tmp_path / "candidate_order.yaml",
         job_tag="black_mage",
         skill_vocab=object(),
     )
 
     assert result is sentinel_dataset
     assert len(dataset_calls) == 2
-    assert all(
-        call[1]["candidate_order_file"] == tmp_path / "candidate_order.yaml"
-        for call in dataset_calls
-    )
+    assert all(call[1]["max_history"] == 240 for call in dataset_calls)
     assert compiled_calls == [
         {
             "source_paths": [source_path],
@@ -664,7 +634,7 @@ def test_model_analysis_outputs_generate_pngs(monkeypatch, tmp_path):
     paths = hidden_output.plot_hidden_statistics(context)
     assert all(path.is_file() for path in paths)
     pca_paths = pca_output.plot_layer_pca(context)
-    assert len(pca_paths) == 12
+    assert len(pca_paths) == 2 + len(analysis_common.ANALYSIS_FEATURES)
     assert pca_paths[0].is_file()
     assert pca_output._strongest_pca_axis(
         np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]]),
@@ -685,12 +655,13 @@ def test_model_analysis_outputs_generate_pngs(monkeypatch, tmp_path):
     class FakePairEncoder:
         @staticmethod
         def embed_pairs(batch):
-            size = batch["candidate_skill_ids"].shape[0]
-            return {"candidate": torch.arange(size * 2 * 3, dtype=torch.float32).reshape(size, 2, 3)}
+            size = batch["history_skill_ids"].shape[0]
+            return {"history": torch.arange(size * 2 * 3, dtype=torch.float32).reshape(size, 2, 3)}
 
     context.model.input_encoder = FakePairEncoder()
     monkeypatch.setattr(pair_output, "TrainingCollator", lambda: (lambda samples: {
-        "candidate_skill_ids": torch.tensor([[1, 2] for _ in samples], dtype=torch.int32),
+        "history_skill_ids": torch.tensor([[1, 2] for _ in samples], dtype=torch.int32),
+        "history_mask": torch.ones((len(samples), 2), dtype=torch.bool),
     }))
     pair_path = pair_output.plot_pair_embedding(context, batch_size=1, max_points=2)
     assert pair_path.is_file()
@@ -719,6 +690,65 @@ def test_model_analysis_layer_pca_reuses_projection_cache(monkeypatch, tmp_path)
         ((8, 4), 3),
         ((4, 4), 2),
     ]
+
+
+def test_real_causal_trace_loads_metadata_and_keeps_current_query_under_token_cap(monkeypatch, tmp_path):
+    """完整分析入口必须兼容真实 trace 和附加历史身份元数据。"""
+    from tests.training.test_kv_cache import _make_model, _make_batch
+
+    model = _make_model()
+    sample = {"metadata": {"fight_id": "real-trace", "step": 0}}
+    batch = _make_batch(1)
+    batch["label_index"] = torch.tensor([0])
+    runtime = SimpleNamespace(
+        model=model, dataset=SimpleNamespace(schema=_analysis_schema()),
+        data_spec=model.data_spec, device=torch.device("cpu"),
+        checkpoint_path=tmp_path / "checkpoint.pt", source_path=tmp_path / "source.json",
+        output_dir=tmp_path, vocab=SimpleNamespace(), precision="float32", autocast=nullcontext,
+    )
+    class Dataset:
+        schema = _analysis_schema()
+        def __len__(self):
+            return 1
+        def __getitem__(self, _index):
+            return sample
+    runtime.dataset = Dataset()
+    monkeypatch.setattr(analysis_common, "_load_model_analysis_context", lambda **_kwargs: runtime)
+    monkeypatch.setattr(analysis_common, "TrainingCollator", lambda: (lambda _samples: batch))
+    context = analysis_common.load_analysis_context(
+        checkpoint_path=runtime.checkpoint_path, source_path=runtime.source_path,
+        raw_root=tmp_path, cache_dir=tmp_path, max_history=4, cache_shard_size=1,
+        cache_max_shards=1, output_dir=tmp_path, max_samples=1, max_tokens=1,
+        batch_size=1, device_name="cpu", precision="float32",
+    )
+    expected_logit = model(batch)["logits"][0, 0].item()
+    for roles, metadata in zip(context.layer_roles, context.layer_metadata):
+        assert roles.tolist() == [ROLE_CURRENT_STATE]
+        assert set(metadata) == set(analysis_common.ANALYSIS_FEATURES)
+        assert metadata["model_logit"][0] == pytest.approx(expected_logit)
+    layer_projections, query_projections = pca_output._build_pca_cache(context)
+    assert layer_projections[0][0].shape == (1, 3)
+    assert query_projections[0][0].shape == (1, 2)
+    assert np.isfinite(query_projections[0][0]).all()
+
+
+def test_history_pair_plot_excludes_padding_and_supports_empty_history(monkeypatch, tmp_path):
+    context = _analysis_context(tmp_path)
+    context.output_dir.mkdir(parents=True)
+    class Encoder:
+        @staticmethod
+        def embed_pairs(_batch):
+            return {"history": torch.tensor([[[1.0, 2.0], [float("nan"), float("nan")]]])}
+    context.model.input_encoder = Encoder()
+    monkeypatch.setattr(pair_output, "skill_name_by_vocab_id", lambda _context: {1: "fire"})
+    values = {
+        "history_skill_ids": torch.tensor([[1, 0]]),
+        "history_mask": torch.tensor([[True, False]]),
+    }
+    monkeypatch.setattr(pair_output, "TrainingCollator", lambda: (lambda _samples: values))
+    assert pair_output.plot_pair_embedding(context, batch_size=1).is_file()
+    values["history_mask"] = torch.zeros((1, 2), dtype=torch.bool)
+    assert pair_output.plot_pair_embedding(context, batch_size=1).is_file()
 
 
 def test_loss_landscape_directions_are_filter_normalized_and_orthogonal():
@@ -855,51 +885,42 @@ def test_loss_landscape_rejects_invalid_options(kwargs, message):
         loss_output._validate_options(**options)
 
 
-def test_opener_attention_averages_all_candidate_queries(monkeypatch, tmp_path):
-    """无 CLS 时汇总全部候选 query，不能误用最后一个候选作为汇总 token。"""
+def test_opener_attention_uses_latest_state_query_and_excludes_padding(monkeypatch, tmp_path):
+    """最新状态 query 汇总真实 key 角色，padding 不计入质量。"""
     weights = torch.tensor([
-        [1.0, 0.0, 0.0],
-        [0.3, 0.6, 0.1],
-        [0.4, 0.2, 0.4],
-    ]).reshape(1, 1, 3, 3).expand(1, 2, 3, 3)
-
+        [1.0, 0.0, 0.0, 0.0],
+        [0.3, 0.6, 0.1, 0.0],
+        [0.1, 0.1, 0.8, 0.0],
+        [0.4, 0.2, 0.9, 0.4],
+    ]).reshape(1, 1, 4, 4).expand(1, 2, 4, 4)
     class Model:
         @staticmethod
         def trace(_batch):
             return SimpleNamespace(
-                encoded={"candidate_positions": torch.tensor([1, 2])},
-                hidden=torch.zeros(1, 3, 2),
-                attentions=(weights,),
+                encoded={
+                    "current_state_position": 3,
+                    "role_ids": torch.tensor([[0, ROLE_HISTORY, ROLE_HISTORY, ROLE_CURRENT_STATE]]),
+                    "padding_mask": torch.tensor([[False, False, True, False]]),
+                },
+                hidden=torch.zeros(1, 4, 2), attentions=(weights,),
             )
-
         @staticmethod
         def score_hidden(_encoded, _hidden, _batch):
             return torch.tensor([[1.0, 0.0]])
-
     context = SimpleNamespace(
-        model=Model(),
-        dataset=[{
-            "candidate_action_keys": ["a", "b"],
-            "label_action_key": "a",
-            "label_index": 0,
-        }],
-        device=torch.device("cpu"),
-        output_dir=tmp_path,
-        autocast=nullcontext,
+        model=Model(), data_spec=SimpleNamespace(action_keys=("a", "b")),
+        dataset=[{"label_action_key": "a", "label_index": 0}],
+        device=torch.device("cpu"), output_dir=tmp_path, autocast=nullcontext,
     )
     captured = {}
     monkeypatch.setattr(attention_output, "TrainingCollator", lambda: (lambda _samples: {}))
-    monkeypatch.setattr(
-        attention_output, "_plot_candidate_attention",
-        lambda values, *_args: captured.update(candidates=values),
-    )
-    monkeypatch.setattr(
-        attention_output, "_plot_layer_attention",
-        lambda values, *_args: captured.update(layers=values),
-    )
+    monkeypatch.setattr(attention_output, "_plot_query_attention",
+                        lambda values, *_args: captured.update(query=values))
+    monkeypatch.setattr(attention_output, "_plot_layer_attention",
+                        lambda values, *_args: captured.update(layers=values))
     attention_output.plot_opener_attention(context, steps=1, batch_size=1)
-    np.testing.assert_allclose(captured["candidates"], [[1.0, 0.625]])
-    np.testing.assert_allclose(captured["layers"], [[1.0, 0.625]])
+    np.testing.assert_allclose(captured["query"], [[1.0, 0.5, 1.0]])
+    np.testing.assert_allclose(captured["layers"], [[1.0, 0.5, 1.0]])
 
 
 def test_model_analysis_attention_output_and_main(monkeypatch, tmp_path):
@@ -907,7 +928,7 @@ def test_model_analysis_attention_output_and_main(monkeypatch, tmp_path):
     context.output_dir.mkdir(parents=True)
     samples = [
         {
-            "candidate_action_keys": ["fire_iii", "fire_iv"],
+            "action_keys": ["fire_iii", "fire_iv"],
             "label_action_key": "fire_iii",
             "label_index": 0,
         }
@@ -919,7 +940,9 @@ def test_model_analysis_attention_output_and_main(monkeypatch, tmp_path):
         @staticmethod
         def trace(_batch):
             encoded = {
-                "candidate_positions": torch.tensor([1, 2]),
+                "current_state_position": 2,
+                "role_ids": torch.tensor([[0, 1, 2], [0, 1, 2]]),
+                "padding_mask": torch.zeros((2, 3), dtype=torch.bool),
             }
             attention = torch.ones((2, 2, 3, 3), dtype=torch.float32)
             return SimpleNamespace(
@@ -934,19 +957,19 @@ def test_model_analysis_attention_output_and_main(monkeypatch, tmp_path):
 
     context.model = FakeAttentionModel()
     monkeypatch.setattr(attention_output, "TrainingCollator", lambda: (lambda batch: {}))
-    candidate_path, layer_path = attention_output.plot_opener_attention(
+    query_path, layer_path = attention_output.plot_opener_attention(
         context, steps=2, batch_size=1
     )
-    assert candidate_path.is_file()
+    assert query_path.is_file()
     assert layer_path.is_file()
     color_norm = attention_output._attention_color_norm()
     assert isinstance(color_norm, Normalize)
     assert float(color_norm(0.25)) == pytest.approx(0.25)
-    candidate_relative = attention_output._normalize_candidate_attention(
+    query_relative = attention_output._normalize_query_attention(
         np.array([[0.1, 0.3, 0.6], [0.01, 0.02, 0.03]], dtype=np.float32),
     )
     np.testing.assert_allclose(
-        candidate_relative,
+        query_relative,
         [[1 / 6, 0.5, 1.0], [1 / 3, 2 / 3, 1.0]],
     )
     row_relative = attention_output._row_relative_attention(
@@ -965,7 +988,6 @@ def test_model_analysis_attention_output_and_main(monkeypatch, tmp_path):
         {
             "scene_vectors": [[0.0]],
             "history_skill_ids": [1, 2],
-            "candidate_skill_ids": [1, 2],
         }
     ]
 
@@ -1001,7 +1023,7 @@ def test_model_analysis_attention_output_and_main(monkeypatch, tmp_path):
         source_path=tmp_path / "data.json",
         data_spec=SimpleNamespace(
             job_tag="black_mage",
-            num_candidates=2,
+            num_actions=2,
             state_dim=3,
             scene_dim=1,
             skill_feature_dim=1,
@@ -1021,7 +1043,6 @@ def test_model_analysis_attention_output_and_main(monkeypatch, tmp_path):
         model=SimpleNamespace(history_capacity=128),
         compiled_cache_shard_size=512,
         compiled_cache_max_shards=8,
-        candidate_order_file=None,
         precision="float32",
     ))
     monkeypatch.setattr(analysis_main, "resolve_policy_model_job_tag", lambda _path: "black_mage")
@@ -1101,7 +1122,19 @@ def test_model_analysis_rejects_bf16_without_cuda(tmp_path):
             output_dir=tmp_path / "output",
             device_name="cpu",
             precision="bf16",
-            candidate_order_file=None,
+        )
+
+
+def test_model_analysis_rejects_old_checkpoint_contract_before_old_fields(monkeypatch, tmp_path):
+    monkeypatch.setattr(analysis_common, "safe_torch_load", lambda _path: {
+        "input_contract": {"version": 9}, "data_spec": {"job_tag": "black_mage"},
+    })
+    with pytest.raises(ValueError, match="unsupported input contract version"):
+        analysis_common._load_model_analysis_context(
+            checkpoint_path=tmp_path / "old.pt", source_path=tmp_path / "source.json",
+            raw_root=tmp_path, cache_dir=tmp_path, max_history=1,
+            cache_shard_size=1, cache_max_shards=1, output_dir=tmp_path,
+            device_name="cpu", precision="float32",
         )
 
 
@@ -1119,9 +1152,9 @@ def test_loss_landscape_cached_grid_matches_full_forward(full_attention_residual
     first = {key: torch.cat((value, value), dim=0) for key, value in _make_batch(3).items()}
     batches = (first, _make_batch(1))
     for index, batch in enumerate(batches):
-        count = batch["candidate_skill_ids"].shape[0]
+        count = batch["current_state_vectors"].shape[0]
         batch["label_index"] = torch.full((count,), index)
-        batch["candidate_action_keys"] = [("fire_iii", "fire_iv", "blizzard_iii")] * count
+        batch["action_keys"] = [("fire_iii", "fire_iv", "blizzard_iii")] * count
         batch["history_action_keys"] = [("fire_iv",)] * count
     context = SimpleNamespace(model=model, device=torch.device("cpu"), autocast=nullcontext)
     baseline = loss_output._mean_cross_entropy(context, batches)

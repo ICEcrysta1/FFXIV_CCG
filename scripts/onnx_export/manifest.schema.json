@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ffxiv-ccg.local/schemas/onnx-manifest-v7.json",
+  "$id": "https://ffxiv-ccg.local/schemas/onnx-manifest-v8.json",
   "title": "FFXIV_CCG ONNX Deployment Manifest",
   "type": "object",
   "additionalProperties": false,
@@ -21,7 +21,7 @@
       "const": "manifest.schema.json"
     },
     "manifest_version": {
-      "const": 7
+      "const": 8
     },
     "format": {
       "const": "onnx"
@@ -229,7 +229,7 @@
       ],
       "properties": {
         "contract_version": {
-          "const": 13
+          "const": 14
         },
         "job_tag": {
           "type": "string",
@@ -350,8 +350,8 @@
         },
         "tensor_inputs": {
           "type": "array",
-          "minItems": 12,
-          "maxItems": 12,
+          "minItems": 10,
+          "maxItems": 10,
           "items": {
             "$ref": "#/$defs/tensorSpec"
           }
@@ -368,15 +368,15 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "candidate_legal_mask",
+            "action_legal_mask",
             "raw_logits_order",
             "repetition",
             "repetition_policy",
             "sampling_policy"
           ],
           "properties": {
-            "candidate_legal_mask": {"type": "object"},
-            "raw_logits_order": {"const": "data_spec.candidate_action_keys"},
+            "action_legal_mask": {"type": "object"},
+            "raw_logits_order": {"const": "data_spec.action_keys"},
             "repetition": {
               "type": "object",
               "additionalProperties": false,
@@ -437,7 +437,7 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "candidate_order_sha256",
+            "action_order_sha256",
             "skill_feature_order_sha256",
             "state_schema_sha256",
             "scene_schema_sha256",
@@ -448,7 +448,7 @@
             "deployment_contract_sha256"
           ],
           "properties": {
-            "candidate_order_sha256": {
+            "action_order_sha256": {
               "$ref": "#/$defs/sha256"
             },
             "skill_feature_order_sha256": {

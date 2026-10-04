@@ -43,7 +43,7 @@ class SkillVocab:
                 vocab[skill.game_id] = next_id
                 next_id += 1
 
-        # policy 动作不属于 SkillBook，但在模型候选和 label 中仍是正式 token。
+        # policy 动作不属于 SkillBook，但在模型输出和 label 中仍是正式 token。
         # 放在真实技能之后可保持既有真实技能 vocab id 稳定。
         for action in load_policy_actions():
             if action.raw_id in vocab:

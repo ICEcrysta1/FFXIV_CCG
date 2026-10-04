@@ -16,7 +16,7 @@ def compute_value_preference_loss(
     config: ValuePreferenceConfig,
     sample_weights: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """只强化“人类已选择的高价值技能”相对低价值合法候选的排序。
+    """只强化“人类已选择的高价值技能”相对低价值合法动作的排序。
 
     价值不是无条件的动作优先级：如果数据中的 label 本身价值更低，
     这里不施加反向约束，避免运行时 value 压过状态、时序和合法性。
@@ -24,14 +24,14 @@ def compute_value_preference_loss(
     if not config.enabled or config.loss_weight <= 0.0:
         return logits.new_zeros(())
 
-    values = batch.get("candidate_values")
+    values = batch.get("action_values")
     if values is None:
         raise ValueError(
-            "value preference requires runtime candidate values from the job YAML"
+            "value preference requires runtime action values from the job YAML"
         )
     if values.ndim != 2 or values.shape != logits.shape:
         raise ValueError(
-            "candidate_values must have the same [batch, candidates] shape as logits"
+            "action_values must have the same [batch, actions] shape as logits"
         )
     values = values.float()
     labels = batch["label_index"]
@@ -39,7 +39,7 @@ def compute_value_preference_loss(
     value_delta = (chosen_values.unsqueeze(1) - values).clamp_min(0.0)
     pair_mask = value_delta > 0.0
 
-    legal_mask = batch.get("candidate_legal_mask")
+    legal_mask = batch.get("action_legal_mask")
     if legal_mask is not None:
         pair_mask &= legal_mask.to(dtype=torch.bool)
 

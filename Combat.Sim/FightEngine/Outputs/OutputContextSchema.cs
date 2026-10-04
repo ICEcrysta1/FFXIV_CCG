@@ -23,8 +23,10 @@ public static class OutputContextSchema
     public static string SceneContextKey => TopLevelKeys[2];
     public static string SkillHistoryContextKey => TopLevelKeys[3];
     public static string StateHistoryContextKey => TopLevelKeys[4];
-    public static string CandidateSkillContextKey => TopLevelKeys[5];
-    public static string CandidateStateContextKey => TopLevelKeys[6];
+    public static string CurrentStateContextKey => TopLevelKeys[5];
+    public static string ActionKeysKey => TopLevelKeys[6];
+    public static string ActionLegalMaskKey => TopLevelKeys[7];
+    public static string ActionValuesKey => TopLevelKeys[8];
     public static string StateContextTokenKey => SchemaConfigLoader.Instance.TokenKey;
 
     public static string[] CanonicalContextTopLevelKeys => TopLevelKeys.ToArray();
@@ -55,7 +57,7 @@ public static class OutputContextSchema
         Dictionary<string, object?> outputContext)
     {
         var historyStateContext = ExpectDict(outputContext, StateHistoryContextKey);
-        var candidateStateContext = ExpectDict(outputContext, CandidateStateContextKey);
+        var currentStateContext = ExpectDict(outputContext, CurrentStateContextKey);
         var schemaVersion = ExpectInt(outputContext, "schema_version");
         return new Dictionary<string, object?>
         {
@@ -64,14 +66,16 @@ public static class OutputContextSchema
             ["scene_context_key"] = SceneContextKey,
             ["skill_history_context_key"] = SkillHistoryContextKey,
             ["state_history_context_key"] = StateHistoryContextKey,
-            ["candidate_skill_context_key"] = CandidateSkillContextKey,
-            ["candidate_state_context_key"] = CandidateStateContextKey,
+            ["current_state_context_key"] = CurrentStateContextKey,
+            ["action_keys_key"] = ActionKeysKey,
+            ["action_legal_mask_key"] = ActionLegalMaskKey,
+            ["action_values_key"] = ActionValuesKey,
             ["state_context_token_key"] = StateContextTokenKey,
             ["state_vector_group_keys"] = StateVectorGroupSchemas.Select(group => group.GroupKey).ToList(),
             ["state_vector_feature_key_fields"] = StateVectorGroupSchemas.ToDictionary(
                 group => group.GroupKey, group => group.FeatureKeysField),
             ["state_history_feature_keys"] = ExtractStateFeatureKeys(historyStateContext),
-            ["candidate_state_feature_keys"] = ExtractStateFeatureKeys(candidateStateContext),
+            ["current_state_feature_keys"] = ExtractStateFeatureKeys(currentStateContext),
         };
     }
 

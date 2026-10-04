@@ -12,11 +12,11 @@ from common.policy.model import repetition as repetition_module
 from common.policy.model import attention_variants as attention_variants_module
 from common.policy.model.attention_residual import FullAttentionResidual
 from common.policy.model.position_encoding import RotaryPositionEncoding
-from common.policy.model import split_encoder as split
+from common.policy.model import causal_encoder as causal
 from common.policy.model.trace import TraceableTransformerEncoderLayer
 from common.training.metrics import MetricAccumulator
 from training.loop import training_loop
-from tests.grpo.test_grpo import _decision
+from tests.training._causal_fixtures import make_batch, make_data_spec
 
 
 def _layer(*, norm_first=True, activation="swiglu", kv_heads=1, dropout=0.0):
@@ -32,46 +32,41 @@ def _encoded(tokens, prefix_length):
     return {
         "tokens": tokens,
         "prefix_length": prefix_length,
-        "candidate_count": 2,
-        "prefix_valid": prefix_valid,
-        "candidate_valid": torch.tensor([[True, False], [False, False]]),
+        "valid": torch.cat((prefix_valid, torch.tensor([[True, False], [False, False]])), dim=1),
         "position_ids": torch.arange(tokens.shape[1]).expand(2, -1),
     }
 
 
-def _reference_split_layer(layer, encoded, rope):
-    """保留优化前的逐段投影/FFN 作为独立参照，保护 attention 分区契约。"""
-    lengths = (encoded["prefix_length"], 2)
-    parts = encoded["tokens"].split(lengths, dim=1)
-    positions = encoded["position_ids"].split(lengths, dim=1)
-    projected = []
-    for hidden, ids in zip(parts, positions):
-        values = layer.norm1(hidden) if layer.norm_first else hidden
-        query, key, value = split.project_qkv(layer.self_attn, values)
-        query, key = split.rotate_qk(
-            rope, split.split_heads(query, 4),
-            split.split_heads(key, split.kv_head_count(layer.self_attn)), ids, ids,
-        )
-        projected.append((query, key, split.split_heads(value, split.kv_head_count(layer.self_attn))))
-    valid = (encoded["prefix_valid"], encoded["candidate_valid"])
-    outputs = []
-    for index, hidden in enumerate(parts):
-        attended, _ = split.run_head_attention(
-            layer, projected[index][0],
-            torch.cat([part[1] for part in projected[:index + 1]], dim=2),
-            torch.cat([part[2] for part in projected[:index + 1]], dim=2),
-            key_valid=torch.cat(valid[:index + 1], dim=1),
-            causal=index == 0, collect_attention=False, force_explicit_mask=True,
-        )
-        outputs.append(split.finish_layer(layer, hidden, attended))
-    return torch.cat(outputs, dim=1)
+def _reference_causal_layer(layer, encoded, rope):
+    """用完整矩阵和显式 KV 扩展验证因果层的输出及梯度。"""
+    from common.policy.model.attention_masks import build_allowed_mask
+    values = layer.norm1(encoded["tokens"]) if layer.norm_first else encoded["tokens"]
+    query, key, value = causal.project_qkv(layer.self_attn, values)
+    query, key = causal.rotate_qk(
+        rope, causal.split_heads(query, 4),
+        causal.split_heads(key, causal.kv_head_count(layer.self_attn)),
+        encoded["position_ids"], encoded["position_ids"],
+    )
+    value = causal.split_heads(value, causal.kv_head_count(layer.self_attn))
+    factor = 4 // causal.kv_head_count(layer.self_attn)
+    key = key.repeat_interleave(factor, dim=1)
+    value = value.repeat_interleave(factor, dim=1)
+    allowed = build_allowed_mask(
+        encoded["valid"], query_count=values.shape[1],
+        key_count=values.shape[1], causal=True,
+    )
+    attended = torch.nn.functional.scaled_dot_product_attention(
+        query, key, value, attn_mask=allowed, dropout_p=0.0,
+    )
+    attended = layer.self_attn.out_proj(attended.transpose(1, 2).reshape_as(values))
+    return causal.finish_layer(layer, encoded["tokens"], attended)
 
 
 @pytest.mark.parametrize("norm_first", (True, False))
 @pytest.mark.parametrize("activation", ("gelu", "swiglu"))
 @pytest.mark.parametrize("kv_heads", (1, 2, 4))
 @pytest.mark.parametrize("prefix_length", (0, 3))
-def test_fused_segments_match_previous_outputs_and_gradients(norm_first, activation, kv_heads, prefix_length):
+def test_causal_layer_matches_explicit_attention_outputs_and_gradients(norm_first, activation, kv_heads, prefix_length):
     torch.manual_seed(12)
     layer = _layer(norm_first=norm_first, activation=activation, kv_heads=kv_heads).double()
     reference = deepcopy(layer)
@@ -79,14 +74,12 @@ def test_fused_segments_match_previous_outputs_and_gradients(norm_first, activat
     reference_tokens = tokens.detach().clone().requires_grad_()
     rope = RotaryPositionEncoding(2)
     encoded = _encoded(tokens, prefix_length)
-    prefix, candidate = tokens.split((prefix_length, 2), dim=1)
-    actual = torch.cat(split.run_split_layer(
-        layer, prefix, candidate,
-        prefix_valid=encoded["prefix_valid"], candidate_valid=encoded["candidate_valid"],
+    actual = causal.run_causal_layer(
+        layer, tokens, key_valid=encoded["valid"],
         position_ids=encoded["position_ids"],
         rotary_position_encoding=rope, force_explicit_mask=True,
-    )[:2], dim=1)
-    expected = _reference_split_layer(reference, _encoded(reference_tokens, prefix_length), rope)
+    )[0]
+    expected = _reference_causal_layer(reference, _encoded(reference_tokens, prefix_length), rope)
     torch.testing.assert_close(actual, expected, atol=1e-10, rtol=1e-9)
     probe = torch.randn_like(actual)
     (actual * probe).sum().backward()
@@ -96,7 +89,7 @@ def test_fused_segments_match_previous_outputs_and_gradients(norm_first, activat
         torch.testing.assert_close(actual_param.grad, expected_param.grad, atol=1e-10, rtol=1e-8)
 
 
-def test_shared_projections_run_once_while_sdpa_keeps_two_regions(monkeypatch):
+def test_shared_projections_and_single_causal_sdpa_run_once(monkeypatch):
     encoder = torch.nn.TransformerEncoder(_layer(), 1, enable_nested_tensor=False)
     encoder.rotary_position_encoding = RotaryPositionEncoding(2)
     layer = encoder.layers[0]
@@ -116,10 +109,10 @@ def test_shared_projections_run_once_while_sdpa_keeps_two_regions(monkeypatch):
         return original_sdpa(*args, **kwargs)
 
     monkeypatch.setattr(attention_variants_module, "scaled_dot_product_attention", counted_sdpa)
-    split.run_split_encoder(encoder, _encoded(torch.randn(2, 5, 8), 3))
+    causal.run_causal_encoder(encoder, _encoded(torch.randn(2, 5, 8), 3))
     for handle in handles:
         handle.remove()
-    assert counts.pop("sdpa") == 2
+    assert counts.pop("sdpa") == 1
     assert len(counts) == 9
     assert set(counts.values()) == {1}
 
@@ -139,9 +132,9 @@ def test_fused_checkpoint_preserves_dropout_outputs_and_gradients(full_residual,
     tokens = torch.randn(2, 5, 8, requires_grad=True)
     reference_tokens = tokens.detach().clone().requires_grad_()
     torch.manual_seed(32)
-    actual = torch.cat(split.run_split_encoder(encoder, _encoded(tokens, 3))[:2], dim=1)
+    actual = causal.run_causal_encoder(encoder, _encoded(tokens, 3))[0]
     torch.manual_seed(32)
-    expected = torch.cat(split.run_split_encoder(reference, _encoded(reference_tokens, 3))[:2], dim=1)
+    expected = causal.run_causal_encoder(reference, _encoded(reference_tokens, 3))[0]
     torch.testing.assert_close(actual, expected)
     probe = torch.randn_like(actual)
     (actual * probe).sum().backward()
@@ -152,17 +145,17 @@ def test_fused_checkpoint_preserves_dropout_outputs_and_gradients(full_residual,
 
 
 @pytest.mark.parametrize("mode", ("whitelist", "blacklist"))
-def test_prepared_repetition_uses_cached_mask_with_reordered_candidates(mode, monkeypatch):
+def test_prepared_repetition_reuses_cached_mask_in_fixed_action_order(mode, monkeypatch):
     config = repetition_module.RepetitionConfig(mode=mode, skills=("b",), penalty=1.25)
     batch = {
-        "candidate_skill_ids": torch.zeros((5, 4), dtype=torch.int64),
-        "candidate_action_keys": [["a", "b", "ogcd_wait", "a"], ["b", "a", "a", "ogcd_wait"]] * 2 + [["a", "b", "ogcd_wait", "a"]],
+        "action_legal_mask": torch.ones((5, 4), dtype=torch.bool),
+        "action_keys": [["a", "b", "ogcd_wait", "c"]] * 5,
         "history_action_keys": [["a", "ogcd_wait"], ["a"], [], ["ogcd_wait"], ["b", "ogcd_wait", "ogcd_wait"]],
     }
     prepared = repetition_module.prepare_repetition_penalty(batch, config)
     assert "repetition_penalty_mask" not in batch
     expected = (
-        [[True, False, False, True], [False, True, True, False], [False] * 4, [False] * 4, [False] * 4]
+        [[True, False, False, False], [True, False, False, False], [False] * 4, [False] * 4, [False] * 4]
         if mode == "whitelist" else
         [[False] * 4, [False] * 4, [False] * 4, [False] * 4, [False, True, False, False]]
     )
@@ -184,10 +177,10 @@ def test_prepared_repetition_uses_cached_mask_with_reordered_candidates(mode, mo
 def test_repetition_cache_is_bounded_and_policy_changes_rebuild_mask():
     first = repetition_module.RepetitionConfig("blacklist", ("a",), 1.0)
     second = repetition_module.RepetitionConfig("blacklist", ("b",), 2.0)
-    batch = {"candidate_skill_ids": torch.zeros(1, 2), "candidate_action_keys": [["a", "b"]], "history_action_keys": [["a"]]}
+    batch = {"action_legal_mask": torch.ones((1, 2), dtype=torch.bool), "action_keys": [["a", "b"]], "history_action_keys": [["a"]]}
     prepared = repetition_module.prepare_repetition_penalty(batch, first)
     assert not repetition_module.build_repetition_penalty_mask(prepared, second, device="cpu").any()
-    assert repetition_module._candidate_penalty_indices.cache_info().maxsize == 128
+    assert repetition_module._action_penalty_indices.cache_info().maxsize == 128
     # 调用方修改输入后重新准备，不能复用旧的最近动作快照。
     prepared["history_action_keys"] = [["b"]]
     refreshed = repetition_module.prepare_repetition_penalty(prepared, first)
@@ -195,9 +188,13 @@ def test_repetition_cache_is_bounded_and_policy_changes_rebuild_mask():
 
 
 def _sample(history_length, scene_length):
-    decision = _decision(history_length=history_length, scene_length=scene_length, action_index=0)
-    sample = {key: value[0] for key, value in decision.batch.items()}
-    sample.update(metadata={}, label_action_key="fire_iii", label_index=0)
+    spec = make_data_spec(state_dim=3, scene_dim=2)
+    values = make_batch(spec, history_length=history_length, scene_length=scene_length)
+    sample = {key: value[0] for key, value in values.items()}
+    sample.update(metadata={}, label_action_key=spec.action_keys[0], label_index=0)
+    sample["action_keys"] = list(spec.action_keys)
+    sample["history_action_keys"] = [spec.action_keys[0]] * history_length
+    sample["action_values"] = torch.ones(spec.num_actions)
     sample["history_state_vectors"] = torch.arange(history_length * 3, dtype=torch.float32).reshape(history_length, 3)
     sample["history_skill_ids"] = torch.arange(history_length, dtype=torch.int32)
     sample["scene_vectors"] = torch.arange(scene_length * 2, dtype=torch.float32).reshape(scene_length, 2)
@@ -245,7 +242,7 @@ def test_compact_padding_mask_and_history_truncation_stay_aligned():
     assert batch["history_bank_skill_ids"].data_ptr() == compact["history_bank_skill_ids"].data_ptr()
 
 
-def test_repetition_preparation_follows_history_truncation_and_candidate_shuffle():
+def test_repetition_preparation_follows_history_truncation_in_fixed_action_space():
     class Augmentation:
         def random(self):
             return 0.0
@@ -253,21 +250,20 @@ def test_repetition_preparation_follows_history_truncation_and_candidate_shuffle
         def randint(self, _start, _end):
             return 2
 
-        def shuffle(self, values):
-            values.reverse()
-
     sample = _sample(3, 0)
     sample["history_action_keys"] = ["a", "b", "ogcd_wait"]
-    sample["candidate_action_keys"] = ["a", "b", "ogcd_wait"]
+    sample["action_keys"] = ["a", "b", "ogcd_wait"]
+    sample["label_action_key"] = "a"
+    sample["action_values"] = torch.ones(3)
+    sample["action_legal_mask"] = torch.ones(3, dtype=torch.bool)
     collator = TrainingCollator(
         history_truncation_enabled=True, history_truncation_probability=1.0,
-        candidate_shuffle_enabled=True, candidate_shuffle_probability=1.0,
         rng=Augmentation(),
     )
     config = repetition_module.RepetitionConfig("blacklist", ("b",), 1.0)
     prepared = repetition_module.prepare_repetition_penalty(collator([sample]), config)
     assert prepared["history_action_keys"] == [["b", "ogcd_wait"]]
-    assert prepared["candidate_action_keys"] == [["ogcd_wait", "b", "a"]]
+    assert prepared["action_keys"] == [["a", "b", "ogcd_wait"]]
     assert prepared["repetition_penalty_mask"].tolist() == [[False, True, False]]
 
 
@@ -320,7 +316,8 @@ def test_epoch_metrics_keep_sample_weighting_and_prepare_repetition(train, monke
     model = Policy()
     optimizer = torch.optim.SGD(model.parameters(), lr=0)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1.0)
-    batches = [{"label_index": torch.zeros(count, dtype=torch.long), "candidate_skill_ids": torch.zeros(count, 2)} for count in (3, 1)]
+    batches = [{"label_index": torch.zeros(count, dtype=torch.long),
+                "action_legal_mask": torch.ones((count, 2), dtype=torch.bool)} for count in (3, 1)]
     monkeypatch.setattr(torch.Tensor, "item", reject_item)
     if train:
         metrics = training_loop.train_epoch(model, batches, optimizer, scheduler, torch.device("cpu"))

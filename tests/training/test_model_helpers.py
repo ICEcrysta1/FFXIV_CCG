@@ -24,9 +24,9 @@ from common.policy import config as policy_config_module
 from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, ModelInputContract, Normalizer
 from common.policy.data.schema import SceneWindowSchema, TrainingSchema
-from common.policy.model import RepetitionConfig, build_split_attention_mask
+from common.policy.model import RepetitionConfig, build_causal_attention_mask
 from common.policy.model.attention_residual import FullAttentionResidual
-from common.policy.model.input_encoder import CandidateInputEncoder
+from common.policy.model.input_encoder import CausalInputEncoder
 from common.policy.model.position_encoding import RotaryPositionEncoding
 from common.policy.model.repetition import (
     apply_repetition_penalty,
@@ -41,6 +41,7 @@ from scripts.convert_fflogs import cache as cache_module
 from scripts.convert_fflogs.cache import cache_compile as cache_compile_module
 from common.policy.data import source_selection as cache_paths_module
 from training.config import ActionQualityLossConfig, RunConfig, ValuePreferenceConfig
+from tests.training._causal_fixtures import make_checkpoint
 
 
 def _attach_rope(encoder):
@@ -106,7 +107,7 @@ def _write_config(tmp_path: Path, payload: object) -> Path:
         ),
         (
             {"model": {"scorer_use_raw_projection": True}},
-            "model.scorer_use_raw_projection is removed",
+            "removed model options",
         ),
         (
             {"training": {"max_history": 128}},
@@ -121,8 +122,8 @@ def _write_config(tmp_path: Path, payload: object) -> Path:
         ({"training": {"history_truncation": [1]}}, "history_truncation must be a mapping"),
         ({"training": {"history_truncation": {"probability": 1.1}}}, "probability must be between 0 and 1"),
         ({"training": {"history_truncation": {"min_recent": 0}}}, "history_min_recent must be >= 1"),
-        ({"training": {"candidate_shuffle": [1]}}, "candidate_shuffle must be a mapping"),
-        ({"training": {"candidate_shuffle": {"probability": -0.1}}}, "probability must be between 0 and 1"),
+        ({"training": {"candidate_shuffle": [1]}}, "removed training options"),
+        ({"training": {"candidate_shuffle": {"probability": -0.1}}}, "removed training options"),
         ({"training": {"value_preference": [1]}}, "value_preference must be a mapping"),
         ({"training": {"value_preference": {"loss_weight": -1}}}, "loss_weight must be >= 0"),
         ({"training": {"value_preference": {"margin_scale": 0}}}, "margin_scale must be > 0"),
@@ -207,23 +208,22 @@ def test_load_run_config_parses_full_attention_residuals_string_aliases(
 
 
 @pytest.mark.parametrize("raw_value", [False, 0, "false", "no"])
-def test_load_run_config_ignores_removed_scorer_switches_during_migration(
+def test_load_run_config_rejects_disabled_removed_scorer_switches(
     tmp_path: Path,
     raw_value: object,
 ):
-    config = config_module.load_run_config(
-        _write_config(
-            tmp_path,
-            {
-                "model": {
-                    "scorer_use_raw_projection": raw_value,
-                    "scorer_use_candidate_hidden": False,
-                }
-            },
+    with pytest.raises(ValueError, match="removed model options"):
+        config_module.load_run_config(
+            _write_config(
+                tmp_path,
+                {
+                    "model": {
+                        "scorer_use_raw_projection": raw_value,
+                        "scorer_use_candidate_hidden": False,
+                    }
+                },
+            )
         )
-    )
-
-    assert "scorer_use_candidate_hidden" not in asdict(config.model)
 
 
 @pytest.mark.parametrize("raw_value", [True, 1, "true", "yes"])
@@ -233,7 +233,7 @@ def test_load_run_config_rejects_enabled_removed_scorer_switch_aliases(
 ):
     with pytest.raises(
         ValueError,
-        match="model.scorer_use_raw_projection is removed",
+        match="removed model options",
     ):
         config_module.load_run_config(
             _write_config(
@@ -399,9 +399,8 @@ def test_load_run_config_rejects_invalid_val_ppg_kv_cache_env(tmp_path, monkeypa
 
 def test_attention_rejects_negative_token_lengths():
     with pytest.raises(ValueError, match="non-negative"):
-        build_split_attention_mask(
-            prefix_length=-1,
-            candidate_count=0,
+        build_causal_attention_mask(
+            token_count=-1,
             device=torch.device("cpu"),
         )
 
@@ -409,16 +408,18 @@ def test_attention_rejects_negative_token_lengths():
 def test_data_spec_from_dict_and_mismatch_error():
     payload = {
         "job_tag": "black_mage",
-        "num_candidates": 2,
+        "num_actions": 2,
         "state_dim": 3,
         "scene_dim": 1,
         "skill_feature_dim": 4,
         "num_scene_types": 1,
-        "candidate_action_keys": ["fire_iii", "fire_iv"],
+        "action_keys": ["fire_iii", "fire_iv"],
+        "action_to_vocab_id": [1, 2],
+        "action_is_gcd": [True, True],
         "skill_feature_names": ["potency", "cast_time.seconds", "gcd_window.seconds", "value"],
     }
     spec = DataSpec.from_dict(payload)
-    assert spec.candidate_action_keys == ("fire_iii", "fire_iv")
+    assert spec.action_keys == ("fire_iii", "fire_iv")
     assert spec.skill_feature_names[-1] == "value"
 
     other = DataSpec.from_dict({**payload, "state_dim": 4})
@@ -446,9 +447,9 @@ def test_repetition_config_checkpoint_and_disabled_mask_paths():
     assert repetition_config_from_checkpoint({}) == RepetitionConfig()
 
     batch = {
-        "candidate_skill_ids": torch.zeros((1, 2), dtype=torch.long),
+        "action_legal_mask": torch.ones((1, 2), dtype=torch.bool),
         "history_action_keys": "not-a-batch",
-        "candidate_action_keys": [["fire_iv", "fire_iii"]],
+        "action_keys": [["fire_iv", "fire_iii"]],
     }
     logits = torch.zeros((1, 2))
     config = RepetitionConfig(mode="blacklist", skills=("fire_iv",), penalty=1.0)
@@ -462,9 +463,9 @@ def test_repetition_config_checkpoint_and_disabled_mask_paths():
         apply_repetition_penalty(
             logits,
             {
-                "candidate_skill_ids": torch.zeros((1, 1), dtype=torch.long),
+                "action_legal_mask": torch.ones((1, 1), dtype=torch.bool),
                 "history_action_keys": [["fire_iv"], ["fire_iv"]],
-                "candidate_action_keys": [["fire_iv"]],
+                "action_keys": [["fire_iv"]],
             },
             config,
         )
@@ -473,12 +474,14 @@ def test_repetition_config_checkpoint_and_disabled_mask_paths():
 def _encoder_spec() -> DataSpec:
     return DataSpec(
         job_tag="black_mage",
-        num_candidates=2,
+        num_actions=2,
         state_dim=3,
         scene_dim=2,
         skill_feature_dim=1,
         num_scene_types=1,
-        candidate_action_keys=("fire_iii", "fire_iv"),
+        action_to_vocab_id=(1, 2),
+        action_is_gcd=(True, True),
+        action_keys=("fire_iii", "fire_iv"),
         skill_feature_names=("potency",),
     )
 
@@ -489,10 +492,11 @@ def _encoder_batch() -> dict[str, torch.Tensor]:
         "history_skill_features": torch.zeros((1, 1, 1)),
         "history_state_vectors": torch.zeros((1, 1, 3)),
         "history_mask": torch.ones((1, 1), dtype=torch.bool),
-        "candidate_skill_ids": torch.ones((1, 2), dtype=torch.long),
-        "candidate_skill_features": torch.zeros((1, 2, 1)),
-        "candidate_state_vectors": torch.zeros((1, 2, 3)),
-        "candidate_legal_mask": torch.ones((1, 2), dtype=torch.bool),
+
+
+        "current_state_vectors": torch.zeros((1, 3)),
+        "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
+        "action_legal_mask": torch.ones((1, 2), dtype=torch.bool),
         "scene_vectors": torch.zeros((1, 1, 2)),
         "scene_types": torch.zeros((1, 1), dtype=torch.long),
         "scene_mask": torch.ones((1, 1), dtype=torch.bool),
@@ -501,7 +505,7 @@ def _encoder_batch() -> dict[str, torch.Tensor]:
 
 def test_input_encoder_handles_null_state_and_rejects_bad_shapes():
     spec = _encoder_spec()
-    encoder = CandidateInputEncoder(
+    encoder = CausalInputEncoder(
         spec,
         ModelConfig(d_model=8, pair_embedding_dim=4, n_layers=1, n_heads=2, ff_dim=16),
         vocab_size=4,
@@ -509,7 +513,7 @@ def test_input_encoder_handles_null_state_and_rejects_bad_shapes():
     assert encoder._embed_state(torch.zeros((1, 3)), None).shape == (1, 4)
 
     with pytest.raises(ValueError, match="non-empty scene"):
-        CandidateInputEncoder(
+        CausalInputEncoder(
             DataSpec(**{**spec.__dict__, "scene_dim": 0}),
             ModelConfig(d_model=8, pair_embedding_dim=4, n_layers=1, n_heads=2, ff_dim=16),
             vocab_size=4,
@@ -517,12 +521,12 @@ def test_input_encoder_handles_null_state_and_rejects_bad_shapes():
 
     invalid_batches = [
         ("history skill/state lengths", "history_state_vectors", torch.zeros((1, 2, 3))),
-        ("candidate count", "candidate_skill_ids", torch.ones((1, 1), dtype=torch.long)),
-        ("candidate skill/state counts", "candidate_state_vectors", torch.zeros((1, 1, 3))),
-        ("candidate state dimension", "candidate_state_vectors", torch.zeros((1, 2, 4))),
+        ("current_state_vectors must have shape", "current_state_vectors", torch.zeros((1, 1, 3))),
+        ("current state dimension", "current_state_vectors", torch.zeros((1, 4))),
+        ("history state dimension", "history_state_vectors", torch.zeros((1, 1, 4))),
         ("scene dimension", "scene_vectors", torch.zeros((1, 1, 3))),
-        ("skill feature dimension", "candidate_skill_features", torch.zeros((1, 2, 2))),
-        ("candidate legal mask", "candidate_legal_mask", torch.ones((1, 1), dtype=torch.bool)),
+        ("skill feature dimension", "history_skill_features", torch.zeros((1, 1, 2))),
+        ("action legal mask", "action_legal_mask", torch.ones((1, 1), dtype=torch.bool)),
         ("label index", "label_index", torch.tensor([2])),
     ]
     for message, key, value in invalid_batches:
@@ -534,7 +538,7 @@ def test_input_encoder_handles_null_state_and_rejects_bad_shapes():
 
 def test_input_encoder_materializes_compact_history_to_dense_semantics():
     spec = _encoder_spec()
-    encoder = CandidateInputEncoder(
+    encoder = CausalInputEncoder(
         spec,
         ModelConfig(d_model=8, pair_embedding_dim=4, n_layers=1, n_heads=2, ff_dim=16),
         vocab_size=4,
@@ -576,52 +580,34 @@ def test_input_encoder_materializes_compact_history_to_dense_semantics():
 
 
 def test_model_and_trace_helpers_cover_error_and_norm_paths():
-    from common.policy.model import CandidateTransformerModel
+    from common.policy.model import CausalPolicyModel
 
     with pytest.raises(ValueError, match="divisible"):
-        CandidateTransformerModel(
+        CausalPolicyModel(
             _encoder_spec(),
             ModelConfig(d_model=7, pair_embedding_dim=4, n_layers=1, n_heads=2, ff_dim=16),
             vocab_size=4,
         )
+    with pytest.raises(ValueError, match="missing input_contract"):
+        CausalPolicyModel.checkpoint_model_config({})
+    checkpoint = make_checkpoint()
+    checkpoint["model_config"] = []
     with pytest.raises(ValueError, match="missing model_config"):
-        CandidateTransformerModel.checkpoint_model_config({})
-    with pytest.raises(ValueError, match="missing model_config"):
-        CandidateTransformerModel.checkpoint_model_config({"model_config": []})
-    with pytest.raises(ValueError, match="removed scorer_use_raw_projection"):
-        CandidateTransformerModel.checkpoint_model_config(
-            {"model_config": {"scorer_use_raw_projection": True}}
-        )
-    migrated_config = CandidateTransformerModel.checkpoint_model_config(
-        {
-            "model_config": {
-                "history_capacity": 128,
-                "scorer_use_raw_projection": False,
-                "scorer_use_candidate_hidden": True,
-            }
-        }
-    )
-    assert migrated_config.history_capacity == 128
-    assert migrated_config.num_kv_heads == migrated_config.n_heads
-    assert "scorer_use_candidate_hidden" not in asdict(migrated_config)
-    with pytest.raises(ValueError, match="removed candidate-shared RoPE"):
-        CandidateTransformerModel.checkpoint_model_config(
-            {
-                "model_config": {
-                    "history_capacity": 128,
-                    "position_id_semantics": "candidate_block_shared",
-                }
-            }
-        )
-    with pytest.raises(ValueError, match="scorer_use_candidate_hidden=false"):
-        CandidateTransformerModel.checkpoint_model_config(
-            {
-                "model_config": {
-                    "history_capacity": 128,
-                    "scorer_use_candidate_hidden": False,
-                }
-            }
-        )
+        CausalPolicyModel.checkpoint_model_config(checkpoint)
+    for removed_key, raw_value in (
+        ("scorer_use_raw_projection", True),
+        ("scorer_use_raw_projection", False),
+        ("scorer_use_candidate_hidden", True),
+        ("scorer_use_candidate_hidden", False),
+        ("position_id_semantics", "candidate_block_shared"),
+    ):
+        checkpoint = make_checkpoint()
+        checkpoint["model_config"][removed_key] = raw_value
+        with pytest.raises(ValueError, match="removed model options"):
+            CausalPolicyModel.checkpoint_model_config(checkpoint)
+    restored_config = CausalPolicyModel.checkpoint_model_config(make_checkpoint())
+    assert restored_config.num_kv_heads == 1
+    assert "scorer_use_candidate_hidden" not in asdict(restored_config)
 
     tokens = torch.zeros((1, 2, 4))
 
@@ -638,10 +624,9 @@ def test_model_and_trace_helpers_cover_error_and_norm_paths():
     ).eval())
     encoded = {
         "tokens": tokens,
-        "prefix_length": 1,
-        "candidate_count": 1,
-        "prefix_valid": torch.ones((1, 1), dtype=torch.bool),
-        "candidate_valid": torch.ones((1, 1), dtype=torch.bool),
+
+        "valid": torch.cat((torch.ones((1, 1), dtype=torch.bool), torch.ones((1, 1), dtype=torch.bool)), dim=1),
+
     }
     trace = trace_encoder(encoder, encoded)
     assert trace.hidden.shape == tokens.shape
@@ -653,9 +638,9 @@ def test_model_and_trace_helpers_cover_error_and_norm_paths():
 def test_model_defaults_to_pre_ln_gelu_with_final_layer_norm():
     from torch.nn import functional as F
 
-    from common.policy.model import CandidateTransformerModel
+    from common.policy.model import CausalPolicyModel
 
-    model = CandidateTransformerModel(
+    model = CausalPolicyModel(
         _encoder_spec(),
         ModelConfig(d_model=8, pair_embedding_dim=4, n_layers=2, n_heads=2, ff_dim=16),
         vocab_size=4,
@@ -723,7 +708,7 @@ def test_ffn_activation_checkpoint_preserves_forward_and_gradients(activation):
 def test_split_finish_layer_applies_ffn_dropout_once(norm_first, activation):
     from unittest.mock import patch
 
-    from common.policy.model.split_encoder import finish_layer
+    from common.policy.model.causal_encoder import finish_layer
 
     layer = TraceableTransformerEncoderLayer(
         d_model=8,
@@ -761,7 +746,7 @@ def test_split_finish_layer_applies_ffn_dropout_once(norm_first, activation):
 
 def test_attention_block_checkpoint_matches_sdpa_checkpoint():
     """整块 attention checkpoint 与只重算 SDPA 的前向输出、梯度必须一致。"""
-    from common.policy.model.split_encoder import run_split_encoder
+    from common.policy.model.causal_encoder import run_causal_encoder
 
     layer_kwargs = {
         "d_model": 8,
@@ -785,10 +770,9 @@ def test_attention_block_checkpoint_matches_sdpa_checkpoint():
 
     base_tokens = torch.randn(2, 4, 8)
     encoded_template = {
-        "prefix_length": 2,
-        "candidate_count": 2,
-        "prefix_valid": torch.ones((2, 2), dtype=torch.bool),
-        "candidate_valid": torch.ones((2, 2), dtype=torch.bool),
+
+        "valid": torch.cat((torch.ones((2, 2), dtype=torch.bool), torch.ones((2, 2), dtype=torch.bool)), dim=1),
+
     }
 
     def run(encoder):
@@ -796,8 +780,9 @@ def test_attention_block_checkpoint_matches_sdpa_checkpoint():
         torch.manual_seed(29)
         tokens = base_tokens.detach().clone().requires_grad_(True)
         encoded = {**encoded_template, "tokens": tokens}
-        prefix, candidate, _, _ = run_split_encoder(encoder, encoded)
-        loss = torch.cat((prefix, candidate), dim=1).square().mean()
+        hidden, layer_hidden, attentions = run_causal_encoder(encoder, encoded)
+        assert layer_hidden == attentions == ()
+        loss = hidden.square().mean()
         loss.backward()
         gradients = {
             name: parameter.grad.detach().clone()
@@ -819,7 +804,7 @@ def test_attention_block_checkpoint_matches_sdpa_checkpoint():
 @pytest.mark.parametrize("num_kv_heads", (1, 2, 4))
 def test_attention_activation_checkpoint_preserves_forward_and_gradients(num_kv_heads):
     from unittest.mock import patch
-    from common.policy.model.split_encoder import run_split_encoder
+    from common.policy.model.causal_encoder import run_causal_encoder
 
     torch.manual_seed(7)
     layer_kwargs = {
@@ -848,10 +833,9 @@ def test_attention_activation_checkpoint_preserves_forward_and_gradients(num_kv_
     checkpointed_input = eager_input.detach().clone().requires_grad_(True)
     encoded = {
         "tokens": eager_input,
-        "prefix_length": 2,
-        "candidate_count": 2,
-        "prefix_valid": torch.ones((2, 2), dtype=torch.bool),
-        "candidate_valid": torch.ones((2, 2), dtype=torch.bool),
+
+        "valid": torch.cat((torch.ones((2, 2), dtype=torch.bool), torch.ones((2, 2), dtype=torch.bool)), dim=1),
+
     }
     checkpointed_encoded = {**encoded, "tokens": checkpointed_input}
     with patch(
@@ -862,22 +846,21 @@ def test_attention_activation_checkpoint_preserves_forward_and_gradients(num_kv_
         wraps=torch.nn.functional.scaled_dot_product_attention,
     ) as sdpa:
         torch.manual_seed(123)
-        eager_output = run_split_encoder(eager, encoded)
+        eager_output = run_causal_encoder(eager, encoded)
         sdpa.reset_mock()
         torch.manual_seed(123)
-        checkpointed_output = run_split_encoder(checkpointed, checkpointed_encoded)
-        forward_call_count = 2 * (num_kv_heads if num_kv_heads < 4 else 1)
+        checkpointed_output = run_causal_encoder(checkpointed, checkpointed_encoded)
+        forward_call_count = num_kv_heads if num_kv_heads < 4 else 1
         assert sdpa.call_count == forward_call_count
-        sum(value.square().sum() for value in eager_output[:2]).backward()
-        sum(value.square().sum() for value in checkpointed_output[:2]).backward()
+        eager_output[0].square().sum().backward()
+        checkpointed_output[0].square().sum().backward()
         assert sdpa.call_count == 2 * forward_call_count
 
-    assert attention_checkpoint.call_count == 2
+    assert attention_checkpoint.call_count == 1
     for call in attention_checkpoint.call_args_list:
         # checkpoint 在广播之前保存输入，K/V 激活仍是压缩的头数。
         assert call.args[2].shape[1] == call.args[3].shape[1] == num_kv_heads
-    for eager_value, checkpointed_value in zip(eager_output[:2], checkpointed_output[:2]):
-        assert torch.allclose(eager_value, checkpointed_value)
+    assert torch.allclose(eager_output[0], checkpointed_output[0])
     assert torch.allclose(eager_input.grad, checkpointed_input.grad)
     for eager_parameter, checkpointed_parameter in zip(
         eager.parameters(), checkpointed.parameters()
@@ -888,7 +871,7 @@ def test_attention_activation_checkpoint_preserves_forward_and_gradients(num_kv_
 @pytest.mark.parametrize("activation", ("gelu", "swiglu"))
 def test_full_attention_residual_checkpoint_recomputes_source_path_and_preserves_gradients(activation):
     from unittest.mock import patch
-    from common.policy.model.split_encoder import run_split_encoder
+    from common.policy.model.causal_encoder import run_causal_encoder
 
     torch.manual_seed(7)
     layer_kwargs = {
@@ -919,15 +902,14 @@ def test_full_attention_residual_checkpoint_recomputes_source_path_and_preserves
     checkpointed_input = eager_input.detach().clone().requires_grad_(True)
     encoded = {
         "tokens": eager_input,
-        "prefix_length": 2,
-        "candidate_count": 2,
-        "prefix_valid": torch.ones((2, 2), dtype=torch.bool),
-        "candidate_valid": torch.ones((2, 2), dtype=torch.bool),
+
+        "valid": torch.cat((torch.ones((2, 2), dtype=torch.bool), torch.ones((2, 2), dtype=torch.bool)), dim=1),
+
     }
     checkpointed_encoded = {**encoded, "tokens": checkpointed_input}
 
     with patch(
-        "common.policy.model.split_encoder.checkpoint",
+        "common.policy.model.causal_encoder.checkpoint",
         wraps=__import__("torch.utils.checkpoint", fromlist=["checkpoint"]).checkpoint,
     ) as residual_checkpoint, patch(
         "common.policy.model.trace.checkpoint",
@@ -937,18 +919,17 @@ def test_full_attention_residual_checkpoint_recomputes_source_path_and_preserves
         wraps=torch.nn.functional.scaled_dot_product_attention,
     ) as sdpa:
         torch.manual_seed(123)
-        eager_output = run_split_encoder(eager, encoded)
+        eager_output = run_causal_encoder(eager, encoded)
         sdpa.reset_mock()
         torch.manual_seed(123)
-        checkpointed_output = run_split_encoder(checkpointed, checkpointed_encoded)
-        sum(value.square().sum() for value in eager_output[:2]).backward()
-        sum(value.square().sum() for value in checkpointed_output[:2]).backward()
+        checkpointed_output = run_causal_encoder(checkpointed, checkpointed_encoded)
+        eager_output[0].square().sum().backward()
+        checkpointed_output[0].square().sum().backward()
 
     assert residual_checkpoint.call_count == 1
     assert ffn_checkpoint.call_count == 0
-    assert sdpa.call_count == 8
-    for eager_value, checkpointed_value in zip(eager_output[:2], checkpointed_output[:2]):
-        assert torch.allclose(eager_value, checkpointed_value)
+    assert sdpa.call_count == 4
+    assert torch.allclose(eager_output[0], checkpointed_output[0])
     assert torch.allclose(eager_input.grad, checkpointed_input.grad)
     for eager_parameter, checkpointed_parameter in zip(
         eager.parameters(), checkpointed.parameters()
@@ -958,7 +939,7 @@ def test_full_attention_residual_checkpoint_recomputes_source_path_and_preserves
 
 def test_full_attention_residual_checkpoint_preserves_partial_layer_granularity():
     from unittest.mock import patch
-    from common.policy.model.split_encoder import run_split_encoder
+    from common.policy.model.causal_encoder import run_causal_encoder
 
     layer_kwargs = {
         "d_model": 8,
@@ -980,20 +961,19 @@ def test_full_attention_residual_checkpoint_preserves_partial_layer_granularity(
     tokens = torch.randn(2, 4, 8, requires_grad=True)
     encoded = {
         "tokens": tokens,
-        "prefix_length": 2,
-        "candidate_count": 2,
-        "prefix_valid": torch.ones((2, 2), dtype=torch.bool),
-        "candidate_valid": torch.ones((2, 2), dtype=torch.bool),
+
+        "valid": torch.cat((torch.ones((2, 2), dtype=torch.bool), torch.ones((2, 2), dtype=torch.bool)), dim=1),
+
     }
     with patch(
-        "common.policy.model.split_encoder.checkpoint",
+        "common.policy.model.causal_encoder.checkpoint",
         wraps=__import__("torch.utils.checkpoint", fromlist=["checkpoint"]).checkpoint,
     ) as residual_checkpoint, patch(
         "common.policy.model.trace.checkpoint",
         wraps=__import__("torch.utils.checkpoint", fromlist=["checkpoint"]).checkpoint,
     ) as ffn_checkpoint:
-        output = run_split_encoder(encoder, encoded)
-        sum(value.square().sum() for value in output[:2]).backward()
+        output = run_causal_encoder(encoder, encoded)
+        output[0].square().sum().backward()
 
     assert residual_checkpoint.call_count == 0
     assert ffn_checkpoint.call_count == 1
@@ -1092,8 +1072,8 @@ def test_training_helpers_and_epoch_metrics(tmp_path, monkeypatch):
         output,
         {
             "label_index": torch.tensor([0]),
-            "candidate_values": torch.tensor([[2.0, 1.0]]),
-            "candidate_legal_mask": torch.ones((1, 2), dtype=torch.bool),
+            "action_values": torch.tensor([[2.0, 1.0]]),
+            "action_legal_mask": torch.ones((1, 2), dtype=torch.bool),
         },
         configured_auxiliary_losses(value_preference=ValuePreferenceConfig(enabled=False)),
     )
@@ -1138,12 +1118,14 @@ def test_training_helpers_and_epoch_metrics(tmp_path, monkeypatch):
     checkpoint = tmp_path / "checkpoint.pt"
     spec = DataSpec(
         job_tag="black_mage",
-        num_candidates=2,
+        num_actions=2,
         state_dim=3,
         scene_dim=3,
         skill_feature_dim=1,
         num_scene_types=1,
-        candidate_action_keys=("a", "b"),
+        action_to_vocab_id=(1, 2),
+        action_is_gcd=(True, True),
+        action_keys=("a", "b"),
         skill_feature_names=("potency",),
     )
     schema = TrainingSchema(
@@ -1163,7 +1145,7 @@ def test_training_helpers_and_epoch_metrics(tmp_path, monkeypatch):
             ),
         ),
         state_group_feature_keys={"player_state": ("a", "b", "c")},
-        candidate_skill_fields=("potency",),
+
         skill_history_fields=(),
     )
     normalizer = Normalizer()
@@ -1187,7 +1169,7 @@ def test_training_helpers_and_epoch_metrics(tmp_path, monkeypatch):
     assert saved["epoch"] == 1
     assert saved["job_tag"] == "black_mage"
     assert saved["model_variant"] == "artzip"
-    assert saved["data_spec"]["num_candidates"] == 2
+    assert saved["data_spec"]["num_actions"] == 2
     assert saved["input_contract"]["normalizer"]["config"]["fight_time_max"] == 1800.0
 
 
@@ -1240,11 +1222,13 @@ def _fake_training_dataset(job_tag: str = "black_mage", *, actions=("a", "b")):
     class FakeDataset:
         def __init__(self):
             self.job_tag = job_tag
-            self.num_candidates = len(actions)
+            self.num_actions = len(actions)
             self.state_dim = 3
             self.scene_dim = 1
             self.num_scene_types = 1
-            self.candidate_action_keys = tuple(actions)
+            self.action_keys = tuple(actions)
+            self.action_to_vocab_id = tuple(range(1, len(actions) + 1))
+            self.action_is_gcd = (True,) * len(actions)
             self.skill_feature_names = ("potency",)
 
         def __len__(self):
@@ -1292,8 +1276,8 @@ def test_build_dataloaders_covers_single_file_empty_shard_and_value_paths(
     assert val_loader.batch_size == config.batch_size
     assert train_dataset is dataset
     assert val_dataset is dataset
-    assert collators[0]["skill_values"] == {"a": 1.0, "b": 2.0}
-    assert collators[1]["skill_values"] == {"a": 1.0, "b": 2.0}
+    assert "skill_values" not in collators[0]
+    assert "skill_values" not in collators[1]
     assert collators[0]["require_quality_percentile"] is quality_enabled
     assert collators[1]["require_quality_percentile"] is False
 
@@ -1450,7 +1434,7 @@ def test_build_dataloaders_rejects_empty_inputs_and_missing_skill_values(tmp_pat
         job_tag="black_mage",
         value_preference=ValuePreferenceConfig(enabled=True, loss_weight=0.1),
     )
-    with pytest.raises(ValueError, match="missing value for candidate actions: missing"):
+    with pytest.raises(ValueError, match="missing value for output actions: missing"):
         training_module.build_dataloaders(
             [tmp_path / "one.json"],
             config,
@@ -1466,8 +1450,8 @@ def test_compose_training_loss_and_autocast_success_paths(monkeypatch):
     }
     batch = {
         "label_index": torch.tensor([0]),
-        "candidate_values": torch.tensor([[2.0, 1.0]]),
-        "candidate_legal_mask": torch.ones((1, 2), dtype=torch.bool),
+        "action_values": torch.tensor([[2.0, 1.0]]),
+        "action_legal_mask": torch.ones((1, 2), dtype=torch.bool),
     }
     losses = compose_training_loss(
         output,
@@ -1576,18 +1560,20 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
             ),
         ),
         state_group_feature_keys={"player_state": ("a", "b", "c")},
-        candidate_skill_fields=("potency",),
+
         skill_history_fields=(),
     )
     normalizer = Normalizer()
     normalizer.configure_job_resources("black_mage")
     dataset = SimpleNamespace(
         job_tag="black_mage",
-        num_candidates=2,
+        num_actions=2,
         state_dim=3,
         scene_dim=3,
         num_scene_types=1,
-        candidate_action_keys=("a", "b"),
+        action_keys=("a", "b"),
+        action_to_vocab_id=(1, 2),
+        action_is_gcd=(True, True),
         skill_feature_names=("potency",),
         schema=schema,
         normalizer=normalizer,
@@ -1682,7 +1668,7 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
     monkeypatch.setattr(training_module, "resolve_policy_cache_dir", lambda job: tmp_path / "cache")
     monkeypatch.setattr(training_module, "registered_job_tags", lambda: ("black_mage",))
     monkeypatch.setattr(training_module, "SkillVocab", FakeVocab)
-    monkeypatch.setattr(training_module, "CandidateTransformerModel", FakeModel)
+    monkeypatch.setattr(training_module, "CausalPolicyModel", FakeModel)
     monkeypatch.setattr(training_module, "train_epoch", fake_train_epoch)
     monkeypatch.setattr(training_module, "validate", fake_validate)
     monkeypatch.setattr(training_module, "_save_checkpoint", fake_save_checkpoint)
@@ -1854,18 +1840,20 @@ def test_run_training_closes_tensorboard_writer_when_validation_callback_raises(
         scene_context_mode="absolute",
         scene_windows=(),
         state_group_feature_keys={"player_state": ("a", "b", "c")},
-        candidate_skill_fields=("potency",),
+
         skill_history_fields=(),
     )
     normalizer = Normalizer()
     normalizer.configure_job_resources("black_mage")
     dataset = SimpleNamespace(
         job_tag="black_mage",
-        num_candidates=2,
+        num_actions=2,
         state_dim=3,
         scene_dim=1,
         num_scene_types=1,
-        candidate_action_keys=("a", "b"),
+        action_keys=("a", "b"),
+        action_to_vocab_id=(1, 2),
+        action_is_gcd=(True, True),
         skill_feature_names=("potency",),
         schema=schema,
         normalizer=normalizer,
@@ -1987,18 +1975,20 @@ def _resume_validation_context(tmp_path: Path, *, max_epochs: int = 3):
         scene_context_mode="absolute",
         scene_windows=(),
         state_group_feature_keys={"player_state": ("a", "b", "c")},
-        candidate_skill_fields=("potency",),
+
         skill_history_fields=(),
     )
     normalizer = Normalizer()
     normalizer.configure_job_resources("black_mage")
     dataset = SimpleNamespace(
         job_tag="black_mage",
-        num_candidates=2,
+        num_actions=2,
         state_dim=3,
         scene_dim=0,
         num_scene_types=0,
-        candidate_action_keys=("a", "b"),
+        action_keys=("a", "b"),
+        action_to_vocab_id=(1, 2),
+        action_is_gcd=(True, True),
         skill_feature_names=("potency",),
         schema=schema,
         normalizer=normalizer,
@@ -2241,7 +2231,7 @@ def test_validate_resume_checkpoint_allows_unknown_legacy_max_files_when_forced(
     )
 
 
-def test_validate_resume_checkpoint_migrates_legacy_false_raw_projection(tmp_path):
+def test_validate_resume_checkpoint_rejects_legacy_false_raw_projection(tmp_path):
     context = _resume_validation_context(tmp_path)
     checkpoint = dict(context.checkpoint)
     checkpoint["model_config"] = {
@@ -2250,13 +2240,14 @@ def test_validate_resume_checkpoint_migrates_legacy_false_raw_projection(tmp_pat
         "scorer_use_candidate_hidden": True,
     }
 
-    training_module._validate_resume_checkpoint(
-        checkpoint,
-        data_spec=context.data_spec,
-        dataset=context.dataset,
-        config=context.config,
-        input_contract=context.input_contract,
-    )
+    with pytest.raises(ValueError, match="removed model options"):
+        training_module._validate_resume_checkpoint(
+            checkpoint,
+            data_spec=context.data_spec,
+            dataset=context.dataset,
+            config=context.config,
+            input_contract=context.input_contract,
+        )
 
 
 def test_validate_resume_checkpoint_rejects_removed_candidate_shared_semantics(tmp_path):
@@ -2265,7 +2256,7 @@ def test_validate_resume_checkpoint_rejects_removed_candidate_shared_semantics(t
     checkpoint["model_config"] = dict(checkpoint["model_config"])
     checkpoint["model_config"]["position_id_semantics"] = "candidate_block_shared"
 
-    with pytest.raises(ValueError, match="removed candidate-shared RoPE"):
+    with pytest.raises(ValueError, match="removed model options"):
         training_module._validate_resume_checkpoint(
             checkpoint,
             data_spec=context.data_spec,

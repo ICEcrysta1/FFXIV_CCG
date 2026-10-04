@@ -11,7 +11,7 @@ using Combat.Sim.Outputs.TokenBuilders;
 namespace Combat.Sim.Policy;
 
 /// <summary>
-/// 在真实 FightEngine 上下文之上合并 policy 候选和 policy 历史。
+/// 在真实 FightEngine 上下文之上合并 policy 动作词表和 policy 历史。
 /// policy 动作只产生模型 token，不进入 SkillBook、SubmitAction 或游戏动作历史。
 /// </summary>
 public sealed class PolicyContextBuilder
@@ -35,25 +35,16 @@ public sealed class PolicyContextBuilder
             throw new ArgumentOutOfRangeException(nameof(nextObservationTimestamp));
 
         var output = simulator.FormatVectorState();
-        var branch = simulator.ForkForPreview();
-        var after = branch.ObserveAt(nextObservationTimestamp);
         var router = simulator.OutputRouter;
-        var consumed = router.BuildNoopResourceTransition(state);
-
-        var candidateSkills = (List<Dictionary<string, object?>>)
-            output[OutputContextSchema.CandidateSkillContextKey]!;
-        var candidateStateContext = (Dictionary<string, object?>)
-            output[OutputContextSchema.CandidateStateContextKey]!;
-        var candidateStates = (List<object>)candidateStateContext["tokens"]!;
-        for (var index = _registry.Actions.Count - 1; index >= 0; index--)
-        {
-            var action = _registry.Actions[index];
-            candidateSkills.Insert(0, BuildSkillToken(
-                action,
-                state.Time,
-                consumed));
-            candidateStates.Insert(0, router.BuildStateTransitionToken(state, after));
-        }
+        var keys = (List<string>)output[OutputContextSchema.ActionKeysKey]!;
+        var legalMask = (List<bool>)output[OutputContextSchema.ActionLegalMaskKey]!;
+        var values = (List<double>)output[OutputContextSchema.ActionValuesKey]!;
+        var actions = keys.Select((key, index) => (Key: key, Legal: legalMask[index], Value: values[index]))
+            .Concat(_registry.Actions.Select(action => (Key: action.Key, Legal: true, Value: action.Value)))
+            .OrderBy(action => action.Key, StringComparer.Ordinal).ToArray();
+        output[OutputContextSchema.ActionKeysKey] = actions.Select(action => action.Key).ToList();
+        output[OutputContextSchema.ActionLegalMaskKey] = actions.Select(action => action.Legal).ToList();
+        output[OutputContextSchema.ActionValuesKey] = actions.Select(action => action.Value).ToList();
 
         MergePolicyHistory(output, history, router);
         return output;
@@ -121,7 +112,7 @@ public sealed class PolicyContextBuilder
             skillName: action.Name,
             potency: 0,
             value: action.Value,
-            kind: action.CandidateKind,
+            kind: action.Kind,
             actualMpCost: 0,
             castTimeSeconds: 0,
             gcdWindowSeconds: 0,

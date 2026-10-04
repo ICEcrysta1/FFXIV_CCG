@@ -17,7 +17,7 @@ from scripts.autoregressive_replay.outputs.markdown import SKILL_NAMES, write_ma
 from scripts.autoregressive_replay.replay import (
     AutoregressiveReplay,
     AutoregressiveReplaySession,
-    NoLegalCandidateError,
+    NoLegalActionError,
     ReplayCacheStore,
     ReplayResult,
     ReplayRow,
@@ -319,7 +319,8 @@ def test_replay_uses_session_normalizer_for_context_builders(monkeypatch, constr
         data_spec=SimpleNamespace(
             job_tag="black_mage",
             skill_feature_names=("kind",),
-            candidate_action_keys=("fire",),
+            action_keys=("fire",),
+            action_is_gcd=(True,),
         ),
         input_contract=input_contract,
         vocab=object(),
@@ -404,7 +405,7 @@ def test_replay_prediction_modes_and_result_helpers(monkeypatch, tmp_path):
         def build(_state, *, max_history=None):
             return (
                 {
-                    "candidate_legal_mask": torch.tensor([[True, False, True]]),
+                    "action_legal_mask": torch.tensor([[True, False, True]]),
                 },
                 ["first", "illegal", "third"],
             )
@@ -416,7 +417,7 @@ def test_replay_prediction_modes_and_result_helpers(monkeypatch, tmp_path):
         repetition = RepetitionConfig()
 
         @staticmethod
-        def raw_logits(_batch, _candidate_keys):
+        def raw_logits(_batch, _action_keys):
             return torch.tensor([[1.0, 100.0, 2.0]])
 
         @staticmethod
@@ -427,8 +428,8 @@ def test_replay_prediction_modes_and_result_helpers(monkeypatch, tmp_path):
     replay.backend = FakeBackend()
     row = replay._predict_row(SimpleNamespace(), gcd_step=2)
     assert row.action_key == "third"
-    assert row.top_candidates[0][0] == "third"
-    assert row.top_candidates[1][0] == "first"
+    assert row.top_actions[0][0] == "third"
+    assert row.top_actions[1][0] == "first"
 
     replay.config = SimpleNamespace(
         temperature=1.0,
@@ -451,11 +452,11 @@ def test_replay_prediction_modes_and_result_helpers(monkeypatch, tmp_path):
     assert torch.equal(sampled_probabilities[0], torch.tensor([0.0, 0.0, 1.0]))
     replay.batcher = SimpleNamespace(
         build=lambda _state, *, max_history=None: (
-            {"candidate_legal_mask": torch.zeros((1, 3), dtype=torch.bool)},
+            {"action_legal_mask": torch.zeros((1, 3), dtype=torch.bool)},
             ["a", "b", "c"],
         )
     )
-    with pytest.raises(RuntimeError, match="no legal candidate"):
+    with pytest.raises(RuntimeError, match="no legal action"):
         replay._predict_row(SimpleNamespace(), gcd_step=0)
 
     assert model_dtype("float32") is torch.float32
@@ -488,22 +489,22 @@ def test_replay_respects_shared_candidate_mask():
     )
     replay.backend = SimpleNamespace(
         repetition=RepetitionConfig(),
-        raw_logits=lambda _batch, _candidate_keys: torch.tensor(
+        raw_logits=lambda _batch, _action_keys: torch.tensor(
             [[100.0, 2.0, 90.0]],
         ),
     )
 
     row = replay._score_row(
-        {"candidate_legal_mask": torch.tensor([[False, True, False]])},
+        {"action_legal_mask": torch.tensor([[False, True, False]])},
         ["swiftcast", "fire", "potion"],
         gcd_step=1,
     )
 
     assert row.action_key == "fire"
-    assert row.top_candidates[0] == ("fire", 2.0, 1.0, True)
+    assert row.top_actions[0] == ("fire", 2.0, 1.0, True)
     assert all(
         legal is False
-        for action_key, _logit, _probability, legal in row.top_candidates
+        for action_key, _logit, _probability, legal in row.top_actions
         if action_key in {"swiftcast", "potion"}
     )
 
@@ -639,7 +640,7 @@ def test_replay_delegates_kv_cache_toggle_to_backend():
         def configure_cache(self, enabled):
             self.kv_cache_enabled = bool(enabled)
 
-        def raw_logits(self, _batch, _candidate_keys):
+        def raw_logits(self, _batch, _action_keys):
             assert self.kv_cache_enabled is True
             self.calls += 1
             return torch.tensor([[1.0, 2.0]])
@@ -648,7 +649,7 @@ def test_replay_delegates_kv_cache_toggle_to_backend():
         @staticmethod
         def build(_state, *, max_history=None):
             return (
-                {"candidate_legal_mask": torch.tensor([[True, True]])},
+                {"action_legal_mask": torch.tensor([[True, True]])},
                 ["first", "second"],
             )
 
@@ -769,7 +770,7 @@ def test_replay_no_legal_candidate_waits_until_next_event_and_continues():
 
     def predict(state, *, gcd_step):
         if state.gcd_remaining > 0.0:
-            raise NoLegalCandidateError("locked")
+            raise NoLegalActionError("locked")
         return ReplayRow(gcd_step, "fire", 1.0, (("fire", 1.0, 1.0, True),))
 
     replay._predict_row = predict
@@ -804,7 +805,7 @@ def test_replay_no_legal_candidate_reports_finished_fight():
     replay._state_machine = _FakeBackend(state, _FAKE_GCD_SKILL)
     replay.backend = SimpleNamespace(configure_cache=lambda _enabled: None)
     replay._predict_row = lambda *_args, **_kwargs: (_ for _ in ()).throw(
-        NoLegalCandidateError("finished")
+        NoLegalActionError("finished")
     )
 
     with pytest.raises(RuntimeError, match="no future time event"):

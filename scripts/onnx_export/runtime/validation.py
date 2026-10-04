@@ -13,7 +13,7 @@ from ..contracts.contract import (
     make_inputs,
     slice_dynamic_inputs,
 )
-from ..policy.policy import _build_batch
+from ..policy.policy import _build_batch, _raw_logits as _policy_raw_logits
 from .precision import precision_tolerances
 from .tensor_runtime import run_ort_tensors
 
@@ -53,10 +53,8 @@ def validate_pytorch_matrix(
 ) -> list[dict[str, object]]:
     """校验 trace 有限性、padding 屏蔽、padding 值不变性和同输入一致性。
 
-    完全因果布局下固定容量输入的 position id 按容量生成，与动态长度
-    输入不再逐 token 等价；这里分别验证动态与固定容量输入各自的
-    内部一致性（policy trace 与 raw model trace 同输入一致），以及
-    固定容量输入上 padding 被 mask 屏蔽。
+    逻辑位置排除 padding；同一有效上下文的动态输入和固定容量输入
+    必须产生相同动作输出，同时验证不同 padding 载荷不影响输出。
     """
     policy.to(device=device, dtype=dtype)
     policy.eval()
@@ -111,6 +109,9 @@ def validate_pytorch_matrix(
             rtol=rtol,
             atol=atol,
         )
+        torch.testing.assert_close(fixed_trace.logits, dynamic_trace.logits, rtol=rtol, atol=atol)
+        dynamic_logits = policy(*dynamic)
+        torch.testing.assert_close(fixed_logits, dynamic_logits, rtol=rtol, atol=atol)
         # trace 会为了保留逐层 attention 而走手工 attention；正式 forward
         # 会走 SDPA/导出路径。两条路径在 BF16 下允许有微小数值差异，
         # 因此 padding 不变性必须在各自的同一条路径内比较。
@@ -148,7 +149,10 @@ def validate_pytorch_matrix(
                 "fixed/zero-padding forward argmax mismatch: "
                 f"scene_valid={scene_valid}, history_valid={history_valid}"
             )
-        argmax_match = trace_argmax_match and forward_argmax_match
+        dynamic_argmax_match = bool(torch.equal(fixed_logits.argmax(-1), dynamic_logits.argmax(-1)))
+        if not dynamic_argmax_match:
+            raise AssertionError("fixed/dynamic valid-context argmax mismatch")
+        argmax_match = trace_argmax_match and forward_argmax_match and dynamic_argmax_match
         results.append(
             asdict(
                 MatrixCaseResult(
@@ -164,7 +168,10 @@ def validate_pytorch_matrix(
                         )
                     ),
                     max_dynamic_baseline_abs_diff=float(
-                        (dynamic_trace.logits - raw_dynamic_logits).abs().max().item()
+                        max(
+                            (dynamic_trace.logits - raw_dynamic_logits).abs().max().item(),
+                            (fixed_logits - dynamic_logits).abs().max().item(),
+                        )
                     ),
                     argmax_match=argmax_match,
                     padding_value_invariant=True,
@@ -296,10 +303,7 @@ def _assert_raw_trace_finite(trace, logits: torch.Tensor) -> None:
 
 def _raw_logits(policy, trace) -> torch.Tensor:
     """用与 policy trace 相同的方式从 raw model trace 计算 logits。"""
-    candidate_hidden = trace.hidden[:, trace.encoded["candidate_positions"], :]
-    return policy.model.scorer(
-        candidate_hidden=candidate_hidden,
-    )
+    return _policy_raw_logits(policy.model, trace.encoded, trace.hidden)
 
 
 def _assert_same_input_trace_close(

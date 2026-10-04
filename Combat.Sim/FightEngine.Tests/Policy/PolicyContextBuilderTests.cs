@@ -42,7 +42,7 @@ public sealed class PolicyContextBuilderTests
     }
 
     [Fact]
-    public void Wait只存在于Policy层且上下文仍有25个候选()
+    public void Wait只存在于Policy层且固定词表包含25个动作()
     {
         var (simulator, registry) = CreateRuntime();
         Assert.False(simulator.Rules.SkillBook.Contains("ogcd_wait"));
@@ -60,14 +60,19 @@ public sealed class PolicyContextBuilderTests
         Assert.Empty(afterRecord.State.History);
 
         var output = new PolicyContextBuilder(registry).BuildVectorContext(simulator, history, 2.5);
-        var candidates = Assert.IsType<List<Dictionary<string, object?>>>(
-            output[OutputContextSchema.CandidateSkillContextKey]);
-        Assert.Equal(25, candidates.Count);
-        Assert.Equal("ogcd_wait", candidates[0]["skill_key"]);
+        var keys = Assert.IsType<List<string>>(output[OutputContextSchema.ActionKeysKey]);
+        Assert.Equal(25, keys.Count);
+        Assert.Equal(keys.OrderBy(key => key, StringComparer.Ordinal), keys);
+        Assert.Contains("ogcd_wait", keys);
+        var legalMask = Assert.IsType<List<bool>>(output[OutputContextSchema.ActionLegalMaskKey]);
+        Assert.True(legalMask[keys.IndexOf("ogcd_wait")]);
 
-        var candidateStates = Assert.IsType<Dictionary<string, object?>>(
-            output[OutputContextSchema.CandidateStateContextKey]);
-        Assert.Equal(25, Assert.IsAssignableFrom<IReadOnlyList<object>>(candidateStates["tokens"]).Count);
+        var currentState = Assert.IsType<Dictionary<string, object?>>(
+            output[OutputContextSchema.CurrentStateContextKey]);
+        Assert.Single(Assert.IsAssignableFrom<IReadOnlyList<object>>(currentState["tokens"]));
+        var laterOutput = new PolicyContextBuilder(registry).BuildVectorContext(simulator, history, 100);
+        Assert.Equal(global::System.Text.Json.JsonSerializer.Serialize(currentState),
+            global::System.Text.Json.JsonSerializer.Serialize(laterOutput[OutputContextSchema.CurrentStateContextKey]));
         var skillHistory = Assert.IsType<List<Dictionary<string, object?>>>(
             output[OutputContextSchema.SkillHistoryContextKey]);
         Assert.Single(skillHistory);

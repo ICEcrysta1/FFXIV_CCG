@@ -30,15 +30,15 @@ def _load_current_checkpoint() -> dict[str, object]:
     ):
         pytest.skip(
             "real checkpoint enables removed scorer_use_raw_projection; "
-            "retrain it with Transformer-only candidate scoring"
+            "retrain it with the causal policy architecture"
         )
     state_dict = checkpoint.get("model_state_dict")
     if isinstance(state_dict, dict) and any(
         str(key).startswith("scorer.network.") for key in state_dict
     ):
         pytest.skip(
-            "real checkpoint uses the removed candidate scorer layout; "
-            "retrain it with the activation-configured candidate scorer"
+            "real checkpoint uses the removed scoring layout; "
+            "retrain it with the causal policy architecture"
         )
     input_contract = checkpoint.get("input_contract")
     try:
@@ -50,7 +50,7 @@ def _load_current_checkpoint() -> dict[str, object]:
     if input_contract_version != INPUT_CONTRACT_VERSION:
         pytest.skip(
             "real checkpoint uses an older model input contract; "
-            "retrain it with the current candidate set and architecture"
+            "retrain it with the fixed action vocabulary and causal architecture"
         )
     return checkpoint
 
@@ -75,13 +75,12 @@ def test_real_bf16_checkpoint_padding_matrix_cuda():
     contract = CapacityContract(
         scene_capacity=scene_capacity,
         history_capacity=int(checkpoint["model_config"]["history_capacity"]),
-        candidate_count=data_spec.num_candidates,
     )
     assert vocab_size == len(profile.vocab_entries) + 1
     required_positions = (
         contract.scene_capacity
         + contract.history_capacity
-        + contract.candidate_token_count
+        + 1
     )
     assert contract.total_token_count == required_positions
     contract.validate()
@@ -120,14 +119,13 @@ def test_real_checkpoint_full_export_profile_and_ort(tmp_path):
     )
     profile = DeploymentProfile.load(profile_path)
     history_capacity = int(checkpoint["model_config"]["history_capacity"])
-    candidate_count = int(checkpoint["data_spec"]["num_candidates"])
     scene_capacity = int(
         checkpoint["model_config"].get(
             "scene_capacity",
             ModelConfig.scene_capacity,
         )
     )
-    required_positions = scene_capacity + history_capacity + candidate_count
+    required_positions = scene_capacity + history_capacity + 1
     embedding = checkpoint["model_state_dict"]["input_encoder.skill_embed.weight"]
 
     output = export_package(
@@ -157,7 +155,7 @@ def test_real_checkpoint_full_export_profile_and_ort(tmp_path):
         )
     )
     assert contract.capacity.history_capacity == history_capacity
-    assert contract.capacity.candidate_count == contract.data_spec.num_candidates == 25
+    assert contract.data_spec.num_actions == len(contract.data_spec.action_keys)
     assert contract.vocab_entries == profile.vocab_entries
     assert contract.capacity.total_token_count == required_positions
 

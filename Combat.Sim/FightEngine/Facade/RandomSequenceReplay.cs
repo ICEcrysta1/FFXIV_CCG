@@ -89,7 +89,7 @@ public static class RandomSequenceReplay
             if (!result.Accepted)
             {
                 throw new InvalidOperationException(
-                    $"合法候选 {action} 在提交时被拒绝: {result.Reason}");
+                    $"合法动作 {action} 在提交时被拒绝: {result.Reason}");
             }
             steps.Add(new RandomSequenceStep(
                 RandomSequenceStepKind.SubmitAction,

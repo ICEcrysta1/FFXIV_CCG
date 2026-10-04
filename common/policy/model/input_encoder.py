@@ -17,20 +17,20 @@ from .activation import (
 
 ROLE_SCENE = 0
 ROLE_HISTORY = 1
-ROLE_CANDIDATE = 2
+ROLE_CURRENT_STATE = 2
 
 SEG_SCENE = 0
 SEG_HISTORY = 1
-SEG_CANDIDATE = 2
+SEG_CURRENT_STATE = 2
 
 
-class CandidateInputEncoder(nn.Module):
-    """编码 scene、历史和候选上下文，并返回稳定的 token 布局元数据。"""
+class CausalInputEncoder(nn.Module):
+    """编码场景、历史 pair 和真实当前状态的单一因果上下文。"""
 
     def __init__(self, data_spec: DataSpec, config: ModelConfig, vocab_size: int):
         super().__init__()
         if data_spec.scene_dim <= 0:
-            raise ValueError("CandidateInputEncoder requires a non-empty scene vector")
+            raise ValueError("CausalInputEncoder requires a non-empty scene vector")
 
         d_model = config.d_model
         self.data_spec = data_spec
@@ -75,7 +75,7 @@ class CandidateInputEncoder(nn.Module):
         return (
             self.config.scene_capacity
             + self.config.history_capacity
-            + self.data_spec.num_candidates
+            + 1
         )
 
     def forward(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
@@ -84,11 +84,9 @@ class CandidateInputEncoder(nn.Module):
         scene_vectors = batch["scene_vectors"]
         batch_size, scene_length, _ = scene_vectors.shape
         history_length = batch["history_skill_ids"].shape[1]
-        candidate_count = self.data_spec.num_candidates
-        candidate_token_count = candidate_count
         # 物理 token 布局仍按 batch 的最大 scene/history 宽度补齐；
         # RoPE 使用的逻辑位置由有效长度单独生成，不再把 padding 当成时间步。
-        total_length = scene_length + history_length + candidate_token_count
+        total_length = scene_length + history_length + 1
         if total_length > self.max_token_count:
             raise ValueError(
                 "physical token sequence length exceeds computed model capacity: "
@@ -110,13 +108,15 @@ class CandidateInputEncoder(nn.Module):
             index=scene_type_indices.expand(-1, -1, 1, pair_dim),
         ).squeeze(2)
 
-        pair_embeddings = self.embed_pairs(batch)
-        history_pair = pair_embeddings["history"]
-        candidate_pair = pair_embeddings["candidate"]
-        candidate_tokens = candidate_pair
+        history_pair = self.embed_pairs(batch)["history"]
+        # 最新状态复用状态投影，不构造伪技能，也不经过历史 pair fusion。
+        current_state = self._embed_state(
+            batch["current_state_vectors"],
+            batch.get("current_state_null_mask"),
+        ).unsqueeze(1)
 
         content_tokens = torch.cat(
-            (scene_embeds, history_pair, candidate_tokens),
+            (scene_embeds, history_pair, current_state),
             dim=1,
         )
         tokens = self.token_embedding(content_tokens)
@@ -125,7 +125,6 @@ class CandidateInputEncoder(nn.Module):
             batch_size=batch_size,
             scene_length=scene_length,
             history_length=history_length,
-            candidate_count=candidate_token_count,
             device=device,
             scene_mask=batch["scene_mask"],
             history_mask=batch["history_mask"],
@@ -134,48 +133,41 @@ class CandidateInputEncoder(nn.Module):
             batch_size=batch_size,
             scene_length=scene_length,
             history_length=history_length,
-            candidate_count=candidate_token_count,
             device=device,
         )
         tokens = tokens + self.role_embed(role_ids) + self.segment_embed(segment_ids)
 
-        candidate_start = scene_length + history_length
-        candidate_positions = torch.arange(
-            candidate_start,
-            candidate_start + candidate_count,
-            device=device,
+        current_state_position = scene_length + history_length
+        current_state_positions = torch.full(
+            (batch_size,), current_state_position, dtype=torch.long, device=device,
         )
-        candidate_position_ids = position_ids[
-            :, candidate_start : candidate_start + candidate_count
-        ]
         prefix_valid = torch.cat(
             (batch["scene_mask"], batch["history_mask"]),
             dim=1,
         )
-        candidate_valid = torch.ones(
-            (batch_size, candidate_count),
+        current_state_valid = torch.ones(
+            (batch_size, 1),
             dtype=torch.bool,
             device=device,
         )
-        valid = torch.cat((prefix_valid, candidate_valid), dim=1)
+        valid = torch.cat((prefix_valid, current_state_valid), dim=1)
         return {
             "tokens": tokens,
             "padding_mask": ~valid,
             "prefix_valid": prefix_valid,
-            "candidate_valid": candidate_valid,
+            "valid": valid,
             "scene_length": scene_length,
             "history_length": history_length,
             "prefix_length": scene_length + history_length,
-            "candidate_count": candidate_count,
             "position_ids": position_ids,
             "role_ids": role_ids,
             "segment_ids": segment_ids,
-            "candidate_positions": candidate_positions,
-            "candidate_position_ids": candidate_position_ids,
+            "current_state_position": current_state_position,
+            "current_state_positions": current_state_positions,
         }
 
     def embed_pairs(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-        """返回未投影到 Transformer 维度的 history/candidate pair embedding。"""
+        """返回未投影到 Transformer 维度的历史 pair embedding。"""
         self._materialize_compact_history(batch)
         self._validate_batch(batch)
         return {
@@ -184,12 +176,6 @@ class CandidateInputEncoder(nn.Module):
                 batch["history_skill_features"],
                 batch["history_state_vectors"],
                 batch.get("history_state_null_mask"),
-            ),
-            "candidate": self._embed_pair(
-                batch["candidate_skill_ids"],
-                batch["candidate_skill_features"],
-                batch["candidate_state_vectors"],
-                batch.get("candidate_state_null_mask"),
             ),
         }
 
@@ -282,22 +268,28 @@ class CandidateInputEncoder(nn.Module):
             )
         if batch["history_skill_ids"].shape[1] != batch["history_state_vectors"].shape[1]:
             raise ValueError("history skill/state lengths must match")
-        if batch["candidate_skill_ids"].shape[1] != expected.num_candidates:
-            raise ValueError("candidate count does not match the compiled cache data spec")
-        if batch["candidate_state_vectors"].shape[1] != expected.num_candidates:
-            raise ValueError("candidate skill/state counts must match the compiled cache data spec")
-        if batch["candidate_state_vectors"].shape[-1] != expected.state_dim:
-            raise ValueError("candidate state dimension does not match the compiled cache data spec")
+        if batch["current_state_vectors"].ndim != 2:
+            raise ValueError("current_state_vectors must have shape [batch, state_dim]")
+        if batch["current_state_vectors"].shape[-1] != expected.state_dim:
+            raise ValueError("current state dimension does not match the data spec")
+        if batch["history_state_vectors"].shape[-1] != expected.state_dim:
+            raise ValueError("history state dimension does not match the data spec")
+        for key in ("current_state_null_mask", "history_state_null_mask"):
+            values_key = key.replace("null_mask", "vectors")
+            if key in batch and batch[key].shape != batch[values_key].shape:
+                raise ValueError(f"{key} must match {values_key}")
         if batch["scene_vectors"].shape[-1] != expected.scene_dim:
             raise ValueError("scene dimension does not match the compiled cache data spec")
-        if batch["candidate_skill_features"].shape[-1] != expected.skill_feature_dim:
+        if batch["history_skill_features"].shape[-1] != expected.skill_feature_dim:
             raise ValueError("skill feature dimension does not match the compiled cache data spec")
-        if batch["candidate_legal_mask"].shape[1] != expected.num_candidates:
-            raise ValueError("candidate legal mask does not match the compiled cache data spec")
-        if "label_index" in batch and not torch.all(
-            (batch["label_index"] >= 0) & (batch["label_index"] < expected.num_candidates)
+        if "action_legal_mask" in batch and batch["action_legal_mask"].shape != (
+            batch["scene_vectors"].shape[0], expected.num_actions,
         ):
-            raise ValueError("label index is outside the compiled cache candidate range")
+            raise ValueError("action legal mask does not match the data spec")
+        if "label_index" in batch and not torch.all(
+            (batch["label_index"] >= 0) & (batch["label_index"] < expected.num_actions)
+        ):
+            raise ValueError("label index is outside the action vocabulary range")
 
 
 def build_position_ids(
@@ -305,7 +297,6 @@ def build_position_ids(
     batch_size: int,
     scene_length: int,
     history_length: int,
-    candidate_count: int,
     device,
     scene_mask: torch.Tensor | None = None,
     history_mask: torch.Tensor | None = None,
@@ -313,7 +304,7 @@ def build_position_ids(
     """构造按样本有效长度生成的 RoPE 逻辑位置编号。
 
     物理布局可以包含任意位置的 padding，但有效 token 的编号始终遵循：
-    ``scene -> history -> candidate``。scene/history 的位置按各自
+    ``scene -> history pair -> current state``。scene/history 的位置按各自
     mask 的有效计数生成，不依赖有效 token 是否位于物理布局前段；无效
     scene/history token 的位置固定为 0，并由 attention mask 完全排除。
     """
@@ -348,37 +339,33 @@ def build_position_ids(
         history_positions,
         torch.zeros_like(history_positions),
     )
-    candidate_start = scene_valid_lengths + history_valid_lengths
-    # 候选位置与其他有效 token 一样按逻辑序列递增，所有区域共用同一套 RoPE。
-    candidate_positions = candidate_start.unsqueeze(1) + torch.arange(
-        candidate_count, device=device
-    ).unsqueeze(0)
+    current_state_positions = (scene_valid_lengths + history_valid_lengths).unsqueeze(1)
     return torch.cat(
         (
             scene_positions,
             history_positions,
-            candidate_positions,
+            current_state_positions,
         ),
         dim=1,
     )
 
 
 def build_role_and_segment_ids(
-    *, batch_size: int, scene_length: int, history_length: int, candidate_count: int, device
+    *, batch_size: int, scene_length: int, history_length: int, device
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """构造 token role 与上下文 segment 编号。"""
     role_ids = torch.cat(
         (
             torch.full((scene_length,), ROLE_SCENE, device=device),
             torch.full((history_length,), ROLE_HISTORY, device=device),
-            torch.full((candidate_count,), ROLE_CANDIDATE, device=device),
+            torch.full((1,), ROLE_CURRENT_STATE, device=device),
         )
     ).unsqueeze(0).expand(batch_size, -1)
     segment_ids = torch.cat(
         (
             torch.full((scene_length,), SEG_SCENE, device=device),
             torch.full((history_length,), SEG_HISTORY, device=device),
-            torch.full((candidate_count,), SEG_CANDIDATE, device=device),
+            torch.full((1,), SEG_CURRENT_STATE, device=device),
         )
     ).unsqueeze(0).expand(batch_size, -1)
     return role_ids, segment_ids

@@ -14,7 +14,7 @@ import torch
 
 from common.policy.data import DataSpec, ModelInputContract, SkillVocab
 from common.policy.model import (
-    CandidateTransformerModel,
+    CausalPolicyModel,
     RepetitionConfig,
     parse_repetition_config,
     repetition_config_from_checkpoint,
@@ -72,9 +72,9 @@ class PolicyBackend(Protocol):
     def raw_logits(
         self,
         batch: Mapping[str, object],
-        candidate_action_keys: Sequence[str],
+        action_keys: Sequence[str],
     ) -> torch.Tensor:
-        """返回 `[batch, candidate]`、未应用宿主策略的 raw logits。"""
+        """返回 `[batch, action]`、未应用宿主策略的固定词表 raw logits。"""
 
     def configure_cache(self, enabled: bool) -> None:
         """切换 backend 自身支持的推理 cache；不支持时必须安全关闭。"""
@@ -169,9 +169,9 @@ class PyTorchPolicyBackend(_MeasuredBackend):
             raise RuntimeError("current CUDA device does not support native BF16")
         self.precision = requested_precision
         # 重复惩罚统一移到宿主；这里故意使用默认关闭的 repetition。
-        self.model = CandidateTransformerModel(
+        self.model = CausalPolicyModel(
             self.data_spec,
-            CandidateTransformerModel.checkpoint_model_config(dict(checkpoint)),
+            CausalPolicyModel.checkpoint_model_config(dict(checkpoint)),
             vocab_size=vocab_size,
         )
         self.model.load_state_dict(checkpoint["model_state_dict"], strict=True)
@@ -198,9 +198,9 @@ class PyTorchPolicyBackend(_MeasuredBackend):
     def raw_logits(
         self,
         batch: Mapping[str, object],
-        candidate_action_keys: Sequence[str],
+        action_keys: Sequence[str],
     ) -> torch.Tensor:
-        _validate_candidate_order(self.data_spec, candidate_action_keys)
+        _validate_action_order(self.data_spec, action_keys)
         started_at = self._start_measurement()
         try:
             context = (
@@ -315,10 +315,10 @@ class OrtPolicyBackend(_MeasuredBackend):
     def raw_logits(
         self,
         batch: Mapping[str, object],
-        candidate_action_keys: Sequence[str],
+        action_keys: Sequence[str],
     ) -> torch.Tensor:
-        legal_mask = _require_tensor(batch, "candidate_legal_mask").detach().cpu().bool()
-        self.contract.validate_host_candidate_order(candidate_action_keys, legal_mask)
+        legal_mask = _require_tensor(batch, "action_legal_mask").detach().cpu().bool()
+        self.contract.validate_host_action_order(action_keys, legal_mask)
         inputs = build_fixed_ort_inputs(batch, self.contract)
         started_at = self._start_measurement()
         try:
@@ -370,57 +370,57 @@ class ParityPolicyBackend:
     def __init__(
         self,
         reference: PolicyBackend,
-        candidate: PolicyBackend,
+        compared: PolicyBackend,
         *,
         tolerance: float = 1e-4,
     ):
-        if reference.data_spec != candidate.data_spec:
+        if reference.data_spec != compared.data_spec:
             raise ValueError("parity backends have different DataSpec")
-        if reference.input_contract.to_dict() != candidate.input_contract.to_dict():
+        if reference.input_contract.to_dict() != compared.input_contract.to_dict():
             raise ValueError("parity backends have different ModelInputContract")
-        if reference.repetition != candidate.repetition:
+        if reference.repetition != compared.repetition:
             raise ValueError("parity backends have different repetition policy")
-        if reference.vocab_entries != candidate.vocab_entries:
+        if reference.vocab_entries != compared.vocab_entries:
             raise ValueError("parity backends have different SkillVocab")
         self.reference = reference
-        self.candidate = candidate
+        self.compared = compared
         self.tolerance = float(tolerance)
-        self.source_path = candidate.source_path
+        self.source_path = compared.source_path
         self.input_device = reference.input_device
         self.data_spec = reference.data_spec
         self.input_contract = reference.input_contract
         self.repetition = reference.repetition
         self.vocab_entries = reference.vocab_entries
         self.execution_provider = (
-            f"{reference.execution_provider}+{candidate.execution_provider}"
+            f"{reference.execution_provider}+{compared.execution_provider}"
         )
         self.rows: list[dict[str, object]] = []
 
     def raw_logits(
         self,
         batch: Mapping[str, object],
-        candidate_action_keys: Sequence[str],
+        action_keys: Sequence[str],
     ) -> torch.Tensor:
         # 完全因果布局下 position id 按序列长度生成，动态 PT 与固定容量
         # ORT 不再逐 token 等价；parity 统一使用同一份固定容量输入双跑，
         # 并放在 reference 的 device 上（ORT 侧会自行搬回 CPU）。
         fixed_batch = batch
-        contract = getattr(self.candidate, "contract", None)
+        contract = getattr(self.compared, "contract", None)
         if getattr(contract, "capacity", None) is not None:
             fixed_batch = _to_fixed_capacity_batch(
                 batch,
                 contract,
                 device=self.reference.input_device,
             )
-        reference_logits = self.reference.raw_logits(fixed_batch, candidate_action_keys)
-        candidate_logits = self.candidate.raw_logits(fixed_batch, candidate_action_keys)
+        reference_logits = self.reference.raw_logits(fixed_batch, action_keys)
+        compared_logits = self.compared.raw_logits(fixed_batch, action_keys)
         row = _compare_logits_values(
             reference_logits,
-            candidate_logits,
-            candidate_action_keys,
+            compared_logits,
+            action_keys,
         )
         legal_mask = (
-            _require_tensor(fixed_batch, "candidate_legal_mask")
+            _require_tensor(fixed_batch, "action_legal_mask")
             .detach()
             .cpu()
             .bool()
@@ -431,24 +431,24 @@ class ParityPolicyBackend:
             self.repetition,
             legal_mask,
         )
-        candidate_final = _apply_host_policy(
-            candidate_logits.detach().cpu(),
+        compared_final = _apply_host_policy(
+            compared_logits.detach().cpu(),
             batch,
             self.repetition,
             legal_mask,
         )
         reference_selection = int(reference_final.argmax(dim=-1).item())
-        candidate_selection = int(candidate_final.argmax(dim=-1).item())
+        compared_selection = int(compared_final.argmax(dim=-1).item())
         row.update(
             {
                 "decision_index": len(self.rows),
                 "reference_final_action": str(
-                    candidate_action_keys[reference_selection]
+                    action_keys[reference_selection]
                 ),
-                "candidate_final_action": str(
-                    candidate_action_keys[candidate_selection]
+                "compared_final_action": str(
+                    action_keys[compared_selection]
                 ),
-                "final_selection_match": reference_selection == candidate_selection,
+                "final_selection_match": reference_selection == compared_selection,
             }
         )
         row["passed"] = bool(
@@ -464,7 +464,7 @@ class ParityPolicyBackend:
         if enabled:
             raise ValueError("parity replay requires KV cache to be disabled")
         self.reference.configure_cache(False)
-        self.candidate.configure_cache(False)
+        self.compared.configure_cache(False)
 
     def metrics(self) -> BackendMetrics:
         return self.reference.metrics()
@@ -491,11 +491,11 @@ class ParityPolicyBackend:
             "first_divergence": first_divergence,
             "decisions": list(rows),
             "reference_backend": self.reference.name,
-            "candidate_backend": self.candidate.name,
+            "compared_backend": self.compared.name,
             "reference_execution_provider": self.reference.execution_provider,
-            "candidate_execution_provider": self.candidate.execution_provider,
+            "compared_execution_provider": self.compared.execution_provider,
             "reference_metrics": self.reference.metrics().to_dict(),
-            "candidate_metrics": self.candidate.metrics().to_dict(),
+            "compared_metrics": self.compared.metrics().to_dict(),
         }
 
 
@@ -557,10 +557,10 @@ def _to_fixed_capacity_batch(
     """
     fixed_inputs = build_fixed_ort_inputs(batch, contract, device=device)
     fixed_batch = dict(zip(TENSOR_INPUT_NAMES, fixed_inputs, strict=True))
-    fixed_batch["candidate_legal_mask"] = (
-        _require_tensor(batch, "candidate_legal_mask").detach().cpu().bool()
+    fixed_batch["action_legal_mask"] = (
+        _require_tensor(batch, "action_legal_mask").detach().cpu().bool()
     )
-    for key in ("history_action_keys", "candidate_action_keys"):
+    for key in ("history_action_keys", "action_keys"):
         if key in batch:
             fixed_batch[key] = batch[key]
     return fixed_batch
@@ -568,19 +568,19 @@ def _to_fixed_capacity_batch(
 
 def compare_backend_logits(
     reference: PolicyBackend,
-    candidate: PolicyBackend,
+    compared: PolicyBackend,
     batch: Mapping[str, object],
-    candidate_action_keys: Sequence[str],
+    action_keys: Sequence[str],
     *,
     tolerance: float = 1e-4,
 ) -> dict[str, object]:
-    """比较同一决策点，并在失败时指出首个候选及两个 logit。
+    """比较同一决策点，并在失败时指出首个动作及两个 logit。
 
-    完全因果布局下动态 PT 与固定容量 ORT 的 position id 不同，
-    候选后端持有部署契约时统一在固定容量输入上双跑。
+    待比较后端持有部署契约时使用同一份固定容量张量双跑；
+    逻辑位置排除 padding，额外由部署矩阵验证动态输入等价。
     """
     comparison_batch = batch
-    contract = getattr(candidate, "contract", None)
+    contract = getattr(compared, "contract", None)
     if getattr(contract, "capacity", None) is not None:
         comparison_batch = _to_fixed_capacity_batch(
             batch,
@@ -588,20 +588,20 @@ def compare_backend_logits(
             device=reference.input_device,
         )
     result = _compare_logits_values(
-        reference.raw_logits(comparison_batch, candidate_action_keys),
-        candidate.raw_logits(comparison_batch, candidate_action_keys),
-        candidate_action_keys,
+        reference.raw_logits(comparison_batch, action_keys),
+        compared.raw_logits(comparison_batch, action_keys),
+        action_keys,
     )
     max_difference = float(result["max_abs_diff"])
     if max_difference > tolerance or not result["top1_match"] or not result["top3_set_match"]:
         raise AssertionError(
             "policy backend parity failed: "
-            f"candidate={result['max_diff_candidate']!r}, "
+            f"compared={result['max_diff_action']!r}, "
             f"reference_logit={result['reference_logit']:.8f}, "
-            f"candidate_logit={result['candidate_logit']:.8f}, "
+            f"compared_logit={result['compared_logit']:.8f}, "
             f"max_abs_diff={result['max_abs_diff']:.8f}, "
             f"reference_top1={result['reference_top1']!r}, "
-            f"candidate_top1={result['candidate_top1']!r}, "
+            f"compared_top1={result['compared_top1']!r}, "
             f"top3_set_match={result['top3_set_match']}"
         )
     return result
@@ -609,41 +609,41 @@ def compare_backend_logits(
 
 def _compare_logits_values(
     reference_logits: torch.Tensor,
-    candidate_logits: torch.Tensor,
-    candidate_action_keys: Sequence[str],
+    compared_logits: torch.Tensor,
+    action_keys: Sequence[str],
 ) -> dict[str, object]:
     reference_row = reference_logits[0].detach().cpu().float()
-    candidate_row = candidate_logits[0].detach().cpu().float()
-    if reference_row.shape != candidate_row.shape:
+    compared_row = compared_logits[0].detach().cpu().float()
+    if reference_row.shape != compared_row.shape:
         raise AssertionError(
             "policy backend logit shape mismatch: "
-            f"{tuple(reference_row.shape)} != {tuple(candidate_row.shape)}"
+            f"{tuple(reference_row.shape)} != {tuple(compared_row.shape)}"
         )
-    differences = torch.abs(reference_row - candidate_row)
+    differences = torch.abs(reference_row - compared_row)
     max_difference, max_index_tensor = differences.max(dim=0)
     max_index = int(max_index_tensor.item())
     reference_top1 = int(reference_row.argmax().item())
-    candidate_top1 = int(candidate_row.argmax().item())
-    top_k = min(3, len(candidate_action_keys))
+    compared_top1 = int(compared_row.argmax().item())
+    top_k = min(3, len(action_keys))
     reference_top3_indices = reference_row.topk(top_k).indices.tolist()
-    candidate_top3_indices = candidate_row.topk(top_k).indices.tolist()
+    compared_top3_indices = compared_row.topk(top_k).indices.tolist()
     reference_top3 = frozenset(reference_top3_indices)
-    candidate_top3 = frozenset(candidate_top3_indices)
+    compared_top3 = frozenset(compared_top3_indices)
     return {
         "max_abs_diff": float(max_difference.item()),
         "max_diff_index": max_index,
-        "max_diff_candidate": str(candidate_action_keys[max_index]),
+        "max_diff_action": str(action_keys[max_index]),
         "reference_logit": float(reference_row[max_index].item()),
-        "candidate_logit": float(candidate_row[max_index].item()),
-        "top1_match": reference_top1 == candidate_top1,
-        "top3_set_match": reference_top3 == candidate_top3,
-        "reference_top1": str(candidate_action_keys[reference_top1]),
-        "candidate_top1": str(candidate_action_keys[candidate_top1]),
+        "compared_logit": float(compared_row[max_index].item()),
+        "top1_match": reference_top1 == compared_top1,
+        "top3_set_match": reference_top3 == compared_top3,
+        "reference_top1": str(action_keys[reference_top1]),
+        "compared_top1": str(action_keys[compared_top1]),
         "reference_top3": [
-            str(candidate_action_keys[index]) for index in reference_top3_indices
+            str(action_keys[index]) for index in reference_top3_indices
         ],
-        "candidate_top3": [
-            str(candidate_action_keys[index]) for index in candidate_top3_indices
+        "compared_top3": [
+            str(action_keys[index]) for index in compared_top3_indices
         ],
     }
 
@@ -669,9 +669,9 @@ def validate_backend_vocab(backend: PolicyBackend, vocab: SkillVocab) -> None:
         )
 
 
-def _validate_candidate_order(data_spec: DataSpec, values: Sequence[str]) -> None:
-    if tuple(str(value) for value in values) != data_spec.candidate_action_keys:
-        raise ValueError("live candidate order differs from policy DataSpec")
+def _validate_action_order(data_spec: DataSpec, values: Sequence[str]) -> None:
+    if tuple(str(value) for value in values) != data_spec.action_keys:
+        raise ValueError("live compared order differs from policy DataSpec")
 
 
 def _require_tensor(batch: Mapping[str, object], name: str) -> torch.Tensor:

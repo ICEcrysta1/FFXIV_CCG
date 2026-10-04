@@ -9,7 +9,7 @@ namespace Combat.Sim.Outputs.TokenBuilders;
 
 /// <summary>
 /// 量谱向量 token 装配器（对照 token_builders/resource_vector_token_builder.py）。
-/// 历史与候选 token 只拼接 before / after；资源消耗由技能 token 携带。
+/// 历史与当前状态 token 只拼接 before / after；资源消耗由技能 token 携带。
 /// </summary>
 public sealed class ResourceVectorTokenBuilder
 {

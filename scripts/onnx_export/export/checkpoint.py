@@ -11,7 +11,7 @@ import torch
 from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, ModelInputContract
 from common.policy.model import (
-    CandidateTransformerModel,
+    CausalPolicyModel,
     repetition_config_from_checkpoint,
 )
 from common.torch_serialization import safe_torch_load
@@ -49,9 +49,9 @@ def load_policy(
     vocab_size = int(embedding.shape[0])
     if vocab_size < 2:
         raise ValueError("checkpoint vocab_size must be >= 2")
-    model = CandidateTransformerModel(
+    model = CausalPolicyModel(
         data_spec,
-        CandidateTransformerModel.checkpoint_model_config(dict(checkpoint)),
+        CausalPolicyModel.checkpoint_model_config(dict(checkpoint)),
         vocab_size=vocab_size,
     )
     model.load_state_dict(state_dict, strict=True)
@@ -108,7 +108,6 @@ def load_policy_contracts(
     contract = CapacityContract(
         scene_capacity=scene_capacity,
         history_capacity=checkpoint_history_capacity,
-        candidate_count=data_spec.num_candidates,
     )
     deployment_contract = DeploymentContract.create(
         precision=precision,

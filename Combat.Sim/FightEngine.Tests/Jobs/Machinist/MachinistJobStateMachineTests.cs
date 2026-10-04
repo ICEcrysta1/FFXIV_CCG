@@ -74,16 +74,16 @@ public class MachinistJobStateMachineTests
         var state = machine.InitialState();
 
         var initialPayload = TimelineTestDriver.FormatVectorState(machine, state);
-        var initialCandidates = (List<Dictionary<string, object?>>)initialPayload["candidate_skill_context"];
-        var initialSplitShot = initialCandidates.Single(token => (string)token["skill_key"]! == "heated_split_shot");
-        Assert.Equal(1.0, (double)initialSplitShot["value"]!, 5);
+        var initialKeys = (List<string>)initialPayload["action_keys"];
+        var initialValues = (List<double>)initialPayload["action_values"];
+        Assert.Equal(1.0, initialValues[initialKeys.IndexOf("heated_split_shot")], 5);
 
         state = TimelineTestDriver.Execute(machine, state, "reassemble").NextState;
 
-        var candidatePayload = TimelineTestDriver.FormatVectorState(machine, state);
-        var candidates = (List<Dictionary<string, object?>>)candidatePayload["candidate_skill_context"];
-        var splitShot = candidates.Single(token => (string)token["skill_key"]! == "heated_split_shot");
-        Assert.Equal(2.0, (double)splitShot["value"]!, 5);
+        var requestPayload = TimelineTestDriver.FormatVectorState(machine, state);
+        var keys = (List<string>)requestPayload["action_keys"];
+        var values = (List<double>)requestPayload["action_values"];
+        Assert.Equal(2.0, values[keys.IndexOf("heated_split_shot")], 5);
 
         state = TimelineTestDriver.Execute(machine, state, "heated_split_shot").NextState;
         var history = (List<Dictionary<string, object?>>)TimelineTestDriver.FormatVectorState(machine, state)["skill_history_context"];

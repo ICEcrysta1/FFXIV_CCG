@@ -54,11 +54,11 @@ def build_dataloaders(
     if config.value_preference.enabled and config.value_preference.loss_weight > 0.0:
         skill_values = load_skill_values(train_dataset.job_tag)
         missing_values = sorted(
-            set(train_dataset.candidate_action_keys) - set(skill_values)
+            set(train_dataset.action_keys) - set(skill_values)
         )
         if missing_values:
             raise ValueError(
-                "job YAML is missing value for candidate actions: "
+                "job YAML is missing value for output actions: "
                 + ", ".join(missing_values)
             )
 
@@ -66,16 +66,12 @@ def build_dataloaders(
         history_truncation_enabled=config.history_truncation_enabled,
         history_truncation_probability=config.history_truncation_probability,
         history_min_recent=config.history_min_recent,
-        candidate_shuffle_enabled=config.candidate_shuffle_enabled,
-        candidate_shuffle_probability=config.candidate_shuffle_probability,
         require_quality_percentile=config.action_quality_loss.enabled,
-        skill_values=skill_values,
         int_dtype=int_dtype,
         float_dtype=float_dtype,
     )
     val_collator = TrainingCollator(
         require_quality_percentile=False,
-        skill_values=skill_values,
         int_dtype=int_dtype,
         float_dtype=float_dtype,
     )
@@ -148,7 +144,6 @@ def _build_dataset(paths, config, normalizer, int_dtype, float_dtype, cache_dir)
         cache_dir=cache_dir,
         compiled_cache_shard_size=config.compiled_cache_shard_size,
         compiled_cache_max_shards=config.compiled_cache_max_shards,
-        candidate_order_file=config.candidate_order_file,
     )
 
 

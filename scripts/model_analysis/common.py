@@ -29,10 +29,11 @@ from training import TrainingCollator, TrainingDataset
 from common.policy.data.policy_actions import load_policy_actions
 from common.policy.data import DataSpec
 from common.policy.model import (
-    CandidateTransformerModel,
+    CausalPolicyModel,
     repetition_config_from_checkpoint,
 )
 from .token_metadata import ANALYSIS_FEATURES, build_token_metadata
+from common.policy.model.input_encoder import ROLE_CURRENT_STATE
 
 
 logger = logging.getLogger(__name__)
@@ -41,7 +42,7 @@ MODEL_ANALYSIS_SCENE_JSON_ENV = "MODEL_ANALYSIS_SCENE_JSON"
 ROLE_NAMES = {
     0: "scene",
     1: "history_pair",
-    2: "candidate_pair",
+    2: "current_state",
 }
 
 # 模型分析统一使用 attention 图的黑色到白金色阶；有明确正负语义的图仍保留专用发散色阶。
@@ -89,7 +90,7 @@ class ModelAnalysisContext:
     checkpoint_path: Path
     source_path: Path
     output_dir: Path
-    model: CandidateTransformerModel
+    model: CausalPolicyModel
     dataset: TrainingDataset
     data_spec: DataSpec
     vocab: SkillVocab
@@ -125,7 +126,6 @@ def load_analysis_context(
     batch_size: int,
     device_name: str,
     precision: str,
-    candidate_order_file: Path | None = None,
 ) -> AnalysisContext:
     """加载 checkpoint/compiled cache 并提取每个 Transformer layer 的有效 token hidden。"""
     runtime = _load_model_analysis_context(
@@ -136,7 +136,6 @@ def load_analysis_context(
         max_history=max_history,
         cache_shard_size=cache_shard_size,
         cache_max_shards=cache_max_shards,
-        candidate_order_file=candidate_order_file,
         output_dir=output_dir,
         device_name=device_name,
         precision=precision,
@@ -189,14 +188,15 @@ def load_analysis_context(
                 flat_vectors = hidden_rows[valid_rows]
                 flat_roles = role_rows_batch[valid_rows]
                 flat_metadata = {
-                    feature: values[valid_rows]
-                    for feature, values in token_metadata.items()
+                    feature: token_metadata[feature][valid_rows]
+                    for feature in ANALYSIS_FEATURES
                 }
                 remaining = max_tokens - collected_tokens[layer_index]
                 if remaining <= 0:
                     continue
                 if len(flat_vectors) > remaining:
-                    indices = np.linspace(0, len(flat_vectors) - 1, remaining, dtype=int)
+                    # 最新状态是决策分析 query，限额采样优先保留它，防止只剩前缀。
+                    indices = _analysis_token_indices(flat_roles, remaining)
                     flat_vectors = flat_vectors[indices]
                     flat_roles = flat_roles[indices]
                     flat_metadata = {
@@ -257,6 +257,17 @@ def load_analysis_context(
     )
 
 
+def _analysis_token_indices(roles: np.ndarray, limit: int) -> np.ndarray:
+    """在总 token 限额内保留最新状态，再均匀采样场景和历史。"""
+    current = np.flatnonzero(roles == ROLE_CURRENT_STATE)
+    if len(current) >= limit:
+        return current[np.linspace(0, len(current) - 1, limit, dtype=int)]
+    others = np.flatnonzero(roles != ROLE_CURRENT_STATE)
+    slots = min(limit - len(current), len(others))
+    selected = others[np.linspace(0, len(others) - 1, slots, dtype=int)] if slots else np.array([], dtype=int)
+    return np.sort(np.concatenate((current, selected)))
+
+
 def load_loss_landscape_context(
     *,
     checkpoint_path: Path,
@@ -269,7 +280,6 @@ def load_loss_landscape_context(
     output_dir: Path,
     device_name: str,
     precision: str,
-    candidate_order_file: Path | None = None,
 ) -> ModelAnalysisContext:
     """只加载损失地图所需模型与数据，不提取 hidden、attention 或 PCA 输入。"""
     return _load_model_analysis_context(
@@ -280,7 +290,6 @@ def load_loss_landscape_context(
         max_history=max_history,
         cache_shard_size=cache_shard_size,
         cache_max_shards=cache_max_shards,
-        candidate_order_file=candidate_order_file,
         output_dir=output_dir,
         device_name=device_name,
         precision=precision,
@@ -299,7 +308,6 @@ def _load_model_analysis_context(
     output_dir: Path,
     device_name: str,
     precision: str,
-    candidate_order_file: Path | None,
 ) -> ModelAnalysisContext:
     """统一加载分析模型和 dataset；模型 dtype 与 autocast 共用同一 precision。"""
     checkpoint_path = Path(checkpoint_path)
@@ -307,6 +315,8 @@ def _load_model_analysis_context(
     if precision != "float32" and device.type != "cuda":
         raise RuntimeError(f"model analysis precision {precision} requires CUDA")
     checkpoint = safe_torch_load(checkpoint_path)
+    # 先拒绝旧输入契约，避免在旧 DataSpec 字段上变成不明确的 KeyError。
+    model_config = CausalPolicyModel.checkpoint_model_config(checkpoint)
     data_spec = DataSpec.from_dict(checkpoint["data_spec"])
     job_tag = resolve_project_job_tag(project_root=PROJECT_ROOT)
     if job_tag != data_spec.job_tag:
@@ -318,9 +328,8 @@ def _load_model_analysis_context(
         source_path, raw_root=raw_root, cache_dir=cache_dir,
         job_tag=job_tag, cache_shard_size=cache_shard_size,
     )
-    model_config = CandidateTransformerModel.checkpoint_model_config(checkpoint)
     repetition_config = repetition_config_from_checkpoint(checkpoint)
-    model = CandidateTransformerModel(
+    model = CausalPolicyModel(
         data_spec,
         model_config,
         vocab_size=vocab.size(),
@@ -336,7 +345,6 @@ def _load_model_analysis_context(
         max_history=max_history,
         cache_shard_size=cache_shard_size,
         cache_max_shards=cache_max_shards,
-        candidate_order_file=candidate_order_file,
         job_tag=job_tag,
         skill_vocab=vocab,
     )
@@ -507,7 +515,6 @@ def _load_analysis_dataset(
     cache_max_shards: int,
     job_tag: str,
     skill_vocab: SkillVocab,
-    candidate_order_file: Path | None = None,
 ) -> TrainingDataset:
     """读取分析用 cache；缺失或过期时调用转换 CLI 后重试。"""
     normalizer = Normalizer()
@@ -523,7 +530,6 @@ def _load_analysis_dataset(
         "cache_dir": cache_dir,
         "compiled_cache_shard_size": cache_shard_size,
         "compiled_cache_max_shards": cache_max_shards,
-        "candidate_order_file": candidate_order_file,
     }
     try:
         return TrainingDataset([source_path], **dataset_kwargs)

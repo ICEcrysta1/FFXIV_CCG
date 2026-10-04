@@ -242,15 +242,15 @@ def summarize_batch(batch: Mapping[str, object]) -> dict[str, object]:
     batch_size = _shape_value(batch, "label_index", 0)
     history_length = _shape_value(batch, "history_skill_ids", 1)
     scene_length = _shape_value(batch, "scene_vectors", 1)
-    candidate_count = _shape_value(batch, "candidate_skill_ids", 1)
+    action_count = _shape_value(batch, "action_legal_mask", 1)
     sequence_length = None
-    if scene_length is not None and history_length is not None and candidate_count is not None:
-        sequence_length = scene_length + history_length + candidate_count + 1
+    if scene_length is not None and history_length is not None:
+        sequence_length = scene_length + history_length + 1
     return {
         "batch_size": batch_size,
         "history_length": history_length,
         "scene_length": scene_length,
-        "candidate_count": candidate_count,
+        "action_count": action_count,
         "sequence_length": sequence_length,
         "shapes": shapes,
     }

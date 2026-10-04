@@ -59,7 +59,7 @@ def test_build_training_samples_uses_pre_action_context_as_label_input(
     assert second_sample["context"]["state_history_context"]["tokens"]
 
 
-def test_queued_label_matches_a_legal_candidate(cs_backend, cs_skill_book):
+def test_queued_label_matches_a_legal_output_action(cs_backend, cs_skill_book):
     cs_backend.init(actual_base_gcd=2.46, fight_remaining=10.0)
     fight_payload = _payload(
         [
@@ -78,12 +78,12 @@ def test_queued_label_matches_a_legal_candidate(cs_backend, cs_skill_book):
 
     payload = build_training_samples(cs_backend, cs_skill_book, fight_payload)
     sample = payload["samples"][1]
-    candidate = _candidate_skill_token(sample["context"], "blizzard_iii")
+    index = sample["context"]["action_keys"].index("blizzard_iii")
 
     assert sample["label"]["queued"] is True
     assert sample["label"]["is_legal"] is True
-    assert candidate["is_legal"] is True
-    assert candidate["invalid_reason"] == ""
+    assert sample["context"]["action_legal_mask"][index] is True
+    assert sample["label"]["action_index"] == index
 
 
 def test_build_training_samples_raises_on_explicit_label_leak(cs_backend, cs_skill_book):
@@ -103,16 +103,9 @@ def test_build_training_samples_raises_on_explicit_label_leak(cs_backend, cs_ski
         build_training_samples(cs_backend, cs_skill_book, fight_payload)
 
 
-def test_find_candidate_index_raises_when_action_missing():
-    """候选缺失时必须抛错，禁止静默返回 0 错标训练标签。"""
-    from scripts.convert_fflogs.training.training import _find_candidate_index
+def test_find_action_index_raises_when_action_missing():
+    """输出动作缺失时必须抛错，禁止静默返回 0 错标训练标签。"""
+    from scripts.convert_fflogs.training.training import _find_action_index
 
-    with pytest.raises(ValueError, match="not present in candidate_skill_context"):
-        _find_candidate_index([{"skill_key": "fire_iii"}], "ogcd_wait")
-
-
-def _candidate_skill_token(context_payload: dict[str, object], skill_key: str) -> dict[str, object]:
-    for token in context_payload["candidate_skill_context"]:
-        if token["skill_key"] == skill_key:
-            return token
-    raise AssertionError(f"missing candidate skill token: {skill_key}")
+    with pytest.raises(ValueError, match="not present in action_keys"):
+        _find_action_index(["fire_iii"], "ogcd_wait")

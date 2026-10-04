@@ -160,14 +160,11 @@ def rewrite_scene_player_state(
 ) -> dict[str, object]:
     """按场景上下文原地改写 canonical context 的 player 场景字段。
 
-    改写 `state_history_context.tokens` 与 `candidate_state_context.tokens` 的
-    player_state 段（before ‖ after）：移动位、下次停手 ETA（秒）及
-    停手剩余秒数。非法候选的 after 段是 null，逐位置跳过；Boss 可选中不再改写，
-    由状态机自己维护。
+    改写历史与显式当前状态的 player_state 双段：移动位、下次停手 ETA
+    及停手剩余秒数。Boss 可选中由状态机自己维护。
 
     时刻取值：历史条目 before = 生效时刻 − 实际读条时长、after = 生效时刻；
-    候选 before = 本次观测时刻、after = 观测时刻 + 该技能自身窗口
-    （policy 候选则取调用方约定的下一次观测时刻）。
+    当前状态双段均为本次观测时刻，不引入未来状态。
     """
     offset = len(_player_state_fields())
 
@@ -187,20 +184,13 @@ def rewrite_scene_player_state(
             scene_state_at=scene_state_at,
         )
 
-    candidate_tokens = _context_tokens(canonical, "candidate_state_context")
-    candidate_skills = _context_entries(canonical, "candidate_skill_context")
-    for index, token in enumerate(candidate_tokens):
-        skill = candidate_skills[index] if index < len(candidate_skills) else {}
-        window_seconds = _nested_float(skill, "gcd_window", "seconds") or 0.0
-        if _is_policy_candidate(skill) and next_observation_timestamp is not None:
-            after_timestamp = next_observation_timestamp
-        else:
-            after_timestamp = observation_timestamp + window_seconds
+    del next_observation_timestamp
+    for token in _context_tokens(canonical, "current_state_context"):
         _rewrite_state_token(
             token,
             offset=offset,
             before_timestamp=observation_timestamp,
-            after_timestamp=after_timestamp,
+            after_timestamp=observation_timestamp,
             scene_state_at=scene_state_at,
         )
     return canonical
@@ -427,11 +417,6 @@ def _context_tokens(canonical: dict[str, object], context_key: str) -> list[obje
 def _context_entries(canonical: dict[str, object], context_key: str) -> list[object]:
     entries = canonical.get(context_key, [])
     return list(entries) if isinstance(entries, list) else []
-
-
-def _is_policy_candidate(skill: object) -> bool:
-    """policy 控制动作不属于游戏技能，raw skill id 固定为 0。"""
-    return isinstance(skill, dict) and _optional_float(skill.get("skill_id")) == 0.0
 
 
 @lru_cache(maxsize=1)

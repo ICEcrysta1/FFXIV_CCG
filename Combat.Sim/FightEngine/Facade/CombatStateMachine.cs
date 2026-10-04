@@ -355,7 +355,7 @@ public sealed class CombatStateMachine
 
     /// <summary>
     /// 构造一次绝对时间动作生命周期所需的纯时序计划。
-    /// 该方法只读取状态，不推进时间、不写入动作效果，供时间线动作事件和候选预演共用。
+    /// 该方法只读取状态，不推进时间、不写入动作效果，供动作时序校验和时间线执行复用。
     /// </summary>
     internal ActionTimingPlan BuildActionTimingPlan(
         CombatState state,

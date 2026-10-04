@@ -13,13 +13,15 @@ from common.policy.data.input_contract import INPUT_CONTRACT_VERSION
 def _build_contract() -> ModelInputContract:
     data_spec = DataSpec(
         job_tag="black_mage",
-        num_candidates=1,
+        num_actions=1,
         state_dim=1,
         scene_dim=3,
         skill_feature_dim=1,
         num_scene_types=1,
-        candidate_action_keys=("fire_iii",),
+        action_keys=("fire_iii",),
         skill_feature_names=("potency",),
+        action_to_vocab_id=(1,),
+        action_is_gcd=(True,),
     )
     schema = TrainingSchema(
         serialization_format="test",
@@ -38,7 +40,6 @@ def _build_contract() -> ModelInputContract:
             ),
         ),
         state_group_feature_keys={"player_state": ("before.time_seconds",)},
-        candidate_skill_fields=("potency",),
         skill_history_fields=("skill_key",),
     )
     normalizer = Normalizer()

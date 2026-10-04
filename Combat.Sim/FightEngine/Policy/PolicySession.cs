@@ -9,7 +9,7 @@ using Combat.Sim.Outputs;
 
 namespace Combat.Sim.Policy;
 
-/// <summary>持有独立策略历史，并为宿主输出包含策略候选的完整模型上下文。</summary>
+/// <summary>持有独立策略历史，为宿主输出包含策略动作词表的完整模型上下文。</summary>
 public sealed class PolicySession
 {
     private readonly PolicyDecisionHistory _history;

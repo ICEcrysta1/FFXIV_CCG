@@ -36,7 +36,7 @@ from scripts.autoregressive_replay.parallel import ParallelRollouts, collate_liv
 from scripts.autoregressive_replay.replay import (
     AutoregressiveReplay,
     AutoregressiveReplaySession,
-    NoLegalCandidateError,
+    NoLegalActionError,
     ReplayCacheStore,
     _apply_top_p,
 )
@@ -83,22 +83,22 @@ class _TrainableRolloutReplay(AutoregressiveReplay):
     def _score_row(
         self,
         batch,
-        candidate_keys: list[str],
+        action_keys: list[str],
         *,
         gcd_step: int,
     ):
         """按生产 replay 的合法性规则采样，并保留训练所需行为概率。"""
-        raw_logits = self.backend.raw_logits(batch, candidate_keys)
+        raw_logits = self.backend.raw_logits(batch, action_keys)
         logits = apply_repetition_penalty(
             raw_logits,
             batch,
             self.backend.repetition,
         )[0].float()
 
-        legal_mask = batch["candidate_legal_mask"][0].bool()
+        legal_mask = batch["action_legal_mask"][0].bool()
         legal_indices = legal_mask.nonzero(as_tuple=True)[0]
         if legal_indices.numel() == 0:
-            raise NoLegalCandidateError("live state has no legal candidate")
+            raise NoLegalActionError("live state has no legal action")
 
         legal_logits = logits.masked_fill(~legal_mask, float("-inf"))
         order = torch.argsort(legal_logits, descending=True)
@@ -124,11 +124,11 @@ class _TrainableRolloutReplay(AutoregressiveReplay):
         )
         if self._record_decisions:
             recorded_batch = _detach_batch_to_cpu(batch)
-            recorded_batch["candidate_legal_mask"] = legal_mask.unsqueeze(0).cpu()
+            recorded_batch["action_legal_mask"] = legal_mask.unsqueeze(0).cpu()
             self.decisions.append(
                 GrpoDecision(
                     batch=recorded_batch,
-                    candidate_keys=tuple(str(key) for key in candidate_keys),
+                    action_keys=tuple(str(key) for key in action_keys),
                     action_index=selected_index,
                     old_logprob=float(torch.log(selected_probability).item()),
                 )
@@ -136,7 +136,7 @@ class _TrainableRolloutReplay(AutoregressiveReplay):
 
         return self._make_replay_row(
             gcd_step=gcd_step,
-            candidate_keys=candidate_keys,
+            action_keys=action_keys,
             logits=logits,
             probabilities=probabilities,
             legal_mask=legal_mask,
@@ -148,7 +148,7 @@ class _TrainableRolloutReplay(AutoregressiveReplay):
         self,
         *,
         gcd_step: int,
-        candidate_keys: list[str],
+        action_keys: list[str],
         logits: torch.Tensor,
         probabilities: torch.Tensor,
         legal_mask: torch.Tensor,
@@ -160,11 +160,11 @@ class _TrainableRolloutReplay(AutoregressiveReplay):
 
         return ReplayRow(
             gcd_step=gcd_step,
-            action_key=candidate_keys[selected_index],
+            action_key=action_keys[selected_index],
             probability=float(probabilities[selected_index].item()),
-            top_candidates=tuple(
+            top_actions=tuple(
                 (
-                    candidate_keys[index],
+                    action_keys[index],
                     float(logits[index].item()),
                     float(probabilities[index].item()),
                     bool(legal_mask[index].item()),
@@ -263,7 +263,7 @@ def compute_grpo_loss(
     with autocast_context(device, precision):
         logits = model(batch)["logits"]
     logits = apply_repetition_penalty(logits, batch, repetition).float()
-    legal_mask = batch["candidate_legal_mask"].bool()
+    legal_mask = batch["action_legal_mask"].bool()
     masked_logits = logits.masked_fill(~legal_mask, float("-inf"))
     scaled_logits = masked_logits / grpo.temperature
     probabilities = torch.softmax(scaled_logits, dim=-1)
@@ -306,7 +306,7 @@ def compute_grpo_loss(
 
 
 def _ppg_from_result(result) -> float:
-    """读取状态机执行轨迹的 PPG，禁止退回候选预演或单步威力。"""
+    """读取状态机执行轨迹的 PPG，禁止退回动作预演或单步威力。"""
     if result.ppg is None:
         raise RuntimeError("GRPO rollout did not produce PPG")
     return float(result.ppg)
@@ -681,7 +681,7 @@ def run_grpo_training(
         max_steps=None,
         max_gcds=None,
         max_duration_seconds=grpo.max_duration_seconds,
-        top_k=data_spec.num_candidates,
+        top_k=data_spec.num_actions,
         top_p=grpo.top_p,
         temperature=grpo.temperature,
         max_history=config.model.history_capacity,

@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import Normalize
 
-from common.policy.model.input_encoder import ROLE_CANDIDATE
+from common.policy.model.input_encoder import ROLE_CURRENT_STATE
 
 from ..common import (
     ANALYSIS_FEATURES,
@@ -28,17 +28,16 @@ from ..token_metadata import ANALYSIS_MP_MAX
 FEATURE_LABELS = {
     "fight_id": "fight_id",
     "step_index": "step index",
-    "candidate_index": "candidate index",
-    "skill_id": "skill_id",
-    "legal": "legal / illegal",
-    "invalid_reason": "invalid_reason",
+    "label_index": "label action index",
+    "prediction_index": "predicted action index",
+    "label_legal": "label legal / illegal",
     "elemental_state": "AF/UI",
     "mp_bucket": "MP",
     "label_rank": "label rank",
     "model_logit": "model logit",
 }
 NUMERIC_FEATURES = frozenset(
-    {"step_index", "candidate_index", "skill_id", "mp_bucket", "label_rank", "model_logit"}
+    {"step_index", "label_index", "prediction_index", "mp_bucket", "label_rank", "model_logit"}
 )
 # 3D 子图需要额外高度容纳 z 轴标签与刻度，其余按统一网格基准。
 PCA_3D_CELL_SIZE = (5.6, 5.6)
@@ -59,7 +58,7 @@ def plot_layer_pca(context: AnalysisContext) -> list[Path]:
         projection="3d",
     )
 
-    layer_projections, candidate_projections = _build_pca_cache(context)
+    layer_projections, current_projections = _build_pca_cache(context)
     for layer_index, roles in enumerate(context.layer_roles):
         coordinates_3d, explained_3d = layer_projections[layer_index]
         coordinates_2d = coordinates_3d[:, :2]
@@ -98,7 +97,7 @@ def plot_layer_pca(context: AnalysisContext) -> list[Path]:
     save_figure(fig_2d, path_2d)
     save_figure(fig_3d, path_3d)
     feature_paths = [
-        _plot_feature_pca_2d(context, feature, candidate_projections)
+        _plot_feature_pca_2d(context, feature, current_projections)
         for feature in ANALYSIS_FEATURES
     ]
     return [path_2d, path_3d, *feature_paths]
@@ -110,35 +109,47 @@ def _build_pca_cache(
     list[tuple[np.ndarray, np.ndarray]],
     list[tuple[np.ndarray, np.ndarray]],
 ]:
-    """一次计算逐层和候选 token 的 PCA，供所有图复用。"""
+    """一次计算逐层与最新状态 hidden 的 PCA，供所有图复用。"""
     layer_projections = []
-    candidate_projections = []
+    current_projections = []
     for vectors, roles in zip(context.layer_vectors, context.layer_roles):
         # hidden 已经是 CPU numpy；留在 CPU 做低内存协方差分解，避免 CUDA SVD
         # 工作区与模型、attention trace 争抢显存。
-        layer_projections.append(pca_projection(vectors, 3))
-        candidate_projections.append(
-            pca_projection(
-                vectors[roles == ROLE_CANDIDATE],
+        layer_projections.append(_available_pca(vectors, 3))
+        current_projections.append(
+            _available_pca(
+                vectors[roles == ROLE_CURRENT_STATE],
                 2,
             )
         )
-    return layer_projections, candidate_projections
+    return layer_projections, current_projections
+
+
+def _available_pca(values: np.ndarray, components: int) -> tuple[np.ndarray, np.ndarray]:
+    """短因果上下文按可用样本数投影，其余轴补零，不制造额外观测。"""
+    if len(values) < 2:
+        return np.zeros((len(values), components)), np.zeros(components)
+    available = min(components, len(values), values.shape[1])
+    coordinates, explained = pca_projection(values, available)
+    return (
+        np.pad(coordinates, ((0, 0), (0, components - available))),
+        np.pad(explained, (0, components - available)),
+    )
 
 
 def _plot_feature_pca_2d(
     context: AnalysisContext,
     feature: str,
-    candidate_projections: list[tuple[np.ndarray, np.ndarray]],
+    current_projections: list[tuple[np.ndarray, np.ndarray]],
 ) -> Path:
-    """只显示 candidate skill token，并按指定决策变量染色。"""
+    """只显示最新状态 hidden，并按指定决策变量染色。"""
     layer_count = len(context.layer_vectors)
     path = context.output_dir / f"02_layers_pca_2d_{feature}.png"
     label = FEATURE_LABELS.get(feature, feature)
     numeric = feature in NUMERIC_FEATURES
 
     all_values = [
-        metadata[feature][roles == ROLE_CANDIDATE]
+        metadata[feature][roles == ROLE_CURRENT_STATE]
         for metadata, roles in zip(context.layer_metadata, context.layer_roles)
     ]
     if numeric:
@@ -173,9 +184,9 @@ def _plot_feature_pca_2d(
     for layer_index, (roles, metadata) in enumerate(
         zip(context.layer_roles, context.layer_metadata)
     ):
-        candidate_mask = roles == ROLE_CANDIDATE
-        raw_values = metadata[feature][candidate_mask]
-        coordinates, explained = candidate_projections[layer_index]
+        current_mask = roles == ROLE_CURRENT_STATE
+        raw_values = metadata[feature][current_mask]
+        coordinates, explained = current_projections[layer_index]
         axis_name, association = _strongest_pca_axis(coordinates, raw_values, numeric)
         strongest_axes.append(axis_name)
         strongest_scores.append(association)
@@ -231,7 +242,7 @@ def _plot_feature_pca_2d(
         f"{axis}:{score:.2f}" for axis, score in zip(strongest_axes, strongest_scores)
     )
     fig.suptitle(
-        f"Candidate Skill PCA 2D — color={label}\n"
+        f"Current State PCA 2D — color={label}\n"
         f"strongest PCA axis by layer: {axis_summary}",
         fontsize=FEATURE_SUPTITLE_FONTSIZE,
     )

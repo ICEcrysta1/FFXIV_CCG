@@ -67,10 +67,10 @@ public class OutputsHistoryTests
         var payload = TimelineTestDriver.FormatVectorState(machine, state);
 
         Assert.Equal(1.0,
-            (double)OutputsTestKit.CandidateStateVectorValue(payload, "fire_iii", "buff_state",
+            OutputsTestKit.CurrentStateVectorValue(payload, "buff_state",
                 "before.system.raid_buff_window.active")!, 5);
         Assert.Equal(18.0,
-            (double)OutputsTestKit.CandidateStateVectorValue(payload, "fire_iii", "buff_state",
+            OutputsTestKit.CurrentStateVectorValue(payload, "buff_state",
                 "before.system.raid_buff_window.remaining_seconds")!, 5);
     }
 
@@ -128,18 +128,15 @@ public class OutputsHistoryTests
         var machine = OutputsTestKit.BuildMachine();
         var state = machine.InitialState();
         state.SetJobResource("astral_fire", 3);
-        var payload = TimelineTestDriver.FormatVectorState(machine, state);
-        var candidateSkill = (List<Dictionary<string, object?>>)payload["candidate_skill_context"];
-
-        var fireIv = candidateSkill.First(token => (string)token["skill_key"] == "fire_iv");
-        var paradox = candidateSkill.First(token => (string)token["skill_key"] == "paradox");
-        Assert.Equal(300.0 * 1.8, (double)fireIv["potency"]!, 5);
-        Assert.Equal(540.0, (double)paradox["potency"]!, 5);
-
         var result = TimelineTestDriver.Execute(machine, state, "fire_iv");
         var afterPayload = TimelineTestDriver.FormatVectorState(machine, result.NextState);
         var skillHistory = (List<Dictionary<string, object?>>)afterPayload["skill_history_context"];
         Assert.Equal(300.0 * 1.8, (double)skillHistory[^1]["potency"]!, 5);
+        state.SetJobResource("paradox_ready", true);
+        var paradoxResult = TimelineTestDriver.Execute(machine, state, "paradox");
+        var paradoxHistory = (List<Dictionary<string, object?>>)TimelineTestDriver.FormatVectorState(machine,
+            paradoxResult.NextState)["skill_history_context"]!;
+        Assert.Equal(540.0, (double)paradoxHistory[^1]["potency"]!, 5);
     }
 
     [Fact]
