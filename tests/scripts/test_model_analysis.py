@@ -16,7 +16,7 @@ from torch import nn
 
 import common.cache_compilation as cache_compilation
 from common.torch_serialization import safe_torch_load
-from common.policy.model.input_encoder import ROLE_CURRENT_STATE, ROLE_HISTORY
+from common.policy.model.input_encoder import ROLE_SCENE, ROLE_STATE, ROLE_SKILL
 from scripts.model_analysis.common import pca_projection, skill_name_by_vocab_id
 from scripts.model_analysis import common as analysis_common
 from scripts.model_analysis.job_labels import decision_state_labels
@@ -24,7 +24,7 @@ from scripts.model_analysis.job_labels.black_mage import decision_state_labels a
 from scripts.model_analysis.outputs import attention as attention_output
 from scripts.model_analysis.outputs import hidden_statistics as hidden_output
 from scripts.model_analysis.outputs import loss_landscape as loss_output
-from scripts.model_analysis.outputs import pair_embedding as pair_output
+from scripts.model_analysis.outputs import history_embedding as history_output
 from scripts.model_analysis.outputs import pca_layers as pca_output
 from scripts.model_analysis.outputs import skill_embedding as skill_output
 from scripts.model_analysis.outputs.pca_layers import _strongest_pca_axis
@@ -253,7 +253,7 @@ def test_skill_labels_use_chinese_names_from_project_config():
 
 def test_sample_token_count_requires_mapping_and_sums_distinct_token_groups():
     sample = {"scene_vectors": [[0.0]], "history_skill_ids": [1, 2]}
-    assert attention_output._sample_token_count(sample) == 4
+    assert attention_output._sample_token_count(sample) == 6
     with pytest.raises(TypeError, match="expected mapping sample"):
         attention_output._sample_token_count(object())
     with pytest.raises(TypeError, match="scene_vectors"):
@@ -262,7 +262,7 @@ def test_sample_token_count_requires_mapping_and_sums_distinct_token_groups():
 
 def test_sample_token_count_supports_compact_history_bank_samples():
     samples = [{"scene_vectors": [[0.0]], "history_length": value} for value in (0, 2, 5)]
-    assert [attention_output._sample_token_count(sample) for sample in samples] == [2, 4, 7]
+    assert [attention_output._sample_token_count(sample) for sample in samples] == [2, 6, 12]
     assert max(samples, key=attention_output._sample_token_count)["history_length"] == 5
 
 
@@ -290,7 +290,7 @@ def _analysis_schema():
 
 def _analysis_context(tmp_path):
     current_mask = np.array([False, False, True, True, True, True, False, False])
-    roles = np.array([0, ROLE_HISTORY, ROLE_CURRENT_STATE, ROLE_CURRENT_STATE, ROLE_CURRENT_STATE, ROLE_CURRENT_STATE, ROLE_HISTORY, 0])
+    roles = np.array([ROLE_SCENE, ROLE_STATE, ROLE_STATE, ROLE_STATE, ROLE_STATE, ROLE_STATE, ROLE_SKILL, ROLE_SCENE])
     vectors = np.array(
         [
             [0.0, 0.0, 0.0, 1.0],
@@ -342,6 +342,7 @@ def _analysis_context(tmp_path):
         autocast=nullcontext,
         layer_vectors=layer_vectors,
         layer_roles=layer_roles,
+        layer_current_state_masks=[current_mask, current_mask],
         layer_metadata=layer_metadata,
     )
 
@@ -350,27 +351,30 @@ def test_model_analysis_metadata_and_black_mage_fallbacks():
     schema = _analysis_schema()
     samples = [{"metadata": {"fight_id": "fight-1", "step": 7}}]
     batch = {
-        "history_skill_ids": torch.tensor([[9]], dtype=torch.int32),
+        "history_skill_ids": torch.tensor([[9, 0]], dtype=torch.int32),
+        "history_mask": torch.tensor([[True, False]]),
         "action_legal_mask": torch.tensor([[True, False]]),
         "current_state_vectors": torch.tensor([[0.0, 1.0, 0.5]]),
         "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
         "label_index": torch.tensor([0]),
     }
     encoded = {
-        "role_ids": torch.tensor([[0, ROLE_HISTORY, ROLE_CURRENT_STATE]]),
-        "current_state_position": 2,
+        "role_ids": torch.tensor([[ROLE_SCENE, ROLE_STATE, ROLE_SKILL, ROLE_STATE, ROLE_SKILL, ROLE_STATE]]),
+        "current_state_positions": torch.tensor([5]),
+        "history_skill_positions": torch.tensor([[2, 4]]),
     }
     metadata = build_token_metadata(
         samples, batch=batch, encoded=encoded, schema=schema,
         job_tag="black_mage", logits=np.array([[3.0, 1.0]]),
     )
     assert metadata["fight_id"][0, 0] == "fight-1"
-    assert metadata["skill_id"][0, 1] == 9
-    assert metadata["skill_id"][0, 2] == -1
-    assert metadata["label_legal"][0, 2] == "legal"
-    assert metadata["label_rank"][0, 2] == 1.0
-    assert metadata["model_logit"][0, 2] == 3.0
-    assert metadata["prediction_index"][0, 2] == 0
+    assert metadata["skill_id"][0, 2] == 9
+    assert metadata["skill_id"][0, 4] == -1
+    assert metadata["skill_id"][0, 5] == -1
+    assert metadata["label_legal"][0, 5] == "legal"
+    assert metadata["label_rank"][0, 5] == 1.0
+    assert metadata["model_logit"][0, 5] == 3.0
+    assert metadata["prediction_index"][0, 5] == 0
     assert np.isnan(metadata["label_rank"][0, 1])
     assert decision_state_labels("machinist", 0, batch=batch, schema=schema)[0] == "unknown"
     missing_schema = SimpleNamespace(state_group_slices=lambda: {}, state_group_feature_keys={})
@@ -512,7 +516,8 @@ def test_model_analysis_common_helpers_and_context_loading(monkeypatch, tmp_path
         def trace(self, _batch):
             encoded = {
                 "padding_mask": torch.zeros((1, 4), dtype=torch.bool),
-                "role_ids": torch.tensor([[0, 1, ROLE_CURRENT_STATE, ROLE_CURRENT_STATE]]),
+                "role_ids": torch.tensor([[ROLE_SCENE, ROLE_STATE, ROLE_SKILL, ROLE_STATE]]),
+                "current_state_positions": torch.tensor([3]),
             }
             return SimpleNamespace(
                 encoded=encoded,
@@ -627,7 +632,7 @@ def test_model_analysis_outputs_generate_pngs(monkeypatch, tmp_path):
     monkeypatch.setattr(skill_output, "skill_name_by_vocab_id", lambda _context: {
         1: "爆炎", 2: "炽炎", 3: "冰封", 4: "悖论"
     })
-    monkeypatch.setattr(pair_output, "skill_name_by_vocab_id", lambda _context: {
+    monkeypatch.setattr(history_output, "skill_name_by_vocab_id", lambda _context: {
         1: "爆炎", 2: "炽炎", 3: "冰封", 4: "悖论"
     })
 
@@ -652,23 +657,24 @@ def test_model_analysis_outputs_generate_pngs(monkeypatch, tmp_path):
     skill_path = skill_output.plot_skill_embedding(context)
     assert skill_path.is_file()
 
-    class FakePairEncoder:
+    class FakeHistoryEncoder:
         @staticmethod
-        def embed_pairs(batch):
+        def embed_history(batch):
             size = batch["history_skill_ids"].shape[0]
-            return {"history": torch.arange(size * 2 * 3, dtype=torch.float32).reshape(size, 2, 3)}
+            values = torch.arange(size * 2 * 3, dtype=torch.float32).reshape(size, 2, 3)
+            return {"skill": values, "state": values + 1.0}
 
-    context.model.input_encoder = FakePairEncoder()
-    monkeypatch.setattr(pair_output, "TrainingCollator", lambda: (lambda samples: {
+    context.model.input_encoder = FakeHistoryEncoder()
+    monkeypatch.setattr(history_output, "TrainingCollator", lambda: (lambda samples: {
         "history_skill_ids": torch.tensor([[1, 2] for _ in samples], dtype=torch.int32),
         "history_mask": torch.ones((len(samples), 2), dtype=torch.bool),
     }))
-    pair_path = pair_output.plot_pair_embedding(context, batch_size=1, max_points=2)
-    assert pair_path.is_file()
+    history_paths = history_output.plot_history_embeddings(context, batch_size=1, max_points=2)
+    assert all(path.is_file() for path in history_paths)
     with pytest.raises(ValueError, match="batch size"):
-        pair_output.plot_pair_embedding(context, batch_size=0)
+        history_output.plot_history_embeddings(context, batch_size=0)
     with pytest.raises(ValueError, match="at least 2"):
-        pair_output.plot_pair_embedding(context, max_points=1)
+        history_output.plot_history_embeddings(context, max_points=1)
 
 
 def test_model_analysis_layer_pca_reuses_projection_cache(monkeypatch, tmp_path):
@@ -723,32 +729,66 @@ def test_real_causal_trace_loads_metadata_and_keeps_current_query_under_token_ca
     )
     expected_logit = model(batch)["logits"][0, 0].item()
     for roles, metadata in zip(context.layer_roles, context.layer_metadata):
-        assert roles.tolist() == [ROLE_CURRENT_STATE]
+        assert roles.tolist() == [ROLE_STATE]
         assert set(metadata) == set(analysis_common.ANALYSIS_FEATURES)
         assert metadata["model_logit"][0] == pytest.approx(expected_logit)
+    assert all(mask.tolist() == [True] for mask in context.layer_current_state_masks)
     layer_projections, query_projections = pca_output._build_pca_cache(context)
     assert layer_projections[0][0].shape == (1, 3)
     assert query_projections[0][0].shape == (1, 2)
     assert np.isfinite(query_projections[0][0]).all()
 
 
-def test_history_pair_plot_excludes_padding_and_supports_empty_history(monkeypatch, tmp_path):
+def test_history_embedding_views_exclude_padding_and_support_empty_history(monkeypatch, tmp_path):
     context = _analysis_context(tmp_path)
     context.output_dir.mkdir(parents=True)
     class Encoder:
         @staticmethod
-        def embed_pairs(_batch):
-            return {"history": torch.tensor([[[1.0, 2.0], [float("nan"), float("nan")]]])}
+        def embed_history(_batch):
+            values = torch.tensor([[[1.0, 2.0], [float("nan"), float("nan")]]])
+            return {"skill": values, "state": values + 3.0}
     context.model.input_encoder = Encoder()
-    monkeypatch.setattr(pair_output, "skill_name_by_vocab_id", lambda _context: {1: "fire"})
+    monkeypatch.setattr(history_output, "skill_name_by_vocab_id", lambda _context: {1: "fire"})
     values = {
         "history_skill_ids": torch.tensor([[1, 0]]),
         "history_mask": torch.tensor([[True, False]]),
     }
-    monkeypatch.setattr(pair_output, "TrainingCollator", lambda: (lambda _samples: values))
-    assert pair_output.plot_pair_embedding(context, batch_size=1).is_file()
+    monkeypatch.setattr(history_output, "TrainingCollator", lambda: (lambda _samples: values))
+    assert all(path.is_file() for path in history_output.plot_history_embeddings(context, batch_size=1))
     values["history_mask"] = torch.zeros((1, 2), dtype=torch.bool)
-    assert pair_output.plot_pair_embedding(context, batch_size=1).is_file()
+    assert all(path.is_file() for path in history_output.plot_history_embeddings(context, batch_size=1))
+
+
+def test_history_skill_and_state_pca_fit_distinct_valid_observations(monkeypatch, tmp_path):
+    """技能与状态各拟合真实观测，padding 的 NaN 不进入任何一张图。"""
+    context = _analysis_context(tmp_path)
+    context.output_dir.mkdir(parents=True)
+    observed = {
+        "skill": torch.tensor([[[0.0, 1.0], [2.0, 3.0], [float("nan"), float("nan")]]]),
+        "state": torch.tensor([[[10.0, 0.0], [0.0, 10.0], [float("nan"), float("nan")]]]),
+    }
+    context.model.input_encoder = SimpleNamespace(embed_history=lambda _batch: observed)
+    monkeypatch.setattr(history_output, "skill_name_by_vocab_id", lambda _context: {1: "fire", 2: "ice"})
+    monkeypatch.setattr(history_output, "TrainingCollator", lambda: (lambda _samples: {
+        "history_skill_ids": torch.tensor([[1, 2, 0]]),
+        "history_mask": torch.tensor([[True, True, False]]),
+    }))
+    fitted = []
+    original = history_output.pca_projection
+
+    def record(values, components):
+        fitted.append(values.copy())
+        return original(values, components)
+
+    monkeypatch.setattr(history_output, "pca_projection", record)
+    paths = history_output.plot_history_embeddings(context, batch_size=2)
+    assert [path.name for path in paths] == [
+        "05_history_skill_embedding_pca.png", "05_history_state_embedding_pca.png",
+    ]
+    assert all(path.is_file() for path in paths)
+    assert len(fitted) == 2
+    np.testing.assert_array_equal(fitted[0], observed["skill"][0, :2].numpy())
+    np.testing.assert_array_equal(fitted[1], observed["state"][0, :2].numpy())
 
 
 def test_loss_landscape_directions_are_filter_normalized_and_orthogonal():
@@ -886,30 +926,31 @@ def test_loss_landscape_rejects_invalid_options(kwargs, message):
 
 
 def test_opener_attention_uses_latest_state_query_and_excludes_padding(monkeypatch, tmp_path):
-    """最新状态 query 汇总真实 key 角色，padding 不计入质量。"""
+    """同类历史状态不能混作 query，逐样本位置和 padding 必须分别处理。"""
     weights = torch.tensor([
-        [1.0, 0.0, 0.0, 0.0],
-        [0.3, 0.6, 0.1, 0.0],
-        [0.1, 0.1, 0.8, 0.0],
-        [0.4, 0.2, 0.9, 0.4],
-    ]).reshape(1, 1, 4, 4).expand(1, 2, 4, 4)
+        [1.0, 0.0, 0.0, 0.0, 0.0],
+        [0.3, 0.7, 0.0, 0.0, 0.0],
+        [0.1, 0.1, 0.8, 0.0, 0.0],
+        [0.6, 0.1, 0.1, 0.2, 0.0],
+        [0.2, 0.1, 0.3, 0.9, 0.4],
+    ]).reshape(1, 1, 5, 5).expand(2, 2, 5, 5)
     class Model:
         @staticmethod
         def trace(_batch):
             return SimpleNamespace(
                 encoded={
-                    "current_state_position": 3,
-                    "role_ids": torch.tensor([[0, ROLE_HISTORY, ROLE_HISTORY, ROLE_CURRENT_STATE]]),
-                    "padding_mask": torch.tensor([[False, False, True, False]]),
+                    "current_state_positions": torch.tensor([4, 3]),
+                    "role_ids": torch.tensor([[ROLE_SCENE, ROLE_STATE, ROLE_SKILL, ROLE_STATE, ROLE_STATE]] * 2),
+                    "padding_mask": torch.tensor([[False, False, False, True, False], [False, False, False, False, True]]),
                 },
-                hidden=torch.zeros(1, 4, 2), attentions=(weights,),
+                hidden=torch.zeros(2, 5, 2), attentions=(weights,),
             )
         @staticmethod
         def score_hidden(_encoded, _hidden, _batch):
-            return torch.tensor([[1.0, 0.0]])
+            return torch.tensor([[1.0, 0.0]] * 2)
     context = SimpleNamespace(
         model=Model(), data_spec=SimpleNamespace(action_keys=("a", "b")),
-        dataset=[{"label_action_key": "a", "label_index": 0}],
+        dataset=[{"label_action_key": "a", "label_index": 0}] * 2,
         device=torch.device("cpu"), output_dir=tmp_path, autocast=nullcontext,
     )
     captured = {}
@@ -918,9 +959,10 @@ def test_opener_attention_uses_latest_state_query_and_excludes_padding(monkeypat
                         lambda values, *_args: captured.update(query=values))
     monkeypatch.setattr(attention_output, "_plot_layer_attention",
                         lambda values, *_args: captured.update(layers=values))
-    attention_output.plot_opener_attention(context, steps=1, batch_size=1)
-    np.testing.assert_allclose(captured["query"], [[1.0, 0.5, 1.0]])
-    np.testing.assert_allclose(captured["layers"], [[1.0, 0.5, 1.0]])
+    attention_output.plot_opener_attention(context, steps=2, batch_size=2)
+    expected = np.array([[0.4, 1.0, 0.6], [1.0, 0.5, 1.0 / 6.0]])
+    np.testing.assert_allclose(captured["query"], expected, rtol=1e-6)
+    np.testing.assert_allclose(captured["layers"], expected.mean(axis=0, keepdims=True), rtol=1e-6)
 
 
 def test_model_analysis_attention_output_and_main(monkeypatch, tmp_path):
@@ -940,8 +982,8 @@ def test_model_analysis_attention_output_and_main(monkeypatch, tmp_path):
         @staticmethod
         def trace(_batch):
             encoded = {
-                "current_state_position": 2,
-                "role_ids": torch.tensor([[0, 1, 2], [0, 1, 2]]),
+                "current_state_positions": torch.tensor([2, 2]),
+                "role_ids": torch.tensor([[ROLE_SCENE, ROLE_SKILL, ROLE_STATE]] * 2),
                 "padding_mask": torch.zeros((2, 3), dtype=torch.bool),
             }
             attention = torch.ones((2, 2, 3, 3), dtype=torch.float32)
@@ -1070,7 +1112,9 @@ def test_model_analysis_attention_output_and_main(monkeypatch, tmp_path):
         lambda _context, **kwargs: (tmp_path / "matrix.png", tmp_path / "heads.png", tmp_path / "blocks.png"),
     )
     monkeypatch.setattr(analysis_main, "plot_skill_embedding", lambda _context: tmp_path / "skill.png")
-    monkeypatch.setattr(analysis_main, "plot_pair_embedding", lambda _context, **kwargs: tmp_path / "pair.png")
+    monkeypatch.setattr(analysis_main, "plot_history_embeddings", lambda _context, **kwargs: (
+        tmp_path / "history_skill.png", tmp_path / "history_state.png",
+    ))
     monkeypatch.setattr(
         analysis_main,
         "plot_loss_landscape",

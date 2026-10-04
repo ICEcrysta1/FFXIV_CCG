@@ -31,7 +31,7 @@ def plot_opener_attention(
     steps: int = 28,
     batch_size: int = 16,
 ) -> tuple[Path, Path]:
-    """绘制最新状态 query 对场景、历史与自身三类 key 的注意力质量。"""
+    """绘制最新状态 query 对场景、状态与技能三类 key 的注意力质量。"""
     if steps <= 0:
         raise ValueError("attention steps must be positive")
     if batch_size <= 0:
@@ -53,14 +53,16 @@ def plot_opener_attention(
                 trace = context.model.trace(batch)
                 encoded = trace.encoded
                 logits = context.model.score_hidden(encoded, trace.hidden, batch)
-            position = int(encoded["current_state_position"])
+            positions = encoded["current_state_positions"]
             valid = ~encoded["padding_mask"]
             roles = encoded["role_ids"]
             if layer_rows is None:
                 layer_rows = [[] for _ in trace.attentions]
             for layer_index, attention in enumerate(trace.attentions):
                 # 只读最新状态 query；按真实 key 角色汇总所有 head 的注意力质量。
-                query_attention = attention[:, :, position, :].mean(dim=1)
+                query_attention = attention[
+                    torch.arange(attention.shape[0], device=attention.device), :, positions, :
+                ].mean(dim=1)
                 mass = torch.stack([
                     (query_attention * ((roles == role) & valid)).sum(dim=-1)
                     for role in sorted(ROLE_NAMES)
@@ -158,7 +160,7 @@ def _sample_token_count(sample: object) -> int:
     history_values = sample.get("history_skill_ids")
     if history_values is not None:
         try:
-            total += len(history_values)
+            total += 2 * len(history_values)
         except TypeError as exc:
             raise TypeError(
                 "sample field 'history_skill_ids' must be sized for representative selection"
@@ -168,7 +170,7 @@ def _sample_token_count(sample: object) -> int:
         history_length = sample.get("history_length")
         if history_length is not None:
             try:
-                total += int(history_length)
+                total += 2 * int(history_length)
             except (TypeError, ValueError, OverflowError) as exc:
                 raise TypeError(
                     "sample field 'history_length' must be an integer for representative selection"

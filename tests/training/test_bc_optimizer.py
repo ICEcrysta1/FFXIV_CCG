@@ -37,7 +37,7 @@ def _model(*, num_kv_heads=1, dtype=torch.float32) -> CausalPolicyModel:
         action_is_gcd=(True, True),
     )
     config = ModelConfig(
-        d_model=8, pair_embedding_dim=4, n_layers=1, n_heads=2,
+        d_model=8, n_layers=1, n_heads=2,
         num_kv_heads=num_kv_heads, ff_dim=12, transformer_activation="swiglu",
         dropout=0.0, full_attention_residuals=True,
     )
@@ -100,7 +100,7 @@ def test_muon_groups_only_transformer_projection_matrices(num_kv_heads):
     assert "encoder.attention_residual.pseudo_queries" in adamw_names
     assert "encoder.layers.0.norm1.weight" in adamw_names
     assert all(name in adamw_names for name, _ in model.named_parameters() if (
-        name.startswith(("input_encoder.", "output_adapter.")) or name.endswith(".bias")
+        name.startswith("input_encoder.") or name.endswith(".bias")
     ))
 
 

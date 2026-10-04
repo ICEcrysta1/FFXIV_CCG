@@ -25,7 +25,7 @@ POLICY_MODEL_CHECKPOINT_ENV = "TRAINING_MODEL_CHECKPOINT"
 POLICY_DEVICE_ENV = "TRAINING_DEVICE"
 POLICY_CACHE_ROOT_ENV = "TRAINING_CACHE_ROOT"
 
-# 全模型共用的激活选项：主干 FFN 与历史 pair 融合都按该取值解析。
+# Transformer 主干 FFN 的激活选项；独立输入编码只使用线性投影与归一化。
 TRANSFORMER_ACTIVATIONS = ("gelu", "relu", "swiglu")
 
 
@@ -65,7 +65,6 @@ class ModelConfig:
     """只保存策略模型架构超参数，数据维度由 DataSpec 提供。"""
 
     d_model: int = 256
-    pair_embedding_dim: int = 384
     n_layers: int = 4
     n_heads: int = 4
     num_kv_heads: int = 1
@@ -87,8 +86,6 @@ class ModelConfig:
             raise ValueError("model.history_capacity must be >= 0")
         if self.scene_capacity < 1:
             raise ValueError("model.scene_capacity must be >= 1")
-        if self.pair_embedding_dim <= 0:
-            raise ValueError("model.pair_embedding_dim must be positive")
         if self.n_heads <= 0:
             raise ValueError("model.n_heads must be positive")
         if self.num_kv_heads <= 0 or self.num_kv_heads > self.n_heads:
@@ -117,6 +114,10 @@ class ModelConfig:
             )
         if "max_history" in values:
             raise ValueError("model.max_history is removed; configure model.history_capacity")
+        if "pair_embedding_dim" in values:
+            raise ValueError(
+                "model.pair_embedding_dim is removed; skill/state tokens use model.d_model directly"
+            )
         removed = {
             "num_candidates", "scorer_use_raw_projection",
             "scorer_use_candidate_hidden", "position_id_semantics",
@@ -131,7 +132,6 @@ class ModelConfig:
             )
         return cls(
             d_model=int(values.get("d_model", cls.d_model)),
-            pair_embedding_dim=int(values.get("pair_embedding_dim", cls.pair_embedding_dim)),
             n_layers=int(values.get("n_layers", cls.n_layers)),
             n_heads=int(values.get("n_heads", cls.n_heads)),
             num_kv_heads=int(values.get("num_kv_heads", cls.num_kv_heads)),

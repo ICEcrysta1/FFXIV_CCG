@@ -21,7 +21,7 @@
       "const": "manifest.schema.json"
     },
     "manifest_version": {
-      "const": 8
+      "const": 9
     },
     "format": {
       "const": "onnx"
@@ -229,7 +229,7 @@
       ],
       "properties": {
         "contract_version": {
-          "const": 14
+          "const": 15
         },
         "job_tag": {
           "type": "string",
@@ -243,7 +243,29 @@
           ]
         },
         "capacity": {
-          "type": "object"
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "scene_capacity", "history_capacity", "batch_size", "padding_direction",
+            "scene_padding_mask_value", "history_padding_mask_value", "position_ids", "over_capacity",
+            "history_capacity_unit", "history_tokens_per_action", "token_order",
+            "total_token_count", "effective_sequence_length"
+          ],
+          "properties": {
+            "scene_capacity": {"type": "integer", "minimum": 1},
+            "history_capacity": {"type": "integer", "minimum": 1},
+            "batch_size": {"const": 1},
+            "padding_direction": {"const": "right"},
+            "scene_padding_mask_value": {"const": false},
+            "history_padding_mask_value": {"const": false},
+            "position_ids": {"const": "logical per-sample positions; right padding excluded; separate skill/state positions; RoPE applied to Q/K"},
+            "over_capacity": {"const": "reject"},
+            "history_capacity_unit": {"const": "actions"},
+            "history_tokens_per_action": {"const": 2},
+            "token_order": {"const": "scene, (skill_i, state_i)*H, current_state"},
+            "total_token_count": {"type": "integer", "minimum": 4},
+            "effective_sequence_length": {"const": "scene_valid + 2 * history_valid + 1"}
+          }
         },
         "data_spec": {
           "type": "object"

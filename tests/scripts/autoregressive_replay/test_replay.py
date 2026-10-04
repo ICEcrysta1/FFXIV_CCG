@@ -473,7 +473,7 @@ def test_replay_prediction_modes_and_result_helpers(monkeypatch, tmp_path):
     assert result.is_history_ablation is True
 
 
-def test_replay_respects_shared_candidate_mask():
+def test_replay_respects_shared_action_mask():
     replay = object.__new__(AutoregressiveReplay)
     replay.config = SimpleNamespace(
         temperature=0.0,

@@ -31,7 +31,6 @@ def _make_model(
         data_spec,
         ModelConfig(
             d_model=16,
-            pair_embedding_dim=8,
             n_layers=2,
             n_heads=2,
             ff_dim=32,
@@ -116,8 +115,10 @@ def test_kv_cache_matches_full_forward_when_history_appends(norm_first: bool, ac
             cached_output["logits"], full_logits, rtol=1e-5, atol=1e-6
         )
 
-    assert model._kv_cache.prefix_tokens.shape[1] == 4
-    assert model._kv_cache.key_cache[0].shape[2] == 4
+    assert model._kv_cache.prefix_tokens.shape[1] == 6
+    assert model._kv_cache.key_cache[0].shape[2] == 6
+    assert model._kv_cache.history_length == 2
+    assert model._kv_cache.history_token_length == 4
     assert not hasattr(model._kv_cache, "layer_outputs")
 
 
@@ -126,7 +127,9 @@ def test_kv_cache_recomputes_current_state_without_rebuilding_prefix():
     prefix_batch = _make_batch(2)
     model.enable_kv_cache(True)
     model(prefix_batch)
+    original_cache = model._kv_cache
     changed_current = _make_batch(2, current_state_offset=10.0)
+    changed_current["current_state_null_mask"][0, 1] = True
 
     full_logits = full_model(changed_current)["logits"]
     cached_output = model(changed_current)
@@ -134,7 +137,58 @@ def test_kv_cache_recomputes_current_state_without_rebuilding_prefix():
     torch.testing.assert_close(
         cached_output["logits"], full_logits, rtol=1e-5, atol=1e-6
     )
-    assert model._kv_cache.prefix_tokens.shape[1] == 4
+    assert model._kv_cache is original_cache
+    assert model._kv_cache.prefix_tokens.shape[1] == 6
+
+
+@pytest.mark.parametrize("full_attention_residuals", (False, True))
+@pytest.mark.parametrize(
+    "changed_field",
+    (
+        "history_state_vectors",
+        "history_state_null_mask",
+        "history_mask",
+        "scene_vectors",
+        "scene_mask",
+        "sliding_history",
+    ),
+)
+def test_kv_cache_rebuilds_for_state_masks_and_sliding_window(
+    changed_field: str, full_attention_residuals: bool,
+):
+    """历史状态、逻辑位置或固定窗口改变时，不沿用旧前缀。"""
+    model, full_model = _make_model_pair(
+        full_attention_residuals=full_attention_residuals,
+    )
+    model.enable_kv_cache(True)
+    model(_make_batch(2))
+    original_cache = model._kv_cache
+    changed_batch = _make_batch(2)
+    if changed_field == "sliding_history":
+        for key in ("history_skill_features", "history_state_vectors"):
+            changed_batch[key][:, 0] = changed_batch[key][:, 1].clone()
+            changed_batch[key][:, 1] += 10.0
+    elif changed_field in ("history_state_vectors", "scene_vectors"):
+        changed_batch[changed_field][0, 0, 0] += 10.0
+    elif changed_field == "history_state_null_mask":
+        changed_batch[changed_field][0, 0, 0] = True
+    else:
+        changed_batch[changed_field][0, 0] = False
+
+    full_logits = full_model(changed_batch)["logits"]
+    cached_output = model(changed_batch)
+
+    torch.testing.assert_close(
+        cached_output["logits"], full_logits, rtol=1e-5, atol=1e-6,
+    )
+    assert model._kv_cache is not original_cache
+    assert model._kv_cache.history_length == 2
+    assert model._kv_cache.history_token_length == 4
+    encoded = model.input_encoder(changed_batch)
+    torch.testing.assert_close(model._kv_cache.prefix_valid, encoded["prefix_valid"])
+    torch.testing.assert_close(
+        model._kv_cache.prefix_position_ids, encoded["position_ids"][:, :6],
+    )
 
 
 @pytest.mark.parametrize("full_attention_residuals", (False, True))
@@ -154,7 +208,7 @@ def test_kv_cache_rebuilds_when_history_is_not_an_append(
     torch.testing.assert_close(
         cached_output["logits"], full_logits, rtol=1e-5, atol=1e-6
     )
-    assert model._kv_cache.prefix_tokens.shape[1] == 4
+    assert model._kv_cache.prefix_tokens.shape[1] == 6
 
 
 @pytest.mark.parametrize("activation", ("gelu", "swiglu"))

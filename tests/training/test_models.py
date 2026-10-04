@@ -41,7 +41,7 @@ def test_future_current_state_cannot_change_earlier_context_hidden():
     spec = make_data_spec()
     model = CausalPolicyModel(
         spec,
-        ModelConfig(d_model=16, pair_embedding_dim=8, n_layers=2,
+        ModelConfig(d_model=16, n_layers=2,
                     n_heads=4, ff_dim=32, dropout=0.0),
         vocab_size=3,
     ).eval()
@@ -60,7 +60,7 @@ def test_action_supervision_metadata_does_not_enter_transformer():
     spec = make_data_spec()
     model = CausalPolicyModel(
         spec,
-        ModelConfig(d_model=16, pair_embedding_dim=8, n_layers=1,
+        ModelConfig(d_model=16, n_layers=1,
                     n_heads=4, ff_dim=32, dropout=0.0),
         vocab_size=3,
     ).eval()
@@ -69,7 +69,7 @@ def test_action_supervision_metadata_does_not_enter_transformer():
                  action_values=torch.tensor([[100.0, -100.0]]))
     with torch.no_grad():
         torch.testing.assert_close(model(batch)["logits"], model(other)["logits"])
-    assert model.input_encoder(batch)["tokens"].shape[1] == 4
+    assert model.input_encoder(batch)["tokens"].shape[1] == 6
 
 
 def test_select_training_raw_paths_uses_directory_proportions(tmp_path):
@@ -170,8 +170,8 @@ def test_position_ids_are_logical_sequential_when_all_tokens_are_valid():
         device=torch.device("cpu"),
     )[0].tolist()
 
-    assert position_ids == [0, 1, 2, 3, 4, 5]
-    assert position_ids[-1] == 5
+    assert position_ids == [0, 1, 2, 3, 4, 5, 6, 7]
+    assert position_ids[-1] == 7
 
 
 def test_position_ids_ignore_right_padding_per_sample():
@@ -188,8 +188,8 @@ def test_position_ids_ignore_right_padding_per_sample():
     )
 
     assert position_ids.tolist() == [
-        [0, 1, 0, 2, 0, 0, 0, 3],
-        [0, 1, 2, 3, 4, 5, 0, 6],
+        [0, 1, 0, 2, 3, 0, 0, 0, 0, 0, 0, 4],
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 9],
     ]
 
 
@@ -204,7 +204,7 @@ def test_position_ids_count_valid_tokens_without_right_padding():
         history_mask=torch.tensor([[False, True, False, True]]),
     )
 
-    assert position_ids.tolist() == [[0, 0, 1, 0, 2, 0, 3, 4]]
+    assert position_ids.tolist() == [[0, 0, 1, 0, 0, 2, 3, 0, 0, 4, 5, 6]]
 
 
 def test_current_state_rope_position_follows_scene_and_history():
@@ -216,7 +216,7 @@ def test_current_state_rope_position_follows_scene_and_history():
         device=torch.device("cpu"),
     )
 
-    assert position_ids.tolist() == [[0, 1, 2, 3, 4]]
+    assert position_ids.tolist() == [[0, 1, 2, 3, 4, 5, 6]]
 
 
 def test_rope_logits_are_invariant_to_other_samples_right_padding():
@@ -235,7 +235,6 @@ def test_rope_logits_are_invariant_to_other_samples_right_padding():
         data_spec,
         ModelConfig(
             d_model=8,
-            pair_embedding_dim=6,
             n_layers=1,
             n_heads=2,
             ff_dim=16,
@@ -327,7 +326,6 @@ def test_causal_model_appends_one_current_state_token():
         data_spec,
         ModelConfig(
             d_model=8,
-            pair_embedding_dim=6,
             n_layers=1,
             n_heads=2,
             ff_dim=16,
@@ -353,11 +351,13 @@ def test_causal_model_appends_one_current_state_token():
     assert output["logits"].shape == (1, 2)
     encoded = model.input_encoder(batch)
     assert "attention_mask" not in encoded
-    assert encoded["prefix_length"] == 3
-    assert encoded["current_state_position"] == 3
-    assert encoded["tokens"].shape == (1, 4, 8)
-    assert encoded["role_ids"].tolist() == [[0, 1, 1, 2]]
-    assert encoded["position_ids"].tolist() == [[0, 1, 2, 3]]
+    assert encoded["history_length"] == 2
+    assert encoded["history_token_length"] == 4
+    assert encoded["prefix_length"] == 5
+    assert encoded["current_state_position"] == 5
+    assert encoded["tokens"].shape == (1, 6, 8)
+    assert encoded["role_ids"].tolist() == [[0, 2, 1, 2, 1, 1]]
+    assert encoded["position_ids"].tolist() == [[0, 1, 2, 3, 4, 5]]
     assert not any(key.startswith("cls_") for key in encoded)
 
 
@@ -377,7 +377,6 @@ def test_input_encoder_derives_context_capacity_from_context_blocks():
         data_spec,
         ModelConfig(
             d_model=8,
-            pair_embedding_dim=6,
             n_layers=1,
             n_heads=2,
             ff_dim=16,
@@ -387,8 +386,8 @@ def test_input_encoder_derives_context_capacity_from_context_blocks():
         ),
         vocab_size=4,
     ).eval()
-    # 阶段 1 保留历史 pair，scene 4 + history 2 + 当前状态 1 = 7。
-    assert model.input_encoder.max_token_count == 7
+    # 历史容量按动作计数：scene 4 + 技能/状态 2 * 2 + 当前状态 1 = 9。
+    assert model.input_encoder.max_token_count == 9
     batch = {
         "history_skill_ids": torch.ones((1, 2), dtype=torch.int64),
         "history_skill_features": torch.zeros((1, 2, 1)),
@@ -430,7 +429,6 @@ def test_model_encode_with_attention_returns_per_head_weights():
         data_spec,
         ModelConfig(
             d_model=8,
-            pair_embedding_dim=6,
             n_layers=2,
             n_heads=2,
             ff_dim=16,
@@ -459,11 +457,11 @@ def test_model_encode_with_attention_returns_per_head_weights():
     assert hidden.shape == encoded["tokens"].shape
     assert len(attentions) == 2
     assert attentions[0].shape == (1, 2, encoded["tokens"].shape[1], encoded["tokens"].shape[1])
-    assert encoded["current_state_position"] == 2
-    assert encoded["tokens"].shape[1] == 3
+    assert encoded["current_state_position"] == 3
+    assert encoded["tokens"].shape[1] == 4
 
 
-def test_stage1_retains_history_pairs_and_encodes_current_state_without_skill():
+def test_history_uses_independent_tokens_and_current_state_has_no_skill():
     torch = pytest.importorskip("torch")
     data_spec = DataSpec(
         job_tag="black_mage",
@@ -479,7 +477,6 @@ def test_stage1_retains_history_pairs_and_encodes_current_state_without_skill():
         data_spec,
         ModelConfig(
             d_model=8,
-            pair_embedding_dim=6,
             n_layers=1,
             n_heads=2,
             ff_dim=16,
@@ -503,12 +500,14 @@ def test_stage1_retains_history_pairs_and_encodes_current_state_without_skill():
 
     encoded = model.input_encoder(batch)
 
-    assert encoded["tokens"].shape[1] == 1 + 2 + 1
-    assert set(model.input_encoder.embed_pairs(batch)) == {"history"}
-    assert encoded["current_state_position"] == 3
+    assert encoded["tokens"].shape[1] == 1 + 2 * 2 + 1
+    assert set(model.input_encoder.embed_history(batch)) == {"skill", "state"}
+    assert encoded["current_state_position"] == 5
+    assert encoded["history_skill_positions"].tolist() == [[1, 3]]
+    assert encoded["history_state_positions"].tolist() == [[2, 4]]
 
 
-def test_input_encoder_routes_all_token_sources_through_shared_embedding():
+def test_input_encoder_routes_each_token_source_through_its_own_norm():
     torch = pytest.importorskip("torch")
     data_spec = DataSpec(
         job_tag="black_mage",
@@ -524,7 +523,6 @@ def test_input_encoder_routes_all_token_sources_through_shared_embedding():
         data_spec,
         ModelConfig(
             d_model=8,
-            pair_embedding_dim=6,
             n_layers=1,
             n_heads=2,
             ff_dim=16,
@@ -547,21 +545,28 @@ def test_input_encoder_routes_all_token_sources_through_shared_embedding():
     }
     captured = {}
 
-    def capture(_module, inputs, _output):
-        captured["shape"] = tuple(inputs[0].shape)
+    def capture(name):
+        def hook(_module, inputs, _output):
+            captured.setdefault(name, []).append(tuple(inputs[0].shape))
+        return hook
 
-    handle = model.input_encoder.token_embedding.register_forward_hook(capture)
+    handles = [getattr(model.input_encoder, name).register_forward_hook(capture(name))
+               for name in ("skill_norm", "state_norm", "scene_norm")]
     try:
         model.input_encoder(batch)
     finally:
-        handle.remove()
+        for handle in handles:
+            handle.remove()
 
-    assert captured["shape"] == (1, 4, 6)
-    assert model.input_encoder.scene_proj[0].out_features == 6
+    assert captured["skill_norm"] == [(1, 2, 8)]
+    assert captured["state_norm"] == [(1, 2, 8), (1, 8)]
+    assert captured["scene_norm"] == [(1, 1, 8)]
+    assert model.input_encoder.scene_proj[0].out_features == 8
     assert model.input_encoder.role_embed.num_embeddings == 3
     assert "input_encoder.cls_token" not in model.state_dict()
-    assert model.output_adapter.in_features == model.config.d_model
-    assert model.output_adapter.out_features == model.config.pair_embedding_dim
+    assert not hasattr(model.input_encoder, "token_embedding")
+    assert not hasattr(model.input_encoder, "segment_embed")
+    assert not hasattr(model, "output_adapter")
 
 
 def test_job_model_config_loads_training_precision(tmp_path):
@@ -570,7 +575,7 @@ def test_job_model_config_loads_training_precision(tmp_path):
         "raw_data_dir: data/human/job/black_mage/raw/FRU\n"
         "output_dir: artifacts/checkpoints/test\n"
         "model:\n"
-        "  pair_embedding_dim: 192\n"
+        "  d_model: 192\n"
         "  full_attention_residuals: true\n"
         "training:\n"
         "  precision: bf16\n",
@@ -580,7 +585,7 @@ def test_job_model_config_loads_training_precision(tmp_path):
     config = load_run_config(config_path)
 
     assert config.precision == "bf16"
-    assert config.model.pair_embedding_dim == 192
+    assert config.model.d_model == 192
     assert config.model.full_attention_residuals is True
     assert config.model.transformer_norm_first is True
     assert config.model.transformer_activation == "gelu"

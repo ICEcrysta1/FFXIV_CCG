@@ -8,8 +8,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import Normalize
 
-from common.policy.model.input_encoder import ROLE_CURRENT_STATE
-
 from ..common import (
     ANALYSIS_FEATURES,
     ATTENTION_CMAP_NAME,
@@ -112,13 +110,13 @@ def _build_pca_cache(
     """一次计算逐层与最新状态 hidden 的 PCA，供所有图复用。"""
     layer_projections = []
     current_projections = []
-    for vectors, roles in zip(context.layer_vectors, context.layer_roles):
+    for vectors, current_mask in zip(context.layer_vectors, context.layer_current_state_masks):
         # hidden 已经是 CPU numpy；留在 CPU 做低内存协方差分解，避免 CUDA SVD
         # 工作区与模型、attention trace 争抢显存。
         layer_projections.append(_available_pca(vectors, 3))
         current_projections.append(
             _available_pca(
-                vectors[roles == ROLE_CURRENT_STATE],
+                vectors[current_mask],
                 2,
             )
         )
@@ -149,8 +147,8 @@ def _plot_feature_pca_2d(
     numeric = feature in NUMERIC_FEATURES
 
     all_values = [
-        metadata[feature][roles == ROLE_CURRENT_STATE]
-        for metadata, roles in zip(context.layer_metadata, context.layer_roles)
+        metadata[feature][current_mask]
+        for metadata, current_mask in zip(context.layer_metadata, context.layer_current_state_masks)
     ]
     if numeric:
         numeric_parts = [values[np.isfinite(values)] for values in all_values if len(values)]
@@ -181,10 +179,9 @@ def _plot_feature_pca_2d(
     fig, axes = create_grid_figure(layer_count)
     strongest_axes: list[str] = []
     strongest_scores: list[float] = []
-    for layer_index, (roles, metadata) in enumerate(
-        zip(context.layer_roles, context.layer_metadata)
+    for layer_index, (current_mask, metadata) in enumerate(
+        zip(context.layer_current_state_masks, context.layer_metadata)
     ):
-        current_mask = roles == ROLE_CURRENT_STATE
         raw_values = metadata[feature][current_mask]
         coordinates, explained = current_projections[layer_index]
         axis_name, association = _strongest_pca_axis(coordinates, raw_values, numeric)

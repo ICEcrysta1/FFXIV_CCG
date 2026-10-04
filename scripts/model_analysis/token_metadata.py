@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import numpy as np
 
-from common.policy.model.input_encoder import ROLE_HISTORY
-
 from .job_labels import decision_state_labels
 
 
@@ -24,6 +22,19 @@ ANALYSIS_FEATURES = (
 )
 
 
+def current_state_mask(encoded: dict[str, object]) -> np.ndarray:
+    """按显式物理位置识别最新状态，不能用与历史共用的状态角色代替。"""
+    shape = tuple(encoded["role_ids"].shape)
+    positions = encoded["current_state_positions"].detach().cpu().numpy()
+    if positions.shape != (shape[0],):
+        raise ValueError("current_state_positions must contain one position per sample")
+    if np.any((positions < 0) | (positions >= shape[1])):
+        raise ValueError("current_state_positions is outside the encoded sequence")
+    mask = np.zeros(shape, dtype=bool)
+    mask[np.arange(shape[0]), positions] = True
+    return mask
+
+
 def build_token_metadata(
     samples: list[dict[str, object]],
     *,
@@ -37,7 +48,8 @@ def build_token_metadata(
     batch_size = len(samples)
     role_ids = encoded["role_ids"].detach().cpu().numpy()
     sequence_length = int(role_ids.shape[1])
-    position = int(encoded["current_state_position"])
+    current_positions = encoded["current_state_positions"].detach().cpu().numpy()
+    history_positions = encoded["history_skill_positions"].detach().cpu().numpy()
     shape = (batch_size, sequence_length)
     metadata = {
         key: np.full(shape, np.nan, dtype=np.float64)
@@ -51,7 +63,9 @@ def build_token_metadata(
         "skill_id": np.full(shape, -1, dtype=np.float64),
     })
     history_skill_ids = batch["history_skill_ids"].detach().cpu().numpy()
+    history_valid = batch["history_mask"].detach().cpu().numpy()
     for batch_index, sample in enumerate(samples):
+        position = int(current_positions[batch_index])
         sample_metadata = sample["metadata"]
         metadata["fight_id"][batch_index, :] = str(sample_metadata.get("fight_id", "unknown"))
         metadata["step_index"][batch_index, :] = float(sample_metadata.get("step", np.nan))
@@ -71,7 +85,10 @@ def build_token_metadata(
             np.count_nonzero(logits[batch_index] > label_logit)
         )
         metadata["model_logit"][batch_index, position] = label_logit
-        history_positions = np.flatnonzero(role_ids[batch_index] == ROLE_HISTORY)
-        for history_position, skill_id in zip(history_positions, history_skill_ids[batch_index]):
+        for history_position, skill_id, valid in zip(
+            history_positions[batch_index], history_skill_ids[batch_index], history_valid[batch_index],
+        ):
+            if not valid:
+                continue
             metadata["skill_id"][batch_index, history_position] = float(skill_id)
     return metadata

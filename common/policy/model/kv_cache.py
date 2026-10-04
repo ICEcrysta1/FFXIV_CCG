@@ -21,6 +21,7 @@ class TransformerKVCache:
     value_cache: tuple[torch.Tensor, ...]
     scene_length: int
     history_length: int
+    history_token_length: int
 
 
 def encode_with_kv_cache(encoder, encoded, cache=None):
@@ -136,7 +137,8 @@ def _build_prefix_cache(
         key_cache=tuple(key_cache),
         value_cache=tuple(value_cache),
         scene_length=scene_length,
-        history_length=prefix_length - scene_length,
+        history_length=(prefix_length - scene_length) // 2,
+        history_token_length=prefix_length - scene_length,
     )
 
 
@@ -193,5 +195,6 @@ def _append_prefix(
         key_cache=tuple(key_cache),
         value_cache=tuple(value_cache),
         scene_length=cache.scene_length,
-        history_length=prefix_tokens.shape[1] - cache.scene_length,
+        history_length=(prefix_tokens.shape[1] - cache.scene_length) // 2,
+        history_token_length=prefix_tokens.shape[1] - cache.scene_length,
     )

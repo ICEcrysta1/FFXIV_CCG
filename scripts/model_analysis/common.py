@@ -32,17 +32,17 @@ from common.policy.model import (
     CausalPolicyModel,
     repetition_config_from_checkpoint,
 )
-from .token_metadata import ANALYSIS_FEATURES, build_token_metadata
-from common.policy.model.input_encoder import ROLE_CURRENT_STATE
+from .token_metadata import ANALYSIS_FEATURES, build_token_metadata, current_state_mask
+from common.policy.model.input_encoder import ROLE_SCENE, ROLE_STATE, ROLE_SKILL
 
 
 logger = logging.getLogger(__name__)
 MODEL_ANALYSIS_SCENE_JSON_ENV = "MODEL_ANALYSIS_SCENE_JSON"
 
 ROLE_NAMES = {
-    0: "scene",
-    1: "history_pair",
-    2: "current_state",
+    ROLE_SCENE: "scene",
+    ROLE_STATE: "state",
+    ROLE_SKILL: "skill",
 }
 
 # 模型分析统一使用 attention 图的黑色到白金色阶；有明确正负语义的图仍保留专用发散色阶。
@@ -108,6 +108,7 @@ class AnalysisContext(ModelAnalysisContext):
 
     layer_vectors: list[np.ndarray]
     layer_roles: list[np.ndarray]
+    layer_current_state_masks: list[np.ndarray]
     layer_metadata: list[dict[str, np.ndarray]]
 
 
@@ -151,6 +152,7 @@ def load_analysis_context(
 
     layer_rows: list[list[np.ndarray]] = [[] for _ in model.encoder.layers]
     role_rows: list[list[np.ndarray]] = [[] for _ in model.encoder.layers]
+    current_rows: list[list[np.ndarray]] = [[] for _ in model.encoder.layers]
     metadata_rows: list[dict[str, list[np.ndarray]]] = [
         {feature: [] for feature in ANALYSIS_FEATURES}
         for _ in model.encoder.layers
@@ -171,6 +173,7 @@ def load_analysis_context(
             ]
             valid_rows = valid.detach().cpu().numpy()
             role_rows_batch = encoded["role_ids"].detach().cpu().numpy()
+            current_rows_batch = current_state_mask(encoded)
 
             with runtime.autocast():
                 logits = model.score_hidden(encoded, trace.hidden, batch_device)
@@ -187,6 +190,7 @@ def load_analysis_context(
                     continue
                 flat_vectors = hidden_rows[valid_rows]
                 flat_roles = role_rows_batch[valid_rows]
+                flat_current = current_rows_batch[valid_rows]
                 flat_metadata = {
                     feature: token_metadata[feature][valid_rows]
                     for feature in ANALYSIS_FEATURES
@@ -196,15 +200,17 @@ def load_analysis_context(
                     continue
                 if len(flat_vectors) > remaining:
                     # 最新状态是决策分析 query，限额采样优先保留它，防止只剩前缀。
-                    indices = _analysis_token_indices(flat_roles, remaining)
+                    indices = _analysis_token_indices(flat_current, remaining)
                     flat_vectors = flat_vectors[indices]
                     flat_roles = flat_roles[indices]
+                    flat_current = flat_current[indices]
                     flat_metadata = {
                         feature: values[indices]
                         for feature, values in flat_metadata.items()
                     }
                 layer_rows[layer_index].append(flat_vectors)
                 role_rows[layer_index].append(flat_roles)
+                current_rows[layer_index].append(flat_current)
                 for feature, values in flat_metadata.items():
                     metadata_rows[layer_index][feature].append(values)
                 collected_tokens[layer_index] += len(flat_vectors)
@@ -218,6 +224,7 @@ def load_analysis_context(
                 layer_hidden_rows,
                 valid_rows,
                 role_rows_batch,
+                current_rows_batch,
                 logits,
                 token_metadata,
             )
@@ -253,16 +260,19 @@ def load_analysis_context(
         precision=runtime.precision,
         layer_vectors=layer_vectors,
         layer_roles=layer_roles,
+        layer_current_state_masks=[
+            _concat_arrays(rows, empty_shape=(0,), dtype=bool) for rows in current_rows
+        ],
         layer_metadata=layer_metadata,
     )
 
 
-def _analysis_token_indices(roles: np.ndarray, limit: int) -> np.ndarray:
+def _analysis_token_indices(current_mask: np.ndarray, limit: int) -> np.ndarray:
     """在总 token 限额内保留最新状态，再均匀采样场景和历史。"""
-    current = np.flatnonzero(roles == ROLE_CURRENT_STATE)
+    current = np.flatnonzero(current_mask)
     if len(current) >= limit:
         return current[np.linspace(0, len(current) - 1, limit, dtype=int)]
-    others = np.flatnonzero(roles != ROLE_CURRENT_STATE)
+    others = np.flatnonzero(~current_mask)
     slots = min(limit - len(current), len(others))
     selected = others[np.linspace(0, len(others) - 1, slots, dtype=int)] if slots else np.array([], dtype=int)
     return np.sort(np.concatenate((current, selected)))

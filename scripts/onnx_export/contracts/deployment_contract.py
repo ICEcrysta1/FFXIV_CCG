@@ -29,8 +29,9 @@ from ..runtime.tensor_runtime import GOLDEN_FORMAT, golden_encoding
 # 12：状态输入移除资源 consumed、weave 字段及黑魔残留辅助 Buff，拒绝旧维度。
 # 13：移除 CLS token 和对应评分器输入，部署图的内部 token 布局变化。
 # 14：移除候选输入，单因果序列与共享技能词表输出；固定动作类型随契约保存。
-DEPLOYMENT_CONTRACT_VERSION = 14
-DEPLOYMENT_MANIFEST_VERSION = 8
+# 15：技能与状态独立为 d_model token，删除融合/输出适配，容量按每动作两个 token 计算。
+DEPLOYMENT_CONTRACT_VERSION = 15
+DEPLOYMENT_MANIFEST_VERSION = 9
 MANIFEST_SCHEMA_FILENAME = "manifest.schema.json"
 
 
@@ -238,6 +239,9 @@ class DeploymentContract:
             raise ValueError(
                 "deployment model_config contains removed max_sequence_length"
             )
+        removed = {"pair_embedding_dim", "pair_fusion", "output_adapter"}.intersection(self.model_config)
+        if removed:
+            raise ValueError("deployment model_config contains removed fusion options: " + ", ".join(sorted(removed)))
         try:
             model_scene_capacity = int(self.model_config["scene_capacity"])
             model_history_capacity = int(self.model_config["history_capacity"])
@@ -332,7 +336,7 @@ class DeploymentContract:
                 (b, h, sd),
                 "history state null flags; right-padded positions are true",
             ),
-            TensorSpec("history_mask", "tensor(bool)", (b, h), "true for valid history tokens"),
+            TensorSpec("history_mask", "tensor(bool)", (b, h), "true for valid actions; shared by independent skill and state tokens"),
             TensorSpec("current_state_vectors", float_dtype, (b, sd), "current request state in ordered state layout"),
             TensorSpec("current_state_null_mask", "tensor(bool)", (b, sd), "current request state null flags"),
         )

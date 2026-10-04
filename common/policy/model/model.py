@@ -80,8 +80,6 @@ class CausalPolicyModel(nn.Module):
                 d_model=config.d_model,
                 num_queries=2 * config.n_layers + 1,
             )
-        # 阶段 1 保持旧技能 embedding 维度；仅在输出侧适配 hidden。
-        self.output_adapter = nn.Linear(config.d_model, config.pair_embedding_dim, bias=False)
         self._init_weights()
         self._kv_cache_enabled = False
         self._kv_cache: TransformerKVCache | None = None
@@ -214,9 +212,8 @@ class CausalPolicyModel(nn.Module):
 
     def _score_current_hidden(self, current_hidden, batch):
         """直接读取输入 embedding 参数，不维护独立输出权重或其副本。"""
-        semantic_hidden = self.output_adapter(current_hidden)
         semantic_vectors = self.input_encoder.skill_embed.weight[self.action_to_vocab_id]
-        logits = semantic_hidden @ semantic_vectors.T
+        logits = current_hidden @ semantic_vectors.T
         return apply_repetition_penalty(logits, batch, self.repetition)
 
     @staticmethod
@@ -228,10 +225,13 @@ class CausalPolicyModel(nn.Module):
             raise ValueError("checkpoint missing model_config")
         state_dict = checkpoint.get("model_state_dict")
         if isinstance(state_dict, Mapping) and any(
-            str(key).startswith("scorer.") or str(key) == "input_encoder.cls_token"
+            str(key).startswith((
+                "scorer.", "output_adapter.", "input_encoder.pair_fusion",
+                "input_encoder.token_embedding.", "input_encoder.segment_embed.",
+            )) or str(key) == "input_encoder.cls_token"
             for key in state_dict
         ):
-            raise ValueError("checkpoint uses an unsupported scoring architecture; retrain")
+            raise ValueError("checkpoint uses an unsupported fused/scoring architecture; retrain")
         if "history_capacity" not in payload:
             raise ValueError("checkpoint missing model.history_capacity")
         return ModelConfig.from_mapping(payload)

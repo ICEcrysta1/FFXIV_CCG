@@ -14,7 +14,6 @@ from training.config import load_run_config
 from common.policy.model.activation import (
     activation_hidden,
     resolve_pointwise_activation,
-    uses_gate,
 )
 from common.policy.model.input_encoder import CausalInputEncoder
 from common.policy.model.model import CausalPolicyModel
@@ -40,7 +39,6 @@ def _activation_spec() -> DataSpec:
 def _activation_config(activation: str) -> ModelConfig:
     return ModelConfig(
         d_model=8,
-        pair_embedding_dim=4,
         n_layers=1,
         n_heads=2,
         num_kv_heads=1,
@@ -195,7 +193,7 @@ def test_checkpoint_rejects_unknown_activation():
 
 def test_checkpoint_rejects_removed_cls_architecture():
     checkpoint = make_checkpoint(model_state_dict={"input_encoder.cls_token": torch.zeros(1, 1, 4)})
-    with pytest.raises(ValueError, match="unsupported scoring architecture"):
+    with pytest.raises(ValueError, match="unsupported fused/scoring architecture"):
         CausalPolicyModel.checkpoint_model_config(checkpoint)
 
 
@@ -207,8 +205,7 @@ def test_shared_skill_head_matches_explicit_dot_product_and_gradients(activation
     current_hidden = torch.randn(2, 8, dtype=torch.float64, requires_grad=True)
     reference_hidden = current_hidden.detach().clone().requires_grad_(True)
     actual = model._score_current_hidden(current_hidden, {})
-    projected = F.linear(reference_hidden, reference.output_adapter.weight)
-    expected = projected @ reference.input_encoder.skill_embed.weight[reference.action_to_vocab_id].T
+    expected = reference_hidden @ reference.input_encoder.skill_embed.weight[reference.action_to_vocab_id].T
     torch.testing.assert_close(actual, expected, atol=1e-12, rtol=1e-12)
     gradient = torch.randn_like(actual)
     actual.backward(gradient)
@@ -216,55 +213,54 @@ def test_shared_skill_head_matches_explicit_dot_product_and_gradients(activation
     torch.testing.assert_close(
         current_hidden.grad, reference_hidden.grad, atol=1e-12, rtol=1e-12,
     )
-    for actual_parameter, reference_parameter in ((model.output_adapter.weight, reference.output_adapter.weight),
-                                                  (model.input_encoder.skill_embed.weight, reference.input_encoder.skill_embed.weight)):
-        assert actual_parameter.grad is not None
-        torch.testing.assert_close(actual_parameter.grad, reference_parameter.grad, atol=1e-12, rtol=1e-12)
+    actual_parameter = model.input_encoder.skill_embed.weight
+    reference_parameter = reference.input_encoder.skill_embed.weight
+    assert actual_parameter.grad is not None
+    torch.testing.assert_close(actual_parameter.grad, reference_parameter.grad, atol=1e-12, rtol=1e-12)
 
 
 @pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
 def test_shared_skill_head_has_one_semantic_parameter_table(activation):
-    """输出只用输入 embedding 原参数，阶段 1 仅多一条维度适配。"""
+    """输出直接用同一张 d_model 维技能表，不保留融合或输出适配。"""
     model = CausalPolicyModel(_activation_spec(), _activation_config(activation), vocab_size=4)
     names = dict(model.named_parameters())
     assert not hasattr(model, "scorer")
-    assert model.output_adapter.weight.numel() == 8 * 4
+    assert not hasattr(model, "output_adapter")
     semantic = model.input_encoder.skill_embed.weight
+    assert semantic.shape == (4, model.config.d_model)
     assert sum(parameter is semantic for parameter in names.values()) == 1
     assert "input_encoder.skill_embed.weight" in names
 
 
 @pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
-def test_pair_fusion_follows_configured_activation(activation):
+def test_independent_skill_and_state_embeddings_match_explicit_formula(activation):
     torch.manual_seed(29)
     encoder = CausalInputEncoder(
         _activation_spec(),
         _activation_config(activation),
         vocab_size=4,
     ).double().eval()
-    paired = torch.randn(2, 3, 8, dtype=torch.float64)
-
-    hidden = F.linear(
-        paired, encoder.pair_fusion_up.weight, encoder.pair_fusion_up.bias
+    batch = _activation_batch()
+    batch["history_skill_features"] = torch.randn(1, 1, 1, dtype=torch.float64)
+    batch["history_state_vectors"] = torch.randn(1, 1, 3, dtype=torch.float64)
+    batch["history_state_null_mask"] = torch.tensor([[[True, False, True]]])
+    actual = encoder.embed_history(batch)
+    skill_content = F.embedding(batch["history_skill_ids"], encoder.skill_embed.weight) + F.linear(
+        batch["history_skill_features"], encoder.skill_feat_proj.weight, encoder.skill_feat_proj.bias,
     )
-    if uses_gate(activation):
-        gate = F.linear(
-            paired, encoder.pair_fusion_gate.weight, encoder.pair_fusion_gate.bias
-        )
-        hidden = (gate * torch.sigmoid(gate)) * hidden
-    else:
-        hidden = resolve_pointwise_activation(activation)(hidden)
-    expected = encoder.pair_fusion_down(encoder.pair_fusion_norm(hidden))
-
-    torch.testing.assert_close(
-        encoder._fuse_pair(paired), expected, atol=1e-12, rtol=1e-12
+    state_content = F.linear(batch["history_state_vectors"], encoder.state_proj.weight, encoder.state_proj.bias) + F.linear(
+        batch["history_state_null_mask"].double(), encoder.state_null_proj.weight,
     )
-    assert encoder.pair_fusion_gated is uses_gate(activation)
+    expected_skill = F.layer_norm(skill_content, (8,), encoder.skill_norm.weight, encoder.skill_norm.bias, encoder.skill_norm.eps)
+    expected_state = F.layer_norm(state_content, (8,), encoder.state_norm.weight, encoder.state_norm.bias, encoder.state_norm.eps)
+    torch.testing.assert_close(actual["skill"], expected_skill, atol=1e-12, rtol=1e-12)
+    torch.testing.assert_close(actual["state"], expected_state, atol=1e-12, rtol=1e-12)
+    assert not any("pair_fusion" in name for name, _ in encoder.named_parameters())
 
 
 @pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
 def test_model_resolves_one_activation_for_every_activation_site(activation):
-    """主干 FFN 与阶段 1 历史 pair 融合使用同一个配置激活。"""
+    """保留全部主干激活覆盖，输入三路编码保持独立线性投影与归一化。"""
     model = CausalPolicyModel(
         _activation_spec(),
         _activation_config(activation),
@@ -273,8 +269,9 @@ def test_model_resolves_one_activation_for_every_activation_site(activation):
     expected = resolve_pointwise_activation(activation)
 
     assert model.encoder.layers[0].activation is expected
-    assert model.input_encoder.pair_fusion_activation is expected
-    assert model.input_encoder.pair_fusion_gated is uses_gate(activation)
+    assert isinstance(model.input_encoder.skill_norm, nn.LayerNorm)
+    assert isinstance(model.input_encoder.state_norm, nn.LayerNorm)
+    assert isinstance(model.input_encoder.scene_norm, nn.LayerNorm)
     model.eval()
     assert model(_activation_batch())["logits"].shape == (1, 2)
 
@@ -305,7 +302,7 @@ def test_activation_hidden_merges_gate_and_pointwise_paths():
 
 @pytest.mark.parametrize("key", ["scorer.network.0.weight", "scorer.up_proj.weight"])
 def test_checkpoint_rejects_removed_candidate_scorer_layout(key):
-    with pytest.raises(ValueError, match="unsupported scoring architecture"):
+    with pytest.raises(ValueError, match="unsupported fused/scoring architecture"):
         CausalPolicyModel.checkpoint_model_config(
             make_checkpoint(model_state_dict={key: torch.zeros(1)})
         )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 
 from .normalizer import Normalizer
@@ -19,7 +20,22 @@ from .spec import DataSpec
 # 8：状态输入移除资源 consumed、weave 计数/上限和黑魔残留辅助 Buff。
 # 9：移除 CLS token，评分器直接读取候选 hidden，旧模型权重不兼容。
 # 10：固定动作输出词表与显式当前状态取代候选输入；旧模型必须重新训练。
-INPUT_CONTRACT_VERSION = 10
+# 11：技能和状态拆为独立 d_model 维 token，共享技能词表直接输出；旧融合权重不兼容。
+INPUT_CONTRACT_VERSION = 11
+
+# 描述固定的输入结构，不作为可调运行参数；d_model 仍由保存的 model_config 提供。
+# 数据 bank 的字段与时间语义未改变，因此这份描述不进入 compiled cache 身份。
+TOKEN_ENCODING_CONTRACT = {
+    "skill": "LayerNorm(E[id] + Linear(skill_features))",
+    "state": "LayerNorm(Linear(state_values) + Linear(null_mask, bias=False))",
+    "scene": "LayerNorm(Linear_by_scene_type(scene_values))",
+    "role_ids": {"scene": 0, "state": 1, "skill": 2},
+    "current_state_encoder": "shared_with_history_state",
+    "output_projection": "hidden @ E[action_to_vocab_id].T",
+    "token_order": "scene, (skill_i, state_i)*H, current_state",
+    "history_capacity_unit": "actions",
+    "history_tokens_per_action": 2,
+}
 
 
 @dataclass(frozen=True)
@@ -64,6 +80,8 @@ class ModelInputContract:
                 "unsupported input contract version: "
                 f"{version!r} != {INPUT_CONTRACT_VERSION}"
             )
+        if payload.get("token_encoding") != TOKEN_ENCODING_CONTRACT:
+            raise ValueError("input contract token_encoding does not match independent skill/state tokens")
         job_tag = str(payload.get("job_tag", "")).strip()
         if not job_tag:
             raise ValueError("input contract job_tag must not be empty")
@@ -97,6 +115,7 @@ class ModelInputContract:
         """转成可直接写入 torch checkpoint 的普通 mapping。"""
         return {
             "version": INPUT_CONTRACT_VERSION,
+            "token_encoding": deepcopy(TOKEN_ENCODING_CONTRACT),
             "job_tag": self.job_tag,
             "data_spec": dict(self.data_spec),
             "schema": asdict(self.schema),

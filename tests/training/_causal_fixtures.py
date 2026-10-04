@@ -68,7 +68,7 @@ def make_input_contract(data_spec=None) -> ModelInputContract:
 
 def make_checkpoint(data_spec=None, config=None, *, model_state_dict=None) -> dict[str, object]:
     spec = data_spec or make_data_spec()
-    config = config or ModelConfig(d_model=8, pair_embedding_dim=4, n_layers=1, n_heads=2,
+    config = config or ModelConfig(d_model=8, n_layers=1, n_heads=2,
                                   num_kv_heads=1, ff_dim=16, dropout=0.0)
     return {"model_config": asdict(config), "data_spec": asdict(spec),
             "input_contract": make_input_contract(spec).to_dict(),

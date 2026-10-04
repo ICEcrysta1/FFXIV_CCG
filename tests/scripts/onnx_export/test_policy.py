@@ -9,7 +9,7 @@ import torch
 
 from scripts.onnx_export import CapacityContract, OnnxPolicy
 from scripts.onnx_export.policy.policy import stable_masked_softmax
-from scripts.onnx_export.runtime.validation import validate_pytorch_matrix
+from scripts.onnx_export.runtime.validation import _assert_padding_keys_blocked, validate_pytorch_matrix
 from common.policy.config import ModelConfig
 from common.policy.data import DataSpec
 from common.policy.model import (
@@ -37,6 +37,7 @@ def _make_model(
     repetition: RepetitionConfig | None = None,
     full_attention_residuals: bool = False,
     activation: str = "gelu",
+    action_to_vocab_id: tuple[int, ...] = (1, 2, 3),
 ):
     data_spec = DataSpec(
         job_tag="black_mage",
@@ -46,7 +47,7 @@ def _make_model(
         skill_feature_dim=2,
         num_scene_types=4,
         action_keys=("fire_iii", "fire_iv", "blizzard_iii"),
-        action_to_vocab_id=(1, 2, 3),
+        action_to_vocab_id=action_to_vocab_id,
         action_is_gcd=(True, True, True),
         skill_feature_names=("potency", "cast_time.seconds"),
     )
@@ -54,11 +55,12 @@ def _make_model(
         data_spec,
         ModelConfig(
             d_model=16,
-            pair_embedding_dim=8,
             n_layers=2,
             n_heads=2,
             ff_dim=32,
             dropout=0.0,
+            history_capacity=384,
+            scene_capacity=200,
             full_attention_residuals=full_attention_residuals,
             transformer_activation=activation,
         ),
@@ -164,16 +166,7 @@ def _right_pad_context(
 def test_scene_projection_selects_each_type_without_data_dependent_branch(scene_types):
     model = _make_model()
     batch = _make_batch(scene_types)
-    captured = {}
-
-    def capture(_module, inputs, _output):
-        captured["content"] = inputs[0].detach()
-
-    handle = model.input_encoder.token_embedding.register_forward_hook(capture)
-    try:
-        model.input_encoder(batch)
-    finally:
-        handle.remove()
+    encoded = model.input_encoder(batch)
 
     expected = torch.stack(
         [
@@ -182,7 +175,49 @@ def test_scene_projection_selects_each_type_without_data_dependent_branch(scene_
         ],
         dim=1,
     )
-    torch.testing.assert_close(captured["content"][:, : len(scene_types)], expected)
+    expected = model.input_encoder.scene_norm(expected)
+    expected = expected + model.input_encoder.role_embed(encoded["role_ids"][:, : len(scene_types)])
+    torch.testing.assert_close(encoded["tokens"][:, : len(scene_types)], expected)
+
+
+def test_raw_head_directly_matches_shared_d_model_skill_vectors():
+    model = _make_model(action_to_vocab_id=(3, 1, 2))
+    policy = OnnxPolicy(model)
+    batch = _make_batch()
+    trace = policy.trace(*_tensor_args(batch))
+    position = len(batch["scene_types"][0]) + 2 * batch["history_skill_ids"].shape[1]
+    expected = trace.hidden[:, position] @ model.input_encoder.skill_embed.weight[model.action_to_vocab_id].T
+    torch.testing.assert_close(trace.logits, expected)
+    torch.testing.assert_close(policy(*_tensor_args(batch)), expected, rtol=1e-5, atol=1e-6)
+    assert model.input_encoder.skill_embed.embedding_dim == model.config.d_model
+    assert not hasattr(model, "output_adapter")
+    assert trace.encoded["history_skill_positions"].tolist() == [[4, 6]]
+    assert trace.encoded["history_state_positions"].tolist() == [[5, 7]]
+    assert trace.encoded["current_state_position"] == 8
+    assert trace.encoded["role_ids"].tolist() == [[0, 0, 0, 0, 2, 1, 2, 1, 1]]
+
+
+def test_maximum_action_window_uses_two_independent_tokens_per_action():
+    model = _make_model()
+    batch = _make_batch((0,) * 200, history_length=384)
+    encoded = model.input_encoder(batch)
+    assert model.input_encoder.max_token_count == 969
+    assert encoded["tokens"].shape == (1, 969, model.config.d_model)
+    assert encoded["current_state_position"] == 968
+    assert encoded["history_skill_positions"][0, -1].item() == 966
+    assert encoded["history_state_positions"][0, -1].item() == 967
+    with torch.no_grad():
+        assert torch.isfinite(OnnxPolicy(model)(*_tensor_args(batch))).all()
+
+
+@pytest.mark.parametrize("padding_key", (3, 4))
+def test_padding_validation_checks_both_skill_and_state_keys(padding_key):
+    # scene=1、历史容量=2、有效历史=1；无效技能和状态位于物理列 3/4。
+    attention = torch.zeros((1, 1, 6, 6))
+    attention[0, 0, 5, padding_key] = 1.0
+    trace = SimpleNamespace(hidden=torch.zeros((1, 6, 2)), attentions=(attention,))
+    with pytest.raises(AssertionError, match="padding attention keys"):
+        _assert_padding_keys_blocked(trace, scene_valid=1, history_valid=1, contract=CapacityContract(1, 2))
 
 
 @pytest.mark.parametrize("full_attention_residuals", (False, True))
@@ -340,7 +375,6 @@ class _PathSeparatedModel(torch.nn.Module):
         super().__init__()
         self.input_encoder = SimpleNamespace(skill_embed=torch.nn.Embedding(3, 1))
         self.input_encoder.skill_embed.weight.data.copy_(torch.tensor([[2.0], [1.0], [0.0]]))
-        self.output_adapter = torch.nn.Identity()
         self.action_to_vocab_id = torch.arange(3)
 
     def trace(self, _batch):
@@ -350,10 +384,10 @@ class _PathSeparatedModel(torch.nn.Module):
 def _path_separated_trace():
     return SimpleNamespace(
         encoded={
-            "current_state_position": 2,
+            "current_state_position": 3,
         },
         layer_hidden=(),
-        hidden=torch.ones((1, 3, 1)),
+        hidden=torch.ones((1, 4, 1)),
         attentions=(),
         logits=torch.tensor([[2.0, 1.0, 0.0]]),
     )

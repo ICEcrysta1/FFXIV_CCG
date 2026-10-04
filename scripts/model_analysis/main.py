@@ -31,7 +31,7 @@ from .outputs import (
     plot_loss_landscape,
     plot_opener_attention,
     plot_standard_attention_outputs,
-    plot_pair_embedding,
+    plot_history_embeddings,
     plot_skill_embedding,
 )
 
@@ -166,7 +166,7 @@ def main() -> None:
         )
     )
     outputs.append(plot_skill_embedding(context))
-    outputs.append(plot_pair_embedding(context, batch_size=args.batch_size))
+    outputs.extend(plot_history_embeddings(context, batch_size=args.batch_size))
     loss_landscape_max_samples = None
     metadata = {
         "checkpoint": str(context.checkpoint_path),

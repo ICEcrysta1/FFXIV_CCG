@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass
 
 import torch
 
+from common.policy.data.input_contract import TOKEN_ENCODING_CONTRACT
+
 
 TENSOR_INPUT_NAMES = (
     "scene_vectors",
@@ -20,11 +22,16 @@ TENSOR_INPUT_NAMES = (
     "current_state_null_mask",
 )
 OUTPUT_NAMES = ("raw_logits",)
+TOKEN_ORDER = TOKEN_ENCODING_CONTRACT["token_order"]
+POSITION_ID_SEMANTICS = (
+    "logical per-sample positions; right padding excluded; "
+    "separate skill/state positions; RoPE applied to Q/K"
+)
 
 
 @dataclass(frozen=True)
 class CapacityContract:
-    """部署图的 batch、scene、历史 pair 与单个当前状态固定容量。"""
+    """部署图固定容量；历史仍按动作条数计量，每条占技能和状态两个 token。"""
 
     scene_capacity: int
     history_capacity: int
@@ -33,8 +40,8 @@ class CapacityContract:
 
     @property
     def total_token_count(self) -> int:
-        """阶段 1 保留历史 pair；末尾只追加一个当前状态 token。"""
-        return self.scene_capacity + self.history_capacity + 1
+        """阶段 2 使用独立技能/状态 token；末尾追加一个当前状态。"""
+        return self.scene_capacity + 2 * self.history_capacity + 1
 
     def validate(self) -> None:
         if self.batch_size != 1:
@@ -59,6 +66,11 @@ class CapacityContract:
             "history_padding_mask_value",
             "position_ids",
             "over_capacity",
+            "history_capacity_unit",
+            "history_tokens_per_action",
+            "token_order",
+            "total_token_count",
+            "effective_sequence_length",
         }
         if set(payload) != expected:
             raise ValueError("capacity contract fields are incomplete or unsupported")
@@ -68,26 +80,40 @@ class CapacityContract:
             raise ValueError("history padding mask value must be false")
         if payload["over_capacity"] != "reject":
             raise ValueError("deployment contract v1 only supports reject over-capacity")
-        if payload["position_ids"] != (
-            "logical per-sample positions; right padding excluded; RoPE applied to Q/K"
-        ):
+        if payload["position_ids"] != POSITION_ID_SEMANTICS:
             raise ValueError("unsupported deployment position id semantics")
-        return cls(
+        if (
+            payload["history_capacity_unit"] != TOKEN_ENCODING_CONTRACT["history_capacity_unit"]
+            or payload["history_tokens_per_action"] != TOKEN_ENCODING_CONTRACT["history_tokens_per_action"]
+        ):
+            raise ValueError("deployment history capacity must represent two tokens per action")
+        if payload["token_order"] != TOKEN_ORDER:
+            raise ValueError("unsupported deployment token order")
+        if payload["effective_sequence_length"] != "scene_valid + 2 * history_valid + 1":
+            raise ValueError("unsupported deployment effective sequence length")
+        contract = cls(
             scene_capacity=int(payload["scene_capacity"]),
             history_capacity=int(payload["history_capacity"]),
             batch_size=int(payload["batch_size"]),
             padding_direction=str(payload["padding_direction"]),
         )
+        contract.validate()
+        if payload["total_token_count"] != contract.total_token_count:
+            raise ValueError("deployment total token count differs from independent token capacities")
+        return contract
 
     def to_dict(self) -> dict[str, object]:
         return {
             **asdict(self),
             "scene_padding_mask_value": False,
             "history_padding_mask_value": False,
-            "position_ids": (
-                "logical per-sample positions; right padding excluded; RoPE applied to Q/K"
-            ),
+            "position_ids": POSITION_ID_SEMANTICS,
             "over_capacity": "reject",
+            "history_capacity_unit": TOKEN_ENCODING_CONTRACT["history_capacity_unit"],
+            "history_tokens_per_action": TOKEN_ENCODING_CONTRACT["history_tokens_per_action"],
+            "token_order": TOKEN_ORDER,
+            "total_token_count": self.total_token_count,
+            "effective_sequence_length": "scene_valid + 2 * history_valid + 1",
         }
 
 

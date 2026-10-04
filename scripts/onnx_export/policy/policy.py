@@ -139,8 +139,7 @@ def _build_batch(*inputs: torch.Tensor) -> dict[str, torch.Tensor]:
 def _raw_logits(model, encoded, hidden):
     """共享输入技能 embedding，输出不包含宿主合法性或重复惩罚。"""
     current_hidden = hidden[:, encoded["current_state_position"], :]
-    semantic_hidden = model.output_adapter(current_hidden)
-    return semantic_hidden @ model.input_encoder.skill_embed.weight[model.action_to_vocab_id].T
+    return current_hidden @ model.input_encoder.skill_embed.weight[model.action_to_vocab_id].T
 
 
 def stable_masked_softmax(

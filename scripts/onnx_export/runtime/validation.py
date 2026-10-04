@@ -278,8 +278,8 @@ def _assert_padding_keys_blocked(
     padding_keys = list(range(scene_valid, contract.scene_capacity))
     padding_keys.extend(
         range(
-            contract.scene_capacity + history_valid,
-            contract.scene_capacity + contract.history_capacity,
+            contract.scene_capacity + 2 * history_valid,
+            contract.scene_capacity + 2 * contract.history_capacity,
         )
     )
     if not padding_keys:

@@ -101,7 +101,42 @@ def test_capacity_contract_rejects_invalid_or_oversized_layout():
         CapacityContract(0, 1).validate()
     contract = CapacityContract(3, 8)
     contract.validate()
-    assert contract.total_token_count == 12
+    assert contract.total_token_count == 20
+    assert CapacityContract(200, 384).total_token_count == 969
+    assert CapacityContract.from_dict(contract.to_dict()) == contract
+
+
+@pytest.mark.parametrize(("field", "value", "message"), (
+    ("history_tokens_per_action", 1, "two tokens per action"),
+    ("history_capacity_unit", "tokens", "two tokens per action"),
+    ("token_order", "scene, state_i, skill_i, current_state", "token order"),
+    ("total_token_count", 12, "total token count"),
+))
+def test_capacity_contract_rejects_old_fusion_or_wrong_token_semantics(field, value, message):
+    payload = CapacityContract(3, 8).to_dict()
+    payload[field] = value
+    with pytest.raises(ValueError, match=message):
+        CapacityContract.from_dict(payload)
+
+
+@pytest.mark.parametrize(("field", "value"), (
+    ("history_tokens_per_action", 1),
+    ("history_capacity_unit", "tokens"),
+    ("token_order", "scene, fused_pair_i, current_state"),
+    ("effective_sequence_length", "scene_valid + history_valid + 1"),
+    ("unsupported_capacity", 10),
+))
+def test_manifest_schema_strictly_rejects_fused_capacity_metadata(field, value):
+    jsonschema = pytest.importorskip("jsonschema")
+    schema_path = Path(export_module.__file__).parents[1] / "manifest.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    capacity_schema = schema["$defs"]["contract"]["properties"]["capacity"]
+    validator = jsonschema.Draft202012Validator(capacity_schema)
+    payload = CapacityContract(3, 8).to_dict()
+    validator.validate(payload)
+    payload[field] = value
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(payload)
 
 
 def test_failed_export_keeps_previous_valid_directory(tmp_path, monkeypatch):
@@ -457,6 +492,10 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["contract"]["capacity"]["padding_direction"] == "right"
     assert manifest["contract"]["capacity"]["history_capacity"] == 4
+    assert manifest["contract"]["capacity"]["history_capacity_unit"] == "actions"
+    assert manifest["contract"]["capacity"]["history_tokens_per_action"] == 2
+    assert manifest["contract"]["capacity"]["total_token_count"] == 12
+    assert manifest["contract"]["capacity"]["token_order"] == "scene, (skill_i, state_i)*H, current_state"
     provenance = manifest["contract"]["capacity_provenance"]
     assert provenance["history_capacity_source"] == (
         "checkpoint.model_config.history_capacity"
@@ -476,7 +515,7 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
     loaded = DeploymentManifest.load(output / "manifest.json")
     assert loaded.contract.data_spec == data_spec
 
-    # 即使候选布局一致，精简状态输入前的部署包也必须被版本门禁拒绝。
+    # 即使输入张量宽度一致，旧历史融合布局也必须被版本门禁拒绝。
     previous_state_contract = deepcopy(manifest["contract"])
     previous_state_contract["contract_version"] = DEPLOYMENT_CONTRACT_VERSION - 1
     with pytest.raises(ValueError, match="unsupported deployment contract version"):
@@ -924,6 +963,8 @@ def test_small_bf16_model_exports_and_runs_on_strict_cuda(tmp_path, activation):
     }
     assert model_metadata["ffxiv.precision"] == "bf16"
     assert model_metadata["ffxiv.compute_precision"] == "float32"
+    assert model_metadata["ffxiv.history_tokens_per_action"] == "2"
+    assert model_metadata["ffxiv.total_token_count"] == "12"
     report = json.loads((output / "export_report.json").read_text(encoding="utf-8"))
     assert report["status"] == "graph_validated"
     assert report["release_gate"] == "requires_rollout_parity"
@@ -954,6 +995,26 @@ def test_load_policy_rejects_removed_candidate_shared_semantics(tmp_path):
     torch.save(payload, checkpoint)
 
     with pytest.raises(ValueError, match="removed model options"):
+        export_module.load_policy(checkpoint, precision="float32")
+
+
+def test_load_policy_rejects_stage1_fusion_config_and_input_contract(tmp_path):
+    checkpoint = tmp_path / "checkpoint.pt"
+    _write_small_checkpoint(checkpoint)
+    payload = safe_torch_load(checkpoint)
+    payload["model_config"]["pair_embedding_dim"] = 8
+    torch.save(payload, checkpoint)
+    with pytest.raises(ValueError, match="pair_embedding_dim is removed"):
+        export_module.load_policy(checkpoint, precision="float32")
+    payload["model_config"].pop("pair_embedding_dim")
+    payload["input_contract"]["version"] = 10
+    torch.save(payload, checkpoint)
+    with pytest.raises(ValueError, match="input contract version"):
+        export_module.load_policy(checkpoint, precision="float32")
+    payload["input_contract"]["version"] = 11
+    payload["input_contract"].pop("token_encoding")
+    torch.save(payload, checkpoint)
+    with pytest.raises(ValueError, match="token_encoding"):
         export_module.load_policy(checkpoint, precision="float32")
 
 
@@ -994,7 +1055,6 @@ def _write_small_checkpoint(
     )
     config = ModelConfig(
         d_model=16,
-        pair_embedding_dim=8,
         n_layers=2,
         n_heads=2,
         ff_dim=32,

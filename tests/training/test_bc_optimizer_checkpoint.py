@@ -48,7 +48,7 @@ def resume_context(tmp_path):
         output_dir=tmp_path / "output",
         job_tag="black_mage",
         model_variant="artzip",
-        model=ModelConfig(d_model=8, pair_embedding_dim=4, n_layers=1, n_heads=2, ff_dim=16),
+        model=ModelConfig(d_model=8, n_layers=1, n_heads=2, ff_dim=16),
     )
     input_contract = ModelInputContract.from_training(
         data_spec=data_spec,

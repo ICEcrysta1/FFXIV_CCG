@@ -21,9 +21,11 @@ CHECKPOINT_PATH = Path("artifacts/checkpoints/black_mage/artzip_bc/best.pt")
 
 
 def _load_current_checkpoint() -> dict[str, object]:
-    """仅跳过实际启用旧 raw candidate scorer 的 checkpoint。"""
+    """真实旧 scorer 或历史融合 checkpoint 明确跳过，不当作新模型验收。"""
     checkpoint = safe_torch_load(CHECKPOINT_PATH)
     model_config = checkpoint.get("model_config")
+    if isinstance(model_config, dict) and "pair_embedding_dim" in model_config:
+        pytest.skip("real checkpoint uses the removed history fusion layout; retrain with independent skill/state tokens")
     if (
         isinstance(model_config, dict)
         and model_config.get("scorer_use_raw_projection") is True
@@ -79,7 +81,7 @@ def test_real_bf16_checkpoint_padding_matrix_cuda():
     assert vocab_size == len(profile.vocab_entries) + 1
     required_positions = (
         contract.scene_capacity
-        + contract.history_capacity
+        + 2 * contract.history_capacity
         + 1
     )
     assert contract.total_token_count == required_positions
@@ -125,7 +127,7 @@ def test_real_checkpoint_full_export_profile_and_ort(tmp_path):
             ModelConfig.scene_capacity,
         )
     )
-    required_positions = scene_capacity + history_capacity + 1
+    required_positions = scene_capacity + 2 * history_capacity + 1
     embedding = checkpoint["model_state_dict"]["input_encoder.skill_embed.weight"]
 
     output = export_package(

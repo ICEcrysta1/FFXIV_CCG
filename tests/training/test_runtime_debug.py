@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 import torch
 
 from training.runtime.runtime_debug import (
@@ -18,7 +19,8 @@ def _read_report(path):
     return [json.loads(line) for line in lines]
 
 
-def test_runtime_debug_writes_batch_context_and_aggregates(tmp_path):
+@pytest.mark.parametrize("compact_history", [False, True])
+def test_runtime_debug_writes_batch_context_and_aggregates(tmp_path, compact_history):
     output_path = tmp_path / "runtime_memory.jsonl"
     recorder = RuntimeDebugRecorder(
         device=torch.device("cpu"),
@@ -28,10 +30,13 @@ def test_runtime_debug_writes_batch_context_and_aggregates(tmp_path):
     batch = {
         "label_index": torch.zeros(2, dtype=torch.int64),
         "history_skill_ids": torch.zeros((2, 5), dtype=torch.int64),
+        "history_mask": torch.ones((2, 5), dtype=torch.bool),
         "scene_vectors": torch.zeros((2, 3, 4)),
         "current_state_vectors": torch.zeros((2, 4)),
         "action_legal_mask": torch.ones((2, 7), dtype=torch.bool),
     }
+    if compact_history:
+        batch.pop("history_skill_ids")
 
     recorder.begin_step(epoch=2, step=4, batch=batch)
     with recorder.stage("input_encoder"):
@@ -50,9 +55,10 @@ def test_runtime_debug_writes_batch_context_and_aggregates(tmp_path):
     assert report["step"] == 4
     assert report["batch"]["batch_size"] == 2
     assert report["batch"]["history_length"] == 5
+    assert report["batch"]["history_token_length"] == 10
     assert report["batch"]["scene_length"] == 3
     assert report["batch"]["action_count"] == 7
-    assert report["batch"]["sequence_length"] == 9
+    assert report["batch"]["sequence_length"] == 14
     assert report["aggregates"]["input_encoder"]["calls"] == 2
     assert report["step_peak_allocated_mib"] == 0.0
 

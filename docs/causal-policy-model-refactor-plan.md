@@ -1,6 +1,6 @@
 # 完全因果策略模型修改计划
 
-记录日期：2026-10-04。状态：已获授权在 `ice/codex/causal-policy-stage1` 实施阶段 1，阶段 1 的集成验收与残留检查已完成；阶段 2～6 尚未开始。
+记录日期：2026-10-04。状态：阶段 1、2 的实现、集成验收与残留检查已完成；实施分支为 `ice/codex/causal-policy-stage1`；阶段 3～6 尚未开始。
 
 本计划将现有候选评分模型改为只读取场景、历史状态和历史技能的因果策略模型。实施顺序固定为：彻底移除候选、拆分 embedding、由用户确认技能和状态字段、调整状态语义、重建历史上下文并保留最多 300 组“状态＋技能”（600 个历史 token），再追加最新状态，非场景容量合计 601，最后由用户执行 100 份训练数据的小规模训练。
 
@@ -201,12 +201,13 @@ rg -n "candidate|Candidate|num_candidates|candidate_index|candidate_kind" common
 
 删除 `pair_fusion` 全部参数、激活路径、辅助方法、旧分析接口和 `pair_embedding_dim` 配置。技能和状态在 Transformer 前不再融合。
 
-建议采用以下独立编码方式，实施时将最终层结构写入模型契约：
+阶段 2 采用以下独立编码结构。各线性投影直接输出 `d_model` 维，再经过各自的 `LayerNorm(d_model)`；归一化不改变维度，也不代替原有字段归一化：
 
 ```text
-技能 token = E[skill_vocab_id] + 技能数值特征投影 -> 独立归一化 -> d_model
-状态 token = 两段状态数值投影 + 必要的缺失值编码 -> 独立归一化 -> d_model
-场景 token = 按场景类型投影 -> d_model
+技能 token = LayerNorm_skill(E[skill_vocab_id] + Linear_skill(技能数值特征))
+状态 token = LayerNorm_state(Linear_state(两段状态数值) + Linear_null(null_mask, bias=False))
+场景 token = LayerNorm_scene(Linear_scene_type(场景数值))
+三种 token 的输出宽度均为 d_model
 ```
 
 技能 ID embedding 使用可学习的词向量查找表 `E`，形状为 `[vocab_size, d_model]`，每个技能 ID 对应一行向量。这是 GPT-like 的 token embedding 方法；技能名称不拆成文本子词。继续保留现有数值字段，不能把“拆分 embedding”解释为只保留技能 ID。新增或删除数值字段必须进入阶段 3 的对照与确认。
@@ -215,9 +216,29 @@ LM Head 直接读取这张 `E` 的输出技能行，用 `h_last @ E[action_to_vo
 
 类型标识区分 `scene`、`state`、`skill`，历史状态和最新状态都使用 `state`。所有 token 进入同一 Transformer 和同一因果注意力路径，不建立第二套上下文或单独的当前状态编码器。role/segment 中重复表达旧候选分区的参数一并清理。
 
-阶段 2 尚未改变旧历史状态语义。若需要整模型过渡布局，可暂用 `scene, A1, T1, A2, T2, ..., 当前状态`，其中 `Ti` 仍是第 i 个技能的旧 before/after。不能把包含 `Ai` 执行结果的 `Ti` 放在 `Ai` 前面并当作决策前状态。这个过渡布局不用于最终训练，阶段 5 必须删除。
+实际实现只保留一张类型 embedding，类型编号为 `scene=0`、`state=1`、`skill=2`，删除重复的 segment embedding。历史状态与最新状态共用同一组状态投影、null 投影、LayerNorm 和类型向量；最新状态由显式物理位置 metadata 识别，不使用特殊的当前状态类型。
+
+按用户最终决定，保留 `is_legal`、`invalid_reason`、`action_legal_mask` 及现有字段级 null mask。`null_mask` 表达字段缺失，当前缺失值数值占位仍遵循原 `-1` 契约；它不表达动作合法性。历史不足的 padding 仍由 scene/history attention mask 排除。阶段 2 不删字段，黑魔技能数值特征保持 19 维，状态保持 86 维；字段删减与状态时间语义另按阶段 3、4 的确认点处理。
+
+checkpoint 输入契约升级为 `11`，保存严格的 `token_encoding` 描述，记录各路投影与 LayerNorm、状态共享、类型编号、共享技能输出头、历史容量单位和过渡序列。旧融合 checkpoint、缺少描述或描述不匹配的新版本输入契约均明确拒绝。共享的是基础技能语义参数表 `E`，不是加数值特征和归一化后的整个技能输入 token。
+
+阶段 2 尚未改变旧历史状态语义，整模型使用过渡布局 `scene, A1, T1, A2, T2, ..., 当前状态`，其中 `Ti` 仍是第 i 个技能的旧 before/after。不能把包含 `Ai` 执行结果的 `Ti` 放在 `Ai` 前面并当作决策前状态。这个过渡布局不用于最终训练，阶段 5 必须改为最终的状态、技能交错顺序。
+
+`history_capacity` 在本阶段仍以历史动作数计量：H 条历史输出 2H 个独立 token，总物理长度为 `scene_length + 2H + 1`。当前 384 条动作与 200 个场景槽对应最大物理容量 969；601 个非场景槽的容量单位迁移仍留在阶段 5。场景和每个有效技能、状态 token 均使用独立连续的 RoPE 位置，padding 不占逻辑位置；KV-cache、trace、分析和 ONNX 同步消费两 token 布局，输出头使用明确的最新状态位置。
+
+compiled cache 的完整 bank、原始字段和状态机语义保持不变，本阶段复用 cache v19/转换 v20 和 C# 桥接 12，不因 embedding 参数或读取窗口变化重编译相同数据。ONNX 仍有 10 个输入，部署契约升级为 15、manifest 升级为 9，明确历史容量的动作单位、每条两 token、过渡顺序及长度公式。旧 pair 分析接口替换为独立历史技能和状态 embedding 视图。
 
 验收包括：独立 token 数量和维度正确、类型标识正确、技能字段及归一化保持、所有投影有梯度、输入输出复用同一张 `E` 且两条梯度路径有效、优化器只更新共享参数一次、无 pair fusion 参数和旧配置残留，旧融合 checkpoint 明确拒绝。主干层数、MQA、激活、优化器、损失策略保持原有设定。
+
+### 阶段 2 实施与验证记录
+
+独立输入编码、共享技能输出头、读取侧长度统计、KV-cache、checkpoint 契约、模型分析和 ONNX 已同步完成。删除旧 pair 分析模块，分别生成历史技能和历史状态 PCA；决策位置从显式 metadata 读取。新增独立编码回归测试，补充共享参数梯度、字段隔离、因果顺序、padding 逻辑位置、缓存复用与失效、严格旧契约拒绝检查。旧融合配置或参数只保留在明确拒绝旧产物的校验和测试中，不保留可运行的兼容路径。
+
+使用项目 `.venv` 完成全量 `pytest tests -q -x --tb=short`，为 pytest 分配独立系统临时目录：**1329 passed、4 skipped、0 failed、0 errors，75.31 秒**。报告保存在 [stage2-integrated-1329.xml](../.tmp/stage2-integrated-1329.xml)。四项跳过分别为旧融合真实 checkpoint 不兼容、未开启完整真实 checkpoint 导出、未提供完整 raw report 的外部集成输入，以及 Full AttnRes 不支持 Post-LN；未将这些边界计为通过。
+
+GELU、SwiGLU 各完成 FP32 CPU 和 BF16 CUDA 的小模型真实导出，共四套。ONNX checker、shape inference、ORT 和每套六种空场景、空历史、有效长度及 padding 检查通过；动作 argmax 一致，FP32 最大 logit 绝对差为 `5.960e-7`，BF16 为 `0`，CUDA 禁止 CPU 算子 fallback。四套包均保存输入契约 11、部署契约 15、manifest 9；这些结果属于小模型图验证，真实训练 checkpoint 的完整导出与回放验收仍待后续匹配产物。
+
+黑魔技能 19 维、状态 86 维及其 before/after、null masks 和合法性字段保持；raw source、完整 history bank、cache signature、转换逻辑、C# 与 schema 未改。UTF-8/LF、Python AST、JSON 和 `git diff --check` 通过。实现验收时未启动正式训练，未修改 `training.yaml` 或 CHANGELOG，未 commit/push；未提前实施阶段 3 的字段删减、阶段 4 的跨步状态语义或阶段 5 的 601 容量。随后按用户要求更新 Unreleased 变更说明并进行阶段 2 的本地提交。
 
 ## 阶段 3 技能与状态字段确认
 
@@ -390,19 +411,20 @@ ONNX 的输入、容量公式、padding、输出动作顺序、manifest、golden
 
 ## 契约升级与产物管理
 
-本次读取的版本基线如下。实施时检查 live 值，按实际不兼容变更递增；这里不提前修改版本或指定发布版本号。
+以下记录阶段 1 已完成后的版本及阶段 2 的实际变更。契约按各自负责的兼容边界升级，不按阶段号统一递增；已经升级且本阶段没有变化的契约保留原值。
 
-| 契约 | 当前值 | 需要升级的变更 |
-| --- | --- | --- |
-| canonical 输出 schema | 10 | 删除候选、增加显式当前状态、状态字段语义和结构改变 |
-| `sidecar_contract_version` | 11 | C# 输出与 Python 进程内调用契约改变；该名称不表示恢复旧 SidecarHost |
-| `INPUT_CONTRACT_VERSION` | 9 | 模型输入、动作输出空间、状态语义或序列契约不兼容 |
-| `CACHE_FORMAT` | `raw_json_compiled_samples_v18_compact_state` | 候选删除、样本或 bank 结构与字段含义改变 |
-| `DEFAULT_CONVERSION_VERSION` | `raw_json_to_compiled_v19_compact_state` | 快照来源、模型历史记录与转换语义改变 |
-| normalizer 契约 | 2 | 前缀字段识别或序列化归一化规则发生不兼容改变 |
-| `DEPLOYMENT_CONTRACT_VERSION` | 13 | ONNX 输入、输出映射、状态或容量契约改变，同时改 manifest 对应 `const` |
+| 契约 | 阶段 1 | 阶段 2 | 本阶段处理原因 |
+| --- | --- | --- | --- |
+| canonical 输出 schema | 11 | 保持 11 | 原始字段与状态时间语义未变 |
+| `sidecar_contract_version` | 12 | 保持 12 | C# 输出与 Python 进程内调用契约未变 |
+| `INPUT_CONTRACT_VERSION` | 10 | 11 | 融合 token 改为独立 token，编码参数、类型和共享输出头不兼容 |
+| `CACHE_FORMAT` | `raw_json_compiled_samples_v19_causal_policy` | 保持 v19 | 完整历史 bank、样本结构和字段含义未变 |
+| `DEFAULT_CONVERSION_VERSION` | `raw_json_to_compiled_v20_causal_policy` | 保持 v20 | 转换和快照来源未变 |
+| normalizer 契约 | 2 | 保持 2 | 字段与归一化规则未变 |
+| `DEPLOYMENT_CONTRACT_VERSION` | 14 | 15 | 内部长度由 H 改为 2H，RoPE、当前状态位置和直接输出头改变 |
+| manifest | 8 | 9 | 容量描述增加必填结构并明确独立 token 的位置语义 |
 
-阶段 1 完成后应有一套相互匹配的无候选契约；阶段 4 与阶段 5 出现进一步不兼容变化时再按实际边界升级，包含历史容量从动作条数改为技能与状态 token 合计容量。纯 embedding 参数变化无需无理由重编译相同数据；在新格式完整 bank 已建立后，单独调整读取侧 token 容量到 601 或其他值不升级 cache 身份。
+阶段 4 与阶段 5 出现进一步不兼容变化时再按实际边界升级，包含历史容量从动作条数改为技能与状态 token 合计容量。纯 embedding 参数变化不重编译相同数据；在新格式完整 bank 已建立后，单独调整读取侧 token 容量到 601 或其他值不升级 cache 身份。即使 ONNX 外部张量名称和 shape 不变，也不能将内部融合编码和独立编码声明为同一个模型、部署契约。
 
 每次修改 FightEngine、PythonBridge 或 `config/schema.yaml` 后，在同一工作树重建：
 
@@ -463,7 +485,7 @@ dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj --configuration Debug
 ## 最终完成清单
 
 - [x] 阶段 1 正式链路完全移除候选，残留扫描和旧契约拒绝检查完成。
-- [ ] 阶段 2 独立技能与状态 embedding 及技能输入输出共享参数完成，pair fusion 和旧配置删除。
+- [x] 阶段 2 独立技能与状态 embedding 及技能输入输出共享参数完成，pair fusion 和旧配置删除。
 - [ ] 阶段 3 用户确认技能、状态字段和待生效动作处理规则。
 - [ ] 阶段 4 状态跨步语义、统一回退、历史冻结与 policy wait 处理完成。
 - [ ] 阶段 5 单一交错因果上下文、600 个历史状态与技能 token 加一个最新状态（共 601 token）和逐 token 顺序 RoPE 完成。

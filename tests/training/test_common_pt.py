@@ -700,7 +700,7 @@ def test_compact_history_materialization_matches_legacy_dense_builder(tmp_path):
 
     encoder = CausalInputEncoder(
         DataSpec.from_dataset(dataset),
-        ModelConfig(d_model=16, pair_embedding_dim=8, n_layers=1, n_heads=2, ff_dim=32),
+        ModelConfig(d_model=16, n_layers=1, n_heads=2, ff_dim=32),
         vocab_size=dataset.skill_vocab.size(),
     )
     encoder._materialize_compact_history(compact_batch)

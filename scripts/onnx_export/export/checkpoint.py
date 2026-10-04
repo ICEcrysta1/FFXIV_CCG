@@ -34,6 +34,7 @@ def load_policy(
     checkpoint = safe_torch_load(checkpoint_path, mmap=True)
     if not isinstance(checkpoint, Mapping):
         raise ValueError("checkpoint must be a mapping")  # noqa: TRY004
+    model_config = CausalPolicyModel.checkpoint_model_config(dict(checkpoint))
     data_spec_payload = checkpoint.get("data_spec")
     state_dict = checkpoint.get("model_state_dict")
     if not isinstance(data_spec_payload, Mapping) or not isinstance(state_dict, Mapping):
@@ -51,7 +52,7 @@ def load_policy(
         raise ValueError("checkpoint vocab_size must be >= 2")
     model = CausalPolicyModel(
         data_spec,
-        CausalPolicyModel.checkpoint_model_config(dict(checkpoint)),
+        model_config,
         vocab_size=vocab_size,
     )
     model.load_state_dict(state_dict, strict=True)

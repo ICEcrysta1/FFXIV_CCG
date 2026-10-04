@@ -65,7 +65,8 @@ def _write_config(tmp_path: Path, payload: object) -> Path:
         ({"model": [1]}, "model and training config sections must be mappings"),
         ({"training": [1]}, "model and training config sections must be mappings"),
         ({"model": {"state_dim": 1}}, "cache-derived dimensions"),
-        ({"model": {"pair_embedding_dim": 0}}, "pair_embedding_dim must be positive"),
+        ({"model": {"pair_embedding_dim": 0}}, "model.pair_embedding_dim is removed"),
+        ({"model": {"pair_embedding_dim": 192}}, "model.pair_embedding_dim is removed"),
         (
             {"model": {"n_heads": 6, "num_kv_heads": 4}},
             "model.n_heads must be divisible by model.num_kv_heads",
@@ -507,15 +508,15 @@ def test_input_encoder_handles_null_state_and_rejects_bad_shapes():
     spec = _encoder_spec()
     encoder = CausalInputEncoder(
         spec,
-        ModelConfig(d_model=8, pair_embedding_dim=4, n_layers=1, n_heads=2, ff_dim=16),
+        ModelConfig(d_model=8, n_layers=1, n_heads=2, ff_dim=16),
         vocab_size=4,
     )
-    assert encoder._embed_state(torch.zeros((1, 3)), None).shape == (1, 4)
+    assert encoder._embed_state(torch.zeros((1, 3)), None).shape == (1, 8)
 
     with pytest.raises(ValueError, match="non-empty scene"):
         CausalInputEncoder(
             DataSpec(**{**spec.__dict__, "scene_dim": 0}),
-            ModelConfig(d_model=8, pair_embedding_dim=4, n_layers=1, n_heads=2, ff_dim=16),
+            ModelConfig(d_model=8, n_layers=1, n_heads=2, ff_dim=16),
             vocab_size=4,
         )
 
@@ -540,7 +541,7 @@ def test_input_encoder_materializes_compact_history_to_dense_semantics():
     spec = _encoder_spec()
     encoder = CausalInputEncoder(
         spec,
-        ModelConfig(d_model=8, pair_embedding_dim=4, n_layers=1, n_heads=2, ff_dim=16),
+        ModelConfig(d_model=8, n_layers=1, n_heads=2, ff_dim=16),
         vocab_size=4,
     )
     dense = _encoder_batch()
@@ -585,7 +586,7 @@ def test_model_and_trace_helpers_cover_error_and_norm_paths():
     with pytest.raises(ValueError, match="divisible"):
         CausalPolicyModel(
             _encoder_spec(),
-            ModelConfig(d_model=7, pair_embedding_dim=4, n_layers=1, n_heads=2, ff_dim=16),
+            ModelConfig(d_model=7, n_layers=1, n_heads=2, ff_dim=16),
             vocab_size=4,
         )
     with pytest.raises(ValueError, match="missing input_contract"):
@@ -600,10 +601,12 @@ def test_model_and_trace_helpers_cover_error_and_norm_paths():
         ("scorer_use_candidate_hidden", True),
         ("scorer_use_candidate_hidden", False),
         ("position_id_semantics", "candidate_block_shared"),
+        ("pair_embedding_dim", 192),
     ):
         checkpoint = make_checkpoint()
         checkpoint["model_config"][removed_key] = raw_value
-        with pytest.raises(ValueError, match="removed model options"):
+        message = "model.pair_embedding_dim is removed" if removed_key == "pair_embedding_dim" else "removed model options"
+        with pytest.raises(ValueError, match=message):
             CausalPolicyModel.checkpoint_model_config(checkpoint)
     restored_config = CausalPolicyModel.checkpoint_model_config(make_checkpoint())
     assert restored_config.num_kv_heads == 1
@@ -642,7 +645,7 @@ def test_model_defaults_to_pre_ln_gelu_with_final_layer_norm():
 
     model = CausalPolicyModel(
         _encoder_spec(),
-        ModelConfig(d_model=8, pair_embedding_dim=4, n_layers=2, n_heads=2, ff_dim=16),
+        ModelConfig(d_model=8, n_layers=2, n_heads=2, ff_dim=16),
         vocab_size=4,
     )
 
@@ -1687,7 +1690,7 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
         model_variant="artzip",
         max_epochs=2,
         tensorboard=TensorBoardConfig(enabled=True, log_every_steps=1),
-        model=ModelConfig(d_model=8, pair_embedding_dim=4, n_layers=1, n_heads=2, ff_dim=16),
+        model=ModelConfig(d_model=8, n_layers=1, n_heads=2, ff_dim=16),
     )
     result = training_module.run_training(
         config,
@@ -1902,7 +1905,6 @@ def test_run_training_closes_tensorboard_writer_when_validation_callback_raises(
         tensorboard=TensorBoardConfig(enabled=True),
         model=ModelConfig(
             d_model=8,
-            pair_embedding_dim=4,
             n_layers=1,
             n_heads=2,
             ff_dim=16,
@@ -2000,7 +2002,7 @@ def _resume_validation_context(tmp_path: Path, *, max_epochs: int = 3):
         job_tag="black_mage",
         model_variant="artzip",
         max_epochs=max_epochs,
-        model=ModelConfig(d_model=8, pair_embedding_dim=4, n_layers=1, n_heads=2, ff_dim=16),
+        model=ModelConfig(d_model=8, n_layers=1, n_heads=2, ff_dim=16),
     )
     input_contract = ModelInputContract.from_training(
         data_spec=data_spec,

@@ -7,7 +7,7 @@ import pytest
 from common.policy.data import ModelInputContract, Normalizer
 from common.policy.data.schema import SceneWindowSchema, TrainingSchema
 from common.policy.data.spec import DataSpec
-from common.policy.data.input_contract import INPUT_CONTRACT_VERSION
+from common.policy.data.input_contract import INPUT_CONTRACT_VERSION, TOKEN_ENCODING_CONTRACT
 
 
 def _build_contract() -> ModelInputContract:
@@ -86,3 +86,27 @@ def test_model_input_contract_rejects_previous_state_semantics():
 
     with pytest.raises(ValueError, match="unsupported input contract version"):
         ModelInputContract.from_dict(payload)
+
+
+@pytest.mark.parametrize("change", ["missing", "role", "token_order", "output_projection", "state_encoder"])
+def test_model_input_contract_requires_exact_independent_token_descriptor(change):
+    payload = _build_contract().to_dict()
+    assert payload["version"] == 11
+    assert payload["token_encoding"] == TOKEN_ENCODING_CONTRACT
+    if change == "missing":
+        payload.pop("token_encoding")
+    elif change == "role":
+        payload["token_encoding"]["role_ids"]["state"] = 2
+    elif change == "state_encoder":
+        payload["token_encoding"]["current_state_encoder"] = "separate_current_state_encoder"
+    else:
+        payload["token_encoding"][change] = "legacy_fused_tokens"
+    with pytest.raises(ValueError, match="token_encoding"):
+        ModelInputContract.from_dict(payload)
+
+
+def test_serialized_token_descriptor_does_not_mutate_contract_authority():
+    contract = _build_contract()
+    payload = contract.to_dict()
+    payload["token_encoding"]["role_ids"]["state"] = 99
+    assert contract.to_dict()["token_encoding"] == TOKEN_ENCODING_CONTRACT
