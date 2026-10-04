@@ -7,8 +7,9 @@ import pytest
 import torch
 
 from common.config import load_precision_config
+from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
 from common.policy.data import ModelInputContract, Normalizer
-from common.policy.data.schema import TrainingSchema
+from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION, TRAINING_SOURCE_FORMAT, TrainingSchema
 from common.policy.data.action_space import ActionSpace
 from common.policy.data.compiled_cache import (
     CACHE_FORMAT,
@@ -32,8 +33,8 @@ def _scene_data_spec():
 
 def _scene_schema():
     return TrainingSchema(
-        serialization_format="test", sample_schema_version=1,
-        context_schema_version=1, scene_context_mode="absolute", scene_windows=(),
+        serialization_format=TRAINING_SOURCE_FORMAT, sample_schema_version=TRAINING_SAMPLE_SCHEMA_VERSION,
+        context_schema_version=CANONICAL_CONTEXT_SCHEMA_VERSION, scene_context_mode="absolute", scene_windows=(),
         state_group_feature_keys={"player_state": ("previous_action_after.time_seconds",)},
         skill_history_fields=("potency",),
     )
@@ -76,11 +77,16 @@ def scene_cache(tmp_path):
             int_dtype=precision.resolve_int_dtype(),
             float_dtype=precision.resolve_float_dtype(), shard_size=768,
         )
-        bank = {key: torch.zeros(1) for key in (
-            "skill_ids", "skill_features", "state_vectors", "state_null_mask",
-            "skill_potencies", "cumulative_dot_potencies",
-        )}
-        bank["action_keys"] = [""]
+        # 有效基线遵守当前 schema 和矩阵形状，使损坏测试能进入各自要覆盖的读取边界。
+        bank = {
+            "skill_ids": torch.zeros(1, dtype=precision.resolve_int_dtype()),
+            "skill_features": torch.zeros(1, 1, dtype=precision.resolve_float_dtype()),
+            "state_vectors": torch.zeros(1, 1, dtype=precision.resolve_float_dtype()),
+            "state_null_mask": torch.zeros(1, 1, dtype=torch.bool),
+            "skill_potencies": torch.zeros(1, dtype=precision.resolve_float_dtype()),
+            "cumulative_dot_potencies": torch.zeros(1, dtype=precision.resolve_float_dtype()),
+            "action_keys": [""],
+        }
         actions = _scene_data_spec()
         payload = {
             "cache_format": CACHE_FORMAT, "cache_signature": signature,

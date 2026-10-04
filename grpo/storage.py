@@ -14,8 +14,8 @@ import torch
 from common.torch_serialization import safe_torch_load
 
 
-# 状态语义改变，同宽的旧轨迹 tensor 也不能静默复用。
-GRPO_ROLLOUT_FORMAT = 3
+# 技能时间列移除，旧轨迹的技能 tensor 不能静默复用。
+GRPO_ROLLOUT_FORMAT = 4
 
 
 @dataclass(frozen=True)

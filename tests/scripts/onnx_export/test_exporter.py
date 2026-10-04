@@ -14,7 +14,9 @@ import torch
 
 from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, ModelInputContract, Normalizer
-from common.policy.data.schema import SceneWindowSchema, TrainingSchema
+from common.policy.data.schema import SceneWindowSchema, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
+from common.policy.data.input_contract import INPUT_CONTRACT_VERSION
+from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
 from common.policy.model import CausalPolicyModel
 from common.torch_serialization import safe_torch_load
 from scripts.autoregressive_replay.backends import (
@@ -1011,7 +1013,7 @@ def test_load_policy_rejects_stage1_fusion_config_and_input_contract(tmp_path):
     torch.save(payload, checkpoint)
     with pytest.raises(ValueError, match="input contract version"):
         export_module.load_policy(checkpoint, precision="float32")
-    payload["input_contract"]["version"] = 12
+    payload["input_contract"]["version"] = INPUT_CONTRACT_VERSION
     payload["input_contract"].pop("token_encoding")
     torch.save(payload, checkpoint)
     with pytest.raises(ValueError, match="token_encoding"):
@@ -1084,8 +1086,8 @@ def _write_small_checkpoint(
         data_spec=data_spec,
         schema=TrainingSchema(
             serialization_format="test",
-            sample_schema_version=9,
-            context_schema_version=12,
+            sample_schema_version=TRAINING_SAMPLE_SCHEMA_VERSION,
+            context_schema_version=CANONICAL_CONTEXT_SCHEMA_VERSION,
             scene_context_mode="absolute",
             scene_windows=scene_windows,
             state_group_feature_keys={

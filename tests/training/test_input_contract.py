@@ -5,9 +5,10 @@ from __future__ import annotations
 import pytest
 
 from common.policy.data import ModelInputContract, Normalizer
-from common.policy.data.schema import SceneWindowSchema, TrainingSchema
+from common.policy.data.schema import SceneWindowSchema, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
 from common.policy.data.spec import DataSpec
 from common.policy.data.input_contract import INPUT_CONTRACT_VERSION, TOKEN_ENCODING_CONTRACT
+from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
 
 
 def _build_contract() -> ModelInputContract:
@@ -25,8 +26,8 @@ def _build_contract() -> ModelInputContract:
     )
     schema = TrainingSchema(
         serialization_format="test",
-        sample_schema_version=1,
-        context_schema_version=1,
+        sample_schema_version=TRAINING_SAMPLE_SCHEMA_VERSION,
+        context_schema_version=CANONICAL_CONTEXT_SCHEMA_VERSION,
         scene_context_mode="absolute",
         scene_windows=(
             SceneWindowSchema.from_feature_keys(
@@ -80,7 +81,7 @@ def test_model_input_contract_rejects_checkpoint_without_contract():
         ModelInputContract.from_checkpoint({"data_spec": {}})
 
 
-def test_model_input_contract_rejects_previous_state_semantics():
+def test_model_input_contract_rejects_previous_skill_time_contract():
     payload = _build_contract().to_dict()
     payload["version"] = INPUT_CONTRACT_VERSION - 1
 
@@ -110,3 +111,23 @@ def test_serialized_token_descriptor_does_not_mutate_contract_authority():
     payload = contract.to_dict()
     payload["token_encoding"]["role_ids"]["state"] = 99
     assert contract.to_dict()["token_encoding"] == TOKEN_ENCODING_CONTRACT
+
+
+@pytest.mark.parametrize("location", ["features", "fields"])
+def test_current_input_contract_rejects_removed_skill_time(location):
+    """仅更新版本号不能把带旧技能时间的契约变成新版输入。"""
+    payload = _build_contract().to_dict()
+    if location == "features":
+        payload["data_spec"]["skill_feature_names"] = ("potency", "time_seconds")
+        payload["data_spec"]["skill_feature_dim"] = 2
+    else:
+        payload["schema"]["skill_history_fields"] = ("skill_key", "time_seconds")
+    with pytest.raises(ValueError, match="removed skill time_seconds"):
+        ModelInputContract.from_dict(payload)
+
+
+def test_data_spec_rejects_removed_column_hidden_by_feature_names():
+    payload = _build_contract().to_dict()["data_spec"]
+    payload["skill_feature_dim"] += 1
+    with pytest.raises(ValueError, match="skill feature order length"):
+        DataSpec.from_dict(payload)

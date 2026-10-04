@@ -7,7 +7,7 @@ import subprocess
 import pytest
 
 from scripts.common.inprocess_backend import InProcessEngine
-from common.output_context_schema import build_output_context_schema_metadata
+from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION, build_output_context_schema_metadata
 from tests.scripts.conftest import _require_inprocess_backend
 
 
@@ -156,7 +156,7 @@ def test_current_state_packet_uses_one_real_snapshot_and_fixed_action_space(cs_b
     assert immediate == future
     assert "candidate_skill_context" not in immediate
     assert "candidate_state_context" not in immediate
-    assert immediate["schema_version"] == 12
+    assert immediate["schema_version"] == CANONICAL_CONTEXT_SCHEMA_VERSION
     assert immediate["skill_history_context"] == []
     keys = immediate["action_keys"]
     assert keys == sorted(keys)

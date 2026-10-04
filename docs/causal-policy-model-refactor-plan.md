@@ -1,10 +1,10 @@
 # 完全因果策略模型修改计划
 
-记录日期：2026-10-04。状态：阶段 1～3 已实现；阶段 3 的历史缓存错行已修复，并通过同刻边界回归与指定 M5s 真实转换验收；实施分支为 `ice/codex/causal-policy-stage1`；阶段 4～6 尚未实施。
+记录日期：2026-10-04。状态：阶段 1～4 已实现；阶段 3 的历史缓存错行已修复，阶段 4 已删除技能时间并通过指定 M5s 真实转换字段对照；实施分支为 `ice/codex/causal-policy-stage1`；阶段 5～6 尚未实施。
 
 本计划将现有候选评分模型改为只读取场景、历史状态和历史技能的因果策略模型。按用户最新决定，实施顺序固定为：彻底移除候选、拆分 embedding、调整状态语义、由用户确认技能和状态字段并完成字段删减、重建历史上下文并保留最多 300 组“状态＋技能”（600 个历史 token），再追加最新状态，非场景容量合计 601，最后由用户执行 100 份训练数据的小规模训练。
 
-各实现阶段包含代码、测试与相匹配的产物契约升级，不自行启动训练实验、提交或推送，也不自动修改 CHANGELOG。阶段 3 已完成状态语义改造，技能字段与 384 条历史动作的容量单位保持阶段 2 基线；当前仍采用技能在前、状态在后的过渡布局，最终状态在前的布局与 601 个非场景 token 容量留在阶段 5。
+各实现阶段包含代码、测试与相匹配的产物契约升级，不自行启动训练实验、提交或推送，也不自动修改 CHANGELOG。阶段 3 已完成状态语义改造，阶段 4 已将黑魔技能数值特征减至 18 维，状态保持 86 维；当前容量仍以 384 条历史动作计量，采用技能在前、状态在后的过渡布局，最终状态在前的布局与 601 个非场景 token 容量留在阶段 5。
 
 ## 目标契约
 
@@ -68,11 +68,11 @@ scene tokens, S1, A1, S2, A2, ..., SH, AH, S_current
 | 1 | 完全移除候选 token 及其生产、缓存、模型和消费路径 | 所有正式入口都不再依赖候选；完成残留清单与测试 |
 | 2 | 技能和状态分别 embedding，技能输入输出共享词向量 | 删除 pair fusion，共享参数与独立编码可验证，历史技能字段保持原有语义 |
 | 3 | 状态改为上一动作后状态与本次请求状态 | 时间锚点、回退、policy wait 和跨步配对通过回归测试 |
-| 4 | 向用户提交技能和状态字段对照，确认后完成字段删减 | 用户确认最终字段对照，字段、维度、顺序、取值口径与归一化核查一致；技能 `time_seconds` 完全移除，相关消费者迁移完成 |
+| 4 | 技能和状态字段对照及字段删减（已完成） | 技能 `time_seconds` 完全移除，技能 18 维、状态 86 维；其余字段和归一化保持，真实转换对照及消费者迁移通过 |
 | 5 | 重建交错历史，历史状态与技能占 600 token，追加最新状态后共 601，RoPE 顺序编号 | 数据、模型、KV-cache、分析、ONNX 和回放遵守同一契约 |
 | 6 | 100 份训练数据的小规模训练 | 用户本人运行并检查训练与自回归结果 |
 
-每阶段只执行对应范围，不以候选空数组、伪候选、保留旧入口但不调用等方式宣布阶段 1 完成。阶段 3 先按已确认的两段状态语义实施，技能字段暂沿用阶段 2。阶段 4 是用户明确要求的字段确认点；字段确认和相应修改完成后才实施阶段 5。
+每阶段只执行对应范围，不以候选空数组、伪候选、保留旧入口但不调用等方式宣布阶段 1 完成。阶段 3 按已确认的两段状态语义实施，技能字段在该阶段沿用阶段 2。阶段 4 已按用户授权删除技能时间，最终字段及保留口径见该阶段交付记录；阶段 5 与阶段 6 仍为后续实施范围。
 
 ## 阶段 1 完全移除候选
 
@@ -311,38 +311,49 @@ GELU 与 SwiGLU 各通过 FP32 CPU 和 BF16 严格 CUDA 的小模型真实导出
 
 修复后的 Python 关联回归为 **199 passed、0 failed、0 errors**，C# 全量为 **290 passed、0 failed**，覆盖两种同刻记录先后、浮点舍入、fork/恢复和历史裁剪；PythonBridge 同一工作树重建为 0 warning、0 error。重新转换同一 M5s 文件后，491 个样本全部通过：完整历史 120295 行访问及正式 384 动作窗口 114624 行访问均逐项一致，前缀重排、遗漏等待、重复真实技能和历史输入错行全部为 0；491 个最新状态与修复前也逐字段一致，原始文件未改动。旧 v21 审计缓存被当前转换签名拒绝。
 
-当前桥接版本为 14、转换版本为 v22，缓存存储格式仍为 v20；canonical、checkpoint 输入、样本、归一化与部署契约保留原版本，技能与状态字段及容量单位未变。修复后明细见 [audit.json](../.tmp/context-history-fix-20261004/audit.json)、[bank_diff.json](../.tmp/context-history-fix-20261004/bank_diff.json) 与 [Python 回归报告](../.tmp/history-fix-python.xml)。
+阶段 3 验收时桥接版本为 14、转换版本为 v22，缓存存储格式为 v20；canonical、checkpoint 输入、样本、归一化与部署契约保留该阶段原版本，技能与状态字段及容量单位未变。修复后明细见 [audit.json](../.tmp/context-history-fix-20261004/audit.json)、[bank_diff.json](../.tmp/context-history-fix-20261004/bank_diff.json) 与 [Python 回归报告](../.tmp/history-fix-python.xml)。
 
 旧格式 cache 需重编译，旧 checkpoint 与 ONNX 包不可静默复用；本阶段没有批量重建用户的生产 cache、训练 checkpoint 或部署包。实现和验证使用独立临时目录，未修改 `training.yaml`，未启动训练或推送；阶段 3 的提交变更说明按用户要求写入 CHANGELOG 的 `Unreleased`。
 
 ## 阶段 4 技能与状态字段确认及删减
 
-这一阶段在状态语义改造后向用户提交最终字段表，确认后完成字段删减。对照需覆盖字段名、顺序、类型、维度、取值来源、时间锚点、归一化和进入模型与否，不能只展示字段名称。
+阶段 4 已按用户授权完成：技能 `time_seconds` 从 canonical、技能特征、归一化装配、完整 history bank、checkpoint 与部署输入契约中删除；黑魔技能数值特征由 19 维变为 **18 维**，状态保持 **86 维**。其余技能字段、数值取值口径和归一化规则不变，技能输入输出仍共用唯一的语义 embedding，token 输出宽度仍为 `d_model: 768`。
 
-以下基线依据阶段 3 的实际输出、C# builder、schema、Python 特征提取与黑魔资源注册核对。技能 `time_seconds` 按已确认要求完全删除，其余字段沿用现有口径，提交最终字段对照；如确需额外删改，逐项说明原因并由用户确认。
+以下最终字段表依据当前 C# token builder、Python 特征提取、normalizer、职业资源定义及指定 M5s 真实转换结果核对。这里的“数值模型输入”指 `skill_features`；原始技能 ID 另行映射到 `SkillVocab` 查共享 embedding，不属于这 18 个数值维度。
 
-### 技能 token 基线
+### 技能 token 最终字段
 
-| 当前 canonical 字段 | 当前用途或来源 | 计划处理 |
-| --- | --- | --- |
-| `skill_id` | 原始技能或 policy ID，映射到技能词表 | 保留，仍走 ID embedding |
-| `skill_key` | 动作身份、输出映射与诊断 | 保留，不作为浮点特征 |
-| `skill_name` | 展示与诊断 | 保留，不作为浮点特征 |
-| `potency` | 历史技能威力字段 | 保留现有口径，同时保留真实执行统计 |
-| `value` | 训练价值偏好信息 | 保留其训练用途，不加入模型数值特征 |
-| `kind` | 数值 1 为 GCD，0 为 oGCD | 保留，进入技能数值特征和历史 GCD 统计 |
-| `actual_mp_cost` | 历史 MP before/after 的非负差 | 保留，不能顺手改为静态技能耗蓝 |
-| `cast_time.seconds` | 历史实际读条时间 | 保留秒制与当前归一化 |
-| `gcd_window.seconds` | 历史动作窗口 | 保留，删除候选不等于删除历史该字段 |
-| `is_legal` | 历史合法性数值 | 保留；即使通常为真，也不在本阶段顺手裁剪 |
-| `invalid_reason` | 合法性诊断文本 | 保留其诊断用途，不作为浮点特征 |
-| `next_cooldown_seconds` | 当前历史记录中的技能冷却快照 | 保留取值时点与归一化 |
-| `available_charges` | 历史技能充能快照 | 保留 |
-| `max_charges` | 技能最大充能 | 保留 |
-| `job_resources_consumed.*` | 历史动作资源差分 | 保留所有已注册资源维度，仍由技能 token 承载 |
-| `time_seconds` | 真实技能历史为动作生效时刻，policy wait 为决策时刻 | 从 canonical 技能 token 和模型数值特征中完全删除；场景查询使用状态自身时间，历史排序使用共享写入序号 |
+记 `clip(x, M) = min(max(x, 0), M)`。秒数字段的上限 `R` 来自保存的 normalizer 契约；职业配置时取所有启用的系统与职业技能的最大正冷却，当前黑魔为 270 秒，不能用固定 120 秒代替。MP 上限当前为 10000，单次威力上限为 2500；离线读取使用 checkpoint 保存的上限。
 
-当前黑魔历史技能的数值特征共 19 维，按当前 Python 排序后的名称为：
+| canonical 字段或展开字段 | 数值模型输入 | 归一化 | 来源与说明 |
+| --- | --- | --- | --- |
+| `skill_id` | 否，单独进入 ID embedding | 不作浮点归一化 | 原始真实技能或 policy ID，经 `SkillVocab` 映射；wait 原始 ID 0 仍映射到独立非 padding 行 |
+| `skill_key` | 否 | 不适用 | 动作身份、输出索引映射和诊断 |
+| `skill_name` | 否 | 不适用 | 展示与诊断 |
+| `value` | 否 | 不进入模型归一化 | 保留历史价值字段；固定动作价值监督仍使用独立 `action_values` |
+| `invalid_reason` | 否 | 不适用 | 合法性诊断文本，保留 |
+| `actual_mp_cost` | 是 | `clip(x, 10000) / 10000` | 真实动作记录的 `max(MpBefore - MpAfter, 0)`；wait 为 0，不改为静态技能耗蓝 |
+| `available_charges` | 是 | 原值 | 历史条目保存的可用充能；wait 为 1 |
+| `cast_time.seconds` | 是 | `clip(x, R) / R` | 历史实际读条秒数，输出保留原四位小数口径；wait 为 0 |
+| `gcd_window.seconds` | 是 | `clip(x, R) / R` | 历史动作窗口秒数，输出保留原四位小数口径；wait 为 0 |
+| `is_legal` | 是 | 原值，bool 展开为 0/1 | 保留调用方所需的合法性字段；wait 为 true |
+| `job_resources_consumed.astral_fire` | 是 | `clip(x, 3) / 3` | 真实动作前后资源变化派生的消耗量，保留原口径 |
+| `job_resources_consumed.astral_soul` | 是 | `clip(x, 6) / 6` | 同上 |
+| `job_resources_consumed.firestarter_ready` | 是 | `clip(x, 1)` | 消耗准备状态时为 1；保留该资源维度 |
+| `job_resources_consumed.paradox_ready` | 是 | `clip(x, 1)` | 同上 |
+| `job_resources_consumed.polyglot` | 是 | `clip(x, 3) / 3` | 真实动作前后资源变化派生的消耗量 |
+| `job_resources_consumed.polyglot_timer` | 是 | `clip(x, 30) / 30` | 按职业注册的资源上限处理，优先于通用 timer 秒数规则 |
+| `job_resources_consumed.thundercloud_ready` | 是 | `clip(x, 1)` | 消耗准备状态时为 1；保留该资源维度 |
+| `job_resources_consumed.umbral_hearts` | 是 | `clip(x, 3) / 3` | 真实动作前后资源变化派生的消耗量 |
+| `job_resources_consumed.umbral_ice` | 是 | `clip(x, 3) / 3` | 同上 |
+| `kind` | 是 | 原值 | 数值 1 为 GCD、0 为 oGCD，同时用于历史执行 GCD 统计；wait 为 0 |
+| `max_charges` | 是 | 原值 | 历史条目保存的最大充能；wait 为 1 |
+| `next_cooldown_seconds` | 是 | `clip(x, R) / R` | 历史条目保存的技能冷却快照，输出保留原四位小数口径；wait 为 0 |
+| `potency` | 是 | `clip(x, 2500) / 2500` | 历史条目的真实技能威力口径；wait 为 0，不替换为固定动作价值 |
+
+`job_resources_consumed` 在 canonical 中仍为嵌套映射，展开后有上述九个黑魔资源维度；wait 使用同一资源结构和零消耗。不同职业仍由各自资源注册推导字段与上限，公共模型不硬编码黑魔列表。
+
+黑魔 `skill_feature_names` 的最终排序为：
 
 ```text
 actual_mp_cost
@@ -363,41 +374,56 @@ kind
 max_charges
 next_cooldown_seconds
 potency
-time_seconds
 ```
 
-19 维数值输入与技能 ID embedding 是两部分。`value`、文本字段和质量监督标签不进入这 19 维。删除 `time_seconds` 后，黑魔技能数值特征为 18 维，技能 token 的输出宽度仍为 `d_model`，共享语义 embedding 不变。新实现要用真实转换样本再验证这个基线；每职业动态资源按其职业注册推导，不把黑魔的列表硬编码进公共模型。
+`time_seconds` 已删除，不保留默认填零的技能列，不新增其他技能时间替代字段。旧技能行、旧技能特征与旧产物明确拒绝；该名称仅在状态、内部时序和旧输入拒绝保护中保留。normalizer 契约仍为 **2**，因为保留字段的数值规则和保存上限未变。
 
-技能时间字段删除时，必须同步移除字段发现、特征顺序、归一化输入装配和完整 history bank 中对应的技能列，不能只删除 raw key 却保留一个默认填零的模型维度。
+### 状态 token 最终字段与两段说明
 
-请求时机由调用方决定。本项目沿用现有历史记录规则：真实技能生效后进入历史，policy wait 在决策落实时进入历史。提前请求时只输出当时可知的历史和最新状态；前一步动作后快照不可取得时，沿用阶段 3 的回退规则，两段复制当前请求状态，历史状态仍按原请求时的信息冻结。
+状态 token 继续由 `player_state`、`buff_state`、`target_buff_state`、`resource_state` 四组按原顺序装配。黑魔每个快照 43 维，两个快照合计 86 维，每组内部依次存放 `previous_action_after.*` 与 `request_state.*`；底层字段和顺序均未调整。
 
-历史合并沿用阶段 3 已实现的共享写入序号 `HistorySequence`，按实际写入顺序合并。同刻记录也按该序号排序，历史裁剪不重置游标，clone、fork 和 restore 保留游标；序号只用于内部排序，不进入技能或状态 token。compiled bank 继续在追加前校验已有技能、状态和执行统计前缀。回放前缀识别使用技能身份、状态时间和完整 token 对照，不再依赖技能时间字段。
-
-场景改写沿用阶段 3 建立的两段状态时间锚点，不使用技能时间减读条时间推算请求时刻。内部时间线继续保留执行所需的时间信息，不新增替代的技能时间特征。
-
-### 状态 token 基线
-
-阶段 2 的状态由 `player_state`、`buff_state`、`target_buff_state`、`resource_state` 四组组成。黑魔单个快照为 43 维；每组包含两段快照，整个状态 token 为 86 维。阶段 3 保留底层字段和四组装配顺序，重新定义两段快照的来源；本阶段核对实际字段和维度。
+| 状态段 | 来源与时间语义 |
+| --- | --- |
+| `previous_action_after.*` | 本次请求时已经可取得的前一步动作后快照；真实技能取效果后的已知快照，wait 取决策落实时的真实快照 |
+| `request_state.*` | 本次请求选择动作前的真实状态；两段之间的 MP/DoT tick、Buff 过期、量谱及场景变化体现在这一段 |
+| 两段回退 | 无前序动作或不能取得其后状态时，逐字段复制当前请求状态为两段；首个状态适用同一规则 |
 
 | 分组 | 单快照字段 | 黑魔单快照维度 |
 | --- | --- | --- |
-| player | `mp`、`max_mp`、`mp_ratio`、`time_seconds`、`current_gcd_seconds`、`boss_targetable`、`next_untargetable_in_seconds`、`downtime_remaining_seconds`、`is_moving` | 9 |
-| buff | 系统 `burst_potion`、`raid_buff_window`，职业 `ley_lines`、`lucid_dreaming`、`swiftcast`、`triplecast` 各自的 `active`、`remaining_seconds`、`stacks`；另含 `resource.firestarter_ready`、`resource.thundercloud_ready` | 20 |
-| target buff | `target.high_thunder` 的 `active`、`remaining_seconds`、`stacks`；以及 `target.cumulative_dot_potency`、`target.cumulative_potency`、`target.current_potency`、`target.current_gcd_dot_potency` | 7 |
-| resource | `astral_fire`、`astral_soul`、`paradox_ready`、`polyglot`、`polyglot_timer`、`umbral_hearts`、`umbral_ice` | 7 |
+| `player_state` | `mp`、`max_mp`、`mp_ratio`、`time_seconds`、`current_gcd_seconds`、`boss_targetable`、`next_untargetable_in_seconds`、`downtime_remaining_seconds`、`is_moving` | 9 |
+| `buff_state` | 系统 `burst_potion`、`raid_buff_window`，职业 `ley_lines`、`lucid_dreaming`、`swiftcast`、`triplecast` 各自的 `active`、`remaining_seconds`、`stacks`；另含 `resource.firestarter_ready`、`resource.thundercloud_ready` | 20 |
+| `target_buff_state` | `target.high_thunder` 的 `active`、`remaining_seconds`、`stacks`；以及 `target.cumulative_dot_potency`、`target.cumulative_potency`、`target.current_potency`、`target.current_gcd_dot_potency` | 7 |
+| `resource_state` | `astral_fire`、`astral_soul`、`paradox_ready`、`polyglot`、`polyglot_timer`、`umbral_hearts`、`umbral_ice` | 7 |
 
-Buff 顺序遵循现有 builder 的系统组、职业组与各组 ordinal 排序；资源顺序、DoT 顺序和四组顺序以实际 schema 为准。每组内部依次存放上一步动作后向量与当前请求向量，不为了本次迁移另行打乱底层字段。
+两段各自保留 `time_seconds`、累计直接威力和累计 DoT 威力。状态绝对时间继续按 `fight_time_max`（当前 1800 秒）归一化；秒数字段按上述 `R`，MP、职业资源、状态层数和当前威力按既有上限处理，累计威力继续按保存的 `cumulative_potency_mode`（当前 `log1p`）处理。两段同名字段应用完全相同的规则，字段级 null mask 和原 `-1` 缺失占位也保持；缺前一步快照通过复制当前状态回退，不用 null 或特殊状态类型代替。
 
-阶段 3 将旧 `before.*`、`after.*` 改为明确的 `previous_action_after.*`、`request_state.*`；本阶段核对归一化器、特征索引、checkpoint 契约、状态分析与部署契约是否一致支持新名称，两段同名基础字段使用相同的归一化规则。不能保留旧字段名却静默改变其含义。
+历史状态仍按原请求可知信息冻结，后来生效不回填。最新状态和历史状态使用同一 schema、归一化、embedding 与类型。真实执行统计仍在独立 `execution_metrics` 中，不以模型两段状态替代 PPG 统计来源。
 
-状态字段缺失与 padding 仍按数据契约处理；“缺少上一步快照”必须复制当前快照，不能通过 null、零向量、专用未知状态标识或截断后重新计算来替代。回退原因如需诊断，只记录为非模型 metadata。
+### 历史记录与消费者收口
 
-### 字段确认与实施核查
+请求时机由调用方决定。本项目沿用现有历史记录规则：真实技能生效后进入历史，policy wait 在决策落实时进入历史；不增加待生效技能 token。提前请求只输出当时可知的历史和最新状态，前一步后状态不可取得时按统一规则回退。
 
-- 向用户提交技能 `time_seconds` 完全删除后的最终字段对照，覆盖 canonical 字段、18 维数值特征、顺序、取值时点和归一化；其余字段如确需额外变更，逐项说明原因并确认。
-- 核对状态底层 43 维字段全部保留，最终状态保持 86 维及既有分组和两段顺序。
-- 核对各消费者一致使用 `previous_action_after.*`、`request_state.*`，两段同名基础字段沿用相同归一化规则；名称和既有状态语义不再作为新的选择项。
+历史合并继续使用内部 `HistorySequence`；序号不进入模型。compiled bank 在追加前逐项比较完整技能、状态与执行统计前缀，拒绝重排或回填。在线回放按技能身份与状态中的 `request_state.time_seconds` 定位重合行，并继续比较完整 skill/state token；同刻重复技能、完全相同快照和滑动窗口均保留正确行数。
+
+场景改写继续按两段状态各自的原始秒数与 feature keys 定位时间，不从技能生效时间减读条时间推算请求时刻。FightEngine 内部请求、生效、读条结束与推进时间保留，供执行和调度使用。
+
+当前容量仍为 **384 条历史动作**，过渡布局仍是 `scene, A1, S1, ..., AH, SH, S_current`，每条动作对应两个独立 token。保留场景容量 200 时最大物理容量仍为 969；有效 token 已按独立连续 RoPE 位置编码。**阶段 5 的状态在前布局、601 个非场景 token 容量及单位迁移尚未实施。**
+
+### 阶段 4 实际交付与验收（2026-10-04）
+
+技能字段生产、raw source、完整 bank、训练输入与恢复、回放、GRPO 和部署契约已同步迁移；旧 cache、旧 19 维输入、旧 checkpoint 与部署包明确拒绝。空历史和 wait-only source 仍由固定字段与职业资源推导稳定的 18 维 schema，调整读取窗口仍复用完整 cache。
+
+同一工作树的 PythonBridge 已重建。C# 全量 **292 passed、0 failed**；Python 消费者检查 **90 passed**，报告见 [stage4-python-consumers.xml](../.tmp/stage4-python-consumers.xml)，相关集成检查 **276 passed**，报告见 [stage4-integration.xml](../.tmp/stage4-integration.xml)。覆盖旧字段/宽度拒绝、状态时间保留、同戳重复技能、字段顺序重排、滑窗、完整前缀及多队列/职业边界。
+
+最终项目 `.venv` 全量 Python 检查为 **1367 passed、4 skipped、0 failed、0 errors，66.45 秒**，进程 exit 0，报告见 [stage4-full-final.xml](../.tmp/stage4-full-final.xml)。四项跳过分别为旧融合真实 checkpoint 不兼容、未启用 `RUN_REAL_ONNX_EXPORT` 慢门禁、未提供 `ACTION_QUALITY_E2E_SOURCE` 外部输入，以及 Full AttnRes 不支持 Post-LN 的组合；未计为通过。上述消费者与集成检查属于关联验证集合，不与全量结果累加。
+
+GELU、SwiGLU 各完成 FP32 CPU 和 BF16 严格 CUDA 的小模型 ONNX 验证，共四套，通过新契约的导出与 parity 检查。真实已训练 checkpoint 的完整导出和生产部署回放门禁尚未执行，不能以小模型图验证替代。
+
+指定 `data/human/job/black_mage/raw/VAL/M5s/fflogs_2CHK3gRfrNJxhmwb_f1_Arcadia_Petralia.json.br` 已通过正式入口重新转换到 [阶段 4 审计目录](../.tmp/stage4-field-removal-20261004/)，仍为 **491 个样本**（真实技能 273、wait 218、排队请求 46）。旧 19 维技能矩阵仅删除 `time_seconds` 后，与新 18 维矩阵逐字段相等；其他 bank 字段及全部 491 个保存样本的其余字段一致，最新状态与原始请求记录也一致。
+
+真实上下文完成 **120295 次**技能时间缺失与冻结请求状态检查；compiled 完整历史 **120295 行访问**、正式 384 动作窗口 **114624 行访问**均逐字段一致，错行、遗漏等待、重复技能及未匹配行全部为 0。原始输入哈希不变，旧缓存被新转换签名拒绝。明细见 [verification.json](../.tmp/stage4-field-removal-20261004/verification.json)、[cache_comparison.json](../.tmp/stage4-field-removal-20261004/cache_comparison.json) 与 [bank_diff.json](../.tmp/stage4-field-removal-20261004/bank_diff.json)。
+
+本阶段使用隔离审计缓存和测试产物，未批量重建用户生产 cache、已训练 checkpoint 或生产部署包；实现与验收期间未运行训练、修改用户训练参数、提交或推送，提交和发布只按用户后续单独授权执行。最终状态在前的 601 容量整链路验收留在阶段 5，100 份训练 source 的训练由用户在阶段 6 本人执行。
 
 ## 阶段 5 重建历史上下文与 RoPE
 
@@ -449,7 +475,7 @@ ONNX 的输入、容量公式、padding、输出动作顺序、manifest、golden
 
 ## 契约升级与产物管理
 
-以下记录阶段 1～3 的实际版本。契约按各自负责的兼容边界升级，不按阶段号统一递增；已升级且当前阶段没有变化的契约保留原值。
+以下记录阶段 1～4 的实际版本。契约按各自负责的兼容边界升级，不按阶段号统一递增；已升级且当前阶段没有变化的契约保留原值。
 
 | 契约 | 阶段 1 | 阶段 2 | 阶段 3 | 阶段 3 处理原因 |
 | --- | --- | --- | --- | --- |
@@ -464,7 +490,22 @@ ONNX 的输入、容量公式、padding、输出动作顺序、manifest、golden
 
 训练样本 schema 从 8 升级为 9，GRPO rollout 格式从 2 升级为 3，拒绝同宽但语义不同的旧样本与轨迹。
 
-阶段 3 的跨步状态语义已按上述边界升级；阶段 4 删除技能时间字段、阶段 5 将历史容量从动作条数改为技能与状态 token 合计容量时，再按实际不兼容边界升级。纯 embedding 参数变化不重编译相同数据；在新格式完整 bank 已建立后，单独调整读取侧 token 容量到 601 或其他值不升级 cache 身份。即使 ONNX 外部张量名称和 shape 不变，也不能将内部融合编码和独立编码声明为同一个模型、部署契约。
+阶段 4 的实际版本如下，阶段 1～3 表保留为历史记录：
+
+| 契约 | 阶段 4 | 本阶段处理原因 |
+| --- | --- | --- |
+| canonical 输出 schema | 13 | canonical 技能字段删除 `time_seconds` |
+| `sidecar_contract_version` | 15 | 桥接输出字段变化，拒绝旧 DLL；状态机合法性与执行规则不变 |
+| `INPUT_CONTRACT_VERSION` | 13 | 技能数值输入从 19 维减为 18 维 |
+| 训练样本 schema | 10 | 样本技能字段与宽度变化，拒绝旧样本 |
+| `CACHE_FORMAT` | `raw_json_compiled_samples_v21_timeless_skills` | 完整 bank 的技能列删除时间 |
+| `DEFAULT_CONVERSION_VERSION` | `raw_json_to_compiled_v23_timeless_skills` | 重新转换不含技能时间的 canonical 输入，旧缓存重编译 |
+| normalizer 契约 | 保持 2 | 删除技能时间入口，保留字段归一化规则及状态时间规则不变 |
+| `DEPLOYMENT_CONTRACT_VERSION` | 17 | 部署技能输入宽度与字段契约变化 |
+| manifest | 11 | 保存新的 18 维输入契约，拒绝旧包 |
+| GRPO rollout | 4 | 轨迹输入字段及宽度变化，拒绝旧轨迹 |
+
+阶段 3 的跨步状态语义及阶段 4 的技能时间删除已按各自边界升级；阶段 5 将历史容量从动作条数改为技能与状态 token 合计容量时，再按实际不兼容边界升级。纯 embedding 参数变化不重编译相同数据；在新格式完整 bank 已建立后，单独调整读取侧 token 容量到 601 或其他值不升级 cache 身份。即使 ONNX 外部张量名称和 shape 不变，也不能将内部融合编码和独立编码声明为同一个模型、部署契约。
 
 每次修改 FightEngine、PythonBridge 或 `config/schema.yaml` 后，在同一工作树重建：
 
@@ -528,7 +569,7 @@ dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj --configuration Debug
 - [x] 阶段 2 独立技能与状态 embedding 及技能输入输出共享参数完成，pair fusion 和旧配置删除。
 - [x] 阶段 3 状态跨步语义、统一回退、历史冻结与 policy wait 处理完成。
 - [x] 阶段 3 同刻历史排序与 compiled bank 前缀一致性问题修复，指定 M5s 真实日志整链路验收通过。
-- [ ] 阶段 4 用户确认技能、状态最终字段对照；技能 `time_seconds` 完全删除并完成消费者迁移。
+- [x] 阶段 4 按用户授权完成字段删减与最终字段对照；技能 `time_seconds` 完全删除，18 维输入和 86 维状态及消费者迁移通过真实转换验收。
 - [ ] 阶段 5 单一交错因果上下文、600 个历史状态与技能 token 加一个最新状态（共 601 token）和逐 token 顺序 RoPE 完成。
 - [ ] 阶段 5 最终契约下的 Python、C#、PPG、GRPO 输入、KV-cache、分析和 ONNX 验证通过。
 - [ ] 新旧产物明确隔离，旧契约不能静默复用，未进行未授权提交或远程发布。

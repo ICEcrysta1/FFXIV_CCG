@@ -15,7 +15,9 @@ from scripts.autoregressive_replay.ppg import (
     _run_rollout_until_time,
     _select_legal_action,
 )
+from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
 from common.policy.data import Normalizer
+from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION
 from scripts.autoregressive_replay.context import LiveBatchBuilder
 
 
@@ -333,8 +335,8 @@ def test_validation_ppg_recovers_initial_base_gcd_from_saved_current_state(base_
     normalizer = Normalizer()
     from common.policy.data.schema import TrainingSchema
     schema = TrainingSchema(
-        serialization_format="raw_training_source_v1", sample_schema_version=9,
-        context_schema_version=12, scene_context_mode="absolute_from_fight_scene_context", scene_windows=(),
+        serialization_format="raw_training_source_v1", sample_schema_version=TRAINING_SAMPLE_SCHEMA_VERSION,
+        context_schema_version=CANONICAL_CONTEXT_SCHEMA_VERSION, scene_context_mode="absolute_from_fight_scene_context", scene_windows=(),
         state_group_feature_keys={
             "player_state": ("previous_action_after.current_gcd_seconds", "request_state.current_gcd_seconds"),
             "buff_state": ("previous_action_after.job.ley_lines.active", "request_state.job.ley_lines.active"),

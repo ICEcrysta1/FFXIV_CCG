@@ -173,13 +173,13 @@ def _state_rewrite_context(previous_time=9.0, request_time=12.0):
     return {"player_state_feature_keys": keys, "tokens": [{"player_state": vector}]}
 
 
-def test_scene_rewrite_reads_each_snapshot_time_and_ignores_skill_and_future_times():
+def test_scene_rewrite_reads_each_snapshot_time_without_skill_timestamp():
     from types import SimpleNamespace
     from scripts.common.scene_state import rewrite_scene_player_state
     canonical = {
         "current_state_context": _state_rewrite_context(9.0, 12.0),
         "state_history_context": _state_rewrite_context(8.0, 11.0),
-        "skill_history_context": [{"time_seconds": 1000.0, "cast_time": {"seconds": 200.0}}],
+        "skill_history_context": [{"skill_key": "fire_iv", "cast_time": {"seconds": 200.0}}],
     }
     queried = []
     def lookup(timestamp):

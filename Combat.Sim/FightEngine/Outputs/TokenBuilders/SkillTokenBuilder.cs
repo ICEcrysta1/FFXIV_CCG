@@ -26,8 +26,7 @@ public static class SkillTokenBuilder
         double nextCooldownSeconds,
         int availableCharges,
         int maxCharges,
-        IReadOnlyDictionary<string, object> jobResourcesConsumed,
-        double? timeSeconds = null)
+        IReadOnlyDictionary<string, object> jobResourcesConsumed)
     {
         var encodedKind = kind switch
         {
@@ -63,11 +62,6 @@ public static class SkillTokenBuilder
                 entry => entry.Key,
                 entry => (object?)entry.Value),
         };
-        if (timeSeconds is not null)
-        {
-            payload["time_seconds"] = Math.Round(timeSeconds.Value, 4);
-        }
-
         return payload;
     }
 }

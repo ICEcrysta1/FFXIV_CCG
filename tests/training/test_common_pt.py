@@ -14,6 +14,7 @@ from common.policy.data.prepared_sources import select_prepared_validation_sourc
 from training import ShardBatchSampler, TrainingCollator, WeightedShardBatchSampler
 from training.config import RunConfig
 from common.policy.model.input_encoder import CausalInputEncoder
+from tests.training._causal_fixtures import make_input_contract
 from training.loop import build_dataloaders
 from tests.training._common_fixtures import (
     enabled_black_mage_config,
@@ -128,7 +129,8 @@ def test_compiled_history_and_current_state_use_compact_state_contract(tmp_path)
     }
 
     assert "gcd_index" not in dataset.skill_feature_names
-    assert len(dataset.skill_feature_names) == 19
+    assert len(dataset.skill_feature_names) == 18
+    assert "time_seconds" not in dataset.skill_feature_names
     assert "job_resources_consumed.polyglot" in dataset.skill_feature_names
     assert dataset.schema.state_vector_dim() == 86
     player_keys = dataset.schema.state_group_feature_keys["player_state"]
@@ -147,13 +149,13 @@ def test_compiled_history_and_current_state_use_compact_state_contract(tmp_path)
         for keys in dataset.schema.state_group_feature_keys.values()
         for key in keys
     )
-    assert sample["history_bank_skill_features"].shape[-1] == 19
+    assert sample["history_bank_skill_features"].shape[-1] == 18
     for prefix in ("history_bank", "current"):
         assert sample[f"{prefix}_state_vectors"].shape[-1] == 86
         assert sample[f"{prefix}_state_null_mask"].shape == sample[f"{prefix}_state_vectors"].shape
 
 
-@pytest.mark.parametrize("old_contract", ["cache_format", "conversion_version", "unstable_history_order"])
+@pytest.mark.parametrize("old_contract", ["cache_format", "conversion_version", "unstable_history_order", "skill_time"])
 def test_previous_state_layout_cache_is_rejected(tmp_path, old_contract):
     """旧输入字段缓存不可复用，即使 raw 文件身份和其余编译参数一致。"""
     torch = pytest.importorskip("torch")
@@ -166,12 +168,17 @@ def test_previous_state_layout_cache_is_rejected(tmp_path, old_contract):
     payload = safe_torch_load(cache_path, safe_globals=(SceneWindowSchema, TrainingSchema))
     signature = dict(payload["cache_signature"])
     if old_contract == "cache_format":
-        payload["cache_format"] = "raw_json_compiled_samples_v17_seconds_only_state"
+        payload["cache_format"] = "raw_json_compiled_samples_v20_causal_state"
     elif old_contract == "conversion_version":
-        payload["cache_signature"]["conversion_version"] = "raw_json_to_compiled_v18_seconds_only_state"
-    else:
+        payload["cache_signature"]["conversion_version"] = "raw_json_to_compiled_v22_stable_history"
+    elif old_contract == "unstable_history_order":
         # 字段宽度与存储格式相同，但旧版本可能遗漏等待或重复真实技能。
         payload["cache_signature"]["conversion_version"] = "raw_json_to_compiled_v21_causal_state"
+    else:
+        # 即使格式和签名冒用新版，旧技能时间列仍必须明确拒绝。
+        payload["skill_feature_names"] = (*payload["skill_feature_names"], "time_seconds")
+        bank = payload["history_bank"]
+        bank["skill_features"] = torch.cat((bank["skill_features"], bank["skill_features"][:, :1]), dim=1)
     torch.save(payload, cache_path)
 
     assert load_compiled_cache(
@@ -237,6 +244,10 @@ def test_compiled_cache_manifest_uses_mmap_for_history_bank(tmp_path, monkeypatc
         "missing_history_bank",
         "overflow_num_samples",
         "overflow_shard_size",
+        "skill_width_mismatch",
+        "previous_sample_schema",
+        "previous_context_schema",
+        "removed_skill_field",
     ],
 )
 def test_corrupt_history_bank_manifest_falls_back_to_recompile(
@@ -268,14 +279,16 @@ def test_corrupt_history_bank_manifest_falls_back_to_recompile(
         history_bank["skill_ids"] = torch.zeros((1,), dtype=torch.int32)
     elif corruption == "bank_size_mismatch":
         payload_num_samples = 1
+    elif corruption == "skill_width_mismatch":
+        history_bank["skill_features"] = torch.zeros((2, 2))
     payload = {
         "cache_format": CACHE_FORMAT,
         "cache_signature": {},
-        "schema": None,
+        "schema": make_input_contract().schema,
         "job_tag": "black_mage",
         "num_samples": payload_num_samples,
         "num_actions": len(space.action_keys),
-        "skill_feature_names": (),
+        "skill_feature_names": ("potency",),
         "action_keys": space.action_keys,
         "action_to_vocab_id": space.action_to_vocab_id,
         "action_is_gcd": space.action_is_gcd,
@@ -287,6 +300,13 @@ def test_corrupt_history_bank_manifest_falls_back_to_recompile(
         payload.pop("history_bank")
     elif corruption == "overflow_num_samples":
         payload["num_samples"] = float("inf")
+    elif corruption == "previous_sample_schema":
+        object.__setattr__(payload["schema"], "sample_schema_version", payload["schema"].sample_schema_version - 1)
+    elif corruption == "previous_context_schema":
+        object.__setattr__(payload["schema"], "context_schema_version", payload["schema"].context_schema_version - 1)
+    elif corruption == "removed_skill_field":
+        # 模拟旧 pickle 恢复 dataclass，恢复过程不会调用 __post_init__。
+        object.__setattr__(payload["schema"], "skill_history_fields", ("potency", "time_seconds"))
     monkeypatch.setattr(
         compiled_cache_module,
         "safe_torch_load",
@@ -313,7 +333,7 @@ def test_empty_compiled_cache_accepts_sentinel_history_bank(tmp_path, monkeypatc
     payload = {
         "cache_format": CACHE_FORMAT,
         "cache_signature": {},
-        "schema": None,
+        "schema": make_input_contract().schema,
         "job_tag": "black_mage",
         "num_samples": 0,
         "num_actions": len(space.action_keys),
@@ -325,7 +345,7 @@ def test_empty_compiled_cache_accepts_sentinel_history_bank(tmp_path, monkeypatc
         "shard_files": [],
         "history_bank": {
             "skill_ids": torch.zeros((1,), dtype=torch.int32),
-            "skill_features": torch.zeros((1, 1)),
+            "skill_features": torch.zeros((1, 0)),
             "state_vectors": torch.zeros((1, 1)),
             "state_null_mask": torch.zeros((1, 1), dtype=torch.bool),
             "action_keys": ("",),

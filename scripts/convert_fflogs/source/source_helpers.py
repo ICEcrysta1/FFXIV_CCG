@@ -18,11 +18,11 @@ SKILL_HISTORY_FIELDS = tuple(sorted((
     "skill_id", "skill_key", "skill_name", "potency", "value", "kind",
     "actual_mp_cost", "cast_time", "gcd_window", "is_legal", "invalid_reason",
     "next_cooldown_seconds", "available_charges", "max_charges",
-    "job_resources_consumed", "time_seconds",
+    "job_resources_consumed",
 )))
 SKILL_NUMERIC_FEATURES = (
     "actual_mp_cost", "available_charges", "cast_time.seconds", "gcd_window.seconds",
-    "is_legal", "kind", "max_charges", "next_cooldown_seconds", "potency", "time_seconds",
+    "is_legal", "kind", "max_charges", "next_cooldown_seconds", "potency",
 )
 
 
@@ -87,6 +87,8 @@ def build_skill_feature_matrix(rows: list[dict[str, object]], *, feature_names: 
 
 
 def flatten_skill_numeric_features(row: dict[str, object]) -> dict[str, float]:
+    if "time_seconds" in row:
+        raise ValueError("skill token must not include time_seconds; recompile raw source")
     flattened = flatten_numeric_mapping(row, ignored_keys=TEXT_SKILL_FIELDS)
     flattened.pop(SKILL_ID_FIELD, None)
     for field_name in TRAINING_ONLY_SKILL_FIELDS:

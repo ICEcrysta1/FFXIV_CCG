@@ -835,7 +835,7 @@ def test_grpo_rollout_store_persists_and_streams_cpu_decisions(tmp_path):
     assert loaded_advantages.tolist() == [1.25]
 
 
-@pytest.mark.parametrize("previous_format", [1, 2])
+@pytest.mark.parametrize("previous_format", [1, 2, 3])
 def test_grpo_rollout_store_rejects_previous_input_format(tmp_path, previous_format):
     """动作输入改为固定词表后，旧轨迹不能按新输入格式继续更新策略。"""
     store = GrpoRolloutStore(tmp_path / "grpo", iteration=1, run_id="old-format")

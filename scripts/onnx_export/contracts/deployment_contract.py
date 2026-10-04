@@ -31,8 +31,9 @@ from ..runtime.tensor_runtime import GOLDEN_FORMAT, golden_encoding
 # 14：移除候选输入，单因果序列与共享技能词表输出；固定动作类型随契约保存。
 # 15：技能与状态独立为 d_model token，删除融合/输出适配，容量按每动作两个 token 计算。
 # 16：状态改为请求时冻结的跨步快照，同宽旧状态语义与旧部署包不兼容。
-DEPLOYMENT_CONTRACT_VERSION = 16
-DEPLOYMENT_MANIFEST_VERSION = 10
+# 17：技能数值输入删除绝对时间列，旧技能宽度与对应部署包不兼容。
+DEPLOYMENT_CONTRACT_VERSION = 17
+DEPLOYMENT_MANIFEST_VERSION = 11
 MANIFEST_SCHEMA_FILENAME = "manifest.schema.json"
 
 

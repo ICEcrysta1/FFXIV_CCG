@@ -99,14 +99,13 @@ def test_normalizer_caches_job_max_cooldown_for_remaining_seconds(monkeypatch):
     assert calls == ["black_mage"]
 
 
-def test_normalizer_uses_fight_time_max_for_skill_time_seconds():
+def test_normalizer_rejects_removed_skill_time_feature():
     torch = pytest.importorskip("torch")
     normalizer = Normalizer()
     values = torch.tensor([[900.0], [1800.0], [1900.0]])
 
-    normalized = normalizer.normalize_skill_features(values, ("time_seconds",))
-
-    assert normalized[:, 0].tolist() == pytest.approx([0.5, 1.0, 1.0])
+    with pytest.raises(ValueError, match="skill features must not include time_seconds"):
+        normalizer.normalize_skill_features(values, ("time_seconds",))
 
 
 def test_normalizer_uses_2500_current_potency_max():

@@ -83,7 +83,7 @@ public sealed class PolicyContextBuilder
             if (!_historyTokens.TryGetValue(decision, out var token))
             {
                 var consumed = router.BuildNoopResourceTransition(decision.StateBefore);
-                token = (BuildSkillToken(decision.Action, decision.Timestamp, consumed),
+                token = (BuildSkillToken(decision.Action, consumed),
                     router.BuildModelStateToken(decision.ModelState));
             }
             retainedTokens.Add(decision, token);
@@ -118,7 +118,6 @@ public sealed class PolicyContextBuilder
 
     private static Dictionary<string, object?> BuildSkillToken(
         PolicyActionDefinition action,
-        double timestamp,
         IReadOnlyDictionary<string, object> consumed) =>
         SkillTokenBuilder.Build(
             skillId: action.RawId,
@@ -135,6 +134,5 @@ public sealed class PolicyContextBuilder
             nextCooldownSeconds: 0,
             availableCharges: 1,
             maxCharges: 1,
-            jobResourcesConsumed: consumed,
-            timeSeconds: timestamp);
+            jobResourcesConsumed: consumed);
 }

@@ -11,8 +11,9 @@ from pathlib import Path
 from common.dataset_layout import map_dataset_output_path
 from common.torch_dependencies import import_torch
 from common.torch_serialization import safe_torch_load
+from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
 
-from .schema import SceneWindowSchema, TrainingSchema
+from .schema import SceneWindowSchema, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
 from .action_space import ActionSpace
 
 # v15：样本只保存配置无关的动作质量等级代码 1/2/3；旧权重缓存必须重编译。
@@ -25,7 +26,8 @@ from .action_space import ActionSpace
 # v18：状态 bank 只保留资源 before/after，移除 weave 字段与黑魔残留辅助 Buff。
 # v19：固定动作词表和当前请求状态；不保存任何候选输入，旧缓存必须重编译。
 # v20：模型历史保存请求时冻结的跨步状态，真实执行统计与状态向量分离。
-CACHE_FORMAT = "raw_json_compiled_samples_v20_causal_state"
+# v21：技能字段与完整 history bank 移除绝对时间列，状态时间仍保留。
+CACHE_FORMAT = "raw_json_compiled_samples_v21_timeless_skills"
 # v11：C# 状态机把硬读条的服务器效果结算与完整读条锁结束拆开；转换请求时刻
 # 仍按统一滑步窗口恢复，日志抖动只由容量一动作队列吸收。旧缓存的效果状态时序不可复用。
 # v10：硬读条请求时刻改由 `cast − 实际读条时长 + 0.5 秒滑步窗口` 解析，
@@ -44,7 +46,8 @@ CACHE_FORMAT = "raw_json_compiled_samples_v20_causal_state"
 # v20：当前请求状态和只读合法性/value 直接生成，不进行未来动作预演。
 # v21：状态使用上一动作后与当前请求快照；wait 不预演未来，场景按各段自身时间查询。
 # v22：真实技能与等待按统一历史写入序号合并，并拒绝不稳定的历史前缀。
-DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v22_stable_history"
+# v23：所有技能 token 移除绝对时间，按精简后的字段重建完整 history bank。
+DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v23_timeless_skills"
 # `weights_only=True` 的安全 unpickler 对 protocol 2 支持最稳定；compiled
 # cache 的样本数据只需要普通 mapping 和 tensor，不需要更高协议。
 CACHE_PICKLE_PROTOCOL = 2
@@ -115,6 +118,13 @@ class CompiledCacheReader:
         self._cache_path = Path(cache_path)
         self._shard_cache = shard_cache
         self._schema = payload["schema"]
+        if not isinstance(self._schema, TrainingSchema):
+            raise ValueError("compiled cache schema must be a TrainingSchema")
+        if (self._schema.sample_schema_version != TRAINING_SAMPLE_SCHEMA_VERSION
+                or self._schema.context_schema_version != CANONICAL_CONTEXT_SCHEMA_VERSION):
+            raise ValueError("unsupported compiled cache schema version; recompile raw source")
+        if "time_seconds" in self._schema.skill_history_fields:
+            raise ValueError("compiled cache contains removed skill time_seconds field")
         self._job_tag = str(payload["job_tag"])
         self._fight_id = str(payload.get("fight_id", ""))
         self._num_samples = int(payload["num_samples"])
@@ -122,6 +132,8 @@ class CompiledCacheReader:
             raise ValueError("compiled cache num_samples must be >= 0")
         self._num_actions = int(payload["num_actions"])
         self._skill_feature_names = tuple(payload["skill_feature_names"])
+        if "time_seconds" in self._skill_feature_names:
+            raise ValueError("compiled cache contains removed skill time_seconds feature")
         self._action_keys = tuple(payload["action_keys"])
         self._action_to_vocab_id = tuple(int(value) for value in payload["action_to_vocab_id"])
         self._action_is_gcd = tuple(payload["action_is_gcd"])
@@ -180,6 +192,8 @@ class CompiledCacheReader:
                 )
             if field.shape[0] != bank_size:
                 raise ValueError(f"compiled cache history_bank field length mismatch: {key}")
+        if history_bank["skill_features"].shape != (bank_size, len(self._skill_feature_names)):
+            raise ValueError("compiled cache history_bank skill feature width mismatch")
         if bank_size < 1 or action_keys[0] != "":
             raise ValueError("compiled cache history_bank must start with an empty sentinel row")
         self._history_bank = history_bank

@@ -51,6 +51,8 @@ class TrainingSourceReader:
             context = self._sample_context(sample_index)
             if context.get("schema_version") != CANONICAL_CONTEXT_SCHEMA_VERSION:
                 raise ValueError("unsupported canonical context schema version; recompile raw source")
+            if any("time_seconds" in row for row in self._history_rows(sample_index)):
+                raise ValueError("removed skill time_seconds field; recompile raw source")
             if tuple(context.get("action_keys", ())) != self._action_keys:
                 raise ValueError("training output action space must match enabled configured actions")
             for key in ("action_legal_mask", "action_values"):

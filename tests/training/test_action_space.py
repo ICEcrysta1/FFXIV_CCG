@@ -9,7 +9,9 @@ import pytest
 import torch
 
 from common.config import load_project_config
+from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
 from common.policy.data import ActionSpace, DataSpec, SkillVocab
+from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION, TRAINING_SOURCE_FORMAT, TrainingSchema
 from training.data.dataset import TrainingDataset
 from common.policy.data.compiled_cache import CACHE_FORMAT, CompiledShardCache, load_compiled_cache
 
@@ -64,8 +66,16 @@ def test_cache_rejects_action_space_drift_even_when_input_vocabulary_is_unchange
     space = ActionSpace.from_job_tag("black_mage")
     path = tmp_path / "manifest.pt"
     path.write_bytes(b"placeholder")
+    # 先提供符合当前契约的有效 manifest，后续只改变动作空间来验证失效原因。
+    schema = TrainingSchema(
+        serialization_format=TRAINING_SOURCE_FORMAT,
+        sample_schema_version=TRAINING_SAMPLE_SCHEMA_VERSION,
+        context_schema_version=CANONICAL_CONTEXT_SCHEMA_VERSION,
+        scene_context_mode="absolute", scene_windows=(),
+        state_group_feature_keys={}, skill_history_fields=(),
+    )
     payload = {
-        "cache_format": CACHE_FORMAT, "cache_signature": {}, "schema": None,
+        "cache_format": CACHE_FORMAT, "cache_signature": {}, "schema": schema,
         "job_tag": "black_mage", "num_samples": 0, "num_actions": len(space.action_keys),
         "skill_feature_names": (), "action_keys": space.action_keys,
         "action_to_vocab_id": space.action_to_vocab_id, "action_is_gcd": space.action_is_gcd, "vocab_signature": ((0, 1),),

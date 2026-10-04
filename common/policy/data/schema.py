@@ -18,7 +18,7 @@ SCENE_TYPE_MOVEMENT = 1
 SCENE_TYPE_RAID_BUFF = 2
 SCENE_TYPE_TARGET_COUNT = 3
 TRAINING_SOURCE_FORMAT = "raw_training_source_v1"
-TRAINING_SAMPLE_SCHEMA_VERSION = 9
+TRAINING_SAMPLE_SCHEMA_VERSION = 10
 
 
 @dataclass(frozen=True)
@@ -84,6 +84,10 @@ class TrainingSchema:
     scene_windows: tuple[SceneWindowSchema, ...]
     state_group_feature_keys: dict[str, tuple[str, ...]]
     skill_history_fields: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if "time_seconds" in self.skill_history_fields:
+            raise ValueError("removed skill time_seconds field; recompile raw source")
 
     def state_group_keys(self) -> tuple[str, ...]:
         return tuple(self.state_group_feature_keys.keys())

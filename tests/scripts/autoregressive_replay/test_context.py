@@ -381,15 +381,21 @@ def test_scene_template_provider_syncs_movement_with_slidecast_boundary():
     assert (61.0, "target_count_changed", {"target_count": 1}) in backend.events
 
 
-def _live_builder_fixture(*, max_history=2):
+def _live_builder_fixture(*, max_history=2, reorder_state_fields=False):
     from copy import deepcopy
 
+    player_keys = ("previous_action_after.time_seconds", "previous_action_after.mp",
+                   "request_state.time_seconds", "request_state.mp")
+    if reorder_state_fields:
+        player_keys = tuple(reversed(player_keys))
+    initial_values = {"previous_action_after.time_seconds": 0.0, "previous_action_after.mp": 200.0,
+                      "request_state.time_seconds": 0.0, "request_state.mp": 200.0}
     canonical = {
         "action_keys": ["fire", "ogcd_wait"],
         "action_legal_mask": [True, True],
         "skill_history_context": [],
-        "state_history_context": {"tokens": []},
-        "current_state_context": {"tokens": [{"player_state": [200.0, 200.0]}]},
+        "state_history_context": {"player_state_feature_keys": player_keys, "tokens": []},
+        "current_state_context": {"tokens": [{"player_state": [initial_values[key] for key in player_keys]}]},
     }
 
     class Backend:
@@ -398,8 +404,8 @@ def _live_builder_fixture(*, max_history=2):
             return SimpleNamespace(context=deepcopy(canonical))
 
     schema = SimpleNamespace(
-        state_group_feature_keys={"player_state": ("previous_action_after.mp", "request_state.mp")},
-        state_vector_dim=lambda: 2, scene_feature_dim=lambda: 2,
+        state_group_feature_keys={"player_state": player_keys},
+        state_vector_dim=lambda: 4, scene_feature_dim=lambda: 2,
     )
     builder = LiveBatchBuilder(
         backend=Backend(), vocab=SimpleNamespace(require_lookup=lambda value, **kwargs: int(value)),
@@ -414,11 +420,16 @@ def _live_builder_fixture(*, max_history=2):
     return builder, canonical
 
 
-def _append_live_history(canonical, index, *, after=100.0):
+def _append_live_history(canonical, index, *, after=100.0, request_time=None, skill_id=None):
     canonical["skill_history_context"].append({
-        "skill_id": index, "skill_key": "fire", "time_seconds": float(index), "kind": 1, "potency": 50.0,
+        "skill_id": index if skill_id is None else skill_id, "skill_key": "fire", "kind": 1, "potency": 50.0,
     })
-    canonical["state_history_context"]["tokens"].append({"player_state": [200.0, after]})
+    state_values = {"previous_action_after.time_seconds": float(index - 1), "previous_action_after.mp": 200.0,
+                    "request_state.time_seconds": float(index) if request_time is None else request_time,
+                    "request_state.mp": after}
+    canonical["state_history_context"]["tokens"].append({
+        "player_state": [state_values[key] for key in canonical["state_history_context"]["player_state_feature_keys"]],
+    })
 
 
 @pytest.mark.parametrize("remaining,expected", ((0.0, [True, False]), (1.0, [False, True])))
@@ -426,9 +437,9 @@ def test_live_current_state_is_independent_of_action_legality_and_preserves_phas
     builder, canonical = _live_builder_fixture()
     batch, keys = builder.build(SimpleNamespace(time=1.0, gcd_remaining=remaining))
     assert keys == ["fire", "ogcd_wait"]
-    assert batch["current_state_vectors"].shape == (1, 2)
-    assert batch["current_state_vectors"].tolist() == [[200.0, 200.0]]
-    assert batch["current_state_null_mask"].tolist() == [[False, False]]
+    assert batch["current_state_vectors"].shape == (1, 4)
+    assert batch["current_state_vectors"].tolist() == [[0.0, 200.0, 0.0, 200.0]]
+    assert batch["current_state_null_mask"].tolist() == [[False, False, False, False]]
     assert batch["history_skill_ids"].shape == (1, 0)
     assert batch["action_legal_mask"].tolist() == [expected]
     canonical["action_legal_mask"] = [False, False]
@@ -443,12 +454,12 @@ def test_live_history_window_keeps_matching_skill_and_state_rows():
         _append_live_history(canonical, index, after=float(index))
     batch, _ = builder.build(SimpleNamespace(time=4.0, gcd_remaining=0.0))
     assert batch["history_skill_ids"].tolist() == [[2, 3]]
-    assert batch["history_state_vectors"].tolist() == [[[200.0, 2.0], [200.0, 3.0]]]
+    assert batch["history_state_vectors"].tolist() == [[[1.0, 200.0, 2.0, 2.0], [2.0, 200.0, 3.0, 3.0]]]
     assert batch["history_skill_features"].tolist() == [[[1.0, 50.0], [1.0, 50.0]]]
     assert batch["history_action_keys"] == [["fire", "fire"]]
     empty, _ = builder.build(SimpleNamespace(time=4.0, gcd_remaining=0.0), max_history=0)
     assert empty["history_skill_ids"].shape == (1, 0)
-    assert empty["current_state_vectors"].shape == (1, 2)
+    assert empty["current_state_vectors"].shape == (1, 4)
 
 
 def test_live_history_cache_reuses_unchanged_rows_and_refreshes_mutated_rows(monkeypatch):
@@ -468,10 +479,10 @@ def test_live_history_cache_reuses_unchanged_rows_and_refreshes_mutated_rows(mon
     repeated, _ = builder.build(state)
     assert calls == [1, 2]
     assert repeated["history_state_vectors"].data_ptr() == first["history_state_vectors"].data_ptr()
-    canonical["current_state_context"]["tokens"][0]["player_state"] = [150.0, 150.0]
+    canonical["current_state_context"]["tokens"][0]["player_state"] = [0.0, 150.0, 0.0, 150.0]
     refreshed, _ = builder.build(state)
     assert calls == [1, 2]
-    assert refreshed["current_state_vectors"].tolist() == [[150.0, 150.0]]
+    assert refreshed["current_state_vectors"].tolist() == [[0.0, 150.0, 0.0, 150.0]]
     _append_live_history(canonical, 3)
     builder.build(state)
     assert calls == [1, 2, 3]
@@ -479,10 +490,10 @@ def test_live_history_cache_reuses_unchanged_rows_and_refreshes_mutated_rows(mon
     slid, _ = builder.build(state)
     assert calls == [1, 2, 3, 4]
     assert slid["history_skill_ids"].tolist() == [[2, 3, 4]]
-    canonical["state_history_context"]["tokens"][-1]["player_state"] = [10.0, None]
+    canonical["state_history_context"]["tokens"][-1]["player_state"] = [3.0, 10.0, 4.0, None]
     changed, _ = builder.build(state)
     assert calls[-1] == 4
-    assert changed["history_state_null_mask"][0, -1].tolist() == [False, True]
+    assert changed["history_state_null_mask"][0, -1].tolist() == [False, False, False, True]
 
 
 @pytest.mark.parametrize("mutation,error", (
@@ -506,3 +517,67 @@ def test_live_and_cached_decisions_use_identical_caller_phase():
     cached, _ = builder.build_from_canonical(canonical, gcd_phase=True, max_history=2)
     torch.testing.assert_close(batch["action_legal_mask"], cached["action_legal_mask"])
     torch.testing.assert_close(batch["current_state_vectors"], cached["current_state_vectors"])
+
+@pytest.mark.parametrize("reordered_fields", [False, True])
+@pytest.mark.parametrize("identical_snapshots", [False, True])
+def test_live_history_cache_preserves_same_skill_same_time_rows_and_sliding_window(
+    monkeypatch, reordered_fields, identical_snapshots,
+):
+    from copy import deepcopy
+
+    builder, canonical = _live_builder_fixture(max_history=2, reorder_state_fields=reordered_fields)
+    calls = []
+    real_build = builder._build_cached_history_row
+
+    def track(*args, **kwargs):
+        calls.append(args[0]["skill_id"])
+        return real_build(*args, **kwargs)
+
+    monkeypatch.setattr(builder, "_build_cached_history_row", track)
+    _append_live_history(canonical, 1, after=100.0, request_time=10.0, skill_id=7)
+    _append_live_history(canonical, 2, after=120.0, request_time=10.0, skill_id=7)
+    if identical_snapshots:
+        canonical["state_history_context"]["tokens"][1] = deepcopy(
+            canonical["state_history_context"]["tokens"][0]
+        )
+    state = SimpleNamespace(time=12.0, gcd_remaining=0.0)
+    first, _ = builder.build(state)
+    assert first["history_skill_ids"].tolist() == [[7, 7]]
+    assert len(builder._cached_history_rows) == 2
+    assert builder._cached_history_rows[0].identity == builder._cached_history_rows[1].identity
+    assert builder._cached_history_rows[0].identity[-1] == 10.0
+    repeated, _ = builder.build(state)
+    assert calls == [7, 7]
+    assert repeated["history_state_vectors"].data_ptr() == first["history_state_vectors"].data_ptr()
+
+    _append_live_history(canonical, 3, after=140.0, request_time=10.0, skill_id=7)
+    slid, _ = builder.build(state)
+    mp_index = canonical["state_history_context"]["player_state_feature_keys"].index("request_state.mp")
+    assert slid["history_skill_ids"].tolist() == [[7, 7]]
+    assert slid["history_state_vectors"][0, :, mp_index].tolist() == [
+        100.0 if identical_snapshots else 120.0, 140.0,
+    ]
+    assert calls == [7, 7, 7]
+
+    canonical["skill_history_context"][-1]["potency"] = 99.0
+    changed, _ = builder.build(state)
+    assert changed["history_skill_features"][0, -1].tolist() == [1.0, 99.0]
+    assert calls == [7, 7, 7, 7]
+
+
+@pytest.mark.parametrize("invalid_time", [None, True, float("nan"), float("inf")])
+def test_live_history_rejects_invalid_request_timestamp(invalid_time):
+    builder, canonical = _live_builder_fixture()
+    _append_live_history(canonical, 1)
+    request_index = canonical["state_history_context"]["player_state_feature_keys"].index("request_state.time_seconds")
+    canonical["state_history_context"]["tokens"][0]["player_state"][request_index] = invalid_time
+    with pytest.raises(ValueError, match="request_state.time_seconds must be finite numeric"):
+        builder.build_from_canonical(canonical, gcd_phase=True, max_history=2)
+
+
+def test_live_history_rejects_old_skill_timestamp_even_with_new_state_schema():
+    builder, canonical = _live_builder_fixture()
+    _append_live_history(canonical, 1)
+    canonical["skill_history_context"][0]["time_seconds"] = 1.0
+    with pytest.raises(ValueError, match="live skill token must not include time_seconds"):
+        builder.build_from_canonical(canonical, gcd_phase=True, max_history=2)

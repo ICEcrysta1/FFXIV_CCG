@@ -21,6 +21,10 @@ class DataSpec:
     action_is_gcd: tuple[bool, ...]
 
     def __post_init__(self) -> None:
+        if "time_seconds" in self.skill_feature_names:
+            raise ValueError("removed skill time_seconds feature; rebuild model input")
+        if self.skill_feature_dim != len(self.skill_feature_names):
+            raise ValueError("skill feature order length differs from skill feature dimension")
         if self.num_actions < 1 or len(self.action_keys) != self.num_actions:
             raise ValueError("action_keys must match the positive num_actions")
         if len(set(self.action_keys)) != self.num_actions:

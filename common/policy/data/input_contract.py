@@ -22,7 +22,8 @@ from .spec import DataSpec
 # 10：固定动作输出词表与显式当前状态取代候选输入；旧模型必须重新训练。
 # 11：技能和状态拆为独立 d_model 维 token，共享技能词表直接输出；旧融合权重不兼容。
 # 12：状态两段改为上一动作后与当前请求快照，历史输入在请求时冻结。
-INPUT_CONTRACT_VERSION = 12
+# 13：技能数值特征完全移除绝对时间，状态时间与其余技能字段口径保持。
+INPUT_CONTRACT_VERSION = 13
 
 # 描述固定的输入结构，不作为可调运行参数；d_model 仍由保存的 model_config 提供。
 # 数据 bank 的字段与时间语义由 schema 与转换版本负责，不把读取窗口加入 cache 身份。
@@ -49,6 +50,11 @@ class ModelInputContract:
     data_spec: dict[str, object]
     schema: TrainingSchema
     normalizer_contract: dict[str, object]
+
+    def __post_init__(self) -> None:
+        DataSpec.from_dict(self.data_spec)
+        if "time_seconds" in self.schema.skill_history_fields:
+            raise ValueError("removed skill time_seconds field; rebuild model input")
 
     @classmethod
     def from_training(cls, *, data_spec, schema: TrainingSchema, normalizer: Normalizer):
@@ -103,7 +109,7 @@ class ModelInputContract:
         normalized_data_spec = dict(data_spec)
         try:
             DataSpec.from_dict(normalized_data_spec)
-        except (KeyError, TypeError, ValueError) as exc:
+        except (KeyError, TypeError) as exc:
             raise ValueError("input contract data_spec is missing the fixed action output mapping") from exc
         if str(normalized_data_spec.get("job_tag", "")) != job_tag:
             raise ValueError("input contract data_spec job_tag mismatch")

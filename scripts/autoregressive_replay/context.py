@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from copy import deepcopy
 from dataclasses import dataclass
 
@@ -482,6 +483,10 @@ class LiveBatchBuilder:
         self._state_groups = tuple(schema.state_group_feature_keys)
         self._state_dim = schema.state_vector_dim()
         self._scene_dim = schema.scene_feature_dim()
+        player_feature_keys = self._schema.state_group_feature_keys.get("player_state", ())
+        if "request_state.time_seconds" not in player_feature_keys:
+            raise ValueError("live state schema lacks request_state.time_seconds")
+        self._history_request_time_index = player_feature_keys.index("request_state.time_seconds")
         self._cached_history_rows: list[_CachedHistoryFeatureRow] = []
         self._cached_history_max_history: int | None = None
         self._cached_scene_batch: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None = None
@@ -619,7 +624,10 @@ class LiveBatchBuilder:
             self._cached_history_device_rows = None
             self._cached_history_device_tensors = None
 
-        identities = [self._history_row_identity(token) for token in skill_tokens]
+        identities = [
+            self._history_row_identity(skill_token, state_token)
+            for skill_token, state_token in zip(skill_tokens, state_tokens, strict=True)
+        ]
         cached_rows, overlap = self._find_history_overlap(
             skill_tokens,
             state_tokens,
@@ -747,13 +755,18 @@ class LiveBatchBuilder:
             for base, new in zip(base_tensors, new_tensors)
         )
 
-    @staticmethod
-    def _history_row_identity(skill_token) -> tuple[object, ...]:
-        """用稳定的事件字段定位历史行；完整 token 仍会用于缓存命中校验。"""
+    def _history_row_identity(self, skill_token, state_token) -> tuple[object, ...]:
+        """按技能身份和冻结请求时间定位；同刻重复行仍校验完整技能、状态。"""
+        player_state = state_token.get("player_state")
+        if not isinstance(player_state, (list, tuple)) or len(player_state) <= self._history_request_time_index:
+            raise ValueError("live history state lacks request_state.time_seconds")
+        request_time = player_state[self._history_request_time_index]
+        if isinstance(request_time, bool) or not isinstance(request_time, (int, float)) or not math.isfinite(request_time):
+            raise ValueError("live history request_state.time_seconds must be finite numeric")
         return (
-            skill_token.get("time_seconds"),
             skill_token.get("skill_key"),
             skill_token.get("skill_id"),
+            float(request_time),
         )
 
     def _find_history_overlap(
@@ -818,6 +831,8 @@ class LiveBatchBuilder:
     def _build_skill_features(self, tokens) -> torch.Tensor:
         feature_rows = []
         for token in tokens:
+            if "time_seconds" in token:
+                raise ValueError("live skill token must not include time_seconds; rebuild old input artifacts")
             flattened = flatten_numeric_mapping(
                 token,
                 ignored_keys=REPLAY_SKILL_IGNORED_FIELDS,

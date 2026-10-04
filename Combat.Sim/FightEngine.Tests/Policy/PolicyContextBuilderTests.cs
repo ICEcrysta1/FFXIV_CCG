@@ -66,8 +66,18 @@ public sealed class PolicyContextBuilderTests
         Assert.Equal(waitFirst
             ? new[] { "fire_iii", "ogcd_wait", "lucid_dreaming" }
             : new[] { "fire_iii", "lucid_dreaming", "ogcd_wait" }, skills.Select(skill => (string)skill["skill_key"]!));
-        // 展示时间仍舍入为 0.1605，合并顺序不再依赖它。
-        Assert.Equal(0.1605, skills[^1]["time_seconds"]);
+        Assert.All(skills, skill => Assert.DoesNotContain("time_seconds", skill.Keys));
+        Assert.All(skills, skill => Assert.Equal(skills[0].Keys, skill.Keys));
+        var realEntries = simulator.GetState().History;
+        Assert.Equal(new[] { 1L, waitFirst ? 3L : 2L }, realEntries.Select(entry => entry.HistorySequence));
+        Assert.Equal(waitFirst ? 2L : 3L, Assert.Single(history.Entries).HistorySequence);
+        // 技能时间字段删除后，同刻顺序仍由内部序号决定，真实请求时刻保留在状态中。
+        var context = Assert.IsType<Dictionary<string, object?>>(output[OutputContextSchema.StateHistoryContextKey]);
+        var states = Assert.IsType<List<Dictionary<string, double[]>>>(context["tokens"]);
+        var timeIndex = Assert.IsType<List<string>>(context["player_state_feature_keys"]).IndexOf("request_state.time_seconds");
+        Assert.True(timeIndex >= 0);
+        Assert.Equal(timestamp, states[1]["player_state"][timeIndex]);
+        Assert.Equal(timestamp, states[2]["player_state"][timeIndex]);
     }
 
     [Fact]
@@ -126,6 +136,40 @@ public sealed class PolicyContextBuilderTests
         var metrics = (List<Dictionary<string, double>>)context["execution_metrics"]!;
         return skills.Select((skill, index) => global::System.Text.Json.JsonSerializer.Serialize(
             new object[] { skill, states[index], metrics[index] })).ToArray();
+    }
+
+    [Fact]
+    public void Wait与真实技能使用同一字段且保持零消耗和独立状态时间()
+    {
+        var (simulator, registry) = CreateRuntime();
+        Assert.True(simulator.SubmitAction(0, "fire_iii", actualCastSeconds: 0).Accepted);
+        simulator.AdvanceTo(0.5);
+        var history = new PolicyDecisionHistory(registry);
+        history.Record(simulator, 0.5, "ogcd_wait", 1);
+        var output = new PolicyContextBuilder(registry).BuildVectorContext(simulator, history, 1);
+        var skills = Assert.IsType<List<Dictionary<string, object?>>>(output[OutputContextSchema.SkillHistoryContextKey]);
+        Assert.Equal(2, skills.Count);
+        Assert.Equal(skills[0].Keys, skills[1].Keys);
+        Assert.All(skills, skill => Assert.DoesNotContain("time_seconds", skill.Keys));
+        var wait = skills[1];
+        Assert.Equal("ogcd_wait", wait["skill_key"]);
+        Assert.Equal(0, wait["kind"]);
+        Assert.Equal(0, wait["actual_mp_cost"]);
+        Assert.Equal(0.0, wait["potency"]);
+        Assert.True(Assert.IsType<bool>(wait["is_legal"]));
+        Assert.Equal("", wait["invalid_reason"]);
+        Assert.Equal(0.0, Assert.IsType<Dictionary<string, object?>>(wait["cast_time"])["seconds"]);
+        Assert.Equal(0.0, Assert.IsType<Dictionary<string, object?>>(wait["gcd_window"])["seconds"]);
+        var resources = Assert.IsType<Dictionary<string, object?>>(wait["job_resources_consumed"]);
+        Assert.Equal(Assert.IsType<Dictionary<string, object?>>(skills[0]["job_resources_consumed"]).Keys, resources.Keys);
+        Assert.All(resources.Values, value => Assert.Equal(0.0, Convert.ToDouble(value)));
+        Assert.Equal(0.5, Assert.Single(history.Entries).Timestamp);
+
+        var context = Assert.IsType<Dictionary<string, object?>>(output[OutputContextSchema.StateHistoryContextKey]);
+        var states = Assert.IsType<List<Dictionary<string, double[]>>>(context["tokens"]);
+        var keys = Assert.IsType<List<string>>(context["player_state_feature_keys"]);
+        Assert.Equal(0.0, states[1]["player_state"][keys.IndexOf("previous_action_after.time_seconds")]);
+        Assert.Equal(0.5, states[1]["player_state"][keys.IndexOf("request_state.time_seconds")]);
     }
 
     [Fact]

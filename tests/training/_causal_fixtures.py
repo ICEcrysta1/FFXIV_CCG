@@ -10,7 +10,8 @@ from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, ModelInputContract, Normalizer
 from common.policy.data.normalization import NormalizerConfig
 from common.policy.data.normalizer import NORMALIZER_CONTRACT_VERSION
-from common.policy.data.schema import SceneWindowSchema, TrainingSchema
+from common.policy.data.schema import SceneWindowSchema, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
+from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
 
 
 def make_data_spec(**overrides) -> DataSpec:
@@ -53,8 +54,8 @@ def make_input_contract(data_spec=None) -> ModelInputContract:
     windows = () if not spec.scene_dim else (SceneWindowSchema.from_feature_keys(
         context_key="targetable_window_context", feature_keys=keys, scene_type_id=0,
     ),)
-    schema = TrainingSchema(serialization_format="test", sample_schema_version=9,
-                            context_schema_version=12, scene_context_mode="absolute",
+    schema = TrainingSchema(serialization_format="test", sample_schema_version=TRAINING_SAMPLE_SCHEMA_VERSION,
+                            context_schema_version=CANONICAL_CONTEXT_SCHEMA_VERSION, scene_context_mode="absolute",
                             scene_windows=windows,
                             state_group_feature_keys={"player_state": tuple(f"field_{index}" for index in range(spec.state_dim))},
                             skill_history_fields=("kind", "potency"))

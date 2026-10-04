@@ -9,6 +9,7 @@ import torch
 
 from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
 from common.policy.data import ActionSpace, SkillVocab
+from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION
 from scripts.convert_fflogs.source.source_reader import TrainingSourceReader
 from scripts.convert_fflogs.training.history_bank import build_history_bank
 from scripts.convert_fflogs.training.sample_builder import TrainingSampleBuilder
@@ -27,7 +28,7 @@ def _source(*, history_length=0):
     token = {"player_state": [10000.0, 10000.0], "buff_state": [], "target_buff_state": [0.0, 0.0], "resource_state": []}
     samples = []
     for step in range(history_length + 1):
-        history = [{"skill_id": 0, "skill_key": "ogcd_wait", "kind": 0, "potency": 0.0, "time_seconds": float(index)} for index in range(step)]
+        history = [{"skill_id": 0, "skill_key": "ogcd_wait", "kind": 0, "potency": 0.0} for _ in range(step)]
         samples.append({
             "step": step + 1,
             "context": {
@@ -41,7 +42,7 @@ def _source(*, history_length=0):
             },
             "label": {"action_key": "ogcd_wait", "action_index": space.action_keys.index("ogcd_wait"), "cast_time_seconds": 0.0},
         })
-    return {"sample_schema_version": 9, "job_tag": "black_mage", "fight_id": "synthetic", "fight_scene_context": build_test_scene_context(), "samples": samples}
+    return {"sample_schema_version": TRAINING_SAMPLE_SCHEMA_VERSION, "job_tag": "black_mage", "fight_id": "synthetic", "fight_scene_context": build_test_scene_context(), "samples": samples}
 
 
 def _builder(reader, **kwargs):
@@ -55,11 +56,13 @@ def test_empty_history_and_wait_only_history_share_stable_skill_schema():
     wait = TrainingSourceReader(_source(history_length=1))
     assert empty.schema == wait.schema
     assert empty.skill_feature_names == wait.skill_feature_names
-    assert len(empty.skill_feature_names) == 19
+    assert len(empty.skill_feature_names) == 18
+    assert "time_seconds" not in empty.skill_feature_names
+    assert "time_seconds" not in empty.schema.skill_history_fields
     empty_sample = _builder(empty).build(empty, 0)
     wait_sample = _builder(wait).build(wait, 1)
-    assert empty_sample["history_skill_features"].shape == (0, 19)
-    assert wait_sample["history_skill_features"].shape == (1, 19)
+    assert empty_sample["history_skill_features"].shape == (0, 18)
+    assert wait_sample["history_skill_features"].shape == (1, 18)
     assert wait_sample["history_skill_ids"].item() > 0
     batch = TrainingCollator()([empty_sample, wait_sample])
     assert batch["current_state_vectors"].shape == (2, empty.schema.state_vector_dim())
@@ -131,7 +134,7 @@ def test_request_time_values_are_supervision_and_do_not_create_skill_inputs():
     changed = _builder(reader).build(reader, 0)
     assert changed["action_values"][0].item() == 3.0
     assert torch.equal(changed["current_state_vectors"], baseline["current_state_vectors"])
-    assert changed["history_skill_features"].shape == (0, 19)
+    assert changed["history_skill_features"].shape == (0, 18)
 
 
 def test_collator_rejects_cross_sample_action_order_drift():
@@ -194,7 +197,7 @@ def test_history_bank_rejects_changed_prefix_before_appending(field, same_length
         payload["samples"].insert(2, deepcopy(payload["samples"][1]))
     context = payload["samples"][2]["context"]
     if field == "skill":
-        context["skill_history_context"][0]["time_seconds"] = 99.0
+        context["skill_history_context"][0]["potency"] = 99.0
     elif field == "state":
         context["state_history_context"]["tokens"][0]["player_state"][1] = 9000.0
     else:
@@ -205,6 +208,8 @@ def test_history_bank_rejects_changed_prefix_before_appending(field, same_length
 
 def test_history_bank_rejects_reordered_prefix_when_history_grows():
     payload = _source(history_length=3)
+    for sample in payload["samples"][2:]:
+        sample["context"]["skill_history_context"][1]["potency"] = 10.0
     rows = payload["samples"][3]["context"]["skill_history_context"]
     rows[0], rows[1] = rows[1], rows[0]
     with pytest.raises(ValueError, match="history prefix changed: sample=3 row=0 field=skill"):
