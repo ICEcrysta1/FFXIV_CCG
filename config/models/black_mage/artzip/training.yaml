@@ -31,7 +31,7 @@ training:
   # 训练阶段：从 .cache/VAL/<副本>/ 的有效 compiled PT 中总共消费多少份验证数据。
   # 与下载器 batch.yaml 的 validation_ratio 独立；该比例只决定每个副本准备多少 VAL。
   # 各副本均分；某副本不足时只在该副本内补位，仍不足则拒绝启动训练。
-  validation_files: 100
+  validation_files: 30
 
   # 候选打乱和采样过程使用的随机种子。
   seed: 42
