@@ -150,7 +150,7 @@ class PyTorchPolicyBackend(_MeasuredBackend):
         self.input_contract = ModelInputContract.from_checkpoint(checkpoint)
         self.input_contract.assert_matches_data_spec(self.data_spec)
         self.repetition = repetition_config_from_checkpoint(checkpoint)
-        vocab = SkillVocab.build_from_job_tag(self.data_spec.job_tag)
+        vocab = self.input_contract.create_skill_vocab()
         self.vocab_entries = tuple(vocab)
         embedding = checkpoint["model_state_dict"].get(
             "input_encoder.skill_embed.weight"
@@ -158,6 +158,7 @@ class PyTorchPolicyBackend(_MeasuredBackend):
         if not isinstance(embedding, torch.Tensor) or embedding.ndim != 2:
             raise ValueError("checkpoint missing skill embedding weight")
         vocab_size = int(embedding.shape[0])
+        self.input_contract.assert_matches_embedding(vocab_size)
         checkpoint_precision = str(checkpoint.get("training_precision", "float32"))
         requested_precision = precision or checkpoint_precision
         if requested_precision in {"bf16", "float16"} and self.input_device.type != "cuda":
@@ -662,11 +663,7 @@ def _match_rate(rows: list[dict[str, object]], key: str) -> float:
 
 
 def validate_backend_vocab(backend: PolicyBackend, vocab: SkillVocab) -> None:
-    actual = tuple(vocab)
-    if actual != backend.vocab_entries:
-        raise ValueError(
-            "state-machine SkillVocab differs from policy deployment contract"
-        )
+    SkillVocab.from_entries(backend.vocab_entries).assert_matches(tuple(vocab), context="policy backend")
 
 
 def _validate_action_order(data_spec: DataSpec, values: Sequence[str]) -> None:

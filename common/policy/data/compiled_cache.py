@@ -15,6 +15,7 @@ from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
 
 from .schema import SceneWindowSchema, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
 from .action_space import ActionSpace
+from .skill_vocab import SkillVocab
 
 # v15：样本只保存配置无关的动作质量等级代码 1/2/3；旧权重缓存必须重编译。
 # v14：样本新增排名区间、标注状态和配置映射后的数值等级权重；旧缓存必须重编译。
@@ -369,6 +370,7 @@ def load_compiled_cache_for_source(
     signature: dict[str, object],
     expected_action_space: ActionSpace,
     shard_cache: CompiledShardCache,
+    expected_skill_vocab: SkillVocab | None = None,
 ) -> CompiledCacheReader | None:
     """统一定位新布局缓存，签名一致时也复用旧的平铺 manifest 和分片。"""
     cache_path = cache_path_for_source(cache_dir, source_path)
@@ -378,6 +380,7 @@ def load_compiled_cache_for_source(
         cached = load_compiled_cache(
             path, source_path, signature=signature,
             expected_action_space=expected_action_space, shard_cache=shard_cache,
+            expected_skill_vocab=expected_skill_vocab,
         )
         if cached is not None:
             return cached
@@ -417,8 +420,9 @@ def load_compiled_cache(
     signature: dict[str, object],
     expected_action_space: ActionSpace,
     shard_cache: CompiledShardCache,
+    expected_skill_vocab: SkillVocab | None = None,
 ) -> CompiledCacheReader | None:
-    """按 raw 签名和调用方指定的动作契约校验 manifest，不读取本机 YAML。"""
+    """按 raw 签名及调用方的动作、完整技能词表校验 manifest，不读取 YAML。"""
     del source_path
     cache_path = Path(cache_path)
     if not cache_path.is_file():
@@ -444,6 +448,13 @@ def load_compiled_cache(
             or tuple(payload.get("action_to_vocab_id", ())) != expected_action_space.action_to_vocab_id
             or tuple(payload.get("action_is_gcd", ())) != expected_action_space.action_is_gcd):
         return None
+    if expected_skill_vocab is not None:
+        try:
+            expected_skill_vocab.assert_matches(
+                payload.get("vocab_signature", ()), context="compiled cache",
+            )
+        except (TypeError, ValueError):
+            return None
     shard_files = payload.get("shard_files")
     if not isinstance(shard_files, list):
         return None

@@ -21,6 +21,7 @@ from .compiled_cache import (
     load_compiled_cache_for_source,
 )
 from .normalizer import Normalizer
+from .skill_vocab import SkillVocab
 from .schema import SceneWindowSchema, TrainingSchema
 from .source_selection import (
     RawTrainingPathGroup,
@@ -43,6 +44,7 @@ def cached_candidates_for_group(
     cache_dir: Path,
     shard_size: int,
     shard_cache: CompiledShardCache,
+    expected_skill_vocab: SkillVocab | None = None,
 ) -> list[Path]:
     """按候选顺序找足本组配额；只有签名和职业均匹配的 PT 才计数。"""
     cached_paths: list[Path] = []
@@ -60,6 +62,7 @@ def cached_candidates_for_group(
         cached = load_compiled_cache_for_source(
             cache_dir, source, signature=signature, shard_cache=shard_cache,
             expected_action_space=expected_action_space,
+            expected_skill_vocab=expected_skill_vocab,
         )
         if cached is not None and cached.num_samples > 0 and cached.job_tag == job_tag:
             cached_paths.append(source)
@@ -93,6 +96,7 @@ def select_prepared_training_sources(
     normalizer = Normalizer()
     normalizer.ensure_job_resources(job_tag)
     action_space = ActionSpace.from_job_tag(job_tag)
+    skill_vocab = SkillVocab.build_from_job_tag(job_tag)
     shard_cache = CompiledShardCache(max_shards)
     selected: list[Path] = []
     missing: list[str] = []
@@ -100,6 +104,7 @@ def select_prepared_training_sources(
         cached_paths = cached_candidates_for_group(
             group, job_tag=job_tag, normalizer=normalizer,
             expected_action_space=action_space,
+            expected_skill_vocab=skill_vocab,
             int_dtype=int_dtype, float_dtype=float_dtype,
             cache_dir=cache_dir, shard_size=shard_size, shard_cache=shard_cache,
         )
@@ -136,6 +141,7 @@ def select_prepared_validation_sources(
     normalizer = Normalizer()
     normalizer.ensure_job_resources(job_tag)
     action_space = ActionSpace.from_job_tag(job_tag)
+    skill_vocab = SkillVocab.build_from_job_tag(job_tag)
     shard_cache = CompiledShardCache(max_shards)
     selected: list[Path] = []
     shortages: list[str] = []
@@ -172,6 +178,7 @@ def select_prepared_validation_sources(
         valid = cached_candidates_for_group(
             candidate_group, job_tag=job_tag, normalizer=normalizer,
             expected_action_space=action_space,
+            expected_skill_vocab=skill_vocab,
             int_dtype=int_dtype, float_dtype=float_dtype,
             cache_dir=cache_dir, shard_size=shard_size, shard_cache=shard_cache,
         )

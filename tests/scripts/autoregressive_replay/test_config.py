@@ -27,18 +27,20 @@ def test_replay_scene_defaults_to_prepared_cache(monkeypatch, tmp_path):
         return scene
 
     monkeypatch.setattr(replay_config_module, "find_prepared_scene_source", select)
-    normalizer = object()
+    normalizer, vocab = object(), object()
     spec = DataSpec("black_mage", 2, 1, 1, 1, 1, ("a", "b"), ("kind",), (1, 2), (True, False))
     monkeypatch.setattr(
         replay_config_module.ModelInputContract, "from_dict",
-        lambda _payload: SimpleNamespace(data_spec=asdict(spec), create_normalizer=lambda: normalizer),
+        lambda _payload: SimpleNamespace(data_spec=asdict(spec), create_normalizer=lambda: normalizer,
+                                        create_skill_vocab=lambda: vocab),
     )
     kwargs = dict(raw_root=tmp_path, cache_dir=tmp_path / ".cache",
                   job_tag="black_mage", cache_shard_size=768, input_contract_payload={})
     assert replay_config_module._resolve_scene_json(None, **kwargs) == scene
     assert calls == [(tmp_path, dict(cache_dir=tmp_path / ".cache",
                                    job_tag="black_mage", cache_shard_size=768,
-                                   normalizer=normalizer, expected_action_space=ActionSpace.from_data_spec(spec)))]
+                                   normalizer=normalizer, expected_action_space=ActionSpace.from_data_spec(spec),
+                                   expected_skill_vocab=vocab))]
 
     explicit = tmp_path / "explicit.json.br"
     atomic_write_json(explicit, {})

@@ -38,7 +38,7 @@ from common.policy.config import (
 )
 from training.config import RunConfig
 from common.project_config import load_root_dotenv
-from common.policy.data import ActionSpace, DataSpec, ModelInputContract, Normalizer
+from common.policy.data import ActionSpace, DataSpec, ModelInputContract, Normalizer, SkillVocab
 from common.policy.data.schema import TrainingSchema
 from training.loop import _save_checkpoint
 
@@ -49,6 +49,7 @@ def test_analysis_scene_uses_independent_env_and_cli_override(monkeypatch, tmp_p
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_SCENE_JSON", "replay.json.br")
     kwargs = dict(raw_root=tmp_path, cache_dir=tmp_path / ".cache",
                   job_tag="black_mage", cache_shard_size=768,
+                  normalizer=object(), skill_vocab=object(),
                   expected_action_space=ActionSpace(("a", "b"), (1, 2), (True, False)))
     assert analysis_common._resolve_analysis_source(None, **kwargs) == tmp_path / "analysis.json.br"
     assert analysis_common._resolve_analysis_source(Path("cli.json.br"), **kwargs) == tmp_path / "cli.json.br"
@@ -66,14 +67,17 @@ def test_analysis_scene_defaults_to_prepared_cache(monkeypatch, tmp_path):
 
     monkeypatch.setattr(analysis_common, "find_prepared_scene_source", select)
     action_space = ActionSpace(("a", "b"), (1, 2), (True, False))
+    normalizer, vocab = object(), object()
     assert analysis_common._resolve_analysis_source(
         None, raw_root=tmp_path, cache_dir=tmp_path / ".cache",
         job_tag="black_mage", cache_shard_size=768,
         expected_action_space=action_space,
+        normalizer=normalizer, skill_vocab=vocab,
     ) == expected
     assert calls == [(tmp_path, dict(cache_dir=tmp_path / ".cache",
                                    job_tag="black_mage", cache_shard_size=768,
-                                   expected_action_space=action_space))]
+                                   expected_action_space=action_space,
+                                   normalizer=normalizer, expected_skill_vocab=vocab))]
 
 
 def test_pca_projection_returns_coordinates_and_explained_variance():
@@ -194,6 +198,7 @@ def test_checkpoint_exposes_job_tag_at_top_level(tmp_path: Path):
     normalizer = Normalizer()
     normalizer.configure_job_resources("black_mage")
     input_contract = ModelInputContract.from_training(
+        skill_vocab=SkillVocab.from_entries([(1001, 1)]),
         data_spec=data_spec,
         schema=TrainingSchema(
             serialization_format="test",
@@ -560,6 +565,55 @@ def test_model_analysis_common_helpers_and_context_loading(monkeypatch, tmp_path
     assert context.layer_vectors[0].shape == (8, 4)
 
 
+@pytest.mark.parametrize("reordered_schema", [False, True])
+def test_analysis_restores_saved_input_contract_without_current_yaml(monkeypatch, tmp_path, reordered_schema):
+    from dataclasses import asdict, replace
+    from tests.scripts.onnx_export.test_exporter import _write_small_checkpoint
+
+    checkpoint = tmp_path / "model.pt"
+    spec, saved = _write_small_checkpoint(checkpoint)
+    seen = {}
+
+    class Dataset:
+        def __init__(self, sources, **kwargs):
+            seen["dataset"] = kwargs
+            for key, value in asdict(spec).items():
+                setattr(self, key, value)
+            self.schema = saved.schema
+            if reordered_schema:
+                self.schema = replace(saved.schema, state_group_feature_keys={
+                    group: tuple(reversed(keys)) for group, keys in saved.schema.state_group_feature_keys.items()
+                })
+
+        def __len__(self):
+            return 1
+
+    def select(_root, **kwargs):
+        seen["source"] = kwargs
+        return tmp_path / "source.json.br"
+
+    monkeypatch.setenv("MODEL_ANALYSIS_SCENE_JSON", "")
+    monkeypatch.setattr(analysis_common, "TrainingDataset", Dataset)
+    monkeypatch.setattr(analysis_common, "find_prepared_scene_source", select)
+    monkeypatch.setattr(analysis_common, "Normalizer", lambda: pytest.fail("分析不得从当前 YAML 重建归一化器"))
+    monkeypatch.setattr(SkillVocab, "build_from_job_tag", lambda *_a, **_kw: pytest.fail("分析不得重建当前技能词表"))
+    kwargs = dict(checkpoint_path=checkpoint, source_path=None, raw_root=tmp_path,
+                  cache_dir=tmp_path / ".cache", max_history=4, cache_shard_size=512,
+                  cache_max_shards=2, output_dir=tmp_path / "analysis", device_name="cpu", precision="float32")
+    if reordered_schema:
+        with pytest.raises(ValueError, match="training state feature keys mismatch"):
+            analysis_common.load_loss_landscape_context(**kwargs)
+        return
+    context = analysis_common.load_loss_landscape_context(**kwargs)
+    assert context.vocab.to_dict() == saved.create_skill_vocab().to_dict()
+    normalizer = seen["dataset"]["normalizer"]
+    assert normalizer.normalization_contract == saved.normalizer_contract
+    assert normalizer.normalize_value("player_state", "previous_action_after.time_seconds", 900) == pytest.approx(0.5)
+    assert seen["source"]["normalizer"] is normalizer
+    assert seen["source"]["expected_skill_vocab"] is seen["dataset"]["skill_vocab"]
+    assert context.model.input_encoder.skill_embed.weight.shape[0] == 8
+
+
 def test_model_analysis_retries_after_compiling_missing_cache(monkeypatch, tmp_path):
     dataset_calls = []
     compiled_calls = []
@@ -574,11 +628,6 @@ def test_model_analysis_retries_after_compiling_missing_cache(monkeypatch, tmp_p
     monkeypatch.setattr(analysis_common, "TrainingDataset", fake_dataset)
     monkeypatch.setattr(
         analysis_common,
-        "Normalizer",
-        lambda: SimpleNamespace(configure_job_resources=lambda _job_tag: None),
-    )
-    monkeypatch.setattr(
-        analysis_common,
         "compile_raw_training_caches",
         lambda **kwargs: compiled_calls.append(kwargs),
     )
@@ -586,6 +635,9 @@ def test_model_analysis_retries_after_compiling_missing_cache(monkeypatch, tmp_p
     source_path = tmp_path / "source.json"
     cache_dir = tmp_path / "cache"
     action_space = ActionSpace(("a", "b"), (1, 2), (True, False))
+    vocab = SkillVocab.from_entries([(1001, 1), (1002, 2)])
+    normalizer = Normalizer()
+    normalizer.configure_job_resources("black_mage")
     result = analysis_common._load_analysis_dataset(
         source_path=source_path,
         cache_dir=cache_dir,
@@ -593,7 +645,8 @@ def test_model_analysis_retries_after_compiling_missing_cache(monkeypatch, tmp_p
         cache_shard_size=768,
         cache_max_shards=24,
         job_tag="black_mage",
-        skill_vocab=object(),
+        skill_vocab=vocab,
+        normalizer=normalizer,
         expected_action_space=action_space,
     )
 
@@ -608,6 +661,8 @@ def test_model_analysis_retries_after_compiling_missing_cache(monkeypatch, tmp_p
             "cache_shard_size": 768,
             "job_tag": "black_mage",
             "expected_action_space": action_space,
+            "normalizer": normalizer,
+            "expected_skill_vocab": vocab,
         }
     ]
 

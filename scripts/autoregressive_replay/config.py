@@ -374,6 +374,7 @@ def _resolve_scene_json(
             raw_root, cache_dir=cache_dir, job_tag=job_tag,
             cache_shard_size=cache_shard_size,
             normalizer=input_contract.create_normalizer(),
+            expected_skill_vocab=input_contract.create_skill_vocab(),
             expected_action_space=ActionSpace.from_data_spec(DataSpec.from_dict(input_contract.data_spec)),
         )
     if not is_json_file(path) or not path.is_file():

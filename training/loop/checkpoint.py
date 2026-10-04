@@ -241,6 +241,9 @@ def _validate_resume_checkpoint(
     checkpoint_contract = ModelInputContract.from_checkpoint(checkpoint)
     checkpoint_contract.assert_matches_data_spec(data_spec)
     checkpoint_contract.schema.assert_compatible_with(dataset.schema)
+    checkpoint_contract.create_skill_vocab().assert_matches(
+        input_contract.skill_vocab_entries, context="resume checkpoint",
+    )
     if checkpoint_contract.normalizer_contract != input_contract.normalizer_contract:
         raise ValueError("resume checkpoint normalization contract mismatch")
 

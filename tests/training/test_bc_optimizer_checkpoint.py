@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from common.policy.config import ModelConfig
-from common.policy.data import DataSpec, ModelInputContract, Normalizer
+from common.policy.data import DataSpec, ModelInputContract, Normalizer, SkillVocab
 from common.policy.data.schema import TrainingSchema
 from common.training.optimizer_config import OptimizerConfig
 from training.config import RunConfig
@@ -51,6 +51,7 @@ def resume_context(tmp_path):
         model=ModelConfig(d_model=8, n_layers=1, n_heads=2, ff_dim=16),
     )
     input_contract = ModelInputContract.from_training(
+        skill_vocab=SkillVocab.from_entries([(1001, 1), (1002, 2), (900001, 3), (900002, 4)]),
         data_spec=data_spec,
         schema=schema,
         normalizer=normalizer,
@@ -86,6 +87,16 @@ def _validate(context, *, optimizer=None, force=False):
         input_contract=context.input_contract,
         force_resume_data_mismatch=force,
     )
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_resume_rejects_inactive_vocab_row_drift_even_when_outputs_match(resume_context, force):
+    resume_context.input_contract = replace(
+        resume_context.input_contract,
+        skill_vocab_entries=((1001, 1), (1002, 2), (900001, 4), (900002, 3)),
+    )
+    with pytest.raises(ValueError, match="resume checkpoint skill vocab mismatch.*raw_skill_id=900001"):
+        _validate(resume_context, force=force)
 
 
 @pytest.mark.parametrize("missing_run_config", [False, True])

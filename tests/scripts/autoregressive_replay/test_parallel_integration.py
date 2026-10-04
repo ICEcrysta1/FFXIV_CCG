@@ -113,6 +113,7 @@ def test_grpo_sampling_is_independent_of_worker_count(dataset, tmp_path):
         data_spec = spec
         input_device = torch.device("cpu")
         input_contract = ModelInputContract.from_training(
+            skill_vocab=vocab,
             data_spec=spec, schema=dataset.schema, normalizer=dataset.normalizer,
         )
         vocab_entries = tuple(vocab)

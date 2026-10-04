@@ -254,6 +254,7 @@ def test_default_replay_uses_saved_contract_without_recompiling(
         job_tag="black_mage", data_spec=saved_spec,
         schema=_scene_schema(),
         normalizer_contract=saved_normalizer,
+        skill_vocab_entries=tuple(SkillVocab.build_from_job_tag("black_mage")),
     )
     if current_cache_exists:
         create("AAA/90-100/current.json.br")
@@ -299,6 +300,7 @@ def test_default_replay_uses_saved_contract_without_recompiling(
     reader = replay_module._load_replay_cache(
         config, "black_mage", contract.create_normalizer(), engine=object(),
         expected_action_space=saved_actions,
+        expected_skill_vocab=contract.create_skill_vocab(),
     )
     sample = reader.sample(0)
     assert sample["action_keys"] == saved_spec["action_keys"]
@@ -352,7 +354,8 @@ def test_model_cache_prepare_reuses_saved_actions_and_training_rejects_drift(sce
     monkeypatch.setattr(ActionSpace, "from_job_tag", lambda _job: pytest.fail("已有模型兼容缓存不应重建动作空间"))
     monkeypatch.setattr(cache_compile, "_compile_raw_source_worker", lambda *_a, **_kw: pytest.fail("不应补编译"))
     store = ReplayCacheStore(max_shards=2)
-    kwargs = dict(job_tag="black_mage", normalizer=normalizer, expected_action_space=saved_actions, engine=engine)
+    kwargs = dict(job_tag="black_mage", normalizer=normalizer, expected_action_space=saved_actions,
+                  expected_skill_vocab=SkillVocab.build_from_job_tag("black_mage"), engine=engine)
     store.prepare([config], workers=2, **kwargs)
     reader = store.load(config, **kwargs)
     assert reader.action_keys == saved_actions.action_keys
@@ -392,7 +395,8 @@ def test_model_cache_recompile_rejects_current_actions_before_writing(scene_cach
     config = SimpleNamespace(scene_json_path=source, cache_dir=cache_dir, cache_shard_size=768, cache_max_shards=2)
     normalizer = Normalizer()
     engine = SimpleNamespace(job_tag="black_mage", capacity=2)
-    kwargs = dict(job_tag="black_mage", normalizer=normalizer, expected_action_space=saved_actions, engine=engine)
+    kwargs = dict(job_tag="black_mage", normalizer=normalizer, expected_action_space=saved_actions,
+                  expected_skill_vocab=SkillVocab.build_from_job_tag("black_mage"), engine=engine)
     store = ReplayCacheStore(max_shards=2)
     with pytest.raises(ValueError, match="current YAML differs.*model action contract"):
         store.prepare([config], workers=2, **kwargs)
@@ -415,3 +419,64 @@ def test_default_replay_rejects_missing_or_old_contract(scene_cache, monkeypatch
             None, raw_root=root, cache_dir=cache_dir, job_tag="black_mage",
             cache_shard_size=768, input_contract_payload=payload,
         )
+
+
+def _cache_with_inactive_vocab(scene_cache):
+    _, cache_dir, create = scene_cache
+    source = create("FRU/90-100/full_vocab.json.br")
+    base = SkillVocab.build_from_job_tag("black_mage")
+    vocab = SkillVocab.from_entries([*base, (900001, base.size()), (900002, base.size() + 1)])
+    path = cache_path_for_source(cache_dir, source)
+    payload = safe_torch_load(path, safe_globals=(TrainingSchema,))
+    payload["vocab_signature"] = tuple(vocab)
+    torch.save(payload, path)
+    return source, cache_dir, vocab
+
+
+def test_model_cache_reuses_complete_vocab_without_current_yaml(scene_cache, monkeypatch):
+    from scripts.autoregressive_replay.replay import ReplayCacheStore
+
+    source, cache_dir, saved_vocab = _cache_with_inactive_vocab(scene_cache)
+    saved_actions = ActionSpace.from_job_tag("black_mage")
+    normalizer = Normalizer()
+    normalizer.ensure_job_resources("black_mage")
+    config = SimpleNamespace(scene_json_path=source, cache_dir=cache_dir, cache_shard_size=768, cache_max_shards=2)
+    engine = SimpleNamespace(job_tag="black_mage", capacity=2)
+    before = {path: path.read_bytes() for path in cache_dir.rglob("*.pt")}
+    monkeypatch.setattr(SkillVocab, "build_from_job_tag", lambda *_a, **_kw: pytest.fail("兼容缓存不读取当前词表 YAML"))
+    monkeypatch.setattr(ActionSpace, "from_job_tag", lambda *_a, **_kw: pytest.fail("兼容缓存不重建动作空间"))
+    store = ReplayCacheStore(max_shards=2)
+    kwargs = dict(job_tag="black_mage", normalizer=normalizer, expected_action_space=saved_actions,
+                  expected_skill_vocab=saved_vocab, engine=engine)
+    store.prepare([config], workers=2, **kwargs)
+    reader = store.load(config, **kwargs)
+    saved_vocab.assert_matches(reader.vocab_signature, context="test")
+    assert before == {path: path.read_bytes() for path in cache_dir.rglob("*.pt")}
+
+
+def test_model_cache_rejects_inactive_row_drift_before_recompiling(scene_cache, monkeypatch):
+    from common.policy.data.compiled_cache import CompiledShardCache, load_compiled_cache
+    from scripts.convert_fflogs.cache import cache_compile
+
+    source, cache_dir, saved_vocab = _cache_with_inactive_vocab(scene_cache)
+    path = cache_path_for_source(cache_dir, source)
+    payload = safe_torch_load(path, safe_globals=(TrainingSchema,))
+    entries = list(saved_vocab)
+    entries[-2], entries[-1] = (entries[-2][0], entries[-1][1]), (entries[-1][0], entries[-2][1])
+    changed = SkillVocab.from_entries(entries)
+    payload["vocab_signature"] = tuple(changed)
+    torch.save(payload, path)
+    actions = ActionSpace.from_job_tag("black_mage")
+    # 输出动作、词表行数和 bank 形状都相同，完整 raw-id 映射仍然必须一致。
+    assert load_compiled_cache(path, source, signature=payload["cache_signature"], expected_action_space=actions,
+                               expected_skill_vocab=saved_vocab, shard_cache=CompiledShardCache(1)) is None
+    before = {p: p.read_bytes() for p in cache_dir.rglob("*.pt")}
+    monkeypatch.setattr(SkillVocab, "build_from_job_tag", lambda *_a, **_kw: changed)
+    monkeypatch.setattr(cache_compile, "InProcessEngine", lambda *_a, **_kw: pytest.fail("词表不匹配时不启动引擎"))
+    with pytest.raises(ValueError, match="cache compilation skill vocab mismatch.*raw_skill_id=900001"):
+        cache_compile.precompile_raw_training_caches(
+            [source], job_tag="black_mage", normalizer=Normalizer(), expected_action_space=actions,
+            expected_skill_vocab=saved_vocab, cache_dir=cache_dir, shard_size=768,
+            int_dtype=torch.int32, float_dtype=torch.float32,
+        )
+    assert before == {p: p.read_bytes() for p in cache_dir.rglob("*.pt")}

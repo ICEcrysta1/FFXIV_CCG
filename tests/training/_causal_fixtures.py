@@ -7,7 +7,7 @@ from dataclasses import asdict
 import torch
 
 from common.policy.config import ModelConfig
-from common.policy.data import DataSpec, ModelInputContract, Normalizer
+from common.policy.data import DataSpec, ModelInputContract, Normalizer, SkillVocab
 from common.policy.data.normalization import NormalizerConfig
 from common.policy.data.normalizer import NORMALIZER_CONTRACT_VERSION
 from common.policy.data.schema import SceneWindowSchema, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
@@ -45,7 +45,7 @@ def make_batch(data_spec=None, *, batch_size=1, history_length=2, scene_length=1
     }
 
 
-def make_input_contract(data_spec=None) -> ModelInputContract:
+def make_input_contract(data_spec=None, *, vocab_size=None) -> ModelInputContract:
     spec = data_spec or make_data_spec()
     if spec.scene_dim and spec.scene_dim < 3:
         raise ValueError("scene test contract requires the three time fields")
@@ -64,13 +64,17 @@ def make_input_contract(data_spec=None) -> ModelInputContract:
         "config": asdict(NormalizerConfig()), "resource_limits": {}, "status_limits": {},
     })
     normalizer.register_schema(schema)
-    return ModelInputContract.from_training(data_spec=spec, schema=schema, normalizer=normalizer)
+    vocab_size = vocab_size or max(spec.action_to_vocab_id) + 1
+    vocab = SkillVocab.from_entries([(1000 + row, row) for row in range(1, vocab_size)])
+    return ModelInputContract.from_training(data_spec=spec, schema=schema, normalizer=normalizer, skill_vocab=vocab)
 
 
 def make_checkpoint(data_spec=None, config=None, *, model_state_dict=None) -> dict[str, object]:
     spec = data_spec or make_data_spec()
     config = config or ModelConfig(d_model=8, n_layers=1, n_heads=2,
                                   num_kv_heads=1, ff_dim=16, dropout=0.0)
+    embedding = (model_state_dict or {}).get("input_encoder.skill_embed.weight")
+    vocab_size = None if embedding is None else int(embedding.shape[0])
     return {"model_config": asdict(config), "data_spec": asdict(spec),
-            "input_contract": make_input_contract(spec).to_dict(),
+            "input_contract": make_input_contract(spec, vocab_size=vocab_size).to_dict(),
             "model_state_dict": {} if model_state_dict is None else model_state_dict}

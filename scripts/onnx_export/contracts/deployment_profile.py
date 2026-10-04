@@ -1,8 +1,8 @@
-"""读取一次性固化的职业 vocab 画像与 scene 容量证据。"""
+"""读取一次性固化的职业 scene 容量证据。"""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import hashlib
 import json
@@ -18,8 +18,8 @@ class DeploymentProfile:
     """首次数据分析后固化的部署侧画像，不在日常导出时重扫语料。
 
     scene 容量不在此维护：它以职业模型配置为权威来源（随 checkpoint
-    的 model_config 进入部署契约），profile 只保留 vocab 映射与佐证
-    该容量的语料统计证据。
+    的 model_config 进入部署契约）。旧 profile 中的 vocab 仅是历史记录，
+    部署词表和容量报告中的词表都必须使用 checkpoint 保存的完整映射。
     """
 
     job_tag: str
@@ -75,6 +75,7 @@ class DeploymentProfile:
         *,
         scene_capacity: int,
         history_capacity: int,
+        vocab_entries: Sequence[tuple[int, int]],
     ) -> dict[str, object]:
         core = {
             "report_version": 1,
@@ -83,7 +84,7 @@ class DeploymentProfile:
             "history_capacity": int(history_capacity),
             "vocab_entries": [
                 {"raw_skill_id": raw_skill_id, "vocab_id": vocab_id}
-                for raw_skill_id, vocab_id in self.vocab_entries
+                for raw_skill_id, vocab_id in vocab_entries
             ],
             "evidence": self.evidence,
         }

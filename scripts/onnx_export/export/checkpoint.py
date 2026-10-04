@@ -48,6 +48,7 @@ def load_policy(
     if not isinstance(embedding, torch.Tensor) or embedding.ndim != 2:
         raise ValueError("checkpoint missing skill embedding weight")
     vocab_size = int(embedding.shape[0])
+    input_contract.assert_matches_embedding(vocab_size)
     if vocab_size < 2:
         raise ValueError("checkpoint vocab_size must be >= 2")
     model = CausalPolicyModel(
@@ -89,7 +90,7 @@ def load_policy_contracts(
     if profile.job_tag != data_spec.job_tag:
         raise ValueError("deployment profile job differs from checkpoint DataSpec")
     # scene 容量以职业模型配置为权威来源（随 checkpoint 的 model_config
-    # 进入部署契约），profile 只保留 vocab 与语料统计证据佐证该容量；
+    # 进入部署契约），profile 只提供语料统计证据佐证该容量；
     # 旧 checkpoint 缺失该字段时与训练路径的恢复逻辑一致，回退默认值。
     scene_capacity = int(
         model_config.get("scene_capacity", ModelConfig.scene_capacity)
@@ -105,6 +106,7 @@ def load_policy_contracts(
     capacity_report = profile.to_capacity_report(
         scene_capacity=scene_capacity,
         history_capacity=checkpoint_history_capacity,
+        vocab_entries=input_contract.skill_vocab_entries,
     )
     contract = CapacityContract(
         scene_capacity=scene_capacity,
@@ -117,7 +119,7 @@ def load_policy_contracts(
         input_contract=input_contract,
         model_config=model_config,
         repetition_config=asdict(repetition_config_from_checkpoint(checkpoint)),
-        vocab_entries=profile.vocab_entries,
+        vocab_entries=input_contract.skill_vocab_entries,
         capacity_report=capacity_report,
         embedding_vocab_size=vocab_size,
     )

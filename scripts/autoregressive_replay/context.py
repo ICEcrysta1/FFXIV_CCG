@@ -543,6 +543,8 @@ class LiveBatchBuilder:
         gcd_phase: bool,
         max_history: int,
     ):
+        self._validate_state_feature_keys(canonical["state_history_context"], context_name="history")
+        self._validate_state_feature_keys(canonical["current_state_context"], context_name="current")
         action_keys = tuple(str(key) for key in canonical["action_keys"])
         if not action_keys or len(set(action_keys)) != len(action_keys):
             raise ValueError("live action vocabulary must be nonempty and unique")
@@ -824,9 +826,14 @@ class LiveBatchBuilder:
         )
 
     def _map_skill_id(self, raw_skill_id) -> int:
-        if raw_skill_id is None:
-            return 0
-        return self._vocab.require_lookup(int(raw_skill_id), context="live replay")
+        return self._vocab.require_lookup(raw_skill_id, context="live replay")
+
+    def _validate_state_feature_keys(self, context, *, context_name: str) -> None:
+        """校验状态字段及其顺序，拒绝同宽但含义错位的状态机输出。"""
+        for group, expected in self._schema.state_group_feature_keys.items():
+            actual = context.get(f"{group}_feature_keys")
+            if not isinstance(actual, (list, tuple)) or tuple(actual) != tuple(expected):
+                raise ValueError(f"live {context_name} {group} feature keys differ from model input contract")
 
     def _build_skill_features(self, tokens) -> torch.Tensor:
         feature_rows = []

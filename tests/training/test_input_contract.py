@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from common.policy.data import ModelInputContract, Normalizer
+from common.policy.data import ModelInputContract, Normalizer, SkillVocab
 from common.policy.data.schema import SceneWindowSchema, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
 from common.policy.data.spec import DataSpec
 from common.policy.data.input_contract import INPUT_CONTRACT_VERSION, TOKEN_ENCODING_CONTRACT
@@ -46,6 +46,7 @@ def _build_contract() -> ModelInputContract:
     normalizer = Normalizer()
     normalizer.configure_job_resources("black_mage")
     return ModelInputContract.from_training(
+        skill_vocab=SkillVocab.from_entries([(152, 1), (900001, 2), (0, 3)]),
         data_spec=data_spec,
         schema=schema,
         normalizer=normalizer,
@@ -67,6 +68,9 @@ def test_model_input_contract_round_trips_without_project_yaml(monkeypatch):
     assert restored.data_spec == contract.data_spec
     assert restored.schema == contract.schema
     assert restored.normalizer_contract == contract.normalizer_contract
+    assert restored.create_skill_vocab().to_dict() == contract.create_skill_vocab().to_dict()
+    assert restored.create_skill_vocab().require_lookup(900001, context="disabled") == 2
+    assert restored.create_skill_vocab().require_lookup(0, context="wait") == 3
 
     normalizer = restored.create_normalizer()
     assert normalizer.normalize_value(
@@ -134,3 +138,41 @@ def test_data_spec_rejects_removed_column_hidden_by_feature_names():
     payload["skill_feature_dim"] += 1
     with pytest.raises(ValueError, match="skill feature order length"):
         DataSpec.from_dict(payload)
+
+
+def test_model_input_contract_requires_complete_vocabulary():
+    payload = _build_contract().to_dict()
+    payload.pop("skill_vocab")
+    with pytest.raises(ValueError, match="missing complete skill_vocab"):
+        ModelInputContract.from_dict(payload)
+
+
+def test_model_input_contract_rejects_embedding_row_count_drift():
+    contract = _build_contract()
+    contract.assert_matches_embedding(4)
+    with pytest.raises(ValueError, match="embedding row count"):
+        contract.assert_matches_embedding(3)
+
+
+@pytest.mark.parametrize("entries", [
+    [], [(1, 0)], [(1, 1), (2, 1)], [(1, 1), (1, 2)], [(1, 1), (2, 3)],
+    [(True, 1)], [(1, True)], [("1", 1)], [(1, 1.0)], [(1,)],
+])
+def test_full_skill_vocab_rejects_ambiguous_or_incomplete_rows(entries):
+    with pytest.raises(ValueError, match="skill vocab"):
+        SkillVocab.from_entries(entries)
+
+
+@pytest.mark.parametrize("field,value", [("size", 99), ("padding_vocab_id", 1), ("size", True)])
+def test_full_skill_vocab_rejects_inconsistent_metadata(field, value):
+    payload = _build_contract().create_skill_vocab().to_dict()
+    payload[field] = value
+    with pytest.raises(ValueError, match="skill vocab"):
+        SkillVocab.from_dict(payload)
+
+
+def test_full_skill_vocab_compares_mapping_instead_of_entry_order():
+    vocab = SkillVocab.from_entries([(152, 1), (900001, 2), (0, 3)])
+    vocab.assert_matches([(0, 3), (900001, 2), (152, 1)], context="test")
+    with pytest.raises(ValueError, match="raw_skill_id=152.*expected vocab_id=1.*actual vocab_id=2"):
+        vocab.assert_matches([(152, 2), (900001, 1), (0, 3)], context="test")

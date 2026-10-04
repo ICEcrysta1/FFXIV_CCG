@@ -395,7 +395,8 @@ def _live_builder_fixture(*, max_history=2, reorder_state_fields=False):
         "action_legal_mask": [True, True],
         "skill_history_context": [],
         "state_history_context": {"player_state_feature_keys": player_keys, "tokens": []},
-        "current_state_context": {"tokens": [{"player_state": [initial_values[key] for key in player_keys]}]},
+        "current_state_context": {"player_state_feature_keys": player_keys,
+                                  "tokens": [{"player_state": [initial_values[key] for key in player_keys]}]},
     }
 
     class Backend:
@@ -460,6 +461,36 @@ def test_live_history_window_keeps_matching_skill_and_state_rows():
     empty, _ = builder.build(SimpleNamespace(time=4.0, gcd_remaining=0.0), max_history=0)
     assert empty["history_skill_ids"].shape == (1, 0)
     assert empty["current_state_vectors"].shape == (1, 4)
+
+
+@pytest.mark.parametrize("context_key", ["state_history_context", "current_state_context"])
+@pytest.mark.parametrize("change", ["missing", "reordered", "renamed"])
+def test_live_batch_rejects_same_width_state_field_drift(context_key, change):
+    builder, canonical = _live_builder_fixture()
+    _append_live_history(canonical, 1)
+    context = canonical[context_key]
+    if change == "missing":
+        context.pop("player_state_feature_keys")
+    elif change == "reordered":
+        context["player_state_feature_keys"] = tuple(reversed(context["player_state_feature_keys"]))
+        for token in context["tokens"]:
+            token["player_state"].reverse()
+    else:
+        context["player_state_feature_keys"] = ("wrong.time_seconds", *context["player_state_feature_keys"][1:])
+    with pytest.raises(ValueError, match="feature keys differ from model input contract"):
+        builder.build_from_canonical(canonical, gcd_phase=True, max_history=2)
+
+
+@pytest.mark.parametrize("raw_id", [None, 900001])
+def test_live_history_does_not_map_missing_or_unknown_skill_to_padding(raw_id):
+    from common.policy.data import SkillVocab
+
+    builder, canonical = _live_builder_fixture()
+    builder._vocab = SkillVocab.from_entries([(3577, 1), (0, 2)])
+    _append_live_history(canonical, 1)
+    canonical["skill_history_context"][0]["skill_id"] = raw_id
+    with pytest.raises(ValueError, match="live replay raw_skill_id"):
+        builder.build_from_canonical(canonical, gcd_phase=True, max_history=2)
 
 
 def test_live_history_cache_reuses_unchanged_rows_and_refreshes_mutated_rows(monkeypatch):

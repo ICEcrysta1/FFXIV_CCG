@@ -9,7 +9,7 @@ import pytest
 import torch
 
 from common.policy.model import RepetitionConfig
-from common.policy.data import ActionSpace, DataSpec
+from common.policy.data import ActionSpace, DataSpec, SkillVocab
 from scripts.autoregressive_replay import main as replay_main_module
 from scripts.autoregressive_replay import parity as parity_module
 from scripts.autoregressive_replay.backends import compare_backend_logits
@@ -193,7 +193,10 @@ def test_parity_failure_writes_auditable_partial_report(monkeypatch, tmp_path):
                 "black_mage", 3, 1, 1, 1, 1, ("fire_iii", "fire_iv", "blizzard_iii"),
                 ("kind",), (1, 2, 3), (True, True, True),
             )
-            self.input_contract = SimpleNamespace(to_dict=lambda: {"version": 1}, create_normalizer=lambda: object())
+            self.input_contract = SimpleNamespace(
+                to_dict=lambda: {"version": 1}, create_normalizer=lambda: object(),
+                create_skill_vocab=lambda: SkillVocab.from_entries(self.vocab_entries),
+            )
             self.repetition = RepetitionConfig()
             self.vocab_entries = ((100, 1), (200, 2), (300, 3))
             self.execution_provider = name

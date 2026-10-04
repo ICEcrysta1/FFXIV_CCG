@@ -9,7 +9,7 @@ from pathlib import Path
 
 import torch
 
-from common.policy.data import DataSpec, ModelInputContract
+from common.policy.data import DataSpec, ModelInputContract, SkillVocab
 from common.policy.model.repetition import parse_repetition_config
 
 from ..io.artifact_io import file_sha256
@@ -84,10 +84,7 @@ class DeploymentContract:
         capacity_report: Mapping[str, object],
         embedding_vocab_size: int,
     ) -> "DeploymentContract":
-        normalized_vocab = tuple(
-            (int(raw_skill_id), int(vocab_id))
-            for raw_skill_id, vocab_id in vocab_entries
-        )
+        normalized_vocab = tuple(SkillVocab.from_entries(vocab_entries))
         capacity_report_sha256 = str(capacity_report.get("semantic_sha256", ""))
         capacity_evidence = {
             "scene_capacity": int(capacity_report["scene_capacity"]),
@@ -161,16 +158,7 @@ class DeploymentContract:
             )
         )
         vocab_payload = _mapping(payload["vocab"], "contract.vocab")
-        entries = vocab_payload.get("entries")
-        if not isinstance(entries, list):
-            raise ValueError("contract.vocab.entries must be a list")
-        vocab_entries = tuple(
-            (
-                int(_mapping(entry, "contract.vocab.entries[]")["raw_skill_id"]),
-                int(_mapping(entry, "contract.vocab.entries[]")["vocab_id"]),
-            )
-            for entry in entries
-        )
+        vocab_entries = tuple(SkillVocab.from_dict(vocab_payload))
         provenance = _mapping(
             payload["capacity_provenance"],
             "contract.capacity_provenance",
@@ -201,6 +189,7 @@ class DeploymentContract:
             data_spec=asdict(data_spec),
             schema=parsed_schema,
             normalizer_contract=parsed_input_contract.normalizer_contract,
+            skill_vocab_entries=parsed_input_contract.skill_vocab_entries,
         )
         capacity = CapacityContract.from_dict(capacity_payload)
         contract = cls(
@@ -236,6 +225,10 @@ class DeploymentContract:
         if self.repetition_config != normalized_repetition:
             raise ValueError("deployment repetition config is not canonical")
         self.input_contract.assert_matches_data_spec(self.data_spec)
+        self.input_contract.assert_matches_embedding(embedding_vocab_size)
+        self.input_contract.create_skill_vocab().assert_matches(
+            self.vocab_entries, context="deployment",
+        )
         if self.input_contract.job_tag != self.data_spec.job_tag:
             raise ValueError("deployment job_tag differs from model input contract")
         if "max_sequence_length" in self.model_config:
@@ -283,16 +276,6 @@ class DeploymentContract:
                 "capacity report history differs from checkpoint full-history boundary: "
                 f"{history_capacity} != {self.capacity.history_capacity}"
             )
-        vocab_ids = tuple(vocab_id for _raw_skill_id, vocab_id in self.vocab_entries)
-        raw_skill_ids = tuple(raw_skill_id for raw_skill_id, _vocab_id in self.vocab_entries)
-        if len(set(self.vocab_entries)) != len(self.vocab_entries):
-            raise ValueError("vocab entries must be unique")
-        if len(set(raw_skill_ids)) != len(raw_skill_ids):
-            raise ValueError("raw skill ids in deployment vocab must be unique")
-        if sorted(vocab_ids) != list(range(1, embedding_vocab_size)):
-            raise ValueError("vocab ids must exactly cover checkpoint embedding rows 1..N")
-        if embedding_vocab_size != len(self.vocab_entries) + 1:
-            raise ValueError("vocab size differs from checkpoint skill embedding")
 
     def to_dict(self) -> dict[str, object]:
         core = self._unsigned_dict()
@@ -409,14 +392,7 @@ class DeploymentContract:
             }
             for window in schema.scene_windows
         ]
-        vocab = {
-            "size": len(self.vocab_entries) + 1,
-            "padding_vocab_id": 0,
-            "entries": [
-                {"raw_skill_id": raw_skill_id, "vocab_id": vocab_id}
-                for raw_skill_id, vocab_id in self.vocab_entries
-            ],
-        }
+        vocab = SkillVocab.from_entries(self.vocab_entries).to_dict()
         return {
             "contract_version": DEPLOYMENT_CONTRACT_VERSION,
             "job_tag": self.data_spec.job_tag,

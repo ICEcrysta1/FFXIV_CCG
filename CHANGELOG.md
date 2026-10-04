@@ -99,6 +99,10 @@
 
 ### Fixed
 
+- 修复 checkpoint 未保存完整输入技能词表，导致本机 YAML 增删或重排禁用技能后 embedding 行身份漂移的问题：输入契约保存全部 `raw_skill_id` ↔ `vocab_id` 映射（含禁用技能和 `ogcd_wait`），PyTorch 回放、模型分析与 ONNX 导出统一从 checkpoint 恢复；BC 复用数据集词表，续训核对完整映射及 embedding 行数。
+- 缓存读取、场景选择与 GRPO 回放按调用方提供的完整词表校验；重编译在写入前核对当前动作空间与完整词表，worker 复用父进程映射，兼容的完整 history bank 继续复用。ONNX profile 仅提供容量证据，部署词表必须与 checkpoint 一致。
+- 模型分析恢复 checkpoint 的 schema 和归一化规则；在线历史与最新状态逐项校验字段名称和顺序，缺失或未知技能 ID 明确报错，避免同宽错列或静默使用 padding。词表兼容性直接比较保存的映射，不用 YAML 哈希代替语义校验。
+- checkpoint 输入契约升级为 v15，明确拒绝缺少完整词表的旧 checkpoint；compiled cache v21、转换版本 v23 保持不变。全量 Python 测试 1431 项通过、4 项跳过，覆盖禁用技能增删与排序变化下的真实模型输入、KV cache 和 logits 一致性，以及 GRPO checkpoint 恢复和 ONNX 导出。
 - 修复同刻真实技能与 `ogcd_wait` 因时间舍入改变历史前缀的问题：真实技能生效和等待决策落实时共用递增 `HistorySequence`，按实际写入顺序合并；序号随 clone、fork 和 restore 保存，历史裁剪不重置。compiled bank 追加前校验已有技能、状态与执行统计前缀，拒绝重排或回填。
 - 重新转换 M5s 的 `fflogs_2CHK3gRfrNJxhmwb_f1_Arcadia_Petralia.json.br`，491 个样本全部通过验收：原有 9 个等待遗漏、9 个真实技能重复及 479 个样本历史输入错行均降为 0；完整历史 120295 行访问和 384 条动作窗口 114624 行访问逐项一致，491 个最新状态与修复前保持一致。
 - 清理六处仍描述候选职责的陈旧注释，并将随机回放异常提示改为“合法动作”；算法、技能字段与状态契约不变。

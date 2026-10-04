@@ -175,6 +175,7 @@ def _load_replay_cache(
     normalizer: Normalizer,
     *,
     expected_action_space: ActionSpace,
+    expected_skill_vocab: SkillVocab,
     shard_cache: CompiledShardCache | None = None,
     engine: InProcessEngine,
 ) -> CompiledCacheReader:
@@ -187,6 +188,7 @@ def _load_replay_cache(
         "cache_dir": config.cache_dir,
         "normalizer": normalizer,
         "expected_action_space": expected_action_space,
+        "expected_skill_vocab": expected_skill_vocab,
         "int_dtype": precision.resolve_int_dtype(),
         "float_dtype": precision.resolve_float_dtype(),
         "shard_size": config.cache_shard_size,
@@ -204,6 +206,7 @@ def _load_replay_cache(
         job_tag=job_tag,
         normalizer=normalizer,
         expected_action_space=expected_action_space,
+        expected_skill_vocab=expected_skill_vocab,
         int_dtype=load_kwargs["int_dtype"],
         float_dtype=load_kwargs["float_dtype"],
         cache_dir=config.cache_dir,
@@ -252,6 +255,7 @@ class ReplayCacheStore:
         job_tag: str,
         normalizer: Normalizer,
         expected_action_space: ActionSpace,
+        expected_skill_vocab: SkillVocab,
         engine: InProcessEngine,
     ) -> CompiledCacheReader:
         """共享 reader 与 shard；并发首次加载只执行一次，缓存容量有界。"""
@@ -259,9 +263,10 @@ class ReplayCacheStore:
             return self._load(
                 config, job_tag=job_tag, normalizer=normalizer,
                 expected_action_space=expected_action_space, engine=engine,
+                expected_skill_vocab=expected_skill_vocab,
             )
 
-    def prepare(self, configs, *, job_tag, normalizer, expected_action_space, engine, workers):
+    def prepare(self, configs, *, job_tag, normalizer, expected_action_space, expected_skill_vocab, engine, workers):
         """按缓存契约集中补编译；使用尚未被回放占用的共享队列容量。"""
         groups = {}
         for config in configs:
@@ -272,12 +277,13 @@ class ReplayCacheStore:
             precompile_raw_training_caches(
                 paths, job_tag=job_tag, normalizer=normalizer,
                 expected_action_space=expected_action_space,
+                expected_skill_vocab=expected_skill_vocab,
                 int_dtype=precision.resolve_int_dtype(), float_dtype=precision.resolve_float_dtype(),
                 cache_dir=cache_dir, shard_size=shard_size, max_shards=max_shards,
                 max_workers=workers, engine=engine,
             )
 
-    def _load(self, config, *, job_tag, normalizer, expected_action_space, engine):
+    def _load(self, config, *, job_tag, normalizer, expected_action_space, expected_skill_vocab, engine):
         source_path = Path(config.scene_json_path).resolve()
         source_stat = source_path.stat()
         cache_path = cache_path_for_source(config.cache_dir, source_path).resolve()
@@ -305,6 +311,7 @@ class ReplayCacheStore:
             config.cache_max_shards,
             repr(normalizer_signature),
             expected_action_space,
+            tuple(expected_skill_vocab),
             cache_fingerprint,
         )
         reader = self._readers.get(reader_key)
@@ -314,6 +321,7 @@ class ReplayCacheStore:
                 job_tag,
                 normalizer,
                 expected_action_space=expected_action_space,
+                expected_skill_vocab=expected_skill_vocab,
                 shard_cache=self._shard_cache,
                 engine=engine,
             )
@@ -362,7 +370,7 @@ class AutoregressiveReplaySession:
                 f"replay job_tag mismatch: checkpoint={self.data_spec.job_tag!r} "
                 f"configured={config.job_tag!r}"
             )
-        self.vocab = SkillVocab.build_from_job_tag(self.data_spec.job_tag)
+        self.vocab = self.input_contract.create_skill_vocab()
         validate_backend_vocab(self.backend, self.vocab)
         self.normalizer = self.input_contract.create_normalizer()
         self.cache_store = (
@@ -406,6 +414,7 @@ class AutoregressiveReplaySession:
             job_tag=self.data_spec.job_tag,
             normalizer=self.normalizer,
             expected_action_space=ActionSpace.from_data_spec(self.data_spec),
+            expected_skill_vocab=self.vocab,
             engine=self._engine,
         )
 

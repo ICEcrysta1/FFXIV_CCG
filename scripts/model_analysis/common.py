@@ -24,7 +24,7 @@ from common.project_config import resolve_project_job_tag, resolve_project_path
 from scripts.common.scene_source import find_prepared_scene_source
 from common.torch_runtime import autocast_context, model_dtype, move_batch
 from common.torch_serialization import safe_torch_load
-from common.policy.data import Normalizer, SkillVocab
+from common.policy.data import ModelInputContract, Normalizer, SkillVocab
 from training import TrainingCollator, TrainingDataset
 from common.policy.data.policy_actions import load_policy_actions
 from common.policy.data import ActionSpace, DataSpec
@@ -328,17 +328,25 @@ def _load_model_analysis_context(
     # 先拒绝旧输入契约，避免在旧 DataSpec 字段上变成不明确的 KeyError。
     model_config = CausalPolicyModel.checkpoint_model_config(checkpoint)
     data_spec = DataSpec.from_dict(checkpoint["data_spec"])
+    input_contract = ModelInputContract.from_checkpoint(checkpoint)
+    input_contract.assert_matches_data_spec(data_spec)
     job_tag = resolve_project_job_tag(project_root=PROJECT_ROOT)
     if job_tag != data_spec.job_tag:
         raise ValueError(
             f"configured job_tag {job_tag!r} does not match checkpoint job_tag {data_spec.job_tag!r}"
         )
-    vocab = SkillVocab.build_from_job_tag(job_tag)
+    vocab = input_contract.create_skill_vocab()
+    normalizer = input_contract.create_normalizer()
+    embedding = checkpoint["model_state_dict"].get("input_encoder.skill_embed.weight")
+    if not isinstance(embedding, torch.Tensor) or embedding.ndim != 2:
+        raise ValueError("checkpoint missing skill embedding weight")
+    input_contract.assert_matches_embedding(int(embedding.shape[0]))
     action_space = ActionSpace.from_data_spec(data_spec)
     source_path = _resolve_analysis_source(
         source_path, raw_root=raw_root, cache_dir=cache_dir,
         job_tag=job_tag, cache_shard_size=cache_shard_size,
         expected_action_space=action_space,
+        normalizer=normalizer, skill_vocab=vocab,
     )
     repetition_config = repetition_config_from_checkpoint(checkpoint)
     model = CausalPolicyModel(
@@ -359,12 +367,14 @@ def _load_model_analysis_context(
         cache_max_shards=cache_max_shards,
         job_tag=job_tag,
         skill_vocab=vocab,
+        normalizer=normalizer,
         expected_action_space=action_space,
     )
     if len(dataset) == 0:
         raise ValueError("dataset is empty, cannot load model analysis context")
     dataset_spec = DataSpec.from_dataset(dataset)
     data_spec.assert_compatible_with(dataset_spec)
+    input_contract.schema.assert_compatible_with(dataset.schema)
     output_dir.mkdir(parents=True, exist_ok=True)
     return ModelAnalysisContext(
         checkpoint_path=checkpoint_path,
@@ -509,6 +519,8 @@ def _resolve_analysis_source(
     explicit: Path | None, *, raw_root: Path, cache_dir: Path,
     job_tag: str, cache_shard_size: int,
     expected_action_space: ActionSpace,
+    normalizer: Normalizer,
+    skill_vocab: SkillVocab,
 ) -> Path:
     """显式参数优先，其次分析专用环境变量，最后选择已有缓存。"""
     raw = explicit or os.environ.get(MODEL_ANALYSIS_SCENE_JSON_ENV, "").strip()
@@ -518,6 +530,7 @@ def _resolve_analysis_source(
         raw_root, cache_dir=cache_dir, job_tag=job_tag,
         cache_shard_size=cache_shard_size,
         expected_action_space=expected_action_space,
+        normalizer=normalizer, expected_skill_vocab=skill_vocab,
     )
 
 
@@ -530,11 +543,10 @@ def _load_analysis_dataset(
     cache_max_shards: int,
     job_tag: str,
     skill_vocab: SkillVocab,
+    normalizer: Normalizer,
     expected_action_space: ActionSpace,
 ) -> TrainingDataset:
     """读取分析用 cache；缺失或过期时调用转换 CLI 后重试。"""
-    normalizer = Normalizer()
-    normalizer.configure_job_resources(job_tag)
     precision = load_precision_config()
     dataset_kwargs = {
         "normalizer": normalizer,
@@ -558,6 +570,7 @@ def _load_analysis_dataset(
             cache_shard_size=cache_shard_size,
             job_tag=job_tag,
             expected_action_space=expected_action_space,
+            normalizer=normalizer, expected_skill_vocab=skill_vocab,
         )
         return TrainingDataset([source_path], **dataset_kwargs)
 

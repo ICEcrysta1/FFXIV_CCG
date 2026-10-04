@@ -41,5 +41,6 @@ def run_replays(configs, *, backend=None, workers=None, history_limits=None):
                 [config for _, config in items], job_tag=policy.data_spec.job_tag,
                 normalizer=policy.input_contract.create_normalizer(), engine=engine, workers=pool.workers,
                 expected_action_space=ActionSpace.from_data_spec(policy.data_spec),
+                expected_skill_vocab=policy.input_contract.create_skill_vocab(),
             )
         yield from pool.map(run, enumerate(chain((first,), iterator)), prepare=prepare)

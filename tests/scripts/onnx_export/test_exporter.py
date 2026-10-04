@@ -13,7 +13,7 @@ import pytest
 import torch
 
 from common.policy.config import ModelConfig
-from common.policy.data import DataSpec, ModelInputContract, Normalizer
+from common.policy.data import DataSpec, ModelInputContract, Normalizer, SkillVocab
 from common.policy.data.schema import SceneWindowSchema, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
 from common.policy.data.input_contract import INPUT_CONTRACT_VERSION
 from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
@@ -990,6 +990,40 @@ def test_small_bf16_model_exports_and_runs_on_strict_cuda(tmp_path, activation):
     ) <= parity_max_abs_tolerance("bf16")
 
 
+def test_export_uses_checkpoint_vocab_instead_of_stale_profile(tmp_path):
+    from scripts.onnx_export.export.checkpoint import load_policy_contracts
+
+    checkpoint, profile = tmp_path / "checkpoint.pt", tmp_path / "profile.json"
+    _, saved = _write_small_checkpoint(checkpoint)
+    _write_small_profile(profile)
+    payload = json.loads(profile.read_text(encoding="utf-8"))
+    entries = payload["vocab_entries"]
+    entries[0]["vocab_id"], entries[1]["vocab_id"] = entries[1]["vocab_id"], entries[0]["vocab_id"]
+    profile.write_text(json.dumps(payload), encoding="utf-8", newline="\n")
+    contracts = load_policy_contracts(checkpoint_path=checkpoint, deployment_profile_path=profile, precision="float32")
+    assert contracts.deployment_contract.vocab_entries == saved.skill_vocab_entries
+    assert contracts.contract_payload["vocab"] == saved.create_skill_vocab().to_dict()
+    assert contracts.capacity_report["vocab_entries"] == saved.create_skill_vocab().to_dict()["entries"]
+
+
+def test_deployment_rejects_reassigned_vocab_rows_even_with_recomputed_signatures(tmp_path):
+    from dataclasses import replace
+    from scripts.onnx_export.export.checkpoint import load_policy_contracts
+
+    checkpoint, profile = tmp_path / "checkpoint.pt", tmp_path / "profile.json"
+    _write_small_checkpoint(checkpoint)
+    _write_small_profile(profile)
+    contracts = load_policy_contracts(checkpoint_path=checkpoint, deployment_profile_path=profile, precision="float32")
+    entries = list(contracts.deployment_contract.vocab_entries)
+    entries[0], entries[1] = (entries[0][0], entries[1][1]), (entries[1][0], entries[0][1])
+    wrong = replace(contracts.deployment_contract, vocab_entries=tuple(entries))
+    with pytest.raises(ValueError, match="deployment skill vocab mismatch"):
+        wrong.validate(embedding_vocab_size=8)
+    # 签名与内容一致也不能把错误映射变成 checkpoint 的权威词表。
+    with pytest.raises(ValueError, match="deployment skill vocab mismatch"):
+        DeploymentContract.from_dict(wrong.to_dict())
+
+
 def test_load_policy_rejects_removed_candidate_shared_semantics(tmp_path):
     checkpoint = tmp_path / "checkpoint.pt"
     _write_small_checkpoint(checkpoint)
@@ -1085,6 +1119,7 @@ def _write_small_checkpoint(
         for scene_type_id in range(data_spec.num_scene_types)
     )
     input_contract = ModelInputContract.from_training(
+        skill_vocab=SkillVocab.from_entries([(1000 + row, row) for row in range(1, 8)]),
         data_spec=data_spec,
         schema=TrainingSchema(
             serialization_format="test",

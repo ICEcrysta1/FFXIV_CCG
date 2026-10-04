@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass
 
 from .normalizer import Normalizer
 from .schema import TrainingSchema
+from .skill_vocab import SkillVocab
 from .spec import DataSpec
 
 
@@ -24,7 +25,8 @@ from .spec import DataSpec
 # 12：状态两段改为上一动作后与当前请求快照，历史输入在请求时冻结。
 # 13：技能数值特征完全移除绝对时间，状态时间与其余技能字段口径保持。
 # 14：历史顺序改为状态在技能之前，因果可见范围变化，旧顺序权重不兼容。
-INPUT_CONTRACT_VERSION = 14
+# 15：保存完整输入技能词表；旧 checkpoint 缺少 embedding 行的原始技能身份。
+INPUT_CONTRACT_VERSION = 15
 
 # 描述固定的输入结构，不作为可调运行参数；d_model 仍由保存的 model_config 提供。
 # 数据 bank 的字段与时间语义由 schema 与转换版本负责，不把读取窗口加入 cache 身份。
@@ -45,20 +47,24 @@ TOKEN_ENCODING_CONTRACT = {
 
 @dataclass(frozen=True)
 class ModelInputContract:
-    """描述模型输入字段、schema 和归一化规则的不可变契约。"""
+    """描述输入字段、完整技能词表、schema 和归一化规则的不可变契约。"""
 
     job_tag: str
     data_spec: dict[str, object]
     schema: TrainingSchema
     normalizer_contract: dict[str, object]
+    skill_vocab_entries: tuple[tuple[int, int], ...]
 
     def __post_init__(self) -> None:
-        DataSpec.from_dict(self.data_spec)
+        data_spec = DataSpec.from_dict(self.data_spec)
+        vocab = self.create_skill_vocab()
+        if any(row >= vocab.size() for row in data_spec.action_to_vocab_id):
+            raise ValueError("input contract output actions exceed the saved skill vocab")
         if "time_seconds" in self.schema.skill_history_fields:
             raise ValueError("removed skill time_seconds field; rebuild model input")
 
     @classmethod
-    def from_training(cls, *, data_spec, schema: TrainingSchema, normalizer: Normalizer):
+    def from_training(cls, *, data_spec, schema: TrainingSchema, normalizer: Normalizer, skill_vocab: SkillVocab):
         if normalizer.configured_job_tag != data_spec.job_tag:
             raise ValueError(
                 "normalizer job_tag must match training data spec: "
@@ -69,6 +75,7 @@ class ModelInputContract:
             data_spec=asdict(data_spec),
             schema=schema,
             normalizer_contract=normalizer.normalization_contract,
+            skill_vocab_entries=tuple(skill_vocab),
         )
 
     @classmethod
@@ -92,6 +99,9 @@ class ModelInputContract:
             )
         if payload.get("token_encoding") != TOKEN_ENCODING_CONTRACT:
             raise ValueError("input contract token_encoding does not match independent skill/state tokens")
+        if not isinstance(payload.get("skill_vocab"), Mapping):
+            raise ValueError("input contract missing complete skill_vocab; restore it from the original training metadata")
+        skill_vocab = SkillVocab.from_dict(payload["skill_vocab"])
         job_tag = str(payload.get("job_tag", "")).strip()
         if not job_tag:
             raise ValueError("input contract job_tag must not be empty")
@@ -119,6 +129,7 @@ class ModelInputContract:
             data_spec=normalized_data_spec,
             schema=TrainingSchema.from_dict(payload.get("schema")),
             normalizer_contract=dict(normalizer_contract),
+            skill_vocab_entries=tuple(skill_vocab),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -130,7 +141,20 @@ class ModelInputContract:
             "data_spec": dict(self.data_spec),
             "schema": asdict(self.schema),
             "normalizer": dict(self.normalizer_contract),
+            "skill_vocab": self.create_skill_vocab().to_dict(),
         }
+
+    def create_skill_vocab(self) -> SkillVocab:
+        """恢复训练时的 embedding 行身份，不读取本机 YAML 或 policy 配置。"""
+        return SkillVocab.from_entries(self.skill_vocab_entries)
+
+    def assert_matches_embedding(self, embedding_vocab_size: int) -> None:
+        expected = self.create_skill_vocab().size()
+        if expected != embedding_vocab_size:
+            raise ValueError(
+                "checkpoint skill embedding row count differs from the saved complete skill vocab: "
+                f"{embedding_vocab_size} != {expected}"
+            )
 
     def create_normalizer(self) -> Normalizer:
         """恢复归一化器并注册 checkpoint 中的状态字段。"""

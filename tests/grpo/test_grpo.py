@@ -14,7 +14,7 @@ import pytest
 import torch
 
 from common.policy.config import resolve_policy_grpo_dir
-from common.policy.data import ActionSpace
+from common.policy.data import ActionSpace, SkillVocab
 from common.policy.model import repetition as repetition_module
 from grpo.config import GrpoConfig, GrpoRunConfig, load_grpo_config
 from grpo.storage import GrpoRolloutStore
@@ -289,6 +289,37 @@ def test_grpo_config_rejects_nonpositive_time_horizon():
 # ---------- GRPO 热启动输出目录 ----------
 
 
+def test_grpo_checkpoint_preserves_complete_input_vocab(tmp_path):
+    from dataclasses import replace
+    from common.policy.config import ModelConfig
+    from common.policy.data import ModelInputContract
+    from common.policy.model import CausalPolicyModel
+    from common.torch_serialization import safe_torch_load
+    from scripts.autoregressive_replay.backends import PyTorchPolicyBackend
+    from tests.training._causal_fixtures import make_data_spec, make_input_contract
+
+    spec = make_data_spec(num_actions=3, action_keys=("fire_iii", "fire_iv", "ogcd_wait"),
+                          action_to_vocab_id=(1, 2, 4), action_is_gcd=(True, True, False))
+    input_contract = replace(make_input_contract(spec, vocab_size=5),
+                             skill_vocab_entries=((152, 1), (3577, 2), (900001, 3), (0, 4)))
+    model_config = ModelConfig(d_model=8, n_layers=1, n_heads=2, num_kv_heads=1,
+                               ff_dim=16, scene_capacity=1, history_capacity=4, dropout=0.0)
+    config = GrpoRunConfig(raw_data_dir=tmp_path / "raw", output_dir=tmp_path,
+                           job_tag="black_mage", model_variant="artzip", model=model_config)
+    model = CausalPolicyModel(spec, model_config, vocab_size=5)
+    optimizer = torch.optim.AdamW(model.parameters())
+    path = tmp_path / "grpo.pt"
+    _save_grpo_checkpoint(path, model=model, optimizer=optimizer, scheduler=None, iteration=1,
+                          config=config, grpo=GrpoConfig(), data_spec=spec, input_contract=input_contract,
+                          precision="float32", metrics={})
+    saved = ModelInputContract.from_checkpoint(safe_torch_load(path))
+    assert saved.create_skill_vocab().to_dict() == input_contract.create_skill_vocab().to_dict()
+    backend = PyTorchPolicyBackend(path, device="cpu", use_kv_cache=False)
+    assert backend.vocab_entries == input_contract.skill_vocab_entries
+    assert saved.create_skill_vocab().lookup(0) == 4
+    assert saved.create_skill_vocab().lookup(900001) == 3
+
+
 def _run_grpo_with_backend(
     monkeypatch,
     tmp_path,
@@ -327,7 +358,10 @@ def _run_grpo_with_backend(
                 action_to_vocab_id=(1,),
                 action_is_gcd=(True,),
             )
-            self.input_contract = SimpleNamespace(create_normalizer=lambda: object())
+            self.input_contract = SimpleNamespace(
+                create_normalizer=lambda: object(),
+                create_skill_vocab=lambda: SkillVocab.from_entries([(152, 1)]),
+            )
             self.repetition = SimpleNamespace()
             self.checkpoint = checkpoint_payload
 
@@ -590,7 +624,10 @@ def test_grpo_training_closes_replay_session_on_outer_failure(monkeypatch, tmp_p
                 action_to_vocab_id=(1,),
                 action_is_gcd=(True,),
             )
-            self.input_contract = SimpleNamespace(create_normalizer=lambda: object())
+            self.input_contract = SimpleNamespace(
+                create_normalizer=lambda: object(),
+                create_skill_vocab=lambda: SkillVocab.from_entries([(152, 1)]),
+            )
             self.repetition = SimpleNamespace()
             self.checkpoint = {}
 

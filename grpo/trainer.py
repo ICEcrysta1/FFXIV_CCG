@@ -717,6 +717,7 @@ def run_grpo_training(
             [replace(replay_config, scene_json_path=task[0]) for task in tasks],
             job_tag=data_spec.job_tag, normalizer=input_contract.create_normalizer(),
             expected_action_space=ActionSpace.from_data_spec(data_spec),
+            expected_skill_vocab=input_contract.create_skill_vocab(),
             engine=engine, workers=rollouts.workers,
         )
 

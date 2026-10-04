@@ -63,6 +63,7 @@ def run_rollout_parities(
                     [config for config, _ in items], job_tag=reference.data_spec.job_tag,
                     normalizer=reference.input_contract.create_normalizer(), engine=engine, workers=pool.workers,
                     expected_action_space=ActionSpace.from_data_spec(reference.data_spec),
+                    expected_skill_vocab=reference.input_contract.create_skill_vocab(),
                 )
             except Exception:
                 # 每个会话仍使用本引擎重试自己的来源，并将失败写入独立报告。

@@ -22,7 +22,7 @@ import training.loop.training_loop as training_loop_impl
 from training.loop.loss import compose_training_loss, configured_auxiliary_losses
 from common.policy import config as policy_config_module
 from common.policy.config import ModelConfig
-from common.policy.data import DataSpec, ModelInputContract, Normalizer
+from common.policy.data import DataSpec, ModelInputContract, Normalizer, SkillVocab
 from common.policy.data.schema import SceneWindowSchema, TrainingSchema
 from common.policy.model import RepetitionConfig, build_causal_attention_mask
 from common.policy.model.attention_residual import FullAttentionResidual
@@ -1155,6 +1155,7 @@ def test_training_helpers_and_epoch_metrics(tmp_path, monkeypatch):
     normalizer.configure_job_resources("black_mage")
     input_contract = ModelInputContract.from_training(
         data_spec=spec,
+        skill_vocab=SkillVocab.from_entries([(1001, 1), (1002, 2), (1003, 3)]),
         schema=schema,
         normalizer=normalizer,
     )
@@ -1599,14 +1600,7 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
     tensorboard_writer = ScalarRecorder()
     tensorboard_output_dirs: list[Path] = []
 
-    class FakeVocab:
-        @classmethod
-        def build_from_job_tag(cls, job_tag):
-            calls["vocab_job_tag"] = job_tag
-            return cls()
-
-        def size(self):
-            return 4
+    dataset.skill_vocab = SkillVocab.from_entries([(1001, 1), (1002, 2), (1003, 3)])
 
     class FakeModel(_TinyModel):
         def __init__(self, data_spec, model_config, *, vocab_size, repetition):
@@ -1670,7 +1664,6 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
     monkeypatch.setattr(training_module, "build_dataloaders", fake_build_dataloaders)
     monkeypatch.setattr(training_module, "resolve_policy_cache_dir", lambda job: tmp_path / "cache")
     monkeypatch.setattr(training_module, "registered_job_tags", lambda: ("black_mage",))
-    monkeypatch.setattr(training_module, "SkillVocab", FakeVocab)
     monkeypatch.setattr(training_module, "CausalPolicyModel", FakeModel)
     monkeypatch.setattr(training_module, "train_epoch", fake_train_epoch)
     monkeypatch.setattr(training_module, "validate", fake_validate)
@@ -1716,7 +1709,7 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
         tag == "validation/val_ppg" and step == 1
         for tag, _value, step in tensorboard_writer.values
     )
-    assert calls["vocab_job_tag"] == "black_mage"
+    assert calls["model_args"][2] == dataset.skill_vocab.size()
     assert any(
         "模型: job=black_mage model_variant=artzip" in record.getMessage()
         for record in caplog.records
@@ -1740,6 +1733,7 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
     )
     resume_optimizer = torch.optim.AdamW(resume_model.parameters(), lr=0.01)
     resume_input_contract = ModelInputContract.from_training(
+        skill_vocab=dataset.skill_vocab,
         data_spec=DataSpec.from_dataset(dataset),
         schema=schema,
         normalizer=normalizer,
@@ -1874,13 +1868,7 @@ def test_run_training_closes_tensorboard_writer_when_validation_callback_raises(
         def close(self):
             self.closed = True
 
-    class FakeVocab:
-        @classmethod
-        def build_from_job_tag(cls, _job_tag):
-            return cls()
-
-        def size(self):
-            return 2
+    dataset.skill_vocab = SkillVocab.from_entries([(1001, 1), (1002, 2)])
 
     class FakeModel(_TinyModel):
         def __init__(self, *_args, **_kwargs):
@@ -1935,7 +1923,6 @@ def test_run_training_closes_tensorboard_writer_when_validation_callback_raises(
             _validate=lambda *_args, **_kwargs: metrics,
             _resolve_cache_dir=lambda _job: tmp_path / "cache",
             _registered_job_tags=lambda: ("black_mage",),
-            _skill_vocab=FakeVocab,
             _model_class=FakeModel,
         )
 
@@ -2006,9 +1993,11 @@ def _resume_validation_context(tmp_path: Path, *, max_epochs: int = 3):
     )
     input_contract = ModelInputContract.from_training(
         data_spec=data_spec,
+        skill_vocab=SkillVocab.from_entries([(1001, 1), (1002, 2), (1003, 3)]),
         schema=schema,
         normalizer=normalizer,
     )
+    dataset.skill_vocab = input_contract.create_skill_vocab()
     model = _TinyModel()
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.01)
     checkpoint = {

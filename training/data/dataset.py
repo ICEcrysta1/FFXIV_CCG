@@ -69,7 +69,6 @@ class TrainingDataset(Dataset):
 
         self._readers: list[CompiledCacheReader] = []
         reference_reader = None
-        vocab_signature: tuple[tuple[int, int], ...] = ()
         for source_path in self._source_paths:
             reader = self._load_reader(source_path)
             if reader is None:
@@ -86,11 +85,9 @@ class TrainingDataset(Dataset):
                 self._action_to_vocab_id = reader.action_to_vocab_id
                 self._action_is_gcd = reader.action_is_gcd
                 self._skill_vocab = skill_vocab or SkillVocab.build_from_job_tag(self._job_tag)
-                vocab_signature = tuple(self._skill_vocab)
 
             self._assert_reader_compatible(reader)
-            if reader.vocab_signature != vocab_signature:
-                raise ValueError(f"compiled cache vocab mismatch: {source_path}")
+            self._skill_vocab.assert_matches(reader.vocab_signature, context=f"compiled cache {source_path}")
             self._readers.append(reader)
 
         if reference_reader is None:
