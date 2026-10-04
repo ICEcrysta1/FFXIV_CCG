@@ -81,10 +81,8 @@ public sealed class StateOutputRouter
     internal IReadOnlyDictionary<string, object> BuildNoopResourceTransition(CombatState state) =>
         _contextBuilder.BuildNoopResourceTransition(state);
 
-    internal Dictionary<string, double[]> BuildStateTransitionToken(
-        CombatState before,
-        CombatState after) =>
-        _contextBuilder.BuildStateTransitionToken(before, after);
+    internal Dictionary<string, double[]> BuildModelStateToken(ModelStateSnapshot snapshot) =>
+        _contextBuilder.BuildModelStateToken(snapshot);
 
     private ModelTensorFormatter LoadTensorFormatter()
     {

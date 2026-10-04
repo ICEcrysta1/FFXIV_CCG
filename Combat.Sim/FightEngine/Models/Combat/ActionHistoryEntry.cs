@@ -40,4 +40,5 @@ public sealed record ActionHistoryEntry(
     double? RequestTimestamp = null,
     double? CastCompletedTimestamp = null,
     double? EffectTimestamp = null,
-    Guid? ActionInstanceId = null);
+    Guid? ActionInstanceId = null,
+    ModelStateSnapshot? ModelState = null);

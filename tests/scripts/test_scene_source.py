@@ -34,7 +34,7 @@ def _scene_schema():
     return TrainingSchema(
         serialization_format="test", sample_schema_version=1,
         context_schema_version=1, scene_context_mode="absolute", scene_windows=(),
-        state_group_feature_keys={"player_state": ("before.time_seconds",)},
+        state_group_feature_keys={"player_state": ("previous_action_after.time_seconds",)},
         skill_history_fields=("potency",),
     )
 

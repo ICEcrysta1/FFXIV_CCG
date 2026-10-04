@@ -6,6 +6,7 @@
 
 ### Added
 
+- 新增请求时冻结的 `ModelStateSnapshot`，以动作实例身份关联上一动作后与本次请求快照；历史裁剪、fork 和 restore 保留已知前序状态，真实执行前后快照仍独立保存。
 - 新增独立历史技能与状态 embedding 的 PCA 视图，分别拟合有效 token、排除 padding，并支持空历史与单条历史；原始技能词表 embedding 图继续保留。
 - 新增固定动作词表 `ActionSpace`，将启用的真实技能与 policy 动作按稳定 Ordinal 顺序合并；`action_keys`、`action_to_vocab_id` 和 `action_is_gcd` 随缓存与 checkpoint 输入契约保存，离线恢复不依赖本机当前 YAML 重建输出顺序或动作类型。
 - 新增完全因果策略模型的六阶段修改计划，记录已完成的候选移除与独立 embedding，明确后续用户字段确认、跨步状态语义及回退规则、601 个非场景 token 与顺序 RoPE；100 份数据训练由用户本人执行。
@@ -22,6 +23,11 @@
 
 ### Changed
 
+- 实现因果策略模型阶段 3 的跨步状态语义：历史与最新状态统一使用 `previous_action_after.*`、`request_state.*`，分别表示上一步动作后与当前请求时状态；无法取得前序后状态时，两段均复制本次请求状态。两段继续保留累计直接与 DoT 威力，黑魔状态 86 维、技能数值特征 19 维不变。
+- `ogcd_wait` 与真实技能共用状态字段、编码和回退规则，等待决策落实时保存真实后状态，删除 fork 推进到未来观测时刻的预演；排队动作冻结原始请求快照，较早动作后来生效不能覆盖较新的等待或动作后基准。
+- 场景字段改写按两段状态自身的原始秒数与 feature keys 查询，不再从技能生效时间减读条时长推算请求时刻。历史真实执行统计通过独立 `execution_metrics` 保存且不进入 embedding；回放最终累计威力、基础 GCD 和黑魔状态分析读取当前 `request_state`。
+- 跨步状态契约同步升级为 PythonBridge 13、canonical 12、checkpoint 输入 12、训练样本 9、compiled cache v20/转换 v21、ONNX 部署 16/manifest 10、GRPO 轨迹 3；归一化契约保持 2。旧状态语义缓存需要重编译，旧 checkpoint、轨迹与部署包明确拒绝。技能时间字段和 384 条动作的过渡布局暂时保留，字段删减与最终 601 token 布局属于后续阶段。
+- 阶段 3 单元与导出验证为 Python 1340 项通过、4 项按条件跳过，清理复验 48 项通过，C# 286 项通过，PythonBridge 重建无 warning/error；GELU/SwiGLU 的 FP32 CPU 与严格 BF16 CUDA 四套小模型 ONNX 导出通过。真实日志的 compiled 历史输入验收发现下述未修复问题，阶段 3 尚未完成整链路验收。
 - 完成无候选因果策略模型迁移的阶段 1、2：技能、状态和场景分别直接编码到 `d_model`（当前黑魔配置为 768）并独立 LayerNorm，历史与当前状态共用状态投影、null 投影、归一化和 state 类型；正式输入暂为 `scene, skill_i, state_i, ..., current_state`，全部采用因果注意力。保留黑魔技能 19 维、状态 86 维、原 before/after 语义、null masks 与合法性字段；跨步状态语义和最终 601 token 交错上下文仍属于后续阶段。
 - `CausalPolicyModel` 从最新状态 hidden 预测固定动作词表：删除 `output_adapter`，直接与 `input_encoder.skill_embed.weight[action_to_vocab_id]` 点积。技能输入和输出共用唯一的 d_model 维语义参数表及 FP32 主权重，输出映射支持非 identity 索引，不扩大 Muon 参数范围。
 - 历史读取窗口仍为 384 条动作，每条展开为技能与状态两个 token；场景容量 200 时最多为 `200 + 2×384 + 1 = 969` 个物理 token。有效技能和状态使用各自连续的 RoPE 位置，padding 不占逻辑位置；KV-cache 分别记录动作数与 token 数，训练诊断、trace、分析和 ONNX 同步消费新布局。模型分析按显式位置识别当前状态 query，避免将历史状态混入决策 PCA 或错误绑定技能身份。
@@ -103,6 +109,10 @@
 
 - 移除历史技能/状态 pair fusion、`pair_embedding_dim` 配置、公共二次 token 投影、重复 segment embedding、输出维度适配和旧 pair embedding 分析模块，旧布局仅保留明确拒绝检查。
 - 彻底移除 C# 候选预演、候选上下文 builder 与非法候选状态生成，以及 Python 候选字段、候选顺序模块/YAML、shuffle、split attention 双向块、候选 scorer 和相关测试 helper；正式链路只保留固定输出动作词表，不保留候选 token、伪候选或候选空数组入口。
+
+### Known issues
+
+- 2026-10-04 转换 M5s 的 `fflogs_2CHK3gRfrNJxhmwb_f1_Arcadia_Petralia.json.br` 得到 491 个样本（273 个真实技能、218 个等待）。真实技能按四位小数时间排序、等待按原始浮点时间排序，同刻动作可能改变已有历史前缀，而 compiled bank 只按历史长度追加，导致 9 个等待记录遗漏、9 个真实技能记录重复；从样本 13 起，479 个样本的模型历史输入与原始转换上下文不一致。491 个最新状态和原始历史的请求冻结语义均正确，但缓存错行尚未修复，阶段 3 的整链路验收待完成。
 
 ## [0.1.1] - 2026-09-26
 

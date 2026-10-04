@@ -258,9 +258,9 @@ def _infer_initial_base_gcd(
             raise ValueError(f"validation PPG initial state has null {feature}")
         return normalizer.inverse(group, feature, float(vector[index]))
 
-    base_gcd = initial_value("player_state", "before.current_gcd_seconds")
+    base_gcd = initial_value("player_state", "request_state.current_gcd_seconds")
     if job_tag == "black_mage":
-        status_feature = "before.job.ley_lines.active"
+        status_feature = "request_state.job.ley_lines.active"
         if status_feature not in schema.state_group_feature_keys.get("buff_state", ()):
             raise ValueError("validation PPG initial state is missing Ley Lines status")
         if initial_value("buff_state", status_feature) >= 0.5:

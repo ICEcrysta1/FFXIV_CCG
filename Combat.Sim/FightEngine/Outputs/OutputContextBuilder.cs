@@ -57,10 +57,8 @@ public sealed class OutputContextBuilder
         return consumed;
     }
 
-    internal Dictionary<string, double[]> BuildStateTransitionToken(
-        CombatState before,
-        CombatState after) =>
-        _stateTokenBuilder.Build(BuildStateContext(before), BuildStateContext(after));
+    internal Dictionary<string, double[]> BuildModelStateToken(ModelStateSnapshot snapshot) =>
+        _stateTokenBuilder.Build(snapshot.PreviousActionAfter, snapshot.RequestState);
 
     /// <summary>装配 canonical 顶层上下文（对照 build_context）。</summary>
     public Dictionary<string, object?> BuildContext(
@@ -86,8 +84,10 @@ public sealed class OutputContextBuilder
                 ["buff_state_feature_keys"] = _stateTokenBuilder.BuffHistoryFeatureKeys.ToList(),
                 ["target_buff_state_feature_keys"] = _stateTokenBuilder.TargetBuffHistoryFeatureKeys.ToList(),
                 ["resource_state_feature_keys"] = _stateTokenBuilder.ResourceHistoryFeatureKeys.ToList(),
-                // 阶段 1 沿用状态 token 字段，两段均为请求时的真实当前快照。
-                ["tokens"] = new List<Dictionary<string, double[]>> { _stateTokenBuilder.Build(current, current) },
+                ["tokens"] = new List<Dictionary<string, double[]>>
+                {
+                    _stateTokenBuilder.Build(state.LastDecisionAfter ?? current, current),
+                },
             },
             ["action_keys"] = actionKeys.ToList(),
             ["action_legal_mask"] = actionLegalMask.ToList(),

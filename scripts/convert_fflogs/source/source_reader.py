@@ -14,7 +14,7 @@ from .source_helpers import (
     SKILL_HISTORY_FIELDS,
     build_skill_feature_matrix,
     derive_skill_feature_names,
-    extract_history_after_value,
+    extract_execution_metric,
     require_numeric_skill_kind,
     to_optional_int,
 )
@@ -77,12 +77,6 @@ class TrainingSourceReader:
                 group_values = token.get(group)
                 if not isinstance(group_values, (list, tuple)) or len(group_values) != len(keys):
                     raise ValueError(f"current request state group width mismatch: {group}")
-                positions = {key: index for index, key in enumerate(keys)}
-                for key, index in positions.items():
-                    if key.startswith("before."):
-                        after = positions.get("after." + key.removeprefix("before."))
-                        if after is None or group_values[index] != group_values[after]:
-                            raise ValueError("phase 1 current request before/after must be identical")
         self._skill_feature_names = derive_skill_feature_names(self)
 
     @property
@@ -242,36 +236,41 @@ class TrainingSourceReader:
     ) -> tuple[list[float], list[float]]:
         """返回历史技能原始威力与累计 DoT，供验证 PPG 使用。"""
         rows = self.history_skill_rows(sample_idx, max_history=max_history)
-        context = self._sample_context(sample_idx)
-        state_context = context.get("state_history_context", {})
-        tokens = state_context.get("tokens", []) if isinstance(state_context, dict) else []
-        if max_history is not None:
-            if max_history < 0:
-                raise ValueError(f"max_history must be >= 0, got {max_history}")
-            tokens = [] if max_history == 0 else tokens[-max_history:]
-        if len(rows) != len(tokens):
+        metrics = self.history_execution_metrics(sample_idx, max_history=max_history)
+        if len(rows) != len(metrics):
             raise ValueError(
-                "skill/state history length mismatch: "
-                f"sample={sample_idx} skills={len(rows)} states={len(tokens)}"
+                "skill/execution metrics length mismatch: "
+                f"sample={sample_idx} skills={len(rows)} metrics={len(metrics)}"
             )
 
         potencies: list[float] = []
         cumulative_dot_potencies: list[float] = []
-        for index, (row, token) in enumerate(zip(rows, tokens)):
+        for index, (row, metric) in enumerate(zip(rows, metrics)):
             context_label = f"history sample={sample_idx} index={index} fight={self.fight_id}"
             require_numeric_skill_kind(row, context=context_label)
             potencies.append(float(row.get("potency", 0.0)))
-            if not isinstance(token, dict):
-                raise ValueError(f"{context_label} state history token must be a mapping")
+            if not isinstance(metric, dict):
+                raise ValueError(f"{context_label} execution metrics row must be a mapping")
             cumulative_dot_potencies.append(
-                extract_history_after_value(
-                    token,
-                    self.schema,
-                    feature_name="target.cumulative_dot_potency",
+                extract_execution_metric(
+                    metric,
+                    feature_name="cumulative_dot_potency",
                     context=context_label,
                 )
             )
         return potencies, cumulative_dot_potencies
+
+    def history_execution_metrics(self, sample_idx: int, *, max_history: int | None = None):
+        """真实执行统计与模型状态分离，顺序与技能历史一一对应。"""
+        state_context = self._sample_context(sample_idx)["state_history_context"]
+        metrics = state_context.get("execution_metrics")
+        if not isinstance(metrics, list) or len(metrics) != self.history_length(sample_idx):
+            raise ValueError(f"history execution metrics length mismatch: sample={sample_idx}")
+        if max_history is not None:
+            if max_history < 0:
+                raise ValueError(f"max_history must be >= 0, got {max_history}")
+            metrics = [] if max_history == 0 else metrics[-max_history:]
+        return metrics
 
     def history_state_matrix(
         self,

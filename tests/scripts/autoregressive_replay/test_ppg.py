@@ -41,10 +41,10 @@ class _FakeBackend:
         self.state.time = float(timestamp)
         if format == "vector":
             context = {
-                "state_history_context": {
+                "current_state_context": {
                     "target_buff_state_feature_keys": [
-                        "after.target.cumulative_potency",
-                        "after.target.cumulative_dot_potency",
+                        "request_state.target.cumulative_potency",
+                        "request_state.target.cumulative_dot_potency",
                     ],
                     "tokens": [
                         {
@@ -333,22 +333,23 @@ def test_validation_ppg_recovers_initial_base_gcd_from_saved_current_state(base_
     normalizer = Normalizer()
     from common.policy.data.schema import TrainingSchema
     schema = TrainingSchema(
-        serialization_format="raw_training_source_v1", sample_schema_version=1,
-        context_schema_version=11, scene_context_mode="absolute_from_fight_scene_context", scene_windows=(),
+        serialization_format="raw_training_source_v1", sample_schema_version=9,
+        context_schema_version=12, scene_context_mode="absolute_from_fight_scene_context", scene_windows=(),
         state_group_feature_keys={
-            "player_state": ("before.current_gcd_seconds", "after.current_gcd_seconds"),
-            "buff_state": ("before.job.ley_lines.active", "after.job.ley_lines.active"),
+            "player_state": ("previous_action_after.current_gcd_seconds", "request_state.current_gcd_seconds"),
+            "buff_state": ("previous_action_after.job.ley_lines.active", "request_state.job.ley_lines.active"),
         }, skill_history_fields=(),
     )
     normalizer.register_schema(schema)
     actual_gcd = base_gcd * (0.85 if haste else 1.0)
-    normalized = normalizer.normalize_value("player_state", "before.current_gcd_seconds", actual_gcd)
+    previous_gcd = normalizer.normalize_value("player_state", "previous_action_after.current_gcd_seconds", 2.9)
+    request_gcd = normalizer.normalize_value("player_state", "request_state.current_gcd_seconds", actual_gcd)
 
     class Reader:
         @staticmethod
         def sample(_index):
             return {
-                "current_state_vectors": torch.tensor([normalized, normalized, float(haste), float(haste)]),
+                "current_state_vectors": torch.tensor([previous_gcd, request_gcd, float(not haste), float(haste)]),
                 "current_state_null_mask": torch.zeros(4, dtype=torch.bool),
             }
     Reader.schema = schema
@@ -363,7 +364,7 @@ def test_validation_ppg_recovers_initial_base_gcd_from_saved_current_state(base_
 @pytest.mark.parametrize("missing_state,null_gcd,gcd", ((True, False, 2.5), (False, True, 2.5), (False, False, 0.0)))
 def test_initial_ppg_state_cannot_silently_fall_back_to_local_gcd(missing_state, null_gcd, gcd):
     normalizer = Normalizer()
-    keys = ("before.current_gcd_seconds", "after.current_gcd_seconds")
+    keys = ("previous_action_after.current_gcd_seconds", "request_state.current_gcd_seconds")
     normalizer.register_feature_keys("player_state", list(keys))
     normalized = normalizer.normalize_value("player_state", keys[0], gcd)
     schema = SimpleNamespace(
@@ -372,7 +373,7 @@ def test_initial_ppg_state_cannot_silently_fall_back_to_local_gcd(missing_state,
     )
     values = {} if missing_state else {
         "current_state_vectors": torch.tensor([normalized, normalized]),
-        "current_state_null_mask": torch.tensor([null_gcd, False]),
+        "current_state_null_mask": torch.tensor([False, null_gcd]),
     }
     reader = SimpleNamespace(schema=schema, sample=lambda _index: values)
     with pytest.raises(ValueError, match="missing initial current state|has null|invalid initial base GCD"):
@@ -448,7 +449,7 @@ def test_validation_ppg_reads_history_capacity_from_model_config(
                 timestamp=self.state.time,
                 next_scheduled_event_time=None,
                 context=(
-                    {"state_history_context": {"tokens": []}}
+                    {"current_state_context": {"target_buff_state_feature_keys": ["request_state.target.cumulative_potency", "request_state.target.cumulative_dot_potency"], "tokens": [{"target_buff_state": [0.0, 0.0]}]}}
                     if format == "vector"
                     else {
                         "time_seconds": self.state.time,

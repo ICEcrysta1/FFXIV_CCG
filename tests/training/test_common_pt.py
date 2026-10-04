@@ -133,14 +133,14 @@ def test_compiled_history_and_current_state_use_compact_state_contract(tmp_path)
     assert dataset.schema.state_vector_dim() == 86
     player_keys = dataset.schema.state_group_feature_keys["player_state"]
     assert len(player_keys) == 18
-    assert "before.current_gcd_seconds" in player_keys
-    assert "after.downtime_remaining_seconds" in player_keys
+    assert "previous_action_after.current_gcd_seconds" in player_keys
+    assert "request_state.downtime_remaining_seconds" in player_keys
     assert len(dataset.schema.state_group_feature_keys["buff_state"]) == 40
     assert len(dataset.schema.state_group_feature_keys["target_buff_state"]) == 14
     resource_keys = dataset.schema.state_group_feature_keys["resource_state"]
     assert len(resource_keys) == 14
-    assert all(key.startswith("before.") for key in resource_keys[:7])
-    assert all(key.startswith("after.") for key in resource_keys[7:])
+    assert all(key.startswith("previous_action_after.") for key in resource_keys[:7])
+    assert all(key.startswith("request_state.") for key in resource_keys[7:])
     assert not any(
         key.rsplit(".", 1)[-1] in removed_fields or key.endswith("_gcds")
         or key.startswith("consumed.") or ".manaward." in key or ".surecast." in key

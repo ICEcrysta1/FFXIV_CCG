@@ -4,16 +4,18 @@
 // See LICENSE and LICENSE-FightEngine-Linking-Exception in the repository root.
 
 using Combat.Sim.Models.Combat;
+using Combat.Sim.Outputs;
 
 namespace Combat.Sim.Models.Policy;
 
-/// <summary>一次纯策略决策及其调用方选定的后续观测状态。</summary>
+/// <summary>一次纯策略决策；真实动作后快照在决策落实时保存，模型状态在请求时冻结。</summary>
 public sealed record PolicyDecision(
     PolicyActionDefinition Action,
     double Timestamp,
     int GcdIndex,
     CombatState StateBefore,
-    CombatState StateAfter)
+    CombatState StateAfter,
+    ModelStateSnapshot ModelState)
 {
     internal PolicyDecision DeepClone() => this with
     {

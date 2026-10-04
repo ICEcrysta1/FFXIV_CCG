@@ -13,7 +13,7 @@ namespace Combat.Sim.Outputs;
 
 /// <summary>
 /// 状态上下文原料装配器（对照 output_context_builder.build_state_context）。
-/// 输出历史条目与当前状态 token 的 before/after 状态上下文共用。
+/// 真实执行历史与模型状态两段快照共用此上下文构造器。
 /// </summary>
 public sealed class StateContextBuilder
 {

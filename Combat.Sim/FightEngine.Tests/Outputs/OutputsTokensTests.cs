@@ -25,8 +25,8 @@ public class OutputsTokensTests
             var values = token[group];
             Assert.Equal(values.Take(values.Length / 2), values.Skip(values.Length / 2));
         }
-        Assert.Equal(8000, OutputsTestKit.CurrentStateVectorValue(payload, "player_state", "before.mp"));
-        Assert.Equal(state.Time, OutputsTestKit.CurrentStateVectorValue(payload, "player_state", "after.time_seconds"));
+        Assert.Equal(8000, OutputsTestKit.CurrentStateVectorValue(payload, "player_state", "previous_action_after.mp"));
+        Assert.Equal(state.Time, OutputsTestKit.CurrentStateVectorValue(payload, "player_state", "request_state.time_seconds"));
     }
 
     [Fact]
@@ -60,7 +60,7 @@ public class OutputsTokensTests
         Assert.DoesNotContain("candidate_state_context", output.Keys);
         Assert.Empty((List<Dictionary<string, object?>>)output["skill_history_context"]!);
         Assert.Equal(JsonSerializer.Serialize(before), JsonSerializer.Serialize(simulator.CreateSnapshot()));
-        Assert.Equal(0, OutputsTestKit.CurrentStateVectorValue(output, "player_state", "after.time_seconds"));
+        Assert.Equal(0, OutputsTestKit.CurrentStateVectorValue(output, "player_state", "request_state.time_seconds"));
     }
 
     [Fact]

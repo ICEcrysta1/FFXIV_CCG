@@ -42,41 +42,17 @@ def require_numeric_skill_kind(row: dict[str, object], *, context: str) -> float
     return numeric_value
 
 
-def extract_history_after_value(
-    state_token: dict[str, object],
-    schema,
+def extract_execution_metric(
+    metrics: dict[str, object],
     *,
     feature_name: str,
     context: str,
 ) -> float:
-    """从状态历史 token 读取一个 after 数值，缺失时显式失败。"""
-    group_key = "target_buff_state"
-    qualified_name = (
-        feature_name
-        if feature_name.startswith("after.")
-        else f"after.{feature_name}"
-    )
-    feature_keys = tuple(schema.state_group_feature_keys.get(group_key, ()))
-    try:
-        feature_index = feature_keys.index(qualified_name)
-    except ValueError as exc:
-        raise ValueError(
-            f"{context} state history is missing feature {qualified_name!r}"
-        ) from exc
-    values = state_token.get(group_key)
-    if not isinstance(values, (list, tuple)) or feature_index >= len(values):
-        raise ValueError(
-            f"{context} state history target_buff_state has no {qualified_name!r} value"
-        )
-    value = values[feature_index]
-    if value is None:
-        raise ValueError(f"{context} state history feature {qualified_name!r} is null")
-    try:
-        return float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            f"{context} state history feature {qualified_name!r} is not numeric"
-        ) from exc
+    """从真实执行 metadata 读取原始指标，禁止改从模型状态两段推导结果。"""
+    value = metrics.get(feature_name) if isinstance(metrics, dict) else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError(f"{context} execution metric {feature_name!r} must be finite numeric")
+    return float(value)
 
 
 def derive_skill_feature_names(reader: "TrainingSourceReader") -> tuple[str, ...]:

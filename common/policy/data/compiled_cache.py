@@ -24,7 +24,8 @@ from .action_space import ActionSpace
 # v17：状态 bank 移除三个调度窗口秒数字段以及全部 GCD 单位时间字段。
 # v18：状态 bank 只保留资源 before/after，移除 weave 字段与黑魔残留辅助 Buff。
 # v19：固定动作词表和当前请求状态；不保存任何候选输入，旧缓存必须重编译。
-CACHE_FORMAT = "raw_json_compiled_samples_v19_causal_policy"
+# v20：模型历史保存请求时冻结的跨步状态，真实执行统计与状态向量分离。
+CACHE_FORMAT = "raw_json_compiled_samples_v20_causal_state"
 # v11：C# 状态机把硬读条的服务器效果结算与完整读条锁结束拆开；转换请求时刻
 # 仍按统一滑步窗口恢复，日志抖动只由容量一动作队列吸收。旧缓存的效果状态时序不可复用。
 # v10：硬读条请求时刻改由 `cast − 实际读条时长 + 0.5 秒滑步窗口` 解析，
@@ -41,7 +42,8 @@ CACHE_FORMAT = "raw_json_compiled_samples_v19_causal_policy"
 # v18：按纯秒制时间输入重建完整 history bank，调度窗口不进入模型。
 # v19：按精简后的状态 token 契约重建完整 history bank，技能侧继续保留资源消耗。
 # v20：当前请求状态和只读合法性/value 直接生成，不进行未来动作预演。
-DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v20_causal_policy"
+# v21：状态使用上一动作后与当前请求快照；wait 不预演未来，场景按各段自身时间查询。
+DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v21_causal_state"
 # `weights_only=True` 的安全 unpickler 对 protocol 2 支持最稳定；compiled
 # cache 的样本数据只需要普通 mapping 和 tensor，不需要更高协议。
 CACHE_PICKLE_PROTOCOL = 2

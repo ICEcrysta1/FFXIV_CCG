@@ -44,7 +44,7 @@ class _SceneWindow:
 
 class _SceneSchema:
     scene_windows = (_SceneWindow(),)
-    state_group_feature_keys = {"player_state": ("before.mp",)}
+    state_group_feature_keys = {"player_state": ("previous_action_after.mp",)}
 
     @staticmethod
     def scene_feature_dim():
@@ -398,7 +398,7 @@ def _live_builder_fixture(*, max_history=2):
             return SimpleNamespace(context=deepcopy(canonical))
 
     schema = SimpleNamespace(
-        state_group_feature_keys={"player_state": ("before.mp", "after.mp")},
+        state_group_feature_keys={"player_state": ("previous_action_after.mp", "request_state.mp")},
         state_vector_dim=lambda: 2, scene_feature_dim=lambda: 2,
     )
     builder = LiveBatchBuilder(

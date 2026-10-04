@@ -54,7 +54,7 @@ public sealed record DotContextEntry(
 
 /// <summary>
 /// 单个时刻的状态上下文原料（对照 output_context_builder.build_state_context 的返回字典）。
-/// 历史条目与当前状态 token 的 before/after 都复用这个类型。
+/// 真实执行历史、模型的上一动作后与请求快照都复用这个类型。
 /// </summary>
 public sealed record StateContext(
     string JobTag,

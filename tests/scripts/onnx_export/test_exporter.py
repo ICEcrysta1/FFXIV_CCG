@@ -1011,7 +1011,7 @@ def test_load_policy_rejects_stage1_fusion_config_and_input_contract(tmp_path):
     torch.save(payload, checkpoint)
     with pytest.raises(ValueError, match="input contract version"):
         export_module.load_policy(checkpoint, precision="float32")
-    payload["input_contract"]["version"] = 11
+    payload["input_contract"]["version"] = 12
     payload["input_contract"].pop("token_encoding")
     torch.save(payload, checkpoint)
     with pytest.raises(ValueError, match="token_encoding"):
@@ -1084,15 +1084,15 @@ def _write_small_checkpoint(
         data_spec=data_spec,
         schema=TrainingSchema(
             serialization_format="test",
-            sample_schema_version=8,
-            context_schema_version=11,
+            sample_schema_version=9,
+            context_schema_version=12,
             scene_context_mode="absolute",
             scene_windows=scene_windows,
             state_group_feature_keys={
                 "player_state": (
-                    "before.time_seconds",
-                    "before.current_gcd_seconds",
-                    "before.mp",
+                    "previous_action_after.time_seconds",
+                    "previous_action_after.current_gcd_seconds",
+                    "previous_action_after.mp",
                 )
             },
             skill_history_fields=("skill_key",),

@@ -516,7 +516,7 @@ _BINARY_FIELDS = frozenset(
 
 
 def _strip_prefix(name: str) -> str:
-    for prefix in ("before.", "after."):
+    for prefix in ("previous_action_after.", "request_state."):
         if name.startswith(prefix):
             return name[len(prefix) :]
     return name

@@ -121,8 +121,8 @@ def test_model_vectors_exclude_scheduling_and_weave_fields(job_tag, action_key):
             or key.startswith("consumed.") or ".manaward." in key or ".surecast." in key
             for key in all_keys
         )
-        assert "before.current_gcd_seconds" in keys
-        assert "after.downtime_remaining_seconds" in keys
+        assert "previous_action_after.current_gcd_seconds" in keys
+        assert "request_state.downtime_remaining_seconds" in keys
     for context_key in ("skill_history_context",):
         assert canonical[context_key]
         assert all("gcd_index" not in token for token in canonical[context_key])
@@ -156,7 +156,7 @@ def test_current_state_packet_uses_one_real_snapshot_and_fixed_action_space(cs_b
     assert immediate == future
     assert "candidate_skill_context" not in immediate
     assert "candidate_state_context" not in immediate
-    assert immediate["schema_version"] == 11
+    assert immediate["schema_version"] == 12
     assert immediate["skill_history_context"] == []
     keys = immediate["action_keys"]
     assert keys == sorted(keys)

@@ -41,20 +41,20 @@ public sealed class StateTokenBuilder
     public IReadOnlyList<string> TargetBuffHistoryFeatureKeys =>
         _targetBuffVectorTokenBuilder.HistoryFeatureKeys;
 
-    /// <summary>状态历史与当前状态共用：before/after 四组向量（对照 build）。</summary>
+    /// <summary>状态历史与当前状态共用：上一动作后、当前请求两段四组向量。</summary>
     public Dictionary<string, double[]> Build(
-        StateContext beforeStateContext,
-        StateContext afterStateContext) =>
+        StateContext previousActionAfter,
+        StateContext requestState) =>
         new()
         {
             ["player_state"] = _playerVectorTokenBuilder.BuildHistoryToken(
-                beforeStateContext.Player, afterStateContext.Player).ToArray(),
+                previousActionAfter.Player, requestState.Player).ToArray(),
             ["buff_state"] = _buffVectorTokenBuilder.BuildHistoryToken(
-                beforeStateContext, afterStateContext).ToArray(),
+                previousActionAfter, requestState).ToArray(),
             ["target_buff_state"] = _targetBuffVectorTokenBuilder.BuildHistoryToken(
-                beforeStateContext, afterStateContext).ToArray(),
+                previousActionAfter, requestState).ToArray(),
             ["resource_state"] = _resourceVectorTokenBuilder.BuildHistoryToken(
-                beforeStateContext.Resources, afterStateContext.Resources).ToArray(),
+                previousActionAfter.Resources, requestState.Resources).ToArray(),
         };
 
 }

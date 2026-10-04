@@ -60,13 +60,14 @@ public sealed class PolicyContextBuilder
         var stateHistoryContext = (Dictionary<string, object?>)
             output[OutputContextSchema.StateHistoryContextKey]!;
         var stateHistory = (List<Dictionary<string, double[]>>)stateHistoryContext["tokens"]!;
+        var executionMetrics = (List<Dictionary<string, double>>)stateHistoryContext["execution_metrics"]!;
 
         var merged = new List<(double Time, int Order, Dictionary<string, object?> Skill,
-            Dictionary<string, double[]> State)>();
+            Dictionary<string, double[]> State, Dictionary<string, double> Metrics)>();
         for (var index = 0; index < skillHistory.Count; index++)
         {
             var time = Convert.ToDouble(skillHistory[index]["time_seconds"]);
-            merged.Add((time, index, skillHistory[index], stateHistory[index]));
+            merged.Add((time, index, skillHistory[index], stateHistory[index], executionMetrics[index]));
         }
 
         var order = skillHistory.Count;
@@ -78,14 +79,19 @@ public sealed class PolicyContextBuilder
             {
                 var consumed = router.BuildNoopResourceTransition(decision.StateBefore);
                 token = (BuildSkillToken(decision.Action, decision.Timestamp, consumed),
-                    router.BuildStateTransitionToken(decision.StateBefore, decision.StateAfter));
+                    router.BuildModelStateToken(decision.ModelState));
             }
             retainedTokens.Add(decision, token);
             merged.Add((
                 decision.Timestamp,
                 order++,
                 token.Skill,
-                token.State));
+                token.State,
+                new Dictionary<string, double>
+                {
+                    ["cumulative_potency"] = decision.StateAfter.CumulativePotency,
+                    ["cumulative_dot_potency"] = decision.StateAfter.CumulativeDotPotency,
+                }));
         }
         // 只保留当前窗口中的条目，重置、恢复及滑动淘汰都不累积旧快照。
         _historyTokens = retainedTokens;
@@ -100,6 +106,8 @@ public sealed class PolicyContextBuilder
         skillHistory.AddRange(merged.Select(item => item.Skill));
         stateHistory.Clear();
         stateHistory.AddRange(merged.Select(item => item.State));
+        executionMetrics.Clear();
+        executionMetrics.AddRange(merged.Select(item => item.Metrics));
     }
 
     private static Dictionary<string, object?> BuildSkillToken(

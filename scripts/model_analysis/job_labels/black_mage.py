@@ -9,7 +9,7 @@ ANALYSIS_MP_MAX = 10000.0
 
 
 def decision_state_labels(batch_index: int, *, batch, schema) -> tuple[str, float]:
-    """从黑魔当前请求 state 的 before 视图提取 AF/UI 和实际 MP。"""
+    """从黑魔状态 token 的当前请求段提取 AF/UI 和实际 MP。"""
     values = batch["current_state_vectors"][batch_index]
     null_mask = batch["current_state_null_mask"][batch_index]
     resource_slice = schema.state_group_slices().get("resource_state")
@@ -26,9 +26,9 @@ def decision_state_labels(batch_index: int, *, batch, schema) -> tuple[str, floa
     player_values = values[player_slice]
     player_null = null_mask[player_slice]
 
-    af = _state_scalar(resource_values, resource_null, resource_index.get("before.astral_fire"))
-    ui = _state_scalar(resource_values, resource_null, resource_index.get("before.umbral_ice"))
-    mp = _state_scalar(player_values, player_null, player_index.get("before.mp"))
+    af = _state_scalar(resource_values, resource_null, resource_index.get("request_state.astral_fire"))
+    ui = _state_scalar(resource_values, resource_null, resource_index.get("request_state.umbral_ice"))
+    mp = _state_scalar(player_values, player_null, player_index.get("request_state.mp"))
     if af >= 0.5:
         elemental_state = f"AF{int(round(af))}"
     elif ui >= 0.5:

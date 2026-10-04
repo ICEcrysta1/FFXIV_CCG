@@ -835,14 +835,15 @@ def test_grpo_rollout_store_persists_and_streams_cpu_decisions(tmp_path):
     assert loaded_advantages.tolist() == [1.25]
 
 
-def test_grpo_rollout_store_rejects_previous_input_format(tmp_path):
+@pytest.mark.parametrize("previous_format", [1, 2])
+def test_grpo_rollout_store_rejects_previous_input_format(tmp_path, previous_format):
     """动作输入改为固定词表后，旧轨迹不能按新输入格式继续更新策略。"""
     store = GrpoRolloutStore(tmp_path / "grpo", iteration=1, run_id="old-format")
     entry = store.write_trajectory(
         scene_json_path=tmp_path / "scene.json", decisions=(_decision(history_length=0, scene_length=0, action_index=0),),
         ppg=1.0, greedy_ppg=1.0, reward=0.0,
     )
-    torch.save({"format": 1, "decisions": []}, entry.path)
+    torch.save({"format": previous_format, "decisions": []}, entry.path)
     with pytest.raises(ValueError, match="unsupported GRPO trajectory format"):
         store._load_decisions(entry.path)
 

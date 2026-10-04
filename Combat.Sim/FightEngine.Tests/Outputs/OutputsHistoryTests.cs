@@ -24,10 +24,12 @@ public class OutputsHistoryTests
         var skillHistory = (List<Dictionary<string, object?>>)payload["skill_history_context"];
         Assert.Equal("paradox", skillHistory[^1]["skill_key"]);
         Assert.Equal(1600, skillHistory[^1]["actual_mp_cost"]);
-        Assert.Equal(2000.0, OutputsTestKit.HistoryVectorValue(historyState, "player_state", "before.mp"), 5);
-        Assert.Equal(400.0, OutputsTestKit.HistoryVectorValue(historyState, "player_state", "after.mp"), 5);
-        Assert.Equal(1.0, OutputsTestKit.HistoryVectorValue(historyState, "resource_state", "before.paradox_ready"), 5);
-        Assert.Equal(0.0, OutputsTestKit.HistoryVectorValue(historyState, "resource_state", "after.paradox_ready"), 5);
+        Assert.Equal(2000.0, OutputsTestKit.HistoryVectorValue(historyState, "player_state", "previous_action_after.mp"), 5);
+        Assert.Equal(2000.0, OutputsTestKit.HistoryVectorValue(historyState, "player_state", "request_state.mp"), 5);
+        Assert.Equal(400, nextState.Mp);
+        Assert.Equal(1.0, OutputsTestKit.HistoryVectorValue(historyState, "resource_state", "previous_action_after.paradox_ready"), 5);
+        Assert.Equal(1.0, OutputsTestKit.HistoryVectorValue(historyState, "resource_state", "request_state.paradox_ready"), 5);
+        Assert.Equal(false, nextState.GetJobResource("paradox_ready"));
         // 资源消耗只保留在技能 token，状态历史不重复输出 consumed 段。
         var consumed = (Dictionary<string, object?>)skillHistory[^1]["job_resources_consumed"]!;
         Assert.Equal(true, consumed["paradox_ready"]);
@@ -45,17 +47,13 @@ public class OutputsHistoryTests
         var historyState = (Dictionary<string, object?>)payload["state_history_context"];
         var tokenIndex = ((List<Dictionary<string, double[]>>)historyState["tokens"]).Count - 1;
 
-        Assert.Equal(1.0, OutputsTestKit.HistoryVectorValue(historyState, "buff_state",
-            "after.system.burst_potion.active", tokenIndex), 5);
-        Assert.True(OutputsTestKit.HistoryVectorValue(historyState, "buff_state",
-            "after.system.burst_potion.remaining_seconds", tokenIndex) > 0.0);
-        Assert.Equal(1.0, OutputsTestKit.HistoryVectorValue(historyState, "buff_state",
-            "after.job.ley_lines.active", tokenIndex), 5);
-        Assert.True(OutputsTestKit.HistoryVectorValue(historyState, "buff_state",
-            "after.job.ley_lines.remaining_seconds", tokenIndex) > 0.0);
+        Assert.Equal(1.0, OutputsTestKit.CurrentStateVectorValue(payload, "buff_state", "previous_action_after.system.burst_potion.active"), 5);
+        Assert.True(OutputsTestKit.CurrentStateVectorValue(payload, "buff_state", "previous_action_after.system.burst_potion.remaining_seconds") > 0.0);
+        Assert.Equal(1.0, OutputsTestKit.CurrentStateVectorValue(payload, "buff_state", "previous_action_after.job.ley_lines.active"), 5);
+        Assert.True(OutputsTestKit.CurrentStateVectorValue(payload, "buff_state", "previous_action_after.job.ley_lines.remaining_seconds") > 0.0);
         var buffFeatureKeys = (List<string>)historyState["buff_state_feature_keys"];
-        Assert.True(buffFeatureKeys.IndexOf("after.system.burst_potion.active") <
-                    buffFeatureKeys.IndexOf("after.job.ley_lines.active"));
+        Assert.True(buffFeatureKeys.IndexOf("request_state.system.burst_potion.active") <
+                    buffFeatureKeys.IndexOf("request_state.job.ley_lines.active"));
     }
 
     [Fact]
@@ -68,10 +66,10 @@ public class OutputsHistoryTests
 
         Assert.Equal(1.0,
             OutputsTestKit.CurrentStateVectorValue(payload, "buff_state",
-                "before.system.raid_buff_window.active")!, 5);
+                "previous_action_after.system.raid_buff_window.active")!, 5);
         Assert.Equal(18.0,
             OutputsTestKit.CurrentStateVectorValue(payload, "buff_state",
-                "before.system.raid_buff_window.remaining_seconds")!, 5);
+                "previous_action_after.system.raid_buff_window.remaining_seconds")!, 5);
     }
 
     [Fact]
@@ -83,10 +81,8 @@ public class OutputsHistoryTests
         var payload = TimelineTestDriver.FormatVectorState(machine, state);
         var historyState = (Dictionary<string, object?>)payload["state_history_context"];
 
-        Assert.Equal(1.0, OutputsTestKit.HistoryVectorValue(historyState, "buff_state",
-            "after.job.triplecast.active", tokenIndex: 1), 5);
-        Assert.Equal(3.0, OutputsTestKit.HistoryVectorValue(historyState, "buff_state",
-            "after.job.triplecast.stacks", tokenIndex: 1), 5);
+        Assert.Equal(1.0, OutputsTestKit.CurrentStateVectorValue(payload, "buff_state", "previous_action_after.job.triplecast.active"), 5);
+        Assert.Equal(3.0, OutputsTestKit.CurrentStateVectorValue(payload, "buff_state", "previous_action_after.job.triplecast.stacks"), 5);
     }
 
     [Fact]
@@ -98,9 +94,9 @@ public class OutputsHistoryTests
         var historyState = (Dictionary<string, object?>)payload["state_history_context"];
 
         Assert.Equal(1.0,
-            OutputsTestKit.HistoryVectorValue(historyState, "buff_state", "after.job.lucid_dreaming.active", tokenIndex: 0), 5);
+            OutputsTestKit.CurrentStateVectorValue(payload, "buff_state", "previous_action_after.job.lucid_dreaming.active"), 5);
         Assert.Equal(21.0,
-            OutputsTestKit.HistoryVectorValue(historyState, "buff_state", "after.job.lucid_dreaming.remaining_seconds", tokenIndex: 0), 5);
+            OutputsTestKit.CurrentStateVectorValue(payload, "buff_state", "previous_action_after.job.lucid_dreaming.remaining_seconds"), 5);
     }
 
     [Fact]
@@ -113,13 +109,10 @@ public class OutputsHistoryTests
         var payload = TimelineTestDriver.FormatResult(machine, result);
         var historyState = (Dictionary<string, object?>)payload["state_history_context"];
 
-        Assert.Equal(1.0, OutputsTestKit.HistoryVectorValue(historyState, "target_buff_state",
-            "after.target.high_thunder.active"), 5);
+        Assert.Equal(1.0, OutputsTestKit.CurrentStateVectorValue(payload, "target_buff_state", "previous_action_after.target.high_thunder.active"), 5);
         // 动作历史在 effect 时刻记录；瞬发 DoT 此时拥有完整持续时间。
-        Assert.Equal(30.0, OutputsTestKit.HistoryVectorValue(historyState, "target_buff_state",
-            "after.target.high_thunder.remaining_seconds"), 5);
-        Assert.Equal(1.0, OutputsTestKit.HistoryVectorValue(historyState, "target_buff_state",
-            "after.target.high_thunder.stacks"), 5);
+        Assert.Equal(30.0, OutputsTestKit.CurrentStateVectorValue(payload, "target_buff_state", "previous_action_after.target.high_thunder.remaining_seconds"), 5);
+        Assert.Equal(1.0, OutputsTestKit.CurrentStateVectorValue(payload, "target_buff_state", "previous_action_after.target.high_thunder.stacks"), 5);
     }
 
     [Fact]

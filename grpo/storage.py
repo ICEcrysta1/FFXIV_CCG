@@ -14,7 +14,8 @@ import torch
 from common.torch_serialization import safe_torch_load
 
 
-GRPO_ROLLOUT_FORMAT = 2
+# 状态语义改变，同宽的旧轨迹 tensor 也不能静默复用。
+GRPO_ROLLOUT_FORMAT = 3
 
 
 @dataclass(frozen=True)

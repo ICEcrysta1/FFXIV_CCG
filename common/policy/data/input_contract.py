@@ -21,16 +21,19 @@ from .spec import DataSpec
 # 9：移除 CLS token，评分器直接读取候选 hidden，旧模型权重不兼容。
 # 10：固定动作输出词表与显式当前状态取代候选输入；旧模型必须重新训练。
 # 11：技能和状态拆为独立 d_model 维 token，共享技能词表直接输出；旧融合权重不兼容。
-INPUT_CONTRACT_VERSION = 11
+# 12：状态两段改为上一动作后与当前请求快照，历史输入在请求时冻结。
+INPUT_CONTRACT_VERSION = 12
 
 # 描述固定的输入结构，不作为可调运行参数；d_model 仍由保存的 model_config 提供。
-# 数据 bank 的字段与时间语义未改变，因此这份描述不进入 compiled cache 身份。
+# 数据 bank 的字段与时间语义由 schema 与转换版本负责，不把读取窗口加入 cache 身份。
 TOKEN_ENCODING_CONTRACT = {
     "skill": "LayerNorm(E[id] + Linear(skill_features))",
     "state": "LayerNorm(Linear(state_values) + Linear(null_mask, bias=False))",
     "scene": "LayerNorm(Linear_by_scene_type(scene_values))",
     "role_ids": {"scene": 0, "state": 1, "skill": 2},
     "current_state_encoder": "shared_with_history_state",
+    "state_snapshots": ["previous_action_after", "request_state"],
+    "history_state_frozen_at": "request",
     "output_projection": "hidden @ E[action_to_vocab_id].T",
     "token_order": "scene, (skill_i, state_i)*H, current_state",
     "history_capacity_unit": "actions",

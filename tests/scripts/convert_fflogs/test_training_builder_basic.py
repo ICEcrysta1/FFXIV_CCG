@@ -56,7 +56,7 @@ def test_build_training_samples_uses_queue_for_sub_window_network_residual(
 
     payload = build_training_samples(cs_backend, cs_skill_book, fight_payload)
 
-    assert payload["sample_schema_version"] == 8
+    assert payload["sample_schema_version"] == 9
     assert payload["resolved_sequence"] == ["fire_iii", "blizzard_iii"]
     assert payload["samples"][0]["time_offset"] == 0.0
     assert payload["samples"][1]["time_offset"] == pytest.approx(2.96)

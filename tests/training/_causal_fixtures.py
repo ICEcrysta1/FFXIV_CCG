@@ -53,8 +53,8 @@ def make_input_contract(data_spec=None) -> ModelInputContract:
     windows = () if not spec.scene_dim else (SceneWindowSchema.from_feature_keys(
         context_key="targetable_window_context", feature_keys=keys, scene_type_id=0,
     ),)
-    schema = TrainingSchema(serialization_format="test", sample_schema_version=8,
-                            context_schema_version=11, scene_context_mode="absolute",
+    schema = TrainingSchema(serialization_format="test", sample_schema_version=9,
+                            context_schema_version=12, scene_context_mode="absolute",
                             scene_windows=windows,
                             state_group_feature_keys={"player_state": tuple(f"field_{index}" for index in range(spec.state_dim))},
                             skill_history_fields=("kind", "potency"))

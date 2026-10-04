@@ -96,13 +96,15 @@ public sealed class JobSimulator
             requestState,
             skill,
             actualCastSeconds);
+        var modelState = RecordModelDecision(actionId, requestState, completed: false);
         var payload = new ActionLifecyclePayload(
             actionId,
             request,
             skill,
             requestState,
             timing,
-            submission.AcceptedTimestamp);
+            submission.AcceptedTimestamp,
+            modelState);
         _timeline.Schedule(new TimelineEvent(
             submission.AcceptedTimestamp,
             TimelineEventPriority.ActionAccepted,
@@ -211,6 +213,19 @@ public sealed class JobSimulator
 
     internal CombatStateMachine Rules => _machine;
 
+    /// <summary>真实动作和 policy 动作共用请求关联与状态冻结；不改变战斗时钟。</summary>
+    internal ModelStateSnapshot RecordModelDecision(Guid decisionId, CombatState requestState, bool completed)
+    {
+        var modelState = ModelStateSnapshot.Capture(
+            requestState.LastDecisionAfter, OutputRouter.BuildStateContext(requestState));
+        _timeline.ApplyMutation(new TimelineMutation(ApplyState: state =>
+        {
+            state.LastDecisionId = decisionId;
+            state.LastDecisionAfter = completed ? modelState.RequestState : null;
+        }));
+        return modelState;
+    }
+
     internal (int History, int PendingEvents, int QueueEntries, int PendingSettlements) GetStatistics() =>
         (_timeline.HistoryCount, _timeline.PendingEventCount,
             _timeline.QueueEntryCount, _timeline.PendingSettlementCount);
@@ -281,7 +296,8 @@ public sealed class JobSimulator
                 payload.ActionInstanceId,
                 payload.Request.Timestamp,
                 payload.AcceptedTimestamp + payload.Timing.ActualCastSeconds,
-                item.Timestamp);
+                item.Timestamp,
+                payload.ModelState);
             _historyRetention.Trim(target.History);
         });
     }

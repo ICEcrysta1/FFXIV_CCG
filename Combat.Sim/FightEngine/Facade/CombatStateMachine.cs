@@ -406,10 +406,14 @@ public sealed class CombatStateMachine
         Guid actionInstanceId,
         double requestTimestamp,
         double castCompletedTimestamp,
-        double effectTimestamp)
+        double effectTimestamp,
+        ModelStateSnapshot modelState)
     {
         var stateBefore = _stateContextBuilder.Build(requestState);
         var stateAfter = _stateContextBuilder.Build(effectState);
+        // 老请求后来生效时，不能覆盖更新请求（包括 wait）的动作后基准。
+        if (effectState.LastDecisionId == actionInstanceId)
+            effectState.LastDecisionAfter = ModelStateSnapshot.Freeze(stateAfter);
         var snapshot = BuildSkillSnapshot(
             effectState,
             skill,
@@ -436,7 +440,8 @@ public sealed class CombatStateMachine
             requestTimestamp: requestTimestamp,
             castCompletedTimestamp: castCompletedTimestamp,
             effectTimestamp: effectTimestamp,
-            actionInstanceId: actionInstanceId);
+            actionInstanceId: actionInstanceId,
+            modelState: modelState);
     }
 
     /// <summary>动作占用元信息（对照 _build_action_metrics 返回值）。</summary>

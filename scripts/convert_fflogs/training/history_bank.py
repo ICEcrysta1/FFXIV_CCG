@@ -5,7 +5,7 @@ from __future__ import annotations
 from ..source.source_helpers import (
     SKILL_ID_FIELD,
     build_skill_feature_matrix,
-    extract_history_after_value,
+    extract_execution_metric,
     require_numeric_skill_kind,
     to_optional_int,
 )
@@ -42,6 +42,7 @@ def build_history_bank(
                 f"sample={sample_idx} actual={actual_length} previous={previous_length}"
             )
         new_skill_rows, new_state_tokens = reader.history_delta(sample_idx, previous_length)
+        new_metrics = reader.history_execution_metrics(sample_idx)[previous_length:]
         for delta_index, (skill_row, state_token) in enumerate(
             zip(new_skill_rows, new_state_tokens, strict=True)
         ):
@@ -55,10 +56,9 @@ def build_history_bank(
             action_keys.append(str(skill_row.get("skill_key", "")))
             skill_potencies.append(float(skill_row.get("potency", 0.0)))
             cumulative_dot_potencies.append(
-                extract_history_after_value(
-                    state_token,
-                    reader.schema,
-                    feature_name="target.cumulative_dot_potency",
+                extract_execution_metric(
+                    new_metrics[delta_index],
+                    feature_name="cumulative_dot_potency",
                     context=context,
                 )
             )

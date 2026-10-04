@@ -12,7 +12,7 @@ namespace FightEngine.Tests.Outputs;
 public class OutputsSchemaTests
 {
     [Fact]
-    public void VectorStateHistoryAfterAdvancesToNextDecisionTiming()
+    public void VectorStateHistoryFreezesRequestSnapshotsBeforeEffects()
     {
         var machine = OutputsTestKit.BuildMachine();
         var state = TimelineTestDriver.Execute(machine, machine.InitialState(), "fire_iii").NextState;
@@ -35,34 +35,35 @@ public class OutputsSchemaTests
         var historyState = (Dictionary<string, object?>)payload["state_history_context"];
         var historyTokens = (List<Dictionary<string, double[]>>)historyState["tokens"];
         Assert.Single(historyTokens);
-        Assert.Contains("before.mp", (List<string>)historyState["player_state_feature_keys"]);
-        Assert.Contains("after.mp", (List<string>)historyState["player_state_feature_keys"]);
-        Assert.Equal(8000.0, OutputsTestKit.HistoryVectorValue(historyState, "player_state", "after.mp"), 5);
-        Assert.Equal(0.0, OutputsTestKit.HistoryVectorValue(historyState, "player_state", "before.time_seconds"), 5);
-        Assert.Equal(3.0, OutputsTestKit.HistoryVectorValue(historyState, "player_state", "after.time_seconds"), 5);
-        Assert.Equal(2.5, OutputsTestKit.HistoryVectorValue(historyState, "player_state", "after.current_gcd_seconds"), 5);
+        Assert.Contains("previous_action_after.mp", (List<string>)historyState["player_state_feature_keys"]);
+        Assert.Contains("request_state.mp", (List<string>)historyState["player_state_feature_keys"]);
+        Assert.Equal(10000.0, OutputsTestKit.HistoryVectorValue(historyState, "player_state", "request_state.mp"), 5);
+        Assert.Equal(0.0, OutputsTestKit.HistoryVectorValue(historyState, "player_state", "previous_action_after.time_seconds"), 5);
+        Assert.Equal(0.0, OutputsTestKit.HistoryVectorValue(historyState, "player_state", "request_state.time_seconds"), 5);
+        Assert.Equal(2.5, OutputsTestKit.HistoryVectorValue(historyState, "player_state", "request_state.current_gcd_seconds"), 5);
         Assert.Equal(597.0, state.FightRemaining, 5);
         Assert.Equal(0.0, state.GcdRemaining, 5);
-        Assert.Equal(1.0, OutputsTestKit.HistoryVectorValue(historyState, "player_state", "after.boss_targetable"), 5);
-        Assert.Equal(1.0, OutputsTestKit.HistoryVectorValue(historyState, "buff_state", "after.resource.thundercloud_ready"), 5);
+        Assert.Equal(1.0, OutputsTestKit.HistoryVectorValue(historyState, "player_state", "request_state.boss_targetable"), 5);
+        Assert.Equal(0.0, OutputsTestKit.HistoryVectorValue(historyState, "buff_state", "request_state.resource.thundercloud_ready"), 5);
         Assert.Equal(new List<string>
         {
-            "before.target.high_thunder.active",
-            "before.target.high_thunder.remaining_seconds",
-            "before.target.high_thunder.stacks",
-            "before.target.cumulative_dot_potency",
-            "before.target.cumulative_potency",
-            "before.target.current_potency",
-            "before.target.current_gcd_dot_potency",
-            "after.target.high_thunder.active",
-            "after.target.high_thunder.remaining_seconds",
-            "after.target.high_thunder.stacks",
-            "after.target.cumulative_dot_potency",
-            "after.target.cumulative_potency",
-            "after.target.current_potency",
-            "after.target.current_gcd_dot_potency",
+            "previous_action_after.target.high_thunder.active",
+            "previous_action_after.target.high_thunder.remaining_seconds",
+            "previous_action_after.target.high_thunder.stacks",
+            "previous_action_after.target.cumulative_dot_potency",
+            "previous_action_after.target.cumulative_potency",
+            "previous_action_after.target.current_potency",
+            "previous_action_after.target.current_gcd_dot_potency",
+            "request_state.target.high_thunder.active",
+            "request_state.target.high_thunder.remaining_seconds",
+            "request_state.target.high_thunder.stacks",
+            "request_state.target.cumulative_dot_potency",
+            "request_state.target.cumulative_potency",
+            "request_state.target.current_potency",
+            "request_state.target.current_gcd_dot_potency",
         }, historyState["target_buff_state_feature_keys"]);
-        Assert.Equal(3.0, OutputsTestKit.HistoryVectorValue(historyState, "resource_state", "after.astral_fire"), 5);
+        Assert.Equal(0.0, OutputsTestKit.HistoryVectorValue(historyState, "resource_state", "request_state.astral_fire"), 5);
+        Assert.Equal(3.0, OutputsTestKit.CurrentStateVectorValue(payload, "resource_state", "previous_action_after.astral_fire"), 5);
     }
 
     [Fact]
@@ -89,11 +90,11 @@ public class OutputsSchemaTests
             Assert.Equal(18, featureKeys.Count);
             foreach (var field in removedFields)
             {
-                Assert.DoesNotContain($"before.{field}", featureKeys);
-                Assert.DoesNotContain($"after.{field}", featureKeys);
+                Assert.DoesNotContain($"previous_action_after.{field}", featureKeys);
+                Assert.DoesNotContain($"request_state.{field}", featureKeys);
             }
-            Assert.Contains("before.current_gcd_seconds", featureKeys);
-            Assert.Contains("after.downtime_remaining_seconds", featureKeys);
+            Assert.Contains("previous_action_after.current_gcd_seconds", featureKeys);
+            Assert.Contains("request_state.downtime_remaining_seconds", featureKeys);
             var allFeatureKeys = new[]
             {
                 "player_state_feature_keys", "buff_state_feature_keys",
@@ -107,10 +108,10 @@ public class OutputsSchemaTests
             Assert.Equal(40, ((List<string>)context["buff_state_feature_keys"]).Count);
             var resourceKeys = (List<string>)context["resource_state_feature_keys"];
             Assert.Equal(14, resourceKeys.Count);
-            Assert.Equal(resourceKeys.Take(7).Select(key => key["before.".Length..]),
-                resourceKeys.Skip(7).Select(key => key["after.".Length..]));
-            Assert.Contains("before.job.triplecast.remaining_seconds", allFeatureKeys);
-            Assert.Contains("after.target.high_thunder.remaining_seconds", allFeatureKeys);
+            Assert.Equal(resourceKeys.Take(7).Select(key => key["previous_action_after.".Length..]),
+                resourceKeys.Skip(7).Select(key => key["request_state.".Length..]));
+            Assert.Contains("previous_action_after.job.triplecast.remaining_seconds", allFeatureKeys);
+            Assert.Contains("request_state.target.high_thunder.remaining_seconds", allFeatureKeys);
         }
         foreach (var contextKey in new[] { "skill_history_context" })
         {
@@ -207,7 +208,7 @@ public class OutputsSchemaTests
             (double)((Dictionary<string, object?>)skillHistory[^1]["cast_time"])["seconds"]!, 5);
         var historyState = (Dictionary<string, object?>)payload["state_history_context"];
         Assert.Equal(actualBaseGcd,
-            OutputsTestKit.HistoryVectorValue(historyState, "player_state", "after.current_gcd_seconds"), 5);
+            OutputsTestKit.HistoryVectorValue(historyState, "player_state", "request_state.current_gcd_seconds"), 5);
 
         var nextState = OutputsTestKit.ReadyAfterGcd(machine, result.NextState);
         var nextResult = TimelineTestDriver.Execute(machine, nextState, "fire_iv");

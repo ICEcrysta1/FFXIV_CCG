@@ -81,8 +81,8 @@ class CausalInputEncoder(nn.Module):
         scene_embeds = self.scene_norm(scene_embeds)
 
         history = self.embed_history(batch)
-        # 阶段 2 保留本技能的 before/after，因此状态放在对应技能之后。
-        # 后续跨步状态语义与最终的状态、技能顺序在独立阶段迁移。
+        # 阶段 3 已冻结跨步状态，仍沿用阶段 2 的技能、状态过渡顺序。
+        # 最终状态、技能顺序与容量单位在阶段 5 同步迁移。
         history_tokens = torch.stack((history["skill"], history["state"]), dim=2).reshape(
             batch_size, history_token_length, d_model,
         )

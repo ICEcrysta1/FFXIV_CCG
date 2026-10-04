@@ -108,8 +108,8 @@ def test_pca_axis_association_identifies_numeric_decision_axis():
 def test_model_analysis_decodes_mp_as_linear_0_to_10000_value():
     class Schema:
         state_group_feature_keys = {
-            "resource_state": ["before.astral_fire", "before.umbral_ice"],
-            "player_state": ["before.mp"],
+            "resource_state": ["request_state.astral_fire", "request_state.umbral_ice"],
+            "player_state": ["request_state.mp"],
         }
 
         @staticmethod
@@ -269,8 +269,8 @@ def test_sample_token_count_supports_compact_history_bank_samples():
 def _analysis_schema():
     class Schema:
         state_group_feature_keys = {
-            "resource_state": ("before.astral_fire", "before.umbral_ice"),
-            "player_state": ("before.mp",),
+            "resource_state": ("request_state.astral_fire", "request_state.umbral_ice"),
+            "player_state": ("request_state.mp",),
         }
 
         @staticmethod

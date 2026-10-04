@@ -62,7 +62,7 @@ def test_build_training_samples_keeps_absolute_scene_context_and_syncs_runtime_f
     assert current_state_vector_value(
         first_sample["context"],
         "player_state",
-        "before.is_moving",
+        "request_state.is_moving",
     ) == 1.0
     assert first_sample["context"]["scene_context"]["forced_movement_context"]["tokens"] == [
         forced_movement_window_token(0.0, 1.5)
@@ -73,15 +73,17 @@ def test_build_training_samples_keeps_absolute_scene_context_and_syncs_runtime_f
     assert current_state_vector_value(
         first_sample["context"],
         "buff_state",
-        "before.system.raid_buff_window.active",
+        "request_state.system.raid_buff_window.active",
     ) == 1.0
     assert current_state_vector_value(
         first_sample["context"],
         "buff_state",
-        "before.system.raid_buff_window.remaining_seconds",
+        "request_state.system.raid_buff_window.remaining_seconds",
     ) == 4.0
 
     assert second_sample["context"]["action_legal_mask"][second_index] is False
+    assert current_state_vector_value(second_sample["context"], "buff_state",
+                                      "previous_action_after.system.raid_buff_window.remaining_seconds") == 4.0
     assert second_sample["context"]["scene_context"] == first_sample["context"]["scene_context"]
     assert second_sample["context"]["scene_context"]["targetable_window_context"]["tokens"][1] == (
         targetable_window_token(2.0, 5.0, targetable=False, segment_kind="downtime")
@@ -92,12 +94,12 @@ def test_build_training_samples_keeps_absolute_scene_context_and_syncs_runtime_f
     assert current_state_vector_value(
         second_sample["context"],
         "buff_state",
-        "before.system.raid_buff_window.active",
+        "request_state.system.raid_buff_window.active",
     ) == 1.0
     assert current_state_vector_value(
         second_sample["context"],
         "buff_state",
-        "before.system.raid_buff_window.remaining_seconds",
+        "request_state.system.raid_buff_window.remaining_seconds",
     ) == 1.0
 
 

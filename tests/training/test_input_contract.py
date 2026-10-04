@@ -39,7 +39,7 @@ def _build_contract() -> ModelInputContract:
                 scene_type_id=0,
             ),
         ),
-        state_group_feature_keys={"player_state": ("before.time_seconds",)},
+        state_group_feature_keys={"player_state": ("previous_action_after.time_seconds",)},
         skill_history_fields=("skill_key",),
     )
     normalizer = Normalizer()
@@ -70,7 +70,7 @@ def test_model_input_contract_round_trips_without_project_yaml(monkeypatch):
     normalizer = restored.create_normalizer()
     assert normalizer.normalize_value(
         "player_state",
-        "before.time_seconds",
+        "previous_action_after.time_seconds",
         900.0,
     ) == pytest.approx(0.5)
 
@@ -88,10 +88,10 @@ def test_model_input_contract_rejects_previous_state_semantics():
         ModelInputContract.from_dict(payload)
 
 
-@pytest.mark.parametrize("change", ["missing", "role", "token_order", "output_projection", "state_encoder"])
+@pytest.mark.parametrize("change", ["missing", "role", "token_order", "output_projection", "state_encoder", "state_snapshots", "history_state_frozen_at"])
 def test_model_input_contract_requires_exact_independent_token_descriptor(change):
     payload = _build_contract().to_dict()
-    assert payload["version"] == 11
+    assert payload["version"] == INPUT_CONTRACT_VERSION
     assert payload["token_encoding"] == TOKEN_ENCODING_CONTRACT
     if change == "missing":
         payload.pop("token_encoding")

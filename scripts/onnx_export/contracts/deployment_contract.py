@@ -30,8 +30,9 @@ from ..runtime.tensor_runtime import GOLDEN_FORMAT, golden_encoding
 # 13：移除 CLS token 和对应评分器输入，部署图的内部 token 布局变化。
 # 14：移除候选输入，单因果序列与共享技能词表输出；固定动作类型随契约保存。
 # 15：技能与状态独立为 d_model token，删除融合/输出适配，容量按每动作两个 token 计算。
-DEPLOYMENT_CONTRACT_VERSION = 15
-DEPLOYMENT_MANIFEST_VERSION = 9
+# 16：状态改为请求时冻结的跨步快照，同宽旧状态语义与旧部署包不兼容。
+DEPLOYMENT_CONTRACT_VERSION = 16
+DEPLOYMENT_MANIFEST_VERSION = 10
 MANIFEST_SCHEMA_FILENAME = "manifest.schema.json"
 
 

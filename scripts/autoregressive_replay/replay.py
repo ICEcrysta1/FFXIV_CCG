@@ -105,15 +105,15 @@ def read_replay_cumulative_potency(backend: InProcessBackend, timestamp: float) 
         format="vector",
         next_observation_timestamp=float(timestamp),
     ).context
-    history = canonical.get("state_history_context", {})
+    history = canonical.get("current_state_context", {})
     tokens = history.get("tokens", []) if isinstance(history, dict) else []
     if not tokens:
-        return 0.0, 0.0
+        raise RuntimeError("C# vector observation lacks current request state")
     keys = history.get("target_buff_state_feature_keys", [])
     target = tokens[-1].get("target_buff_state", [])
     try:
-        potency_index = keys.index("after.target.cumulative_potency")
-        dot_index = keys.index("after.target.cumulative_dot_potency")
+        potency_index = keys.index("request_state.target.cumulative_potency")
+        dot_index = keys.index("request_state.target.cumulative_dot_potency")
         return float(target[potency_index]), float(target[dot_index])
     except (AttributeError, IndexError, ValueError, TypeError):
         raise RuntimeError("C# vector observation lacks cumulative potency fields") from None
