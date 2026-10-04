@@ -62,7 +62,7 @@ def test_black_mage_oversampling_strengthens_entire_matched_sequence(tmp_path):
         ]
     )
 
-    weights = oversampler.build_source_weights(samples, skill_feature_names=("cast_time.seconds",))
+    weights = oversampler.build_source_weights(samples)
 
     assert weights == (
         configured_weights[("paradox", "transpose", "paradox", "fire_iii(0)")],
@@ -83,11 +83,9 @@ def test_oversampling_matches_cast_time_mode_for_entire_sequence(tmp_path):
 
     assert oversampler.build_source_weights(
         _oversampling_samples([("fire_iii", 2.5)]),
-        skill_feature_names=("cast_time.seconds",),
     ) == (3,)
     assert oversampler.build_source_weights(
         _oversampling_samples([("fire_iii", 0.0)]),
-        skill_feature_names=("cast_time.seconds",),
     ) == (1,)
 
 
@@ -114,7 +112,7 @@ def test_oversampling_ignores_actions_for_match_but_includes_them_in_weighted_sp
             ("fire_iv", 2.5),
         ]
     )
-    assert oversampler.build_source_weights(samples, skill_feature_names=("cast_time.seconds",)) == (4, 4, 4, 4, 4, 1)
+    assert oversampler.build_source_weights(samples) == (4, 4, 4, 4, 4, 1)
 
 
 def test_oversampling_uses_highest_weight_for_overlapping_sequences(tmp_path):
@@ -133,7 +131,6 @@ def test_oversampling_uses_highest_weight_for_overlapping_sequences(tmp_path):
 
     assert oversampler.build_source_weights(
         _oversampling_samples([("a", 0.0), ("b", 0.0), ("c", 0.0)]),
-        skill_feature_names=("cast_time.seconds",),
     ) == (3, 5, 5)
 
 
@@ -161,7 +158,7 @@ def _oversampling_samples(actions_and_cast_times):
         {
             "label_action_key": action_key,
             "label_index": 0,
-            "candidate_skill_features": [[cast_time]],
+            "label_cast_time_seconds": cast_time,
         }
         for action_key, cast_time in actions_and_cast_times
     ]
@@ -169,8 +166,6 @@ def _oversampling_samples(actions_and_cast_times):
 
 class _OversamplingDataset:
     """只实现序列权重构建所需的数据集接口。"""
-
-    skill_feature_names = ("cast_time.seconds",)
 
     def __init__(self, samples, *, source_ranges):
         self._samples = samples

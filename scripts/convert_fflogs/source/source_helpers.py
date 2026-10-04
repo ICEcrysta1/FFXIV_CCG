@@ -14,6 +14,16 @@ if TYPE_CHECKING:
 TEXT_SKILL_FIELDS = frozenset({"skill_key", "skill_name", "invalid_reason"})
 SKILL_ID_FIELD = "skill_id"
 TRAINING_ONLY_SKILL_FIELDS = frozenset({"value"})
+SKILL_HISTORY_FIELDS = tuple(sorted((
+    "skill_id", "skill_key", "skill_name", "potency", "value", "kind",
+    "actual_mp_cost", "cast_time", "gcd_window", "is_legal", "invalid_reason",
+    "next_cooldown_seconds", "available_charges", "max_charges",
+    "job_resources_consumed",
+)))
+SKILL_NUMERIC_FEATURES = (
+    "actual_mp_cost", "available_charges", "cast_time.seconds", "gcd_window.seconds",
+    "is_legal", "kind", "max_charges", "next_cooldown_seconds", "potency",
+)
 
 
 def require_numeric_skill_kind(row: dict[str, object], *, context: str) -> float:
@@ -32,61 +42,28 @@ def require_numeric_skill_kind(row: dict[str, object], *, context: str) -> float
     return numeric_value
 
 
-def extract_history_after_value(
-    state_token: dict[str, object],
-    schema,
+def extract_execution_metric(
+    metrics: dict[str, object],
     *,
     feature_name: str,
     context: str,
 ) -> float:
-    """从状态历史 token 读取一个 after 数值，缺失时显式失败。"""
-    group_key = "target_buff_state"
-    qualified_name = (
-        feature_name
-        if feature_name.startswith("after.")
-        else f"after.{feature_name}"
-    )
-    feature_keys = tuple(schema.state_group_feature_keys.get(group_key, ()))
-    try:
-        feature_index = feature_keys.index(qualified_name)
-    except ValueError as exc:
-        raise ValueError(
-            f"{context} state history is missing feature {qualified_name!r}"
-        ) from exc
-    values = state_token.get(group_key)
-    if not isinstance(values, (list, tuple)) or feature_index >= len(values):
-        raise ValueError(
-            f"{context} state history target_buff_state has no {qualified_name!r} value"
-        )
-    value = values[feature_index]
-    if value is None:
-        raise ValueError(f"{context} state history feature {qualified_name!r} is null")
-    try:
-        return float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            f"{context} state history feature {qualified_name!r} is not numeric"
-        ) from exc
+    """从真实执行 metadata 读取原始指标，禁止改从模型状态两段推导结果。"""
+    value = metrics.get(feature_name) if isinstance(metrics, dict) else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError(f"{context} execution metric {feature_name!r} must be finite numeric")
+    return float(value)
 
 
 def derive_skill_feature_names(reader: "TrainingSourceReader") -> tuple[str, ...]:
-    """从候选和历史技能行推导统一的数值特征名。"""
-    seen: set[str] = set()
-    sources = []
-    candidate_rows = reader.candidate_skill_rows(0) if reader.num_candidates > 0 else []
-    if candidate_rows:
-        sources.append(candidate_rows[0])
+    """由稳定技能字段和职业资源定义推导，空历史也有同一宽度。"""
+    from common.config import load_project_config
 
-    for sample_idx in range(reader.num_samples):
-        history_rows = reader.history_skill_rows(sample_idx, max_history=1)
-        if history_rows:
-            sources.append(history_rows[0])
-            break
-
-    for row in sources:
-        for feature_name in flatten_skill_numeric_features(row):
-            seen.add(feature_name)
-    return tuple(sorted(seen))
+    config = load_project_config(job_tag=reader.job_tag)
+    resource_names = tuple(
+        f"job_resources_consumed.{key}" for key in config.job.resource_limits
+    )
+    return tuple(sorted((*SKILL_NUMERIC_FEATURES, *resource_names)))
 
 
 def build_skill_feature_matrix(rows: list[dict[str, object]], *, feature_names: tuple[str, ...], torch, dtype):
@@ -96,7 +73,7 @@ def build_skill_feature_matrix(rows: list[dict[str, object]], *, feature_names: 
         return torch.zeros((0, len(feature_names)), dtype=dtype)
 
     # 一次性创建矩阵，避免每个技能行都单独创建一个临时 tensor 再复制到
-    # 预分配矩阵。raw JSON 编译阶段这个函数会被每个样本的历史和候选各调用一次。
+    # 预分配矩阵。raw JSON 编译阶段只为已执行历史构建技能特征。
     numeric_rows = []
     for row in rows:
         numeric_features = flatten_skill_numeric_features(row)
@@ -110,6 +87,8 @@ def build_skill_feature_matrix(rows: list[dict[str, object]], *, feature_names: 
 
 
 def flatten_skill_numeric_features(row: dict[str, object]) -> dict[str, float]:
+    if "time_seconds" in row:
+        raise ValueError("skill token must not include time_seconds; recompile raw source")
     flattened = flatten_numeric_mapping(row, ignored_keys=TEXT_SKILL_FIELDS)
     flattened.pop(SKILL_ID_FIELD, None)
     for field_name in TRAINING_ONLY_SKILL_FIELDS:
@@ -125,16 +104,13 @@ def extract_mapping_row(node: dict[str, object], indices: tuple[int, ...]) -> di
 
 
 def _extract_mapping_value(node: object, indices: tuple[int, ...]):
-    """从列式节点读取一行，并处理候选动态字段的按样本嵌套结构。"""
+    """从列式节点读取一行，并处理按样本嵌套的映射结构。"""
     if is_nullable_tensor_node(node):
         return extract_nullable_scalar(node, indices)
     if isinstance(node, dict):
         return extract_mapping_row(node, indices)
 
-    # candidate_skill_dynamic 的部分字段是
-    # ``list[样本] -> {feature: {values: [候选], is_null: [候选]}}``。
-    # 先取样本映射后，剩余索引才用于读取候选值；不能把 candidate_idx
-    # 直接应用到这个中间 dict，否则会静默退化为 None，再被特征矩阵填成 0。
+    # 先取样本映射，再将剩余索引用于其中字段，避免对中间 dict 使用整数下标。
     if isinstance(node, (list, tuple)) and indices:
         sample_index, *remaining_indices = indices
         try:

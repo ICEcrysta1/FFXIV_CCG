@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass
 
 import torch
 
+from common.policy.data.input_contract import TOKEN_ENCODING_CONTRACT
+
 
 TENSOR_INPUT_NAMES = (
     "scene_vectors",
@@ -16,33 +18,30 @@ TENSOR_INPUT_NAMES = (
     "history_state_vectors",
     "history_state_null_mask",
     "history_mask",
-    "candidate_skill_ids",
-    "candidate_skill_features",
-    "candidate_state_vectors",
-    "candidate_state_null_mask",
+    "current_state_vectors",
+    "current_state_null_mask",
 )
 OUTPUT_NAMES = ("raw_logits",)
+TOKEN_ORDER = TOKEN_ENCODING_CONTRACT["token_order"]
+POSITION_ID_SEMANTICS = (
+    "logical per-sample positions; right padding excluded; "
+    "separate skill/state positions; RoPE applied to Q/K"
+)
 
 
 @dataclass(frozen=True)
 class CapacityContract:
-    """首版部署图的 batch、scene、history 和候选固定容量。"""
+    """部署图固定容量；历史仍按动作条数计量，每条占技能和状态两个 token。"""
 
     scene_capacity: int
     history_capacity: int
-    candidate_count: int
     batch_size: int = 1
     padding_direction: str = "right"
 
     @property
-    def candidate_token_count(self) -> int:
-        """模型内部的候选 token 数；双向候选只保留一份。"""
-        return self.candidate_count
-
-    @property
     def total_token_count(self) -> int:
-        """由 scene、history 和候选容量自动换算物理 token 数。"""
-        return self.scene_capacity + self.history_capacity + self.candidate_token_count
+        """阶段 2 使用独立技能/状态 token；末尾追加一个当前状态。"""
+        return self.scene_capacity + 2 * self.history_capacity + 1
 
     def validate(self) -> None:
         if self.batch_size != 1:
@@ -51,8 +50,6 @@ class CapacityContract:
             raise ValueError("scene_capacity must be >= 1 to represent empty scene")
         if self.history_capacity < 1:
             raise ValueError("history_capacity must be >= 1 to represent empty history")
-        if self.candidate_count < 1:
-            raise ValueError("candidate_count must be >= 1")
         if self.padding_direction != "right":
             raise ValueError("ONNX v1 contract only supports right padding")
 
@@ -63,13 +60,17 @@ class CapacityContract:
         expected = {
             "scene_capacity",
             "history_capacity",
-            "candidate_count",
             "batch_size",
             "padding_direction",
             "scene_padding_mask_value",
             "history_padding_mask_value",
             "position_ids",
             "over_capacity",
+            "history_capacity_unit",
+            "history_tokens_per_action",
+            "token_order",
+            "total_token_count",
+            "effective_sequence_length",
         }
         if set(payload) != expected:
             raise ValueError("capacity contract fields are incomplete or unsupported")
@@ -79,27 +80,40 @@ class CapacityContract:
             raise ValueError("history padding mask value must be false")
         if payload["over_capacity"] != "reject":
             raise ValueError("deployment contract v1 only supports reject over-capacity")
-        if payload["position_ids"] != (
-            "logical per-sample positions; right padding excluded; RoPE applied to Q/K"
-        ):
+        if payload["position_ids"] != POSITION_ID_SEMANTICS:
             raise ValueError("unsupported deployment position id semantics")
-        return cls(
+        if (
+            payload["history_capacity_unit"] != TOKEN_ENCODING_CONTRACT["history_capacity_unit"]
+            or payload["history_tokens_per_action"] != TOKEN_ENCODING_CONTRACT["history_tokens_per_action"]
+        ):
+            raise ValueError("deployment history capacity must represent two tokens per action")
+        if payload["token_order"] != TOKEN_ORDER:
+            raise ValueError("unsupported deployment token order")
+        if payload["effective_sequence_length"] != "scene_valid + 2 * history_valid + 1":
+            raise ValueError("unsupported deployment effective sequence length")
+        contract = cls(
             scene_capacity=int(payload["scene_capacity"]),
             history_capacity=int(payload["history_capacity"]),
-            candidate_count=int(payload["candidate_count"]),
             batch_size=int(payload["batch_size"]),
             padding_direction=str(payload["padding_direction"]),
         )
+        contract.validate()
+        if payload["total_token_count"] != contract.total_token_count:
+            raise ValueError("deployment total token count differs from independent token capacities")
+        return contract
 
     def to_dict(self) -> dict[str, object]:
         return {
             **asdict(self),
             "scene_padding_mask_value": False,
             "history_padding_mask_value": False,
-            "position_ids": (
-                "logical per-sample positions; right padding excluded; RoPE applied to Q/K"
-            ),
+            "position_ids": POSITION_ID_SEMANTICS,
             "over_capacity": "reject",
+            "history_capacity_unit": TOKEN_ENCODING_CONTRACT["history_capacity_unit"],
+            "history_tokens_per_action": TOKEN_ENCODING_CONTRACT["history_tokens_per_action"],
+            "token_order": TOKEN_ORDER,
+            "total_token_count": self.total_token_count,
+            "effective_sequence_length": "scene_valid + 2 * history_valid + 1",
         }
 
 
@@ -160,27 +174,9 @@ def make_inputs(
         generator=generator,
     ) < 0.1
     history_mask = _length_mask(history_valid, contract.history_capacity)
-    candidate_skill_ids = (
-        torch.arange(data_spec.num_candidates, dtype=torch.long)
-        .remainder(max(vocab_size - 1, 1))
-        .add(1)
-        .unsqueeze(0)
-    )
-    candidate_skill_features = floats(
-        batch_size,
-        data_spec.num_candidates,
-        data_spec.skill_feature_dim,
-    )
-    candidate_state_vectors = floats(
-        batch_size,
-        data_spec.num_candidates,
-        data_spec.state_dim,
-    )
-    candidate_state_null_mask = torch.rand(
-        batch_size,
-        data_spec.num_candidates,
-        data_spec.state_dim,
-        generator=generator,
+    current_state_vectors = floats(batch_size, data_spec.state_dim)
+    current_state_null_mask = torch.rand(
+        batch_size, data_spec.state_dim, generator=generator,
     ) < 0.1
     result = (
         scene_vectors,
@@ -191,10 +187,8 @@ def make_inputs(
         history_state_vectors,
         history_state_null_mask,
         history_mask,
-        candidate_skill_ids,
-        candidate_skill_features,
-        candidate_state_vectors,
-        candidate_state_null_mask,
+        current_state_vectors,
+        current_state_null_mask,
     )
     if padding_fill == "zero":
         return fill_padding_values(

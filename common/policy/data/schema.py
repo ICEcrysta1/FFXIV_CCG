@@ -18,6 +18,7 @@ SCENE_TYPE_MOVEMENT = 1
 SCENE_TYPE_RAID_BUFF = 2
 SCENE_TYPE_TARGET_COUNT = 3
 TRAINING_SOURCE_FORMAT = "raw_training_source_v1"
+TRAINING_SAMPLE_SCHEMA_VERSION = 10
 
 
 @dataclass(frozen=True)
@@ -82,8 +83,11 @@ class TrainingSchema:
     scene_context_mode: str
     scene_windows: tuple[SceneWindowSchema, ...]
     state_group_feature_keys: dict[str, tuple[str, ...]]
-    candidate_skill_fields: tuple[str, ...]
     skill_history_fields: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if "time_seconds" in self.skill_history_fields:
+            raise ValueError("removed skill time_seconds field; recompile raw source")
 
     def state_group_keys(self) -> tuple[str, ...]:
         return tuple(self.state_group_feature_keys.keys())
@@ -134,10 +138,6 @@ class TrainingSchema:
                 SceneWindowSchema.from_dict(window) for window in scene_windows
             ),
             state_group_feature_keys=normalized_state_groups,
-            candidate_skill_fields=_string_tuple_field(
-                payload,
-                "candidate_skill_fields",
-            ),
             skill_history_fields=_string_tuple_field(
                 payload,
                 "skill_history_fields",
@@ -168,8 +168,8 @@ class TrainingSchema:
             )
         if self.state_group_feature_keys != other.state_group_feature_keys:
             raise ValueError("training state feature keys mismatch")
-        if set(self.candidate_skill_fields) != set(other.candidate_skill_fields):
-            raise ValueError("training candidate skill field set mismatch")
+        if self.skill_history_fields != other.skill_history_fields:
+            raise ValueError("training skill history field layout mismatch")
 
         self_scene_windows = tuple(
             (window.context_key, window.feature_keys, window.scene_type_id)

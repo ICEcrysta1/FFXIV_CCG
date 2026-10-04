@@ -14,9 +14,9 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from common.policy.model import CandidateTransformerModel
+from common.policy.model import CausalPolicyModel
 from common.policy.model.repetition import build_repetition_penalty_mask
-from common.policy.model.split_encoder import run_split_layer
+from common.policy.model.causal_encoder import run_causal_layer
 from common.torch_runtime import move_batch
 from training import TrainingCollator
 
@@ -296,9 +296,9 @@ def _direction_statistics(
 
 
 def _supports_prefix_cache(model: nn.Module) -> bool:
-    """仅对普通 split encoder 复用前层；Full AttnRes 保留完整前向语义。"""
+    """仅对普通因果 encoder 复用前层；Full AttnRes 保留完整前向语义。"""
     return (
-        isinstance(model, CandidateTransformerModel)
+        isinstance(model, CausalPolicyModel)
         and getattr(model.encoder, "attention_residual", None) is None
     )
 
@@ -321,26 +321,19 @@ class _LayerForward:
             with context.autocast():
                 encoded = context.model.input_encoder(batch)
                 self.encoded = encoded
-                prefix_length = int(encoded["prefix_length"])
-                candidate_count = int(encoded["candidate_count"])
-                tokens = encoded["tokens"]
-                hidden = (
-                    tokens[:, :prefix_length],
-                    tokens[:, prefix_length : prefix_length + candidate_count],
-                )
+                hidden = encoded["tokens"]
                 for layer in context.model.encoder.layers[:layer_index]:
                     hidden = self._step(layer, hidden)
                 self.hidden = hidden
 
     def _step(self, layer, hidden):
         encoded = self.encoded
-        return run_split_layer(
-            layer, *hidden,
-            prefix_valid=encoded["prefix_valid"],
-            candidate_valid=encoded["candidate_valid"],
+        return run_causal_layer(
+            layer, hidden,
+            key_valid=encoded["valid"],
             position_ids=encoded["position_ids"],
             rotary_position_encoding=self.context.model.encoder.rotary_position_encoding,
-        )[:2]
+        )[0]
 
     def logits(self):
         model = self.context.model
@@ -352,8 +345,8 @@ class _LayerForward:
             for layer in model.encoder.layers[self.layer_index:]:
                 hidden = self._step(layer, hidden)
             if model.encoder.norm is not None:
-                hidden = tuple(model.encoder.norm(value) for value in hidden)
-            return model.score_hidden(self.encoded, torch.cat(hidden, dim=1), self.batch)
+                hidden = model.encoder.norm(hidden)
+            return model.score_hidden(self.encoded, hidden, self.batch)
 
 
 @torch.inference_mode()

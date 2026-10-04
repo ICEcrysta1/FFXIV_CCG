@@ -166,8 +166,8 @@ def test_quality_loss_gates_ce_and_value_preference_together():
         "quality_label_mask": torch.tensor([[True], [False]]),
         "quality_annotation_available": torch.tensor([True, False]),
         "source_quality": torch.tensor([0.0, -1.0]),
-        "candidate_values": torch.tensor([[2.0, 1.0], [2.0, 1.0]]),
-        "candidate_legal_mask": torch.ones(2, 2, dtype=torch.bool),
+        "action_values": torch.tensor([[2.0, 1.0], [2.0, 1.0]]),
+        "action_legal_mask": torch.ones(2, 2, dtype=torch.bool),
     }
     terms = configured_auxiliary_losses(
         value_preference=ValuePreferenceConfig(enabled=True, loss_weight=0.05)

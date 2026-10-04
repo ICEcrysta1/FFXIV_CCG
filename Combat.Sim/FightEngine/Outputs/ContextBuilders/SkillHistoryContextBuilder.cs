@@ -10,7 +10,7 @@ namespace Combat.Sim.Outputs.ContextBuilders;
 
 /// <summary>
 /// 技能历史上下文装配器（对照 history_context_builders/skill_history_context_builder.py）。
-/// 与候选技能共用同一个 <see cref="SkillTokenBuilder.Build"/>，只是字段来源是历史条目；
+/// 通过共享的 <see cref="SkillTokenBuilder.Build"/> 从历史条目生成技能 token；
 /// 增量缓存按条目引用身份复用固定 token，避免滑动窗口逐决策全量重建。
 /// </summary>
 public sealed class SkillHistoryContextBuilder
@@ -68,8 +68,7 @@ public sealed class SkillHistoryContextBuilder
             nextCooldownSeconds: entry.NextCooldownSeconds,
             availableCharges: entry.AvailableCharges,
             maxCharges: entry.MaxCharges,
-            jobResourcesConsumed: entry.JobResourcesConsumed,
-            timeSeconds: entry.TimeSeconds);
+            jobResourcesConsumed: entry.JobResourcesConsumed);
 
     private List<ActionHistoryEntry> Limit(List<ActionHistoryEntry> history)
     {

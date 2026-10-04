@@ -10,7 +10,7 @@ public sealed record PolicyActionDefinition(
     string Key,
     int RawId,
     string Name,
-    string CandidateKind,
+    string Kind,
     string Behavior,
     double Value,
     IReadOnlyList<string> Tags);

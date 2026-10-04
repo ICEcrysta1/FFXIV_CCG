@@ -216,8 +216,8 @@ class CombatState:
         - `job_resources` / `cooldowns` / `statuses` / `dots`：复制容器和元素。
         - `history`：默认复制列表本身，但复用只读历史条目对象。
 
-        `copy_history=False` 只适用于“明确不会改写 history 列表”的只读预演场景，
-        这样可以进一步减少候选预演时的复制成本。
+        `copy_history=False` 只适用于“明确不会改写 history 列表”的只读分支，
+        这样可以减少状态分支的历史复制成本。
         """
         return CombatState(
             time=self.time,

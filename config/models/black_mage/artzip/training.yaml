@@ -33,7 +33,7 @@ training:
   # 各副本均分；某副本不足时只在该副本内补位，仍不足则拒绝启动训练。
   validation_files: 30
 
-  # 候选打乱和采样过程使用的随机种子。
+  # 数据采样、历史增强和模型初始化使用的随机种子。
   seed: 42
 
   # 训练时释放 FFN 中间激活，并在反向传播时重算；验证和推理不启用。
@@ -84,19 +84,11 @@ training:
       scale: 0.6
       exponent: 4
 
-  # 仅训练集随机移除早期历史，保留最近 min_recent 条；scene 和候选始终完整。
+  # 仅训练集随机移除早期历史，保留最近 min_recent 条；scene 和当前状态始终完整。
   history_truncation:
     enabled: true
     probability: 0.33
     min_recent: 4
-
-  # 人工数据定义的 canonical 候选技能顺序；推理始终使用该顺序。
-  candidate_order_file: candidate_order.yaml
-
-  # 仅训练集随机打乱候选，并同步重排候选技能、状态、合法性和 label。
-  candidate_shuffle:
-    enabled: false
-    probability: 1.0
 
   # 可选的技能价值辅助损失；不会修改推理 logits 或绕过状态机合法性。
   value_preference:
@@ -110,7 +102,7 @@ training:
     gcd_count: 128
     normalization: 1000.0
 
-  # 连续重复动作的 soft penalty；只降低候选 logit，不改变状态机合法性。
+  # 连续重复动作的 soft penalty；只降低动作 logit，不改变状态机合法性。
   repetition:
     mode: whitelist
     skills: [fire_iv, xenoglossy, foul, flare]

@@ -10,7 +10,7 @@ from typing import Any
 
 @dataclass(frozen=True)
 class RepetitionConfig:
-    """控制连续重复候选动作的 logits 软惩罚。"""
+    """控制连续重复输出动作的 logits 软惩罚。"""
 
     mode: str = "none"
     skills: tuple[str, ...] = ()
@@ -53,15 +53,15 @@ def repetition_config_from_checkpoint(checkpoint: Mapping[str, object]) -> Repet
 
 
 @lru_cache(maxsize=128)
-def _candidate_penalty_indices(
-    candidates: tuple[str, ...],
+def _action_penalty_indices(
+    actions: tuple[str, ...],
     mode: str,
     skills: tuple[str, ...],
 ):
-    """缓存动作到候选索引的静态映射；重排导致缓存未命中时也不分配 tensor。"""
+    """缓存动作到输出索引的静态映射；固定词表索引不分配 tensor。"""
     listed_skills = frozenset(skills)
     positions: dict[str, list[int]] = {}
-    for index, key in enumerate(candidates):
+    for index, key in enumerate(actions):
         penalized = (
             key not in listed_skills if mode == "whitelist" else key in listed_skills
         )
@@ -71,32 +71,32 @@ def _candidate_penalty_indices(
 
 
 def _build_repetition_mask_cpu(batch: dict[str, Any], config: RepetitionConfig):
-    """在输入准备阶段解析最近非 wait 动作，候选匹配复用静态查找表。"""
+    """在输入准备阶段解析最近非 wait 动作，输出匹配复用静态查找表。"""
     import torch
 
-    shape = batch["candidate_skill_ids"].shape[:2]
-    candidates = batch.get("candidate_action_keys")
+    shape = batch["action_legal_mask"].shape[:2]
+    actions = batch.get("action_keys")
     histories = batch.get("history_action_keys")
     if (
         not config.enabled
-        or not isinstance(candidates, (list, tuple))
+        or not isinstance(actions, (list, tuple))
         or not isinstance(histories, (list, tuple))
     ):
         return torch.zeros(shape, dtype=torch.bool, device="cpu")
-    if len(histories) != len(candidates):
-        raise ValueError("history_action_keys and candidate_action_keys batch lengths differ")
-    if len(candidates) != shape[0] or any(len(row) != shape[1] for row in candidates):
-        raise ValueError("candidate_action_keys shape must match candidate_skill_ids")
+    if len(histories) != len(actions):
+        raise ValueError("history_action_keys and action_keys batch lengths differ")
+    if len(actions) != shape[0] or any(len(row) != shape[1] for row in actions):
+        raise ValueError("action_keys shape must match action_legal_mask")
     row_indices = []
     column_indices = []
-    for row_index, (history, candidate_keys) in enumerate(zip(histories, candidates)):
+    for row_index, (history, action_keys) in enumerate(zip(histories, actions)):
         last_action = next(
             (str(key) for key in reversed(history) if str(key) != "ogcd_wait"), None,
         )
         if last_action is None:
             continue
-        by_action = _candidate_penalty_indices(
-            tuple(str(key) for key in candidate_keys), config.mode, config.skills,
+        by_action = _action_penalty_indices(
+            tuple(str(key) for key in action_keys), config.mode, config.skills,
         )
         indices = by_action.get(last_action, ())
         row_indices.extend([row_index] * len(indices))
@@ -111,7 +111,7 @@ def prepare_repetition_penalty(
     batch: dict[str, Any],
     config: RepetitionConfig,
 ) -> dict[str, Any]:
-    """为完成截断/重排的 batch 缓存惩罚 mask，随后与其他输入一起搬运。
+    """为完成历史截断的 batch 缓存惩罚 mask，随后与其他输入一起搬运。
 
     mask 是当前动作元数据和策略的快照；改变输入后应重新调用本函数。
     不修改调用方 batch，也不将运行期 mask 写入 checkpoint 或数据缓存。
@@ -131,14 +131,14 @@ def build_repetition_penalty_mask(
     *,
     device,
 ):
-    """返回 `[batch, candidate]` 的连续重复候选掩码。"""
+    """返回 `[batch, action]` 的连续重复输出掩码。"""
     import torch
 
     mask = batch.get("repetition_penalty_mask")
     if isinstance(mask, torch.Tensor) and batch.get("repetition_penalty_config") == config:
-        if mask.shape != batch["candidate_skill_ids"].shape or mask.dtype != torch.bool:
+        if mask.shape != batch["action_legal_mask"].shape or mask.dtype != torch.bool:
             raise ValueError(
-                "repetition_penalty_mask must be boolean and match candidate_skill_ids"
+                "repetition_penalty_mask must be boolean and match action_legal_mask"
             )
         return mask.to(device=device)
     # 独立推理/旧调用方仍可直接传字符串元数据，共用同一策略实现。
@@ -146,7 +146,7 @@ def build_repetition_penalty_mask(
 
 
 def apply_repetition_penalty(logits, batch: dict[str, Any], config: RepetitionConfig):
-    """对不允许连续重复的候选动作降低 logits，不改变其合法性。"""
+    """对不允许连续重复的输出动作降低 logits，不改变其合法性。"""
     if not config.enabled:
         return logits
     mask = build_repetition_penalty_mask(batch, config, device=logits.device)

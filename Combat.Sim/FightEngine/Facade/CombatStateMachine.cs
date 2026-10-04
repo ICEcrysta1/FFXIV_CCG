@@ -355,7 +355,7 @@ public sealed class CombatStateMachine
 
     /// <summary>
     /// 构造一次绝对时间动作生命周期所需的纯时序计划。
-    /// 该方法只读取状态，不推进时间、不写入动作效果，供时间线动作事件和候选预演共用。
+    /// 该方法只读取状态，不推进时间、不写入动作效果，供动作时序校验和时间线执行复用。
     /// </summary>
     internal ActionTimingPlan BuildActionTimingPlan(
         CombatState state,
@@ -406,10 +406,14 @@ public sealed class CombatStateMachine
         Guid actionInstanceId,
         double requestTimestamp,
         double castCompletedTimestamp,
-        double effectTimestamp)
+        double effectTimestamp,
+        ModelStateSnapshot modelState)
     {
         var stateBefore = _stateContextBuilder.Build(requestState);
         var stateAfter = _stateContextBuilder.Build(effectState);
+        // 老请求后来生效时，不能覆盖更新请求（包括 wait）的动作后基准。
+        if (effectState.LastDecisionId == actionInstanceId)
+            effectState.LastDecisionAfter = ModelStateSnapshot.Freeze(stateAfter);
         var snapshot = BuildSkillSnapshot(
             effectState,
             skill,
@@ -436,7 +440,8 @@ public sealed class CombatStateMachine
             requestTimestamp: requestTimestamp,
             castCompletedTimestamp: castCompletedTimestamp,
             effectTimestamp: effectTimestamp,
-            actionInstanceId: actionInstanceId);
+            actionInstanceId: actionInstanceId,
+            modelState: modelState);
     }
 
     /// <summary>动作占用元信息（对照 _build_action_metrics 返回值）。</summary>

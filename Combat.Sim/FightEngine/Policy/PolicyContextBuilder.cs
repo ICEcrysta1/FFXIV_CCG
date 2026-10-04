@@ -4,6 +4,7 @@
 // See LICENSE and LICENSE-FightEngine-Linking-Exception in the repository root.
 
 using Combat.Sim.Facade;
+using Combat.Sim.Models.Combat;
 using Combat.Sim.Models.Policy;
 using Combat.Sim.Outputs;
 using Combat.Sim.Outputs.TokenBuilders;
@@ -11,7 +12,7 @@ using Combat.Sim.Outputs.TokenBuilders;
 namespace Combat.Sim.Policy;
 
 /// <summary>
-/// 在真实 FightEngine 上下文之上合并 policy 候选和 policy 历史。
+/// 在真实 FightEngine 上下文之上合并 policy 动作词表和 policy 历史。
 /// policy 动作只产生模型 token，不进入 SkillBook、SubmitAction 或游戏动作历史。
 /// </summary>
 public sealed class PolicyContextBuilder
@@ -30,55 +31,51 @@ public sealed class PolicyContextBuilder
         PolicyDecisionHistory history,
         double nextObservationTimestamp)
     {
-        var state = simulator.GetStateWithoutHistory();
+        var state = simulator.GetState();
         if (nextObservationTimestamp < state.Time)
             throw new ArgumentOutOfRangeException(nameof(nextObservationTimestamp));
 
-        var output = simulator.FormatVectorState();
-        var branch = simulator.ForkForPreview();
-        var after = branch.ObserveAt(nextObservationTimestamp);
+        var output = simulator.FormatVectorState(state);
         var router = simulator.OutputRouter;
-        var consumed = router.BuildNoopResourceTransition(state);
+        var keys = (List<string>)output[OutputContextSchema.ActionKeysKey]!;
+        var legalMask = (List<bool>)output[OutputContextSchema.ActionLegalMaskKey]!;
+        var values = (List<double>)output[OutputContextSchema.ActionValuesKey]!;
+        var actions = keys.Select((key, index) => (Key: key, Legal: legalMask[index], Value: values[index]))
+            .Concat(_registry.Actions.Select(action => (Key: action.Key, Legal: true, Value: action.Value)))
+            .OrderBy(action => action.Key, StringComparer.Ordinal).ToArray();
+        output[OutputContextSchema.ActionKeysKey] = actions.Select(action => action.Key).ToList();
+        output[OutputContextSchema.ActionLegalMaskKey] = actions.Select(action => action.Legal).ToList();
+        output[OutputContextSchema.ActionValuesKey] = actions.Select(action => action.Value).ToList();
 
-        var candidateSkills = (List<Dictionary<string, object?>>)
-            output[OutputContextSchema.CandidateSkillContextKey]!;
-        var candidateStateContext = (Dictionary<string, object?>)
-            output[OutputContextSchema.CandidateStateContextKey]!;
-        var candidateStates = (List<object>)candidateStateContext["tokens"]!;
-        for (var index = _registry.Actions.Count - 1; index >= 0; index--)
-        {
-            var action = _registry.Actions[index];
-            candidateSkills.Insert(0, BuildSkillToken(
-                action,
-                state.Time,
-                consumed));
-            candidateStates.Insert(0, router.BuildStateTransitionToken(state, after));
-        }
-
-        MergePolicyHistory(output, history, router);
+        MergePolicyHistory(output, history, router, state.History);
         return output;
     }
 
     private void MergePolicyHistory(
         Dictionary<string, object?> output,
         PolicyDecisionHistory history,
-        StateOutputRouter router)
+        StateOutputRouter router,
+        IReadOnlyList<ActionHistoryEntry> realHistory)
     {
         var skillHistory = (List<Dictionary<string, object?>>)
             output[OutputContextSchema.SkillHistoryContextKey]!;
         var stateHistoryContext = (Dictionary<string, object?>)
             output[OutputContextSchema.StateHistoryContextKey]!;
         var stateHistory = (List<Dictionary<string, double[]>>)stateHistoryContext["tokens"]!;
+        var executionMetrics = (List<Dictionary<string, double>>)stateHistoryContext["execution_metrics"]!;
 
-        var merged = new List<(double Time, int Order, Dictionary<string, object?> Skill,
-            Dictionary<string, double[]> State)>();
+        var entries = realHistory.TakeLast(skillHistory.Count).ToArray();
+        if (entries.Length != skillHistory.Count || stateHistory.Count != skillHistory.Count
+            || executionMetrics.Count != skillHistory.Count)
+            throw new InvalidOperationException("real history and output tokens must be aligned");
+
+        var merged = new List<(long Sequence, Dictionary<string, object?> Skill,
+            Dictionary<string, double[]> State, Dictionary<string, double> Metrics)>();
         for (var index = 0; index < skillHistory.Count; index++)
         {
-            var time = Convert.ToDouble(skillHistory[index]["time_seconds"]);
-            merged.Add((time, index, skillHistory[index], stateHistory[index]));
+            merged.Add((entries[index].HistorySequence, skillHistory[index], stateHistory[index], executionMetrics[index]));
         }
 
-        var order = skillHistory.Count;
         var retainedTokens = new Dictionary<PolicyDecision,
             (Dictionary<string, object?> Skill, Dictionary<string, double[]> State)>(ReferenceEqualityComparer.Instance);
         foreach (var decision in history.ReadEntries)
@@ -86,34 +83,41 @@ public sealed class PolicyContextBuilder
             if (!_historyTokens.TryGetValue(decision, out var token))
             {
                 var consumed = router.BuildNoopResourceTransition(decision.StateBefore);
-                token = (BuildSkillToken(decision.Action, decision.Timestamp, consumed),
-                    router.BuildStateTransitionToken(decision.StateBefore, decision.StateAfter));
+                token = (BuildSkillToken(decision.Action, consumed),
+                    router.BuildModelStateToken(decision.ModelState));
             }
             retainedTokens.Add(decision, token);
             merged.Add((
-                decision.Timestamp,
-                order++,
+                decision.HistorySequence,
                 token.Skill,
-                token.State));
+                token.State,
+                new Dictionary<string, double>
+                {
+                    ["cumulative_potency"] = decision.StateAfter.CumulativePotency,
+                    ["cumulative_dot_potency"] = decision.StateAfter.CumulativeDotPotency,
+                }));
         }
         // 只保留当前窗口中的条目，重置、恢复及滑动淘汰都不累积旧快照。
         _historyTokens = retainedTokens;
 
-        merged.Sort((left, right) =>
+        // 同一单调战斗游标上的真实效果与等待共用实际写入顺序，展示用时间不参与排序。
+        merged.Sort((left, right) => left.Sequence.CompareTo(right.Sequence));
+        for (var index = 0; index < merged.Count; index++)
         {
-            var byTime = left.Time.CompareTo(right.Time);
-            return byTime != 0 ? byTime : left.Order.CompareTo(right.Order);
-        });
+            if (merged[index].Sequence <= 0 || (index > 0 && merged[index - 1].Sequence == merged[index].Sequence))
+                throw new InvalidOperationException("history sequence must be positive and unique");
+        }
         history.Retention.Trim(merged);
         skillHistory.Clear();
         skillHistory.AddRange(merged.Select(item => item.Skill));
         stateHistory.Clear();
         stateHistory.AddRange(merged.Select(item => item.State));
+        executionMetrics.Clear();
+        executionMetrics.AddRange(merged.Select(item => item.Metrics));
     }
 
     private static Dictionary<string, object?> BuildSkillToken(
         PolicyActionDefinition action,
-        double timestamp,
         IReadOnlyDictionary<string, object> consumed) =>
         SkillTokenBuilder.Build(
             skillId: action.RawId,
@@ -121,7 +125,7 @@ public sealed class PolicyContextBuilder
             skillName: action.Name,
             potency: 0,
             value: action.Value,
-            kind: action.CandidateKind,
+            kind: action.Kind,
             actualMpCost: 0,
             castTimeSeconds: 0,
             gcdWindowSeconds: 0,
@@ -130,6 +134,5 @@ public sealed class PolicyContextBuilder
             nextCooldownSeconds: 0,
             availableCharges: 1,
             maxCharges: 1,
-            jobResourcesConsumed: consumed,
-            timeSeconds: timestamp);
+            jobResourcesConsumed: consumed);
 }

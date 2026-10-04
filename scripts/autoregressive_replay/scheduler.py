@@ -143,7 +143,7 @@ class DecisionScheduler:
         return self.advance_by(state, gcd_request_delay(state), end_time=end_time)
 
     def advance_to_next_decision(self, state, *, end_time=None):
-        """无候选时跳到下一真实事件；插入阶段直接让出剩余 GCD 窗口。"""
+        """无动作时跳到下一真实事件；插入阶段直接让出剩余 GCD 窗口。"""
         delay = gcd_request_delay(state)
         if delay <= DECISION_TIME_EPSILON:
             times = [getattr(state, "next_scheduled_event_time", None),

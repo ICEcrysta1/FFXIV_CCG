@@ -9,7 +9,7 @@ from pathlib import Path
 
 import torch
 
-from common.policy.data import DataSpec, ModelInputContract
+from common.policy.data import DataSpec, ModelInputContract, SkillVocab
 from common.policy.model.repetition import parse_repetition_config
 
 from ..io.artifact_io import file_sha256
@@ -23,13 +23,18 @@ from ..runtime.precision import (
 from ..runtime.tensor_runtime import GOLDEN_FORMAT, golden_encoding
 
 
-# 候选合法性与 Sidecar 执行语义变化后，旧导出包不得继续被部署侧接受。
+# 输入与状态机执行语义变化后，旧导出包不得继续被部署侧接受。
 # 10：技能和状态输入收缩为新的秒制窗口契约，禁止复用旧部署包。
 # 11：移除模型调度窗口和 GCD 单位时间字段，状态维度与归一化契约变化。
 # 12：状态输入移除资源 consumed、weave 字段及黑魔残留辅助 Buff，拒绝旧维度。
 # 13：移除 CLS token 和对应评分器输入，部署图的内部 token 布局变化。
-DEPLOYMENT_CONTRACT_VERSION = 13
-DEPLOYMENT_MANIFEST_VERSION = 7
+# 14：移除候选输入，单因果序列与共享技能词表输出；固定动作类型随契约保存。
+# 15：技能与状态独立为 d_model token，删除融合/输出适配，容量按每动作两个 token 计算。
+# 16：状态改为请求时冻结的跨步快照，同宽旧状态语义与旧部署包不兼容。
+# 17：技能数值输入删除绝对时间列，旧技能宽度与对应部署包不兼容。
+# 18：历史 token 改为状态、技能顺序，拒绝同宽但因果语义不同的旧部署包。
+DEPLOYMENT_CONTRACT_VERSION = 18
+DEPLOYMENT_MANIFEST_VERSION = 11
 MANIFEST_SCHEMA_FILENAME = "manifest.schema.json"
 
 
@@ -79,10 +84,7 @@ class DeploymentContract:
         capacity_report: Mapping[str, object],
         embedding_vocab_size: int,
     ) -> "DeploymentContract":
-        normalized_vocab = tuple(
-            (int(raw_skill_id), int(vocab_id))
-            for raw_skill_id, vocab_id in vocab_entries
-        )
+        normalized_vocab = tuple(SkillVocab.from_entries(vocab_entries))
         capacity_report_sha256 = str(capacity_report.get("semantic_sha256", ""))
         capacity_evidence = {
             "scene_capacity": int(capacity_report["scene_capacity"]),
@@ -156,16 +158,7 @@ class DeploymentContract:
             )
         )
         vocab_payload = _mapping(payload["vocab"], "contract.vocab")
-        entries = vocab_payload.get("entries")
-        if not isinstance(entries, list):
-            raise ValueError("contract.vocab.entries must be a list")
-        vocab_entries = tuple(
-            (
-                int(_mapping(entry, "contract.vocab.entries[]")["raw_skill_id"]),
-                int(_mapping(entry, "contract.vocab.entries[]")["vocab_id"]),
-            )
-            for entry in entries
-        )
+        vocab_entries = tuple(SkillVocab.from_dict(vocab_payload))
         provenance = _mapping(
             payload["capacity_provenance"],
             "contract.capacity_provenance",
@@ -196,6 +189,7 @@ class DeploymentContract:
             data_spec=asdict(data_spec),
             schema=parsed_schema,
             normalizer_contract=parsed_input_contract.normalizer_contract,
+            skill_vocab_entries=parsed_input_contract.skill_vocab_entries,
         )
         capacity = CapacityContract.from_dict(capacity_payload)
         contract = cls(
@@ -231,14 +225,19 @@ class DeploymentContract:
         if self.repetition_config != normalized_repetition:
             raise ValueError("deployment repetition config is not canonical")
         self.input_contract.assert_matches_data_spec(self.data_spec)
+        self.input_contract.assert_matches_embedding(embedding_vocab_size)
+        self.input_contract.create_skill_vocab().assert_matches(
+            self.vocab_entries, context="deployment",
+        )
         if self.input_contract.job_tag != self.data_spec.job_tag:
             raise ValueError("deployment job_tag differs from model input contract")
-        if self.capacity.candidate_count != self.data_spec.num_candidates:
-            raise ValueError("deployment candidate capacity differs from checkpoint DataSpec")
         if "max_sequence_length" in self.model_config:
             raise ValueError(
                 "deployment model_config contains removed max_sequence_length"
             )
+        removed = {"pair_embedding_dim", "pair_fusion", "output_adapter"}.intersection(self.model_config)
+        if removed:
+            raise ValueError("deployment model_config contains removed fusion options: " + ", ".join(sorted(removed)))
         try:
             model_scene_capacity = int(self.model_config["scene_capacity"])
             model_history_capacity = int(self.model_config["history_capacity"])
@@ -251,8 +250,8 @@ class DeploymentContract:
         if model_history_capacity != self.capacity.history_capacity:
             raise ValueError("deployment history capacity differs from model_config")
         self.capacity.validate()
-        if len(self.data_spec.candidate_action_keys) != self.data_spec.num_candidates:
-            raise ValueError("candidate action order length differs from candidate count")
+        if len(self.data_spec.action_keys) != self.data_spec.num_actions:
+            raise ValueError("action order length differs from num_actions")
         if len(self.data_spec.skill_feature_names) != self.data_spec.skill_feature_dim:
             raise ValueError("skill feature order length differs from skill feature dimension")
         schema = self.input_contract.schema
@@ -277,22 +276,12 @@ class DeploymentContract:
                 "capacity report history differs from checkpoint full-history boundary: "
                 f"{history_capacity} != {self.capacity.history_capacity}"
             )
-        vocab_ids = tuple(vocab_id for _raw_skill_id, vocab_id in self.vocab_entries)
-        raw_skill_ids = tuple(raw_skill_id for raw_skill_id, _vocab_id in self.vocab_entries)
-        if len(set(self.vocab_entries)) != len(self.vocab_entries):
-            raise ValueError("vocab entries must be unique")
-        if len(set(raw_skill_ids)) != len(raw_skill_ids):
-            raise ValueError("raw skill ids in deployment vocab must be unique")
-        if sorted(vocab_ids) != list(range(1, embedding_vocab_size)):
-            raise ValueError("vocab ids must exactly cover checkpoint embedding rows 1..N")
-        if embedding_vocab_size != len(self.vocab_entries) + 1:
-            raise ValueError("vocab size differs from checkpoint skill embedding")
 
     def to_dict(self) -> dict[str, object]:
         core = self._unsigned_dict()
         signatures = {
-            "candidate_order_sha256": stable_sha256(
-                list(self.data_spec.candidate_action_keys)
+            "action_order_sha256": stable_sha256(
+                list(self.data_spec.action_keys)
             ),
             "skill_feature_order_sha256": stable_sha256(
                 list(self.data_spec.skill_feature_names)
@@ -316,7 +305,6 @@ class DeploymentContract:
         b = self.capacity.batch_size
         s = self.capacity.scene_capacity
         h = self.capacity.history_capacity
-        c = self.data_spec.num_candidates
         sd = self.data_spec.state_dim
         fd = self.data_spec.skill_feature_dim
         xd = self.data_spec.scene_dim
@@ -334,11 +322,9 @@ class DeploymentContract:
                 (b, h, sd),
                 "history state null flags; right-padded positions are true",
             ),
-            TensorSpec("history_mask", "tensor(bool)", (b, h), "true for valid history tokens"),
-            TensorSpec("candidate_skill_ids", "tensor(int64)", (b, c), "candidate vocab ids in canonical order"),
-            TensorSpec("candidate_skill_features", float_dtype, (b, c, fd), "candidate features in canonical order"),
-            TensorSpec("candidate_state_vectors", float_dtype, (b, c, sd), "candidate states in canonical order"),
-            TensorSpec("candidate_state_null_mask", "tensor(bool)", (b, c, sd), "candidate state null flags"),
+            TensorSpec("history_mask", "tensor(bool)", (b, h), "true for valid actions; shared by independent skill and state tokens"),
+            TensorSpec("current_state_vectors", float_dtype, (b, sd), "current request state in ordered state layout"),
+            TensorSpec("current_state_null_mask", "tensor(bool)", (b, sd), "current request state null flags"),
         )
         assert tuple(spec.name for spec in specs) == TENSOR_INPUT_NAMES
         return specs
@@ -349,8 +335,8 @@ class DeploymentContract:
             TensorSpec(
                 OUTPUT_NAMES[0],
                 float_dtype,
-                (self.capacity.batch_size, self.data_spec.num_candidates),
-                "raw logits in canonical candidate order before host masking/policy",
+                (self.capacity.batch_size, self.data_spec.num_actions),
+                "raw logits in fixed action order before host masking/policy",
             ),
         )
 
@@ -370,30 +356,27 @@ class DeploymentContract:
         if bool(((scene_types < 0) | (scene_types >= self.data_spec.num_scene_types)).any()):
             raise ValueError("scene_types contains an id outside the deployment contract")
         history_ids = inputs[3]
-        candidate_ids = inputs[8]
         vocab_size = len(self.vocab_entries) + 1
         if bool(((history_ids < 0) | (history_ids >= vocab_size)).any()):
             raise ValueError("history_skill_ids contains an id outside the deployment vocab")
-        if bool(((candidate_ids <= 0) | (candidate_ids >= vocab_size)).any()):
-            raise ValueError("candidate_skill_ids contains an invalid deployment vocab id")
         _validate_right_padding(inputs[2], "scene_mask")
         _validate_right_padding(inputs[7], "history_mask")
 
-    def validate_host_candidate_order(
+    def validate_host_action_order(
         self,
-        candidate_action_keys: Sequence[str],
-        candidate_legal_mask: torch.Tensor,
+        action_keys: Sequence[str],
+        action_legal_mask: torch.Tensor,
     ) -> None:
-        if tuple(candidate_action_keys) != self.data_spec.candidate_action_keys:
-            raise ValueError("host candidate order differs from raw_logits contract")
+        if tuple(action_keys) != self.data_spec.action_keys:
+            raise ValueError("host action order differs from raw_logits contract")
         expected_shape = (
             self.capacity.batch_size,
-            self.data_spec.num_candidates,
+            self.data_spec.num_actions,
         )
-        if tuple(candidate_legal_mask.shape) != expected_shape:
-            raise ValueError("candidate_legal_mask shape differs from raw_logits")
-        if candidate_legal_mask.dtype != torch.bool:
-            raise ValueError("candidate_legal_mask must use bool dtype")
+        if tuple(action_legal_mask.shape) != expected_shape:
+            raise ValueError("action_legal_mask shape differs from raw_logits")
+        if action_legal_mask.dtype != torch.bool:
+            raise ValueError("action_legal_mask must use bool dtype")
 
     def _unsigned_dict(self) -> dict[str, object]:
         schema = self.input_contract.schema
@@ -409,14 +392,7 @@ class DeploymentContract:
             }
             for window in schema.scene_windows
         ]
-        vocab = {
-            "size": len(self.vocab_entries) + 1,
-            "padding_vocab_id": 0,
-            "entries": [
-                {"raw_skill_id": raw_skill_id, "vocab_id": vocab_id}
-                for raw_skill_id, vocab_id in self.vocab_entries
-            ],
-        }
+        vocab = SkillVocab.from_entries(self.vocab_entries).to_dict()
         return {
             "contract_version": DEPLOYMENT_CONTRACT_VERSION,
             "job_tag": self.data_spec.job_tag,
@@ -431,15 +407,15 @@ class DeploymentContract:
             "tensor_inputs": [spec.to_dict() for spec in self.tensor_inputs()],
             "tensor_outputs": [spec.to_dict() for spec in self.tensor_outputs()],
             "host_postprocessing": {
-                "candidate_legal_mask": {
+                "action_legal_mask": {
                     "dtype": "tensor(bool)",
                     "shape": [
                         self.capacity.batch_size,
-                        self.data_spec.num_candidates,
+                        self.data_spec.num_actions,
                     ],
-                    "order": "data_spec.candidate_action_keys",
+                    "order": "data_spec.action_keys",
                 },
-                "raw_logits_order": "data_spec.candidate_action_keys",
+                "raw_logits_order": "data_spec.action_keys",
                 "repetition": dict(self.repetition_config),
                 "repetition_policy": "host",
                 "sampling_policy": "host",

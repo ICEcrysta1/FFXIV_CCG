@@ -1,4 +1,4 @@
-"""开场决策的候选动作注意力图。"""
+"""开场最新状态 query 与完整因果上下文注意力图。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from matplotlib.colors import Normalize
-from matplotlib.patches import Rectangle
 
 from common.torch_runtime import move_batch
 from training import TrainingCollator
@@ -32,7 +31,7 @@ def plot_opener_attention(
     steps: int = 28,
     batch_size: int = 16,
 ) -> tuple[Path, Path]:
-    """用 compiled cache 的真实开场样本，绘制候选 query 对候选 key 的平均注意力。"""
+    """绘制最新状态 query 对场景、状态与技能三类 key 的注意力质量。"""
     if steps <= 0:
         raise ValueError("attention steps must be positive")
     if batch_size <= 0:
@@ -40,15 +39,12 @@ def plot_opener_attention(
     sample_count = min(steps, len(context.dataset))
     if sample_count == 0:
         raise ValueError("dataset is empty, cannot plot opener attention")
-
     samples = [context.dataset[index] for index in range(sample_count)]
-    candidate_keys = tuple(str(key) for key in samples[0]["candidate_action_keys"])
+    action_keys = context.data_spec.action_keys
+    context_keys = tuple(ROLE_NAMES[role] for role in sorted(ROLE_NAMES))
     collator = TrainingCollator()
     layer_rows: list[list[np.ndarray]] | None = None
     labels: list[str] = []
-    label_indices: list[int] = []
-    prediction_indices: list[int] = []
-
     with torch.no_grad():
         for start in range(0, sample_count, batch_size):
             sample_batch = samples[start : start + batch_size]
@@ -57,53 +53,41 @@ def plot_opener_attention(
                 trace = context.model.trace(batch)
                 encoded = trace.encoded
                 logits = context.model.score_hidden(encoded, trace.hidden, batch)
-            attentions = trace.attentions
-            candidate_positions = encoded["candidate_positions"]
+            positions = encoded["current_state_positions"]
+            valid = ~encoded["padding_mask"]
+            roles = encoded["role_ids"]
             if layer_rows is None:
-                layer_rows = [[] for _ in attentions]
-
-            for layer_index, attention in enumerate(attentions):
-                # attention: [batch, head, query, key]；对所有候选 query 和 head 求均值。
-                candidate_to_candidate = attention.index_select(2, candidate_positions).index_select(
-                    3, candidate_positions
-                )
-                candidate_attention = candidate_to_candidate.mean(dim=(1, 2))
-                layer_rows[layer_index].append(
-                    candidate_attention.detach().float().cpu().numpy()
-                )
-
+                layer_rows = [[] for _ in trace.attentions]
+            for layer_index, attention in enumerate(trace.attentions):
+                # 只读最新状态 query；按真实 key 角色汇总所有 head 的注意力质量。
+                query_attention = attention[
+                    torch.arange(attention.shape[0], device=attention.device), :, positions, :
+                ].mean(dim=1)
+                mass = torch.stack([
+                    (query_attention * ((roles == role) & valid)).sum(dim=-1)
+                    for role in sorted(ROLE_NAMES)
+                ], dim=-1)
+                layer_rows[layer_index].append(mass.detach().float().cpu().numpy())
             predictions = logits.argmax(dim=-1).detach().cpu().tolist()
             for row, sample in enumerate(sample_batch):
-                label_action = str(sample["label_action_key"])
-                label_index = int(sample["label_index"])
-                labels.append(f"{start + row + 1}: {label_action}")
-                label_indices.append(label_index)
-                prediction_indices.append(int(predictions[row]))
-            # 避免下一批前向开始时，上一批完整 trace 仍由局部变量引用。
-            del batch, trace, encoded, logits, attentions, candidate_positions
+                labels.append(
+                    f"{start + row + 1}: {sample['label_action_key']} / pred={action_keys[predictions[row]]}"
+                )
+            del batch, trace, encoded, logits
             if context.device.type == "cuda":
                 torch.cuda.empty_cache()
-
-    assert layer_rows is not None
+    if not layer_rows:
+        raise ValueError("model trace did not return attention weights")
     layer_values = [np.concatenate(rows, axis=0) for rows in layer_rows]
-    final_attention = layer_values[-1]
-    candidate_focus = _normalize_candidate_attention(final_attention)
-    layer_focus = np.stack(
-        [_normalize_candidate_attention(values).mean(axis=0) for values in layer_values]
-    )
-
-    candidate_path = context.output_dir / "06_opener_attention_candidates.png"
+    query_focus = _normalize_query_attention(layer_values[-1])
+    layer_focus = np.stack([
+        _normalize_query_attention(values).mean(axis=0) for values in layer_values
+    ])
+    query_path = context.output_dir / "06_opener_attention_context.png"
     layer_path = context.output_dir / "07_opener_attention_by_layer.png"
-    _plot_candidate_attention(
-        candidate_focus,
-        candidate_keys,
-        labels,
-        label_indices,
-        prediction_indices,
-        candidate_path,
-    )
-    _plot_layer_attention(layer_focus, candidate_keys, layer_path)
-    return candidate_path, layer_path
+    _plot_query_attention(query_focus, context_keys, labels, query_path)
+    _plot_layer_attention(layer_focus, context_keys, layer_path)
+    return query_path, layer_path
 
 
 def plot_standard_attention_outputs(
@@ -161,8 +145,8 @@ def _sample_token_count(sample: object) -> int:
             "expected mapping sample for representative selection, "
             f"got {type(sample).__name__}"
         )
-    total = 0
-    for key in ("scene_vectors", "candidate_skill_ids"):
+    total = 1  # 显式最新状态 token。
+    for key in ("scene_vectors",):
         values = sample.get(key)
         if values is None:
             continue
@@ -176,7 +160,7 @@ def _sample_token_count(sample: object) -> int:
     history_values = sample.get("history_skill_ids")
     if history_values is not None:
         try:
-            total += len(history_values)
+            total += 2 * len(history_values)
         except TypeError as exc:
             raise TypeError(
                 "sample field 'history_skill_ids' must be sized for representative selection"
@@ -186,7 +170,7 @@ def _sample_token_count(sample: object) -> int:
         history_length = sample.get("history_length")
         if history_length is not None:
             try:
-                total += int(history_length)
+                total += 2 * int(history_length)
             except (TypeError, ValueError, OverflowError) as exc:
                 raise TypeError(
                     "sample field 'history_length' must be an integer for representative selection"
@@ -452,10 +436,10 @@ def _plot_attention_role_blocks(
     save_figure(fig, path)
 
 
-def _normalize_candidate_attention(values: np.ndarray) -> np.ndarray:
-    """按每个开场决策行的候选最大注意力归一化到 0~1。"""
+def _normalize_query_attention(values: np.ndarray) -> np.ndarray:
+    """按每个开场决策行的上下文最大注意力归一化到 0~1。"""
     if values.ndim != 2 or values.shape[1] == 0:
-        raise ValueError("candidate attention must have shape [sample, candidate]")
+        raise ValueError("current-state query attention must have shape [sample, context role]")
     row_maximum = values.max(axis=1, keepdims=True)
     normalized = np.zeros_like(values, dtype=np.float32)
     np.divide(
@@ -467,82 +451,39 @@ def _normalize_candidate_attention(values: np.ndarray) -> np.ndarray:
     return normalized
 
 
-def _plot_candidate_attention(
+def _plot_query_attention(
     values: np.ndarray,
-    candidate_keys: tuple[str, ...],
+    context_keys: tuple[str, ...],
     labels: list[str],
-    label_indices: list[int],
-    prediction_indices: list[int],
     path: Path,
 ) -> None:
-    fig_width = max(14.0, len(candidate_keys) * 0.48)
-    fig_height = max(8.0, len(labels) * 0.32)
-    fig, ax = create_figure((fig_width, fig_height))
-    image = ax.imshow(
-        values,
-        cmap=_attention_cmap(),
-        aspect="auto",
-        norm=_attention_color_norm(),
-    )
-    ax.set_xticks(np.arange(len(candidate_keys)), candidate_keys, rotation=90, fontsize=8)
+    fig, ax = create_figure((max(10.0, len(context_keys) * 2.0), max(8.0, len(labels) * 0.32)))
+    image = ax.imshow(values, cmap=_attention_cmap(), aspect="auto", norm=_attention_color_norm())
+    ax.set_xticks(np.arange(len(context_keys)), context_keys, rotation=35, fontsize=8)
     ax.set_yticks(np.arange(len(labels)), labels, fontsize=8)
-    ax.set_xlabel("Candidate action (mean candidate-query attention; each row normalized to max=1.0)")
-    ax.set_ylabel("Opening decision step / recorded label")
-    ax.set_title("Opener candidate attention — final Transformer layer")
-
-    for row, (label_index, prediction_index) in enumerate(zip(label_indices, prediction_indices)):
-        ax.add_patch(
-            Rectangle(
-                (label_index - 0.45, row - 0.45),
-                0.9,
-                0.9,
-                fill=False,
-                edgecolor="#ffffff",
-                linewidth=1.4,
-            )
-        )
-        ax.scatter(
-            prediction_index,
-            row,
-            marker="x",
-            s=42,
-            color="#00bcd4",
-            linewidths=1.5,
-        )
-
-    ax.scatter([], [], marker="s", facecolors="none", edgecolors="#ffffff", label="recorded label")
-    ax.scatter([], [], marker="x", color="#00bcd4", label="model top-1")
-    ax.legend(
-        loc="lower center",
-        bbox_to_anchor=(0.5, 1.08),
-        ncol=2,
-        borderaxespad=0.0,
-    )
-    fig.colorbar(
-        image,
-        ax=ax,
-        label="row-relative attention (row maximum = 1.0)",
-        pad=0.04,
-    )
+    ax.set_xlabel("Context key role (current-state query; each row normalized to max=1.0)")
+    ax.set_ylabel("Opening decision step / recorded label / model top-1")
+    ax.set_title("Opener current-state query attention — final Transformer layer")
+    fig.colorbar(image, ax=ax, label="row-relative attention mass (row maximum = 1.0)", pad=0.04)
     save_figure(fig, path)
 
 
 def _plot_layer_attention(
     values: np.ndarray,
-    candidate_keys: tuple[str, ...],
+    context_keys: tuple[str, ...],
     path: Path,
 ) -> None:
-    fig, ax = create_figure((max(14.0, len(candidate_keys) * 0.48), 5.5))
+    fig, ax = create_figure((max(14.0, len(context_keys) * 0.48), 5.5))
     image = ax.imshow(
         values,
         cmap=_attention_cmap(),
         aspect="auto",
         norm=_attention_color_norm(),
     )
-    ax.set_xticks(np.arange(len(candidate_keys)), candidate_keys, rotation=90, fontsize=8)
+    ax.set_xticks(np.arange(len(context_keys)), context_keys, rotation=90, fontsize=8)
     ax.set_yticks(np.arange(values.shape[0]), [f"Layer {index + 1}" for index in range(values.shape[0])])
-    ax.set_xlabel("Candidate action")
+    ax.set_xlabel("Context key role")
     ax.set_ylabel("Transformer layer")
-    ax.set_title("Mean row-relative opener candidate attention by Transformer layer")
+    ax.set_title("Mean row-relative current-state query attention by Transformer layer")
     fig.colorbar(image, ax=ax, label="row-relative attention (row maximum = 1.0)")
     save_figure(fig, path)

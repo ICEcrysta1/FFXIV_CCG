@@ -1,6 +1,6 @@
 """策略输入数据契约与预处理组件。"""
 
-from .candidate_order import candidate_permutation, load_candidate_order
+from .action_space import ActionSpace
 from .compiled_cache import CompiledCacheReader
 from .input_contract import ModelInputContract
 from .normalization import NormalizerConfig, load_normalizer_config
@@ -12,6 +12,7 @@ from .spec import DataSpec
 
 __all__ = [
     "CompiledCacheReader",
+    "ActionSpace",
     "DataSpec",
     "ModelInputContract",
     "Normalizer",
@@ -20,8 +21,6 @@ __all__ = [
     "SceneWindowSchema",
     "SkillVocab",
     "TrainingSchema",
-    "candidate_permutation",
-    "load_candidate_order",
     "load_normalizer_config",
     "load_policy_actions",
 ]

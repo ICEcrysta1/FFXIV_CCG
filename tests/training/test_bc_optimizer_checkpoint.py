@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from common.policy.config import ModelConfig
-from common.policy.data import DataSpec, ModelInputContract, Normalizer
+from common.policy.data import DataSpec, ModelInputContract, Normalizer, SkillVocab
 from common.policy.data.schema import TrainingSchema
 from common.training.optimizer_config import OptimizerConfig
 from training.config import RunConfig
@@ -25,19 +25,20 @@ def resume_context(tmp_path):
         scene_context_mode="absolute",
         scene_windows=(),
         state_group_feature_keys={"player_state": ("a", "b", "c")},
-        candidate_skill_fields=("potency",),
         skill_history_fields=(),
     )
     normalizer = Normalizer()
     normalizer.configure_job_resources("black_mage")
     dataset = SimpleNamespace(
         job_tag="black_mage",
-        num_candidates=2,
+        num_actions=2,
         state_dim=3,
         scene_dim=0,
         num_scene_types=0,
-        candidate_action_keys=("a", "b"),
+        action_keys=("a", "b"),
         skill_feature_names=("potency",),
+        action_to_vocab_id=(1, 2),
+        action_is_gcd=(True, True),
         schema=schema,
         normalizer=normalizer,
     )
@@ -47,9 +48,10 @@ def resume_context(tmp_path):
         output_dir=tmp_path / "output",
         job_tag="black_mage",
         model_variant="artzip",
-        model=ModelConfig(d_model=8, pair_embedding_dim=4, n_layers=1, n_heads=2, ff_dim=16),
+        model=ModelConfig(d_model=8, n_layers=1, n_heads=2, ff_dim=16),
     )
     input_contract = ModelInputContract.from_training(
+        skill_vocab=SkillVocab.from_entries([(1001, 1), (1002, 2), (900001, 3), (900002, 4)]),
         data_spec=data_spec,
         schema=schema,
         normalizer=normalizer,
@@ -85,6 +87,16 @@ def _validate(context, *, optimizer=None, force=False):
         input_contract=context.input_contract,
         force_resume_data_mismatch=force,
     )
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_resume_rejects_inactive_vocab_row_drift_even_when_outputs_match(resume_context, force):
+    resume_context.input_contract = replace(
+        resume_context.input_contract,
+        skill_vocab_entries=((1001, 1), (1002, 2), (900001, 4), (900002, 3)),
+    )
+    with pytest.raises(ValueError, match="resume checkpoint skill vocab mismatch.*raw_skill_id=900001"):
+        _validate(resume_context, force=force)
 
 
 @pytest.mark.parametrize("missing_run_config", [False, True])

@@ -65,9 +65,7 @@ def evaluate_none_ppg(
     if not ppg_config.enabled:
         return {}
 
-    normalizer = Normalizer()
-    normalizer.configure_job_resources(data_spec.job_tag)
-    normalizer.register_schema(dataset.schema)
+    normalizer = _dataset_normalizer(dataset)
     model.eval()
     policy_backend = TrainingPolicyBackend(
         model, data_spec=data_spec, device=device, precision=config.precision,
@@ -88,7 +86,8 @@ def evaluate_none_ppg(
                 scene_provider=EmptySceneProvider(data_spec.scene_dim),
                 device=device,
                 max_history=config.model.history_capacity,
-                candidate_action_keys=data_spec.candidate_action_keys,
+                action_keys=data_spec.action_keys,
+                action_is_gcd=data_spec.action_is_gcd,
             )
             return _run_rollout(
                 policy,
@@ -98,7 +97,7 @@ def evaluate_none_ppg(
                 normalization=ppg_config.normalization,
                 precision=config.precision,
                 device=device,
-                expected_candidate_keys=data_spec.candidate_action_keys,
+                expected_action_keys=data_spec.action_keys,
             )
 
     try:
@@ -134,9 +133,7 @@ def evaluate_validation_ppg(
     if not callable(iter_source_readers):
         raise TypeError("validation PPG requires a TrainingDataset source reader iterator")
 
-    normalizer = Normalizer()
-    normalizer.configure_job_resources(data_spec.job_tag)
-    normalizer.register_schema(dataset.schema)
+    normalizer = _dataset_normalizer(dataset)
     source_results: list[PpgResult] = []
     model.eval()
     enable_kv_cache = getattr(model, "enable_kv_cache", None)
@@ -172,7 +169,7 @@ def evaluate_validation_ppg(
             actual_base_gcd = _infer_initial_base_gcd(
                 reader,
                 normalizer=normalizer,
-                skill_feature_names=dataset.skill_feature_names,
+                job_tag=data_spec.job_tag,
             )
 
             backend.init(
@@ -191,7 +188,8 @@ def evaluate_validation_ppg(
                 scene_provider=scene_provider,
                 device=device,
                 max_history=config.model.history_capacity,
-                candidate_action_keys=data_spec.candidate_action_keys,
+                action_keys=data_spec.action_keys,
+                action_is_gcd=data_spec.action_is_gcd,
             )
             return _run_rollout_until_time(
                 policy,
@@ -202,7 +200,7 @@ def evaluate_validation_ppg(
                 normalization=ppg_config.normalization,
                 precision=config.precision,
                 device=device,
-                expected_candidate_keys=data_spec.candidate_action_keys,
+                expected_action_keys=data_spec.action_keys,
                 source_label=f"{source_index}:{reader.fight_id}",
             )
 
@@ -237,50 +235,54 @@ def _infer_initial_base_gcd(
     reader,
     *,
     normalizer: Normalizer,
-    skill_feature_names,
+    job_tag: str,
 ) -> float:
-    """从首个缓存样本的合法 GCD 技能 token 恢复状态机基础 GCD。
-
-    首个样本没有历史，正是转换器开始回放时的初始状态。`gcd_window.seconds`
-    已按 remaining_seconds_max 归一化，缓存本身不需要额外保存一份重复的 GCD 元数据。
-    """
-    feature_names = tuple(str(name) for name in skill_feature_names)
-    try:
-        kind_index = feature_names.index("kind")
-        gcd_window_index = feature_names.index("gcd_window.seconds")
-        legal_index = feature_names.index("is_legal")
-    except ValueError as exc:
-        raise ValueError(
-            "validation PPG cache is missing numeric skill kind/GCD legality features"
-        ) from exc
-
+    """用缓存初始请求状态与保存的归一化契约恢复基础 GCD。"""
     sample = reader.sample(0)
-    candidate_features = sample.get("candidate_skill_features")
-    candidate_legal_mask = sample.get("candidate_legal_mask")
-    if candidate_features is None or candidate_legal_mask is None:
-        raise ValueError(
-            "validation PPG cache first sample is missing candidate skill features"
-        )
+    vector = sample.get("current_state_vectors")
+    null_mask = sample.get("current_state_null_mask")
+    if vector is None or null_mask is None:
+        raise ValueError("validation PPG cache is missing initial current state")
+    schema = reader.schema
+    if tuple(vector.shape) != (schema.state_vector_dim(),):
+        raise ValueError("validation PPG current state width differs from schema")
+    slices = schema.state_group_slices()
 
-    gcd_values: list[float] = []
-    for row, legal in zip(candidate_features, candidate_legal_mask):
-        if float(legal) < 0.5 or float(row[legal_index]) < 0.5:
-            continue
-        if float(row[kind_index]) < 0.5:
-            continue
-        normalized_gcd = float(row[gcd_window_index])
-        if normalized_gcd <= PPG_TIME_EPSILON:
-            continue
-        gcd_values.append(normalized_gcd * normalizer.remaining_seconds_max)
+    def initial_value(group: str, feature: str) -> float:
+        keys = schema.state_group_feature_keys[group]
+        try:
+            index = slices[group].start + keys.index(feature)
+        except ValueError as exc:
+            raise ValueError(f"validation PPG initial state is missing {feature}") from exc
+        if bool(null_mask[index]):
+            raise ValueError(f"validation PPG initial state has null {feature}")
+        return normalizer.inverse(group, feature, float(vector[index]))
 
-    if not gcd_values:
-        raise ValueError(
-            "validation PPG cache first sample has no legal GCD candidate to recover base GCD"
-        )
-    base_gcd = min(gcd_values)
+    base_gcd = initial_value("player_state", "request_state.current_gcd_seconds")
+    if job_tag == "black_mage":
+        status_feature = "request_state.job.ley_lines.active"
+        if status_feature not in schema.state_group_feature_keys.get("buff_state", ()):
+            raise ValueError("validation PPG initial state is missing Ley Lines status")
+        if initial_value("buff_state", status_feature) >= 0.5:
+            from common.config import load_project_config
+
+            multiplier = float(load_project_config(job_tag=job_tag).job.timing["ley_lines_haste_multiplier"])
+            if not math.isfinite(multiplier) or multiplier <= 0.0:
+                raise ValueError("invalid Ley Lines haste multiplier")
+            base_gcd /= multiplier
     if not math.isfinite(base_gcd) or base_gcd <= PPG_TIME_EPSILON:
         raise ValueError(f"invalid initial base GCD recovered from cache: {base_gcd!r}")
     return base_gcd
+
+
+def _dataset_normalizer(dataset) -> Normalizer:
+    """复用训练/cache权威契约，禁止重新按本机默认值建立归一化器。"""
+    saved = getattr(dataset, "normalizer", None)
+    if saved is None:
+        raise ValueError("PPG dataset must expose its saved normalizer")
+    restored = Normalizer.from_contract(saved.normalization_contract)
+    restored.register_schema(dataset.schema)
+    return restored
 
 
 @torch.no_grad()
@@ -293,7 +295,7 @@ def _run_rollout(
     normalization: float,
     precision: str,
     device: torch.device,
-    expected_candidate_keys,
+    expected_action_keys,
 ) -> PpgResult:
     """执行固定输出 GCD 数量的贪心自回归木桩回放。"""
     if gcd_count < 1:
@@ -306,7 +308,7 @@ def _run_rollout(
     output_gcds = 0
     action_count = 0
     max_actions = max(gcd_count * 16, gcd_count + 32)
-    expected_candidate_keys = tuple(str(key) for key in expected_candidate_keys)
+    expected_action_keys = tuple(str(key) for key in expected_action_keys)
 
     while output_gcds < gcd_count:
         action_count += 1
@@ -316,26 +318,26 @@ def _run_rollout(
                 f"before reaching {gcd_count} GCDs"
             )
 
-        batch, candidate_keys = batcher.build(state)
-        candidate_keys = tuple(str(key) for key in candidate_keys)
-        if candidate_keys != expected_candidate_keys:
+        batch, action_keys = batcher.build(state)
+        action_keys = tuple(str(key) for key in action_keys)
+        if action_keys != expected_action_keys:
             raise ValueError(
-                "PPG candidate action order mismatch: "
-                f"live={candidate_keys!r} cache={expected_candidate_keys!r}"
+                "PPG action order mismatch: "
+                f"live={action_keys!r} cache={expected_action_keys!r}"
             )
         with autocast_context(device, precision):
             logits = model(batch)["logits"][0].float()
-        legal_mask = batch["candidate_legal_mask"][0].bool()
-        selected_index, has_legal_candidate = _select_legal_candidate(logits, legal_mask)
-        if not has_legal_candidate:
+        legal_mask = batch["action_legal_mask"][0].bool()
+        selected_index, has_legal_action = _select_legal_action(logits, legal_mask)
+        if not has_legal_action:
             advanced = DecisionScheduler(
                 backend, lambda timestamp: observe_replay_state(backend, timestamp),
             ).advance_to_next_decision(state)
             if advanced is not None:
                 state = advanced
                 continue
-            raise RuntimeError("PPG live state has no legal candidate")
-        action_key = candidate_keys[selected_index]
+            raise RuntimeError("PPG live state has no legal action")
+        action_key = action_keys[selected_index]
         if action_key == OGCD_WAIT_ACTION_KEY:
             wait_seconds = gcd_request_delay(state)
             if wait_seconds <= PPG_TIME_EPSILON:
@@ -387,7 +389,7 @@ def _run_rollout_until_time(
     normalization: float,
     precision: str,
     device: torch.device,
-    expected_candidate_keys,
+    expected_action_keys,
     source_label: str,
 ) -> PpgResult:
     """从验证副本首个决策点自回归执行到最后一个人类动作时刻。"""
@@ -400,7 +402,7 @@ def _run_rollout_until_time(
     output_gcds = 0
     action_count = 0
     max_actions = max(1024, int(max(1.0, end_time - initial_time) * 32.0))
-    expected_candidate_keys = tuple(str(key) for key in expected_candidate_keys)
+    expected_action_keys = tuple(str(key) for key in expected_action_keys)
 
     while float(state.time) < end_time - PPG_TIME_EPSILON:
         action_count += 1
@@ -410,18 +412,18 @@ def _run_rollout_until_time(
                 f"for {source_label}: {max_actions}"
             )
 
-        batch, candidate_keys = batcher.build(state)
-        candidate_keys = tuple(str(key) for key in candidate_keys)
-        if candidate_keys != expected_candidate_keys:
+        batch, action_keys = batcher.build(state)
+        action_keys = tuple(str(key) for key in action_keys)
+        if action_keys != expected_action_keys:
             raise ValueError(
-                "PPG candidate action order mismatch: "
-                f"live={candidate_keys!r} cache={expected_candidate_keys!r}"
+                "PPG action order mismatch: "
+                f"live={action_keys!r} cache={expected_action_keys!r}"
             )
         with autocast_context(device, precision):
             logits = model(batch)["logits"][0].float()
-        legal_mask = batch["candidate_legal_mask"][0].bool()
-        selected_index, has_legal_candidate = _select_legal_candidate(logits, legal_mask)
-        if not has_legal_candidate:
+        legal_mask = batch["action_legal_mask"][0].bool()
+        selected_index, has_legal_action = _select_legal_action(logits, legal_mask)
+        if not has_legal_action:
             advanced = DecisionScheduler(
                 backend, lambda timestamp: observe_replay_state(backend, timestamp), scene_provider,
             ).advance_to_next_decision(state, end_time=end_time)
@@ -429,7 +431,7 @@ def _run_rollout_until_time(
                 state = advanced
                 continue
             logger.warning(
-                "验证 PPG 副本候选全非法，跳过本副本并记 PPG=0: "
+                "验证 PPG 副本动作全非法，跳过本副本并记 PPG=0: "
                 "source=%s time=%.4f executed_gcds=%d",
                 source_label,
                 float(state.time),
@@ -442,7 +444,7 @@ def _run_rollout_until_time(
                 ppg=0.0,
                 normalized_ppg=0.0,
             )
-        action_key = candidate_keys[selected_index]
+        action_key = action_keys[selected_index]
         if action_key == OGCD_WAIT_ACTION_KEY:
             wait_seconds = gcd_request_delay(state)
             if wait_seconds <= PPG_TIME_EPSILON:
@@ -518,17 +520,17 @@ def _advance_after_action(
     )
 
 
-def _select_legal_candidate(
+def _select_legal_action(
     logits: torch.Tensor,
     legal_mask: torch.Tensor,
 ) -> tuple[int, bool]:
     """合并动作索引与合法性读取，避免两次 CUDA 到 CPU 同步。"""
     selected_index = logits.masked_fill(~legal_mask, float("-inf")).argmax()
-    has_legal_candidate = legal_mask.any()
+    has_legal_action = legal_mask.any()
     decision = torch.stack(
         (
             selected_index.to(dtype=torch.int64),
-            has_legal_candidate.to(dtype=torch.int64),
+            has_legal_action.to(dtype=torch.int64),
         )
     )
     selected_value, has_legal_value = decision.cpu().tolist()

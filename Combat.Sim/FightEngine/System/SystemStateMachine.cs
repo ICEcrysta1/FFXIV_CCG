@@ -271,7 +271,8 @@ public sealed class SystemStateMachine
         double? requestTimestamp = null,
         double? castCompletedTimestamp = null,
         double? effectTimestamp = null,
-        Guid? actionInstanceId = null) =>
+        Guid? actionInstanceId = null,
+        ModelStateSnapshot? modelState = null) =>
         History.RecordActionHistory(
             nextState,
             previousState,
@@ -293,7 +294,8 @@ public sealed class SystemStateMachine
             requestTimestamp,
             castCompletedTimestamp,
             effectTimestamp,
-            actionInstanceId);
+            actionInstanceId,
+            modelState);
 
     public StatusDefinition StatusDefinitionOf(string key) => BuffState.StatusDefinitionOf(key);
 

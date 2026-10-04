@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 from common.contracts import SCENE_EPSILON
+from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION
 
 from scripts.common.scene_state import SceneFactScheduler, rewrite_scene_player_state
 
@@ -90,7 +91,7 @@ def build_training_samples(
         next_step_index += 1
 
     return {
-        "sample_schema_version": 7,
+        "sample_schema_version": TRAINING_SAMPLE_SCHEMA_VERSION,
         "job_tag": str(fight_payload.get("job_tag", backend.job_tag)),
         "fight_id": str(fight_payload.get("fight_id", "unknown_fight")),
         "player": fight_payload.get("player"),
@@ -175,7 +176,8 @@ def _run_real_action(
             "skill_name": skill.name,
             "raw_event_index": raw_action.get("raw_event_index"),
             "quality_labels": list(raw_action.get("quality_labels", [])),
-            "candidate_index": _find_candidate_index(context["candidate_skill_context"], action_key),
+            "action_index": _find_action_index(context["action_keys"], action_key),
+            "cast_time_seconds": None if observed_cast_seconds is None else float(observed_cast_seconds),
             "is_legal": True,
             "invalid_reason": "",
             "time_gap": round(float(raw_action.get("time_gap", 0.0)), 4),
@@ -242,10 +244,11 @@ def _build_ogcd_wait_sample(
                 "action_key": policy_action_key,
                 "skill_id": 0,
                 "skill_name": "",
-                "candidate_index": _find_candidate_index(
-                    context["candidate_skill_context"],
+                "action_index": _find_action_index(
+                    context["action_keys"],
                     policy_action_key,
                 ),
+                "cast_time_seconds": 0.0,
                 "is_legal": True,
                 "invalid_reason": "",
                 "time_gap": 0.0,
@@ -337,16 +340,12 @@ def _offset_or_zero(timestamp: float | None, base: float) -> float:
     return 0.0 if timestamp is None else _round_time(float(timestamp) - base)
 
 
-def _find_candidate_index(candidate_skill_context: list[dict[str, object]], action_key: str) -> int:
-    """在候选技能上下文里找到与目标动作同源的候选下标。
-
-    候选集必须覆盖全部已启用技能（含 policy 候选），缺失即抛错，
-    避免训练标签静默错位污染数据。
-    """
-    for index, entry in enumerate(candidate_skill_context):
-        if str(entry.get("skill_key")) == action_key:
-            return index
-    raise ValueError(f"action {action_key} is not present in candidate_skill_context")
+def _find_action_index(action_keys: list[str], action_key: str) -> int:
+    """在固定动作输出词表中取得监督索引，缺失时显式失败。"""
+    try:
+        return action_keys.index(action_key)
+    except ValueError as exc:
+        raise ValueError(f"action {action_key} is not present in action_keys") from exc
 
 
 def _assert_no_label_leak(
@@ -391,13 +390,10 @@ def _assert_no_label_leak(
             f"skill_count={len(skill_history)}, state_count={state_history_count}"
         )
 
-    candidate_skill_count = len(context["candidate_skill_context"])
-    candidate_state_count = len(context["candidate_state_context"]["tokens"])
-    if candidate_skill_count != candidate_state_count:
+    if len(context["current_state_context"]["tokens"]) != 1:
         raise AssertionError(
-            "candidate context mismatch: "
+            "current request state must contain exactly one token: "
             f"step={current_step}, action={current_action_key}, "
-            f"candidate_skill_count={candidate_skill_count}, candidate_state_count={candidate_state_count}"
         )
 
 

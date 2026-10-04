@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from common.policy.data.normalizer import Normalizer
+from common.policy.data.action_space import ActionSpace
 from scripts.convert_fflogs import (
     build_skill_book,
     build_training_samples,
@@ -261,6 +262,7 @@ def test_compiled_pt_and_batch_keep_label_outside_model_inputs(
     assert paths == [source]
     reader = load_raw_compiled_cache(
         source, cache_dir=cache_root, normalizer=normalizer,
+        expected_action_space=ActionSpace.from_job_tag("black_mage"),
         int_dtype=torch.int32, float_dtype=torch.float32, shard_size=1,
     )
     assert reader is not None
@@ -277,6 +279,7 @@ def test_compiled_pt_and_batch_keep_label_outside_model_inputs(
     assert "quality_label_weights" not in saved
     dataset = TrainingDataset(
         [source], job_tag="black_mage", normalizer=normalizer,
+        expected_action_space=ActionSpace.from_job_tag("black_mage"),
         int_dtype=torch.int32, float_dtype=torch.float32,
         cache_dir=cache_root, compiled_cache_shard_size=1,
     )
@@ -292,7 +295,7 @@ def test_compiled_pt_and_batch_keep_label_outside_model_inputs(
     assert batch["source_quality"].tolist() == pytest.approx([normalized_quality])
     assert "source_percentile" not in batch
     assert "source_percentile_bucket_lower" not in batch
-    assert isinstance(batch["candidate_skill_features"], torch.Tensor)
+    assert isinstance(batch["current_state_vectors"], torch.Tensor)
     quality_config = load_run_config("config/models/black_mage/artzip/config.yaml").action_quality_loss
     if percentile is None:
         if with_labels:

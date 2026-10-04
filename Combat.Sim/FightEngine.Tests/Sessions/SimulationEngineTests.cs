@@ -167,8 +167,8 @@ public sealed class SimulationEngineTests
         Assert.Equal(1024, fullRows.Count);
         Assert.Equal(JsonSerializer.Serialize(fullRows.TakeLast(8)), JsonSerializer.Serialize(windowRows));
         Assert.Empty(Rows(none.ObserveAt(1280, "vector", 1280).Value));
-        Assert.Equal(JsonSerializer.Serialize(full.ObserveAt(1280, "vector", 1280).Value["candidate_state_context"]),
-            JsonSerializer.Serialize(none.ObserveAt(1280, "vector", 1280).Value["candidate_state_context"]));
+        Assert.Equal(JsonSerializer.Serialize(full.ObserveAt(1280, "vector", 1280).Value["current_state_context"]),
+            JsonSerializer.Serialize(none.ObserveAt(1280, "vector", 1280).Value["current_state_context"]));
         Assert.InRange(window.GetStatistics().QueueEntryCount, 0, 80);
     }
 

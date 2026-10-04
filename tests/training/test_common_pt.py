@@ -9,17 +9,18 @@ from scripts.convert_fflogs.source.source_reader import TrainingSourceReader
 from scripts.convert_fflogs.training.sample_builder import TrainingSampleBuilder
 from scripts.convert_fflogs.utils import build_skill_book, load_job_project_config
 from common.policy.config import ModelConfig
-from common.policy.data import CompiledCacheReader, DataSpec, Normalizer
+from common.policy.data import ActionSpace, CompiledCacheReader, DataSpec, Normalizer
 from common.policy.data.prepared_sources import select_prepared_validation_sources
 from training import ShardBatchSampler, TrainingCollator, WeightedShardBatchSampler
 from training.config import RunConfig
-from common.policy.model.input_encoder import CandidateInputEncoder
+from common.policy.model.input_encoder import CausalInputEncoder
+from tests.training._causal_fixtures import make_input_contract
 from training.loop import build_dataloaders
 from tests.training._common_fixtures import (
     enabled_black_mage_config,
     make_dataset,
     make_demo_pt,
-    make_illegal_candidate_pt,
+    make_illegal_action_pt,
     write_test_compiled_cache,
 )
 from common.policy.data.compiled_cache import (
@@ -79,10 +80,8 @@ def test_training_dataset_returns_grouped_sample_and_uses_config_vocab(tmp_path)
     assert sample["history_bank_skill_features"][history_start, kind_index].item() == pytest.approx(1.0)
     assert sample["history_bank_skill_potencies"].shape == sample["history_bank_cumulative_dot_potencies"].shape
     assert sample["history_bank_state_vectors"].shape == sample["history_bank_state_null_mask"].shape
-    assert sample["candidate_skill_ids"].shape[0] == len(sample["candidate_action_keys"])
-    assert sample["candidate_skill_features"].shape[1] == len(dataset.skill_feature_names)
-    assert sample["candidate_values"].shape[0] == len(sample["candidate_action_keys"])
-    assert sample["candidate_state_vectors"].shape == sample["candidate_state_null_mask"].shape
+    assert sample["action_values"].shape == (len(sample["action_keys"]),)
+    assert sample["current_state_vectors"].shape == sample["current_state_null_mask"].shape == (dataset.state_dim,)
     assert sample["scene_vectors"].shape[0] == sample["scene_types"].shape[0]
     assert sample["label_action_key"] == "fire_iv"
 
@@ -106,17 +105,17 @@ def test_training_dataset_compiles_and_reuses_disk_cache(tmp_path):
     assert second_sample["history_end"] == first_sample["history_end"]
     assert second_sample["history_length"] == first_sample["history_length"]
     assert second_sample["history_bank_skill_ids"].equal(first_sample["history_bank_skill_ids"])
-    assert second_sample["candidate_state_vectors"].equal(first_sample["candidate_state_vectors"])
+    assert second_sample["current_state_vectors"].equal(first_sample["current_state_vectors"])
     assert len(first._shard_cache) == 1
 
     restored = object.__new__(type(first))
     restored.__setstate__(first.__getstate__())
     assert isinstance(restored._readers[0], CompiledCacheReader)
-    assert restored[1]["candidate_state_vectors"].equal(first_sample["candidate_state_vectors"])
+    assert restored[1]["current_state_vectors"].equal(first_sample["current_state_vectors"])
 
 
-def test_compiled_history_and_candidates_use_compact_state_contract(tmp_path):
-    """真实 C# 转换生成的候选和完整历史 bank 必须同时采用新输入维度。"""
+def test_compiled_history_and_current_state_use_compact_state_contract(tmp_path):
+    """真实 C# 转换生成的当前请求与完整历史 bank 必须同时采用新输入维度。"""
     pytest.importorskip("torch")
     source_path = make_demo_pt(tmp_path, ["fire_iii", "fire_iv"], fight_id="seconds_contract")
     dataset = make_dataset([source_path])
@@ -130,32 +129,33 @@ def test_compiled_history_and_candidates_use_compact_state_contract(tmp_path):
     }
 
     assert "gcd_index" not in dataset.skill_feature_names
-    assert len(dataset.skill_feature_names) == 19
+    assert len(dataset.skill_feature_names) == 18
+    assert "time_seconds" not in dataset.skill_feature_names
     assert "job_resources_consumed.polyglot" in dataset.skill_feature_names
     assert dataset.schema.state_vector_dim() == 86
     player_keys = dataset.schema.state_group_feature_keys["player_state"]
     assert len(player_keys) == 18
-    assert "before.current_gcd_seconds" in player_keys
-    assert "after.downtime_remaining_seconds" in player_keys
+    assert "previous_action_after.current_gcd_seconds" in player_keys
+    assert "request_state.downtime_remaining_seconds" in player_keys
     assert len(dataset.schema.state_group_feature_keys["buff_state"]) == 40
     assert len(dataset.schema.state_group_feature_keys["target_buff_state"]) == 14
     resource_keys = dataset.schema.state_group_feature_keys["resource_state"]
     assert len(resource_keys) == 14
-    assert all(key.startswith("before.") for key in resource_keys[:7])
-    assert all(key.startswith("after.") for key in resource_keys[7:])
+    assert all(key.startswith("previous_action_after.") for key in resource_keys[:7])
+    assert all(key.startswith("request_state.") for key in resource_keys[7:])
     assert not any(
         key.rsplit(".", 1)[-1] in removed_fields or key.endswith("_gcds")
         or key.startswith("consumed.") or ".manaward." in key or ".surecast." in key
         for keys in dataset.schema.state_group_feature_keys.values()
         for key in keys
     )
-    for prefix in ("history_bank", "candidate"):
-        assert sample[f"{prefix}_skill_features"].shape[-1] == 19
+    assert sample["history_bank_skill_features"].shape[-1] == 18
+    for prefix in ("history_bank", "current"):
         assert sample[f"{prefix}_state_vectors"].shape[-1] == 86
         assert sample[f"{prefix}_state_null_mask"].shape == sample[f"{prefix}_state_vectors"].shape
 
 
-@pytest.mark.parametrize("old_contract", ["cache_format", "conversion_version"])
+@pytest.mark.parametrize("old_contract", ["cache_format", "conversion_version", "unstable_history_order", "skill_time"])
 def test_previous_state_layout_cache_is_rejected(tmp_path, old_contract):
     """旧输入字段缓存不可复用，即使 raw 文件身份和其余编译参数一致。"""
     torch = pytest.importorskip("torch")
@@ -168,13 +168,22 @@ def test_previous_state_layout_cache_is_rejected(tmp_path, old_contract):
     payload = safe_torch_load(cache_path, safe_globals=(SceneWindowSchema, TrainingSchema))
     signature = dict(payload["cache_signature"])
     if old_contract == "cache_format":
-        payload["cache_format"] = "raw_json_compiled_samples_v17_seconds_only_state"
+        payload["cache_format"] = "raw_json_compiled_samples_v20_causal_state"
+    elif old_contract == "conversion_version":
+        payload["cache_signature"]["conversion_version"] = "raw_json_to_compiled_v22_stable_history"
+    elif old_contract == "unstable_history_order":
+        # 字段宽度与存储格式相同，但旧版本可能遗漏等待或重复真实技能。
+        payload["cache_signature"]["conversion_version"] = "raw_json_to_compiled_v21_causal_state"
     else:
-        payload["cache_signature"]["conversion_version"] = "raw_json_to_compiled_v18_seconds_only_state"
+        # 即使格式和签名冒用新版，旧技能时间列仍必须明确拒绝。
+        payload["skill_feature_names"] = (*payload["skill_feature_names"], "time_seconds")
+        bank = payload["history_bank"]
+        bank["skill_features"] = torch.cat((bank["skill_features"], bank["skill_features"][:, :1]), dim=1)
     torch.save(payload, cache_path)
 
     assert load_compiled_cache(
         cache_path, source_path, signature=signature, shard_cache=CompiledShardCache(),
+        expected_action_space=ActionSpace.from_job_tag("black_mage"),
     ) is None
 
 
@@ -236,6 +245,10 @@ def test_compiled_cache_manifest_uses_mmap_for_history_bank(tmp_path, monkeypatc
         "missing_history_bank",
         "overflow_num_samples",
         "overflow_shard_size",
+        "skill_width_mismatch",
+        "previous_sample_schema",
+        "previous_context_schema",
+        "removed_skill_field",
     ],
 )
 def test_corrupt_history_bank_manifest_falls_back_to_recompile(
@@ -249,6 +262,7 @@ def test_corrupt_history_bank_manifest_falls_back_to_recompile(
     cache_path = tmp_path / "corrupt.compiled.pt"
     cache_path.write_bytes(b"corrupt manifest")
     payload_num_samples = 2
+    space = ActionSpace.from_job_tag("black_mage")
     history_bank = {
         "skill_ids": torch.zeros((2,), dtype=torch.int32),
         "skill_features": torch.zeros((2, 1)),
@@ -266,15 +280,19 @@ def test_corrupt_history_bank_manifest_falls_back_to_recompile(
         history_bank["skill_ids"] = torch.zeros((1,), dtype=torch.int32)
     elif corruption == "bank_size_mismatch":
         payload_num_samples = 1
+    elif corruption == "skill_width_mismatch":
+        history_bank["skill_features"] = torch.zeros((2, 2))
     payload = {
         "cache_format": CACHE_FORMAT,
         "cache_signature": {},
-        "schema": None,
+        "schema": make_input_contract().schema,
         "job_tag": "black_mage",
         "num_samples": payload_num_samples,
-        "num_candidates": 1,
-        "skill_feature_names": (),
-        "candidate_action_keys": (),
+        "num_actions": len(space.action_keys),
+        "skill_feature_names": ("potency",),
+        "action_keys": space.action_keys,
+        "action_to_vocab_id": space.action_to_vocab_id,
+        "action_is_gcd": space.action_is_gcd,
         "shard_size": float("inf") if corruption == "overflow_shard_size" else 1,
         "shard_files": [],
         "history_bank": history_bank,
@@ -283,6 +301,13 @@ def test_corrupt_history_bank_manifest_falls_back_to_recompile(
         payload.pop("history_bank")
     elif corruption == "overflow_num_samples":
         payload["num_samples"] = float("inf")
+    elif corruption == "previous_sample_schema":
+        object.__setattr__(payload["schema"], "sample_schema_version", payload["schema"].sample_schema_version - 1)
+    elif corruption == "previous_context_schema":
+        object.__setattr__(payload["schema"], "context_schema_version", payload["schema"].context_schema_version - 1)
+    elif corruption == "removed_skill_field":
+        # 模拟旧 pickle 恢复 dataclass，恢复过程不会调用 __post_init__。
+        object.__setattr__(payload["schema"], "skill_history_fields", ("potency", "time_seconds"))
     monkeypatch.setattr(
         compiled_cache_module,
         "safe_torch_load",
@@ -293,6 +318,7 @@ def test_corrupt_history_bank_manifest_falls_back_to_recompile(
         cache_path,
         tmp_path / "source.json",
         signature={},
+        expected_action_space=ActionSpace.from_job_tag("black_mage"),
         shard_cache=CompiledShardCache(),
     ) is None
 
@@ -305,20 +331,23 @@ def test_empty_compiled_cache_accepts_sentinel_history_bank(tmp_path, monkeypatc
     compiled_cache_module = importlib.import_module("common.policy.data.compiled_cache")
     cache_path = tmp_path / "empty.compiled.pt"
     cache_path.write_bytes(b"empty manifest")
+    space = ActionSpace.from_job_tag("black_mage")
     payload = {
         "cache_format": CACHE_FORMAT,
         "cache_signature": {},
-        "schema": None,
+        "schema": make_input_contract().schema,
         "job_tag": "black_mage",
         "num_samples": 0,
-        "num_candidates": 1,
+        "num_actions": len(space.action_keys),
         "skill_feature_names": (),
-        "candidate_action_keys": (),
+        "action_keys": space.action_keys,
+        "action_to_vocab_id": space.action_to_vocab_id,
+        "action_is_gcd": space.action_is_gcd,
         "shard_size": 1,
         "shard_files": [],
         "history_bank": {
             "skill_ids": torch.zeros((1,), dtype=torch.int32),
-            "skill_features": torch.zeros((1, 1)),
+            "skill_features": torch.zeros((1, 0)),
             "state_vectors": torch.zeros((1, 1)),
             "state_null_mask": torch.zeros((1, 1), dtype=torch.bool),
             "action_keys": ("",),
@@ -336,6 +365,7 @@ def test_empty_compiled_cache_accepts_sentinel_history_bank(tmp_path, monkeypatc
         cache_path,
         tmp_path / "source.json",
         signature={},
+        expected_action_space=ActionSpace.from_job_tag("black_mage"),
         shard_cache=CompiledShardCache(),
     )
 
@@ -352,9 +382,14 @@ def test_compiled_cache_reader_does_not_swallow_memory_error(tmp_path, monkeypat
     compiled_cache_module = importlib.import_module("common.policy.data.compiled_cache")
     cache_path = tmp_path / "manifest.pt"
     cache_path.write_bytes(b"manifest")
+    space = ActionSpace.from_job_tag("black_mage")
     payload = {
         "cache_format": CACHE_FORMAT,
         "cache_signature": {},
+        "job_tag": "black_mage",
+        "action_keys": space.action_keys,
+        "action_to_vocab_id": space.action_to_vocab_id,
+        "action_is_gcd": space.action_is_gcd,
         "shard_files": [],
     }
     monkeypatch.setattr(
@@ -373,6 +408,7 @@ def test_compiled_cache_reader_does_not_swallow_memory_error(tmp_path, monkeypat
             cache_path,
             tmp_path / "source.json",
             signature={},
+            expected_action_space=ActionSpace.from_job_tag("black_mage"),
             shard_cache=CompiledShardCache(),
         )
 
@@ -521,24 +557,23 @@ def test_training_dataset_treats_raw_skill_id_zero_as_real_ogcd_wait(tmp_path):
     ogcd_wait_vocab_id = dataset.skill_vocab.lookup(0)
 
     assert ogcd_wait_vocab_id > 0
-    assert "ogcd_wait" in sample["candidate_action_keys"]
-    assert sample["candidate_skill_ids"][sample["candidate_action_keys"].index("ogcd_wait")].item() == ogcd_wait_vocab_id
+    assert "ogcd_wait" in sample["action_keys"]
+    assert dataset.action_to_vocab_id[sample["action_keys"].index("ogcd_wait")] == ogcd_wait_vocab_id
 
 
-def test_training_dataset_uses_null_mask_for_illegal_candidate_state(tmp_path):
+def test_training_dataset_keeps_current_request_state_for_illegal_output_action(tmp_path):
     torch = pytest.importorskip("torch")
-    pt_path = make_illegal_candidate_pt(tmp_path)
+    pt_path = make_illegal_action_pt(tmp_path)
 
     dataset = make_dataset([pt_path], normalizer=Normalizer())
     sample = dataset[0]
-    fire_iii_index = sample["candidate_action_keys"].index("fire_iii")
-    null_mask = sample["candidate_state_null_mask"][fire_iii_index]
-    values = sample["candidate_state_vectors"][fire_iii_index]
+    fire_iii_index = sample["action_keys"].index("fire_iii")
+    null_mask = sample["current_state_null_mask"]
+    values = sample["current_state_vectors"]
 
-    assert bool(sample["candidate_legal_mask"][fire_iii_index].item()) is False
-    assert bool(null_mask.any().item()) is True
-    assert torch.count_nonzero(values[null_mask]).item() > 0
-    assert torch.all(values[null_mask] == -1.0)
+    assert bool(sample["action_legal_mask"][fire_iii_index].item()) is False
+    assert bool(null_mask.any().item()) is False
+    assert torch.isfinite(values).all()
 
 
 def test_training_collator_pads_history_and_scene_lengths(tmp_path):
@@ -562,7 +597,7 @@ def test_training_collator_pads_history_and_scene_lengths(tmp_path):
     assert batch["history_mask"][1].sum().item() == 2
     assert batch["scene_vectors"].ndim == 3
     assert batch["scene_mask"].shape[:2] == batch["scene_vectors"].shape[:2]
-    assert batch["candidate_state_vectors"].shape == batch["candidate_state_null_mask"].shape
+    assert batch["current_state_vectors"].shape == batch["current_state_null_mask"].shape == (2, short_dataset.state_dim)
 
 
 @pytest.mark.parametrize("levels, status, percentile, error", [
@@ -616,7 +651,7 @@ def test_unweighted_dataloader_accepts_tagged_sample_without_percentile(
     assert batch["quality_label_levels"].tolist() == [[3]]
     assert batch["quality_annotation_available"].tolist() == [True]
     assert batch["source_quality"].tolist() == [-1.0]
-    logits = torch.zeros_like(batch["candidate_legal_mask"], dtype=torch.float32)
+    logits = torch.zeros_like(batch["action_legal_mask"], dtype=torch.float32)
     loss = compose_training_loss({"logits": logits}, batch)
     expected = torch.nn.functional.cross_entropy(logits, batch["label_index"])
     torch.testing.assert_close(loss.primary, expected)
@@ -682,7 +717,7 @@ def test_compact_history_materialization_matches_legacy_dense_builder(tmp_path):
         skill_feature_names=reader.skill_feature_names,
         int_dtype=precision.resolve_int_dtype(),
         float_dtype=precision.resolve_float_dtype(),
-        num_candidates=reader.num_candidates,
+        num_actions=reader.num_actions,
     )
     indices = [0, 1, 3]
     dense_batch = TrainingCollator()(
@@ -690,9 +725,9 @@ def test_compact_history_materialization_matches_legacy_dense_builder(tmp_path):
     )
     compact_batch = TrainingCollator()([dataset[index] for index in indices])
 
-    encoder = CandidateInputEncoder(
+    encoder = CausalInputEncoder(
         DataSpec.from_dataset(dataset),
-        ModelConfig(d_model=16, pair_embedding_dim=8, n_layers=1, n_heads=2, ff_dim=32),
+        ModelConfig(d_model=16, n_layers=1, n_heads=2, ff_dim=32),
         vocab_size=dataset.skill_vocab.size(),
     )
     encoder._materialize_compact_history(compact_batch)

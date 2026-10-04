@@ -23,7 +23,7 @@ def replay_worker_count() -> int:
 
 
 def collate_live_batches(samples):
-    """右侧补齐变长场景和历史；固定候选保持原始顺序。"""
+    """右侧补齐变长场景和历史；固定动作保持原始顺序。"""
     if not samples:
         raise ValueError("cannot collate empty live batches")
     if any(sample.keys() != samples[0].keys() for sample in samples[1:]):
@@ -62,7 +62,7 @@ class TrainingPolicyBackend:
         if callable(configure):
             configure(enabled)
 
-    def raw_logits(self, batch, candidate_action_keys):
+    def raw_logits(self, batch, action_keys):
         with autocast_context(self.input_device, self.precision):
             return self.model(batch)["logits"].float()
 
@@ -88,15 +88,15 @@ class _PolicyClient:
     def _kv_cache_enabled(self):
         return self._cache_enabled
 
-    def raw_logits(self, batch, candidate_action_keys):
-        return self._coordinator.request(self, batch, tuple(candidate_action_keys))
+    def raw_logits(self, batch, action_keys):
+        return self._coordinator.request(self, batch, tuple(action_keys))
 
     def eval(self):
         # 满足 PPG 的模型调用契约；实际模型只由调度器的调用线程操作。
         return self
 
     def __call__(self, batch):
-        return {"logits": self.raw_logits(batch, self.data_spec.candidate_action_keys)}
+        return {"logits": self.raw_logits(batch, self.data_spec.action_keys)}
 
 
 class _InferenceCoordinator:
@@ -188,7 +188,7 @@ class _InferenceCoordinator:
             self.cache_layout = layout
         keys = group[0][2]
         if any(request[2] != keys for request in group):
-            raise ValueError("parallel replay candidate order mismatch")
+            raise ValueError("parallel replay action order mismatch")
         batch = collate_live_batches([request[1] for request in group])
         with torch.inference_mode():
             logits = backend.raw_logits(batch, keys)

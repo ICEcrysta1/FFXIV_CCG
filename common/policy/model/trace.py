@@ -155,20 +155,18 @@ class ModelTrace:
 
 @torch.no_grad()
 def trace_encoder(encoder, encoded: dict[str, torch.Tensor]) -> ModelTrace:
-    """运行 split encoder 并保留每层 hidden 与完整 attention 矩阵。"""
-    from .attention_masks import build_split_attention_mask
-    from .split_encoder import run_split_encoder
+    """运行因果编码器并保留每层 hidden 与完整 attention 矩阵。"""
+    from .attention_masks import build_causal_attention_mask
+    from .causal_encoder import run_causal_encoder
 
-    prefix_hidden, candidate_hidden, layer_hidden, attentions = run_split_encoder(
+    hidden, layer_hidden, attentions = run_causal_encoder(
         encoder,
         encoded,
         collect_attention=True,
     )
-    hidden = torch.cat((prefix_hidden, candidate_hidden), dim=1)
     traced_encoded = dict(encoded)
-    traced_encoded["attention_mask"] = build_split_attention_mask(
-        prefix_length=int(encoded["prefix_length"]),
-        candidate_count=int(encoded["candidate_count"]),
+    traced_encoded["attention_mask"] = build_causal_attention_mask(
+        token_count=hidden.shape[1],
         device=hidden.device,
     )
     return ModelTrace(

@@ -3,7 +3,7 @@ policy_actions:
   ogcd_wait:
     raw_id: 0
     name: 空输出
-    candidate_kind: ogcd
+    kind: ogcd
     behavior: end_weave_window
     value: 1.00
     tags: [sentinel, policy]

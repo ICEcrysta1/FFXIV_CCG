@@ -24,9 +24,6 @@ model:
   # Transformer token 的主维度；必须能被 n_heads 整除。
   d_model: 768
 
-  # 技能与对应状态在进入 Transformer 前的融合维度；修改后需要重新训练 checkpoint。
-  pair_embedding_dim: 512
-
   # Transformer 编码层数。
   n_layers: 12
 
@@ -42,21 +39,22 @@ model:
   # Transformer 每层采用 Pre-LN；LayerNorm 位于注意力/FFN 子层之前。
   transformer_norm_first: true
 
-  # 全模型激活：gelu / relu / swiglu；主干 FFN、候选打分头与 pair 融合统一使用，
+  # Transformer 主干 FFN 激活：gelu / relu / swiglu；
   # 切换后需要重新训练。
   transformer_activation: swiglu
 
   # 沿深度对 embedding、attention/FFN 输出做 Full AttnRes；启用后需重新训练。
   full_attention_residuals: false
 
-  # Transformer 与候选 scorer 的 dropout 概率。
+  # Transformer 的 dropout 概率。
   dropout: 0.1
 
   # RoPE 的基础频率参数。
   rope_theta: 10000.0
 
-  # 模型最多接收的技能历史条数；物理 token 总长由上下文容量自动换算。
-  history_capacity: 384
+  # 模型最多接收的历史动作条数；每条拆成技能、状态两个 token，末尾追加当前状态。
+  # 当前总物理容量为 scene_capacity + 2 * history_capacity + 1；601 的新单位留后续阶段。
+  history_capacity: 300
 
   # 部署侧 scene 容量上限；必须不小于语料实测 scene 长度最大值。
   scene_capacity: 200

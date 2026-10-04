@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from common.policy.data.action_space import ActionSpace
 from common.policy.data.compiled_cache import (
     DEFAULT_CACHE_MAX_SHARDS,
     DEFAULT_CACHE_SHARD_SIZE,
@@ -13,6 +14,7 @@ from common.policy.data.compiled_cache import (
     load_compiled_cache_for_source,
 )
 from common.policy.data.normalizer import Normalizer
+from common.policy.data.skill_vocab import SkillVocab
 
 RAW_CONVERSION_VERSION = DEFAULT_CONVERSION_VERSION
 
@@ -22,17 +24,21 @@ def load_raw_compiled_cache(
     *,
     cache_dir: Path,
     normalizer: Normalizer,
+    expected_action_space: ActionSpace,
     int_dtype,
     float_dtype,
     shard_size: int = DEFAULT_CACHE_SHARD_SIZE,
     max_shards: int = DEFAULT_CACHE_MAX_SHARDS,
     shard_cache: CompiledShardCache | None = None,
+    expected_skill_vocab: SkillVocab | None = None,
 ):
     """只读取 raw JSON 对应的最终 cache，不触发转换。"""
     return _load_cache(
         Path(source_path),
         cache_dir=Path(cache_dir),
         normalizer=normalizer,
+        expected_action_space=expected_action_space,
+        expected_skill_vocab=expected_skill_vocab,
         int_dtype=int_dtype,
         float_dtype=float_dtype,
         shard_size=shard_size,
@@ -49,10 +55,12 @@ def _load_cache(
     *,
     cache_dir: Path,
     normalizer: Normalizer,
+    expected_action_space: ActionSpace,
     int_dtype,
     float_dtype,
     shard_size: int,
     shard_cache: CompiledShardCache,
+    expected_skill_vocab: SkillVocab | None = None,
 ):
     signature = build_cache_signature(
         source_path,
@@ -66,5 +74,7 @@ def _load_cache(
         Path(cache_dir),
         source_path,
         signature=signature,
+        expected_action_space=expected_action_space,
+        expected_skill_vocab=expected_skill_vocab,
         shard_cache=shard_cache,
     )

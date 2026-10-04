@@ -27,7 +27,7 @@ from common.policy.config import (
     validate_policy_model_variant,
 )
 from common.policy.replay import AutoregressiveReplayConfig
-from common.policy.data import ModelInputContract
+from common.policy.data import ActionSpace, DataSpec, ModelInputContract
 from common.torch_serialization import safe_torch_load
 from scripts.onnx_export.config.config import (
     AUTOREGRESSIVE_REPLAY_CHECKPOINT_ENV,
@@ -368,12 +368,14 @@ def _resolve_scene_json(
     if raw:
         path = resolve_project_path(raw, project_root=PROJECT_ROOT)
     else:
-        # 与实际回放使用同一份模型契约，不能由当前 YAML 重建归一化签名。
+        # 与实际回放使用同一份模型契约，不从当前 YAML 重建归一化或动作空间。
         input_contract = ModelInputContract.from_dict(input_contract_payload)
         path = find_prepared_scene_source(
             raw_root, cache_dir=cache_dir, job_tag=job_tag,
             cache_shard_size=cache_shard_size,
             normalizer=input_contract.create_normalizer(),
+            expected_skill_vocab=input_contract.create_skill_vocab(),
+            expected_action_space=ActionSpace.from_data_spec(DataSpec.from_dict(input_contract.data_spec)),
         )
     if not is_json_file(path) or not path.is_file():
         raise FileNotFoundError(f"autoregressive scene raw JSON not found: {path}")

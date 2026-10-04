@@ -1,28 +1,27 @@
-"""与职业无关的候选动作 Transformer 模型。"""
+"""与职业无关、共享技能词向量的因果策略模型。"""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import nullcontext
-from dataclasses import asdict
 
 import torch
 import torch.nn as nn
 
-from .candidate_scorer import CandidateScorer
 from ..config import ModelConfig
 from .attention_residual import FullAttentionResidual
-from .input_encoder import CandidateInputEncoder
+from .input_encoder import CausalInputEncoder
 from .kv_cache import TransformerKVCache, encode_with_kv_cache
 from .position_encoding import RotaryPositionEncoding
 from .repetition import RepetitionConfig, apply_repetition_penalty
-from .split_encoder import run_split_encoder
+from .causal_encoder import run_causal_encoder
+from ..data.input_contract import ModelInputContract
 from ..data.spec import DataSpec
 from .trace import ModelTrace, TraceableTransformerEncoderLayer, trace_encoder
 
 
-class CandidateTransformerModel(nn.Module):
-    """对当前候选动作集合进行排序的策略模型。"""
+class CausalPolicyModel(nn.Module):
+    """从最新状态预测固定技能词表，输入与输出使用同一语义参数表。"""
 
     def __init__(
         self,
@@ -46,7 +45,14 @@ class CandidateTransformerModel(nn.Module):
         self.data_spec = data_spec
         self.config = config
         self.repetition = repetition or RepetitionConfig()
-        self.input_encoder = CandidateInputEncoder(data_spec, config, vocab_size)
+        self.input_encoder = CausalInputEncoder(data_spec, config, vocab_size)
+        if any(index <= 0 or index >= vocab_size for index in data_spec.action_to_vocab_id):
+            raise ValueError("output actions must map to registered non-padding embedding rows")
+        self.register_buffer(
+            "action_to_vocab_id",
+            torch.tensor(data_spec.action_to_vocab_id, dtype=torch.long),
+            persistent=False,
+        )
         encoder_layer = TraceableTransformerEncoderLayer(
             d_model=config.d_model,
             nhead=config.n_heads,
@@ -57,7 +63,7 @@ class CandidateTransformerModel(nn.Module):
             batch_first=True,
             norm_first=config.transformer_norm_first,
         )
-        # Pre-LN 保留残差路径的稳定尺度，末尾 LayerNorm 统一 scorer 和分析输出的输入尺度。
+        # Pre-LN 保留残差路径的稳定尺度，末尾 LayerNorm 统一输出头和分析的输入尺度。
         self.encoder = nn.TransformerEncoder(
             encoder_layer,
             config.n_layers,
@@ -74,11 +80,6 @@ class CandidateTransformerModel(nn.Module):
                 d_model=config.d_model,
                 num_queries=2 * config.n_layers + 1,
             )
-        self.scorer = CandidateScorer(
-            d_model=config.d_model,
-            dropout=config.dropout,
-            activation=config.transformer_activation,
-        )
         self._init_weights()
         self._kv_cache_enabled = False
         self._kv_cache: TransformerKVCache | None = None
@@ -143,20 +144,13 @@ class CandidateTransformerModel(nn.Module):
         """执行前向传播；没有 label 时只返回 logits。"""
         with self._debug_stage("input_encoder"):
             encoded = self.input_encoder(batch)
-        cached_candidate_positions = None
         if self.training or not self._kv_cache_enabled:
             with self._debug_stage("encoder"):
-                prefix_hidden, candidate_hidden, _, _ = run_split_encoder(
+                hidden, _, _ = run_causal_encoder(
                     self.encoder,
                     encoded,
                 )
-                hidden = torch.cat(
-                    (
-                        prefix_hidden,
-                        candidate_hidden,
-                    ),
-                    dim=1,
-                )
+                current_hidden = hidden[:, encoded["current_state_position"], :]
         else:
             with self._debug_stage("encoder"):
                 with torch.no_grad():
@@ -165,16 +159,9 @@ class CandidateTransformerModel(nn.Module):
                         encoded,
                         self._kv_cache,
                     )
-            # cached hidden 只包含候选块；候选位置需要换算为 suffix 局部索引。
-            prefix_length = encoded["scene_length"] + encoded["history_length"]
-            cached_candidate_positions = encoded["candidate_positions"] - prefix_length
-        with self._debug_stage("scorer"):
-            logits = self.score_hidden(
-                encoded,
-                hidden,
-                batch,
-                candidate_positions=cached_candidate_positions,
-            )
+            current_hidden = hidden[:, 0, :]
+        with self._debug_stage("lm_head"):
+            logits = self._score_current_hidden(current_hidden, batch)
         output: dict[str, torch.Tensor] = {"logits": logits}
 
         if "label_index" not in batch:
@@ -182,7 +169,7 @@ class CandidateTransformerModel(nn.Module):
 
         label_index = batch["label_index"]
         predictions = logits.argmax(dim=-1)
-        top_k = min(3, self.data_spec.num_candidates)
+        top_k = min(3, self.data_spec.num_actions)
         top_indices = logits.topk(top_k, dim=-1).indices
         output.update(
             {
@@ -201,7 +188,7 @@ class CandidateTransformerModel(nn.Module):
 
     @torch.no_grad()
     def trace(self, batch: dict[str, torch.Tensor]) -> ModelTrace:
-        """返回 split attention 的逐层 hidden 和逐 head attention。"""
+        """返回单一因果上下文的逐层 hidden 和逐 head attention。"""
         encoded = self.input_encoder(batch)
         return trace_encoder(self.encoder, encoded)
 
@@ -219,65 +206,32 @@ class CandidateTransformerModel(nn.Module):
         encoded: dict[str, torch.Tensor],
         hidden: torch.Tensor,
         batch: dict[str, torch.Tensor],
-        *,
-        candidate_positions: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """从指定 hidden 计算 logits，并应用重复动作策略。"""
-        positions = (
-            encoded["candidate_positions"]
-            if candidate_positions is None
-            else candidate_positions
-        )
-        candidate_hidden = hidden[:, positions, :]
-        logits = self.scorer(
-            candidate_hidden=candidate_hidden,
-        )
+        """从最新状态 hidden 计算固定动作词表 logits。"""
+        return self._score_current_hidden(hidden[:, encoded["current_state_position"], :], batch)
+
+    def _score_current_hidden(self, current_hidden, batch):
+        """直接读取输入 embedding 参数，不维护独立输出权重或其副本。"""
+        semantic_vectors = self.input_encoder.skill_embed.weight[self.action_to_vocab_id]
+        logits = current_hidden @ semantic_vectors.T
         return apply_repetition_penalty(logits, batch, self.repetition)
 
     @staticmethod
     def checkpoint_model_config(checkpoint: dict[str, object]) -> ModelConfig:
-        """从 checkpoint 读取模型结构配置。"""
+        """只恢复与当前无候选输入契约匹配的模型结构。"""
+        ModelInputContract.from_checkpoint(checkpoint)
         payload = checkpoint.get("model_config")
-        if not isinstance(payload, dict):
+        if not isinstance(payload, Mapping):
             raise ValueError("checkpoint missing model_config")
-        if payload.get("scorer_use_raw_projection") is True:
-            raise ValueError(
-                "checkpoint enables removed scorer_use_raw_projection; "
-                "retrain it with Transformer-only candidate scoring"
-            )
         state_dict = checkpoint.get("model_state_dict")
-        if isinstance(state_dict, Mapping) and "input_encoder.cls_token" in state_dict:
-            raise ValueError("checkpoint with CLS token is unsupported; retrain without CLS")
         if isinstance(state_dict, Mapping) and any(
-            str(key).startswith("scorer.network.") for key in state_dict
+            str(key).startswith((
+                "scorer.", "output_adapter.", "input_encoder.pair_fusion",
+                "input_encoder.token_embedding.", "input_encoder.segment_embed.",
+            )) or str(key) == "input_encoder.cls_token"
+            for key in state_dict
         ):
-            raise ValueError(
-                "checkpoint uses the removed candidate scorer layout; "
-                "retrain it with the activation-configured candidate scorer"
-            )
-        if payload.get("scorer_use_candidate_hidden") is False:
-            raise ValueError(
-                "checkpoint uses removed scorer_use_candidate_hidden=false; "
-                "retrain it with fixed Transformer candidate scoring"
-            )
-        if "max_sequence_length" in payload:
-            raise ValueError(
-                "checkpoint contains removed model.max_sequence_length; "
-                "retrain it with block capacities and derived physical context length"
-            )
+            raise ValueError("checkpoint uses an unsupported fused/scoring architecture; retrain")
         if "history_capacity" not in payload:
             raise ValueError("checkpoint missing model.history_capacity")
-        if payload.get("position_id_semantics") == "candidate_block_shared":
-            raise ValueError(
-                "checkpoint uses the removed candidate-shared RoPE architecture; "
-                "retrain with the fixed sequential RoPE model architecture"
-            )
-        defaults = asdict(ModelConfig())
-        config_payload = {key: payload[key] for key in defaults if key in payload}
-        if "num_kv_heads" not in config_payload:
-            # 旧 RoPE checkpoint 没有该字段，旧结构仍是每个 Q 头各自一组 K/V。
-            config_payload["num_kv_heads"] = int(
-                config_payload.get("n_heads", ModelConfig.n_heads)
-            )
-        config = ModelConfig(**config_payload)
-        return config
+        return ModelConfig.from_mapping(payload)

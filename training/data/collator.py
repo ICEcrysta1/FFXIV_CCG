@@ -18,10 +18,7 @@ class TrainingCollator:
         history_truncation_enabled: bool = False,
         history_truncation_probability: float = 0.0,
         history_min_recent: int = 1,
-        candidate_shuffle_enabled: bool = False,
-        candidate_shuffle_probability: float = 0.0,
         require_quality_percentile: bool = False,
-        skill_values: Mapping[str, float] | None = None,
         int_dtype=None,
         index_dtype=None,
         float_dtype=None,
@@ -31,19 +28,10 @@ class TrainingCollator:
             raise ValueError("history_truncation_probability must be between 0 and 1")
         if history_min_recent < 1:
             raise ValueError("history_min_recent must be >= 1")
-        if not 0.0 <= candidate_shuffle_probability <= 1.0:
-            raise ValueError("candidate_shuffle_probability must be between 0 and 1")
         self.history_truncation_enabled = bool(history_truncation_enabled)
         self.history_truncation_probability = float(history_truncation_probability)
         self.history_min_recent = int(history_min_recent)
-        self.candidate_shuffle_enabled = bool(candidate_shuffle_enabled)
-        self.candidate_shuffle_probability = float(candidate_shuffle_probability)
         self._require_quality_percentile = bool(require_quality_percentile)
-        self._skill_values = (
-            None
-            if skill_values is None
-            else {str(action_key): float(value) for action_key, value in skill_values.items()}
-        )
         self._rng = rng or random
         precision = load_precision_config() if (int_dtype is None or index_dtype is None or float_dtype is None) else None
         self._int_dtype = int_dtype if int_dtype is not None else precision.resolve_int_dtype()
@@ -56,7 +44,15 @@ class TrainingCollator:
             return {}
 
         samples = [self._truncate_early_history(sample) for sample in samples]
-        samples = [self._shuffle_candidates(sample, torch) for sample in samples]
+        action_keys = tuple(samples[0]["action_keys"])
+        if not action_keys or any(tuple(sample["action_keys"]) != action_keys for sample in samples):
+            raise ValueError("batch samples must share the same fixed action output space")
+        for sample in samples:
+            if sample["action_values"].shape != (len(action_keys),) or sample["action_legal_mask"].shape != (len(action_keys),):
+                raise ValueError("action supervision width must match the fixed output action space")
+            label_index = int(sample["label_index"])
+            if not 0 <= label_index < len(action_keys) or str(sample["label_action_key"]) != action_keys[label_index]:
+                raise ValueError("label must match the fixed output action index")
 
         compact_flags = ["history_end" in sample for sample in samples]
         if any(compact_flags) and not all(compact_flags):
@@ -91,10 +87,7 @@ class TrainingCollator:
         batch = {
             "metadata": [sample["metadata"] for sample in samples],
             "history_action_keys": history_action_batches,
-            "candidate_action_keys": [sample["candidate_action_keys"] for sample in samples],
-            "candidate_invalid_reasons": [
-                sample.get("candidate_invalid_reasons", []) for sample in samples
-            ],
+            "action_keys": [sample["action_keys"] for sample in samples],
             "label_action_key": [sample["label_action_key"] for sample in samples],
             "quality_label_levels": padded_quality_levels,
             "quality_label_mask": quality_label_mask,
@@ -114,40 +107,20 @@ class TrainingCollator:
                 [sample["label_index"] for sample in samples],
                 dtype=self._index_dtype,
             ),
-            "candidate_skill_ids": torch.stack([sample["candidate_skill_ids"] for sample in samples]),
-            "candidate_skill_features": torch.stack(
-                [sample["candidate_skill_features"] for sample in samples]
+            "current_state_vectors": torch.stack(
+                [sample["current_state_vectors"] for sample in samples]
             ),
-            "candidate_state_vectors": torch.stack(
-                [sample["candidate_state_vectors"] for sample in samples]
+            "current_state_null_mask": torch.stack(
+                [sample["current_state_null_mask"] for sample in samples]
             ),
-            "candidate_state_null_mask": torch.stack(
-                [sample["candidate_state_null_mask"] for sample in samples]
+            "action_legal_mask": torch.stack(
+                [sample["action_legal_mask"] for sample in samples]
             ),
-            "candidate_legal_mask": torch.stack(
-                [sample["candidate_legal_mask"] for sample in samples]
-            ),
+            "action_values": torch.stack([sample["action_values"] for sample in samples]),
         }
         _validate_quality_supervision(
             batch, torch=torch, require_percentile=self._require_quality_percentile,
         )
-        if self._skill_values is not None:
-            runtime_values = []
-            for sample in samples:
-                candidate_values = sample.get("candidate_values")
-                if candidate_values is None:
-                    candidate_values = torch.tensor(
-                        [
-                            self._resolve_skill_value(action_key)
-                            for action_key in sample["candidate_action_keys"]
-                        ],
-                        dtype=samples[0]["candidate_skill_features"].dtype,
-                    )
-                runtime_values.append(candidate_values)
-            batch["candidate_values"] = torch.stack(runtime_values).to(
-                dtype=samples[0]["candidate_skill_features"].dtype,
-            )
-
         if use_compact_history:
             bank, history_ends = _merge_history_banks(samples, torch=torch)
             batch["history_lengths"] = torch.tensor(
@@ -178,17 +151,8 @@ class TrainingCollator:
             batch[key] = pad_sequence([sample[key] for sample in samples], batch_first=True)
         return batch
 
-    def _resolve_skill_value(self, action_key: str) -> float:
-        assert self._skill_values is not None
-        try:
-            return self._skill_values[action_key]
-        except KeyError as exc:
-            raise ValueError(
-                f"missing value for candidate action {action_key!r} in the job YAML"
-            ) from exc
-
     def _truncate_early_history(self, sample: dict[str, object]) -> dict[str, object]:
-        """仅截掉早期历史，保留最近状态；scene 和候选输入保持原样。"""
+        """仅截掉早期历史，保留最近状态；scene 和当前请求状态保持原样。"""
         compact_history = "history_end" in sample
         history_length = (
             int(sample["history_length"])
@@ -220,42 +184,6 @@ class TrainingCollator:
             ):
                 truncated[key] = sample[key][start:]
         return truncated
-
-    def _shuffle_candidates(self, sample: dict[str, object], torch) -> dict[str, object]:
-        """同步打乱候选技能与对应预演状态，并重映射 label index。"""
-        candidate_count = int(sample["candidate_skill_ids"].shape[0])
-        if (
-            candidate_count <= 1
-            or not self.candidate_shuffle_enabled
-            or self.candidate_shuffle_probability <= 0.0
-            or self._rng.random() >= self.candidate_shuffle_probability
-        ):
-            return sample
-
-        permutation = list(range(candidate_count))
-        self._rng.shuffle(permutation)
-        permutation_tensor = torch.tensor(permutation, dtype=self._index_dtype)
-        shuffled = dict(sample)
-        for key in (
-            "candidate_skill_ids",
-            "candidate_skill_features",
-            "candidate_values",
-            "candidate_state_vectors",
-            "candidate_state_null_mask",
-            "candidate_legal_mask",
-        ):
-            if key in sample:
-                shuffled[key] = sample[key][permutation_tensor]
-        shuffled["candidate_action_keys"] = [
-            sample["candidate_action_keys"][index] for index in permutation
-        ]
-        if "candidate_invalid_reasons" in sample:
-            shuffled["candidate_invalid_reasons"] = [
-                sample["candidate_invalid_reasons"][index] for index in permutation
-            ]
-        shuffled["label_index"] = permutation.index(int(sample["label_index"]))
-        return shuffled
-
 
 def _validate_quality_supervision(
     batch: Mapping[str, object], *, torch, require_percentile: bool,

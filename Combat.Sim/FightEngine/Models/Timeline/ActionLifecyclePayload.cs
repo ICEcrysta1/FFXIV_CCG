@@ -5,6 +5,7 @@
 
 using Combat.Sim.Models.Combat;
 using Combat.Sim.Models.Definitions;
+using Combat.Sim.Outputs;
 
 namespace Combat.Sim.Models.Timeline;
 
@@ -17,7 +18,8 @@ internal sealed record ActionLifecyclePayload(
     SkillDefinition Skill,
     CombatState RequestState,
     ActionTimingPlan Timing,
-    double AcceptedTimestamp) : ITimelineEventPayload
+    double AcceptedTimestamp,
+    ModelStateSnapshot ModelState) : ITimelineEventPayload
 {
     public object DeepClone() => this with { RequestState = RequestState.Clone() };
 }

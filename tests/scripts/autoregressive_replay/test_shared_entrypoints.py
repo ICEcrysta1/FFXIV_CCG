@@ -31,6 +31,7 @@ def policy_config(tmp_path):
         data_spec = spec
         input_device = torch.device("cpu")
         input_contract = ModelInputContract.from_training(
+            skill_vocab=vocab,
             data_spec=spec, schema=dataset.schema, normalizer=dataset.normalizer,
         )
         repetition = RepetitionConfig()
@@ -43,7 +44,7 @@ def policy_config(tmp_path):
             assert not enabled
 
         def raw_logits(self, batch, keys):
-            logits = torch.full_like(batch["candidate_legal_mask"], -10, dtype=torch.float32)
+            logits = torch.full_like(batch["action_legal_mask"], -10, dtype=torch.float32)
             for key, value in (("fire_iii", 4), ("blizzard_iii", 3), ("ogcd_wait", 2)):
                 logits[:, keys.index(key)] = value
             return logits

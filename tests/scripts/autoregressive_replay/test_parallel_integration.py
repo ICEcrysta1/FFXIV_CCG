@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from common.policy.data import DataSpec, SkillVocab
-from common.policy.model import CandidateTransformerModel
+from common.policy.model import CausalPolicyModel
 from common.policy.config import ModelConfig
 from scripts.autoregressive_replay.parallel import ParallelRollouts, TrainingPolicyBackend
 from scripts.autoregressive_replay.ppg import evaluate_validation_ppg
@@ -31,7 +31,7 @@ def test_real_model_variable_history_matches_serial(dataset, use_cache, precisio
     device = torch.device("cpu" if precision == "float32" else "cuda")
     spec = DataSpec.from_dataset(dataset)
     torch.manual_seed(81)
-    model = CandidateTransformerModel(
+    model = CausalPolicyModel(
         spec, ModelConfig(d_model=16, n_heads=2, n_layers=1, ff_dim=32, dropout=0),
         vocab_size=SkillVocab.build_from_job_tag(spec.job_tag).size(),
     ).eval().to(device=device, dtype=torch.float32 if precision == "float32" else torch.bfloat16)
@@ -41,20 +41,20 @@ def test_real_model_variable_history_matches_serial(dataset, use_cache, precisio
         model.input_encoder._materialize_compact_history(batch)
     # 标签与训练监督字段不属于在线模型输入。
     from scripts.onnx_export import TENSOR_INPUT_NAMES
-    live_keys = {*TENSOR_INPUT_NAMES, "candidate_legal_mask"}
+    live_keys = {*TENSOR_INPUT_NAMES, "action_legal_mask"}
     samples = [{key: value for key, value in sample.items() if key in live_keys} for sample in samples]
     samples = [{key: value.to(device) for key, value in sample.items()} for sample in samples]
     with torch.inference_mode():
         reference = []
         for batch in samples:
             policy.configure_cache(use_cache)
-            reference.append(policy.raw_logits(batch, spec.candidate_action_keys).clone())
+            reference.append(policy.raw_logits(batch, spec.action_keys).clone())
 
     def worker(item, client, engine):
         client.configure_cache(use_cache)
         # 轨迹在不同步数退出，剩余 batch 变化时不能误用已退出轨迹的 KV。
         for _ in range(item + 1):
-            result = client.raw_logits(samples[item], spec.candidate_action_keys)
+            result = client.raw_logits(samples[item], spec.action_keys)
         return result
 
     with ParallelRollouts(policy, job_tag=spec.job_tag, workers=3) as pool:
@@ -75,10 +75,10 @@ def test_validation_real_queues_match_serial_and_release(dataset, monkeypatch, w
             self.batch_sizes = []
 
         def forward(self, batch):
-            self.batch_sizes.append(batch["candidate_legal_mask"].shape[0])
-            values = torch.full_like(batch["candidate_legal_mask"], -10, dtype=torch.float32)
+            self.batch_sizes.append(batch["action_legal_mask"].shape[0])
+            values = torch.full_like(batch["action_legal_mask"], -10, dtype=torch.float32)
             for key, score in (("fire_iii", 4), ("blizzard_iii", 3), ("ogcd_wait", 2)):
-                values[:, spec.candidate_action_keys.index(key)] = score
+                values[:, spec.action_keys.index(key)] = score
             return {"logits": values}
 
     config = SimpleNamespace(
@@ -113,6 +113,7 @@ def test_grpo_sampling_is_independent_of_worker_count(dataset, tmp_path):
         data_spec = spec
         input_device = torch.device("cpu")
         input_contract = ModelInputContract.from_training(
+            skill_vocab=vocab,
             data_spec=spec, schema=dataset.schema, normalizer=dataset.normalizer,
         )
         vocab_entries = tuple(vocab)
@@ -128,7 +129,7 @@ def test_grpo_sampling_is_independent_of_worker_count(dataset, tmp_path):
             return SimpleNamespace(to_dict=lambda: {})
 
         def raw_logits(self, batch, keys):
-            values = torch.full_like(batch["candidate_legal_mask"], -20, dtype=torch.float32)
+            values = torch.full_like(batch["action_legal_mask"], -20, dtype=torch.float32)
             for key, score in (("fire_iii", 1.5), ("blizzard_iii", 1.2), ("ogcd_wait", 0.8)):
                 values[:, keys.index(key)] = score
             return values
@@ -178,11 +179,11 @@ def test_sixteen_real_queues_keep_bounded_history_for_180_seconds():
     batch_sizes = []
     class FixedPolicy(torch.nn.Module):
         def forward(self, batch):
-            size = batch["candidate_legal_mask"].shape[0]
+            size = batch["action_legal_mask"].shape[0]
             batch_sizes.append(size)
             return {"logits": torch.tensor([[2.0, 1.0]]).expand(size, -1)}
     policy = TrainingPolicyBackend(
-        FixedPolicy(), data_spec=SimpleNamespace(candidate_action_keys=keys),
+        FixedPolicy(), data_spec=SimpleNamespace(action_keys=keys),
         device=torch.device("cpu"), precision="float32",
     )
 
@@ -192,11 +193,11 @@ def test_sixteen_real_queues_keep_bounded_history_for_180_seconds():
                 def build(self, state):
                     legal = backend.validate_at(state.time, keys[0]).legal
                     wait = gcd_request_delay(state) > 1e-6
-                    return {"candidate_legal_mask": torch.tensor([[legal, wait]])}, keys
+                    return {"action_legal_mask": torch.tensor([[legal, wait]])}, keys
             result = _run_rollout_until_time(
                 client, backend, Batcher(), scene_provider=None, end_time=180,
                 normalization=1000, precision="float32", device=torch.device("cpu"),
-                expected_candidate_keys=keys, source_label=str(index),
+                expected_action_keys=keys, source_label=str(index),
             )
             stats = backend.statistics()
             assert stats["timestamp"] == pytest.approx(180)

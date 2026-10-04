@@ -12,7 +12,7 @@ from scripts.convert_fflogs.source.source_reader import TrainingSourceReader
 from scripts.convert_fflogs.training.history_bank import build_history_bank
 from scripts.convert_fflogs.training.sample_builder import TrainingSampleBuilder
 from scripts.convert_fflogs.utils import build_skill_book, load_job_project_config
-from common.policy.data import Normalizer, NormalizerConfig, SkillVocab
+from common.policy.data import ActionSpace, Normalizer, NormalizerConfig, SkillVocab
 from training import TrainingDataset
 from common.policy.data.compiled_cache import build_cache_signature, cache_path_for_source
 from common.policy.data.schema import SceneWindowSchema
@@ -46,6 +46,7 @@ def make_dataset(source_paths: list[Path], **kwargs) -> TrainingDataset:
     kwargs.setdefault("float_dtype", precision.resolve_float_dtype())
     kwargs.setdefault("normalizer", Normalizer())
     kwargs.setdefault("job_tag", "black_mage")
+    kwargs.setdefault("expected_action_space", ActionSpace.from_job_tag(kwargs["job_tag"]))
     if "cache_dir" not in kwargs:
         kwargs["cache_dir"] = source_paths[0].parents[1] / ".cache"
     for source_path in source_paths:
@@ -96,7 +97,7 @@ def make_demo_pt(
     return source_path
 
 
-def make_illegal_candidate_pt(tmp_path: Path) -> Path:
+def make_illegal_action_pt(tmp_path: Path) -> Path:
     from tests.helpers import (
         build_test_scene_context,
         forced_movement_window_token,
@@ -105,7 +106,7 @@ def make_illegal_candidate_pt(tmp_path: Path) -> Path:
     )
 
     fight_payload = {
-        "fight_id": "illegal_candidate_demo",
+        "fight_id": "illegal_action_demo",
         "job_tag": "black_mage",
         "player": "Tester",
         "encounter": "Demo",
@@ -133,7 +134,7 @@ def make_illegal_candidate_pt(tmp_path: Path) -> Path:
         ],
     }
     payload = _build_training_samples(fight_payload)
-    source_path = tmp_path / "raw" / "illegal_candidate_demo.json"
+    source_path = tmp_path / "raw" / "illegal_action_demo.json"
     source_path.parent.mkdir(parents=True, exist_ok=True)
     source_path.write_text("{}", encoding="utf-8", newline="\n")
     _TEST_TRAINING_PAYLOADS[source_path.resolve()] = payload
@@ -213,7 +214,7 @@ def write_test_compiled_cache(
         skill_feature_names=reader.skill_feature_names,
         int_dtype=int_dtype,
         float_dtype=float_dtype,
-        num_candidates=reader.num_candidates,
+        num_actions=reader.num_actions,
         history_bank=history_bank,
     )
     signature = build_cache_signature(

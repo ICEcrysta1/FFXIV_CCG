@@ -339,7 +339,7 @@ def build_targetable_window_token(
         end_offset=end_offset,
         extras=[
             1.0 if targetable else 0.0,
-            *(1.0 if candidate_kind == segment_kind else 0.0 for candidate_kind in TARGETABLE_SEGMENT_KINDS),
+            *(1.0 if kind == segment_kind else 0.0 for kind in TARGETABLE_SEGMENT_KINDS),
         ],
     )
 
@@ -359,7 +359,7 @@ def build_raid_buff_window_token(
     return build_window_vector(
         start_offset=start_offset,
         end_offset=end_offset,
-        extras=[1.0 if candidate_source in selected_sources else 0.0 for candidate_source in marker_keys],
+        extras=[1.0 if marker_key in selected_sources else 0.0 for marker_key in marker_keys],
     )
 
 

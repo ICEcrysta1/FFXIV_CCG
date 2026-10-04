@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from scripts.convert_fflogs import build_training_samples
+from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION
 from tests.helpers import build_test_scene_context, targetable_window_token
 
 
@@ -56,7 +57,7 @@ def test_build_training_samples_uses_queue_for_sub_window_network_residual(
 
     payload = build_training_samples(cs_backend, cs_skill_book, fight_payload)
 
-    assert payload["sample_schema_version"] == 7
+    assert payload["sample_schema_version"] == TRAINING_SAMPLE_SCHEMA_VERSION
     assert payload["resolved_sequence"] == ["fire_iii", "blizzard_iii"]
     assert payload["samples"][0]["time_offset"] == 0.0
     assert payload["samples"][1]["time_offset"] == pytest.approx(2.96)

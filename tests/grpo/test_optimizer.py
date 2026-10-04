@@ -64,7 +64,7 @@ def test_grpo_training_builds_its_own_optimizer_and_closes_engine(tmp_path, monk
     scene_path.write_text("{}", encoding="utf-8", newline="\n")
     backend = SimpleNamespace(
         model=model,
-        data_spec=SimpleNamespace(job_tag="black_mage", num_candidates=2),
+        data_spec=SimpleNamespace(job_tag="black_mage", num_actions=2),
         input_contract=object(),
         checkpoint=checkpoint,
     )

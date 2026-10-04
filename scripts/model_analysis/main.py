@@ -31,7 +31,7 @@ from .outputs import (
     plot_loss_landscape,
     plot_opener_attention,
     plot_standard_attention_outputs,
-    plot_pair_embedding,
+    plot_history_embeddings,
     plot_skill_embedding,
 )
 
@@ -118,7 +118,6 @@ def main() -> None:
             max_history=run_config.model.history_capacity,
             cache_shard_size=run_config.compiled_cache_shard_size,
             cache_max_shards=run_config.compiled_cache_max_shards,
-            candidate_order_file=run_config.candidate_order_file,
             output_dir=args.output,
             device_name=device_name,
             precision=run_config.precision,
@@ -143,7 +142,6 @@ def main() -> None:
         max_history=run_config.model.history_capacity,
         cache_shard_size=run_config.compiled_cache_shard_size,
         cache_max_shards=run_config.compiled_cache_max_shards,
-        candidate_order_file=run_config.candidate_order_file,
         output_dir=args.output,
         max_samples=args.max_samples,
         max_tokens=args.max_tokens,
@@ -168,7 +166,7 @@ def main() -> None:
         )
     )
     outputs.append(plot_skill_embedding(context))
-    outputs.append(plot_pair_embedding(context, batch_size=args.batch_size))
+    outputs.extend(plot_history_embeddings(context, batch_size=args.batch_size))
     loss_landscape_max_samples = None
     metadata = {
         "checkpoint": str(context.checkpoint_path),
@@ -178,7 +176,7 @@ def main() -> None:
         "device": str(context.device),
         "precision": context.precision,
         "num_samples": min(args.max_samples, len(context.dataset)) if args.max_samples > 0 else len(context.dataset),
-        "num_candidates": context.data_spec.num_candidates,
+        "num_actions": context.data_spec.num_actions,
         "state_dim": context.data_spec.state_dim,
         "scene_dim": context.data_spec.scene_dim,
         "skill_feature_dim": context.data_spec.skill_feature_dim,
@@ -207,7 +205,6 @@ def main() -> None:
             max_history=run_config.model.history_capacity,
             cache_shard_size=run_config.compiled_cache_shard_size,
             cache_max_shards=run_config.compiled_cache_max_shards,
-            candidate_order_file=run_config.candidate_order_file,
             output_dir=args.output,
             device_name=device_name,
             precision=run_config.precision,

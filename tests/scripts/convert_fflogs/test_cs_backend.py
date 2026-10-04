@@ -7,6 +7,7 @@ import subprocess
 import pytest
 
 from scripts.common.inprocess_backend import InProcessEngine
+from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION, build_output_context_schema_metadata
 from tests.scripts.conftest import _require_inprocess_backend
 
 
@@ -77,7 +78,9 @@ def test_inprocess_backend_returns_native_python_context():
     assert isinstance(context, dict)
     assert isinstance(context["skill_history_context"], list)
     assert isinstance(context["state_history_context"]["tokens"], list)
-    assert isinstance(context["candidate_skill_context"], list)
+    assert isinstance(context["action_keys"], list)
+    assert len(context["current_state_context"]["tokens"]) == 1
+    assert len(context["action_keys"]) == len(context["action_legal_mask"])
 
 
 @pytest.mark.parametrize(
@@ -104,7 +107,7 @@ def test_model_vectors_exclude_scheduling_and_weave_fields(job_tag, action_key):
         "next_untargetable_in_gcds", "remaining_gcds",
         "ogcds_weaved", "max_ogcd_per_window",
     }
-    for context_key in ("state_history_context", "candidate_state_context"):
+    for context_key in ("state_history_context", "current_state_context"):
         keys = canonical[context_key]["player_state_feature_keys"]
         assert len(keys) == 18
         all_keys = [
@@ -118,9 +121,9 @@ def test_model_vectors_exclude_scheduling_and_weave_fields(job_tag, action_key):
             or key.startswith("consumed.") or ".manaward." in key or ".surecast." in key
             for key in all_keys
         )
-        assert "before.current_gcd_seconds" in keys
-        assert "after.downtime_remaining_seconds" in keys
-    for context_key in ("skill_history_context", "candidate_skill_context"):
+        assert "previous_action_after.current_gcd_seconds" in keys
+        assert "request_state.downtime_remaining_seconds" in keys
+    for context_key in ("skill_history_context",):
         assert canonical[context_key]
         assert all("gcd_index" not in token for token in canonical[context_key])
 
@@ -132,15 +135,40 @@ def test_compact_model_state_keeps_runtime_ogcd_limit(cs_backend):
         assert cs_backend.submit_action(timestamp, action).accepted
 
     context = cs_backend.observe_at(0.4, format="vector", next_observation_timestamp=0.5).context
-    candidate = next(
-        token for token in context["candidate_skill_context"]
-        if token["skill_key"] == "lucid_dreaming"
-    )
-    assert not candidate["is_legal"]
-    assert candidate["invalid_reason"] == "ogcd_limit"
+    index = context["action_keys"].index("lucid_dreaming")
+    assert not context["action_legal_mask"][index]
+    validation = cs_backend.validate_at(0.4, "lucid_dreaming")
+    assert not validation.legal
+    assert validation.reason == "ogcd_limit"
     rejected = cs_backend.submit_action(0.4, "lucid_dreaming")
     assert not rejected.accepted
     assert rejected.reason == "ogcd_limit"
 
     assert cs_backend.validate_at(2.5, "lucid_dreaming").legal
     assert cs_backend.submit_action(2.5, "lucid_dreaming").accepted
+
+
+def test_current_state_packet_uses_one_real_snapshot_and_fixed_action_space(cs_backend):
+    """观测的未来参数不改变请求输入，动作合法性只读当前真实状态。"""
+    assert cs_backend.submit_action(0.0, "fire_iii").accepted
+    immediate = cs_backend.observe_at(0.0, format="vector", next_observation_timestamp=0.0).context
+    future = cs_backend.observe_at(0.0, format="vector", next_observation_timestamp=60.0).context
+    assert immediate == future
+    assert "candidate_skill_context" not in immediate
+    assert "candidate_state_context" not in immediate
+    assert immediate["schema_version"] == CANONICAL_CONTEXT_SCHEMA_VERSION
+    assert immediate["skill_history_context"] == []
+    keys = immediate["action_keys"]
+    assert keys == sorted(keys)
+    assert "ogcd_wait" in keys
+    assert len(keys) == len(set(keys))
+    assert len(keys) == len(immediate["action_values"]) == len(immediate["action_legal_mask"])
+    current = immediate["current_state_context"]
+    assert len(current["tokens"]) == 1
+    for group, values in current["tokens"][0].items():
+        assert values[:len(values) // 2] == values[len(values) // 2:]
+        assert current[f"{group}_feature_keys"] == immediate["state_history_context"][f"{group}_feature_keys"]
+    metadata = build_output_context_schema_metadata(immediate)
+    assert metadata["current_state_context_key"] == "current_state_context"
+    assert metadata["current_state_feature_keys"] == metadata["state_history_feature_keys"]
+    assert cs_backend.observe_at(0.0, format="seconds").context["time_seconds"] == 0.0

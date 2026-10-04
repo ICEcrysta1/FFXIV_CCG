@@ -33,7 +33,7 @@ class FakePolicy:
         assert get_ident() == self.owner
         assert keys == ("a", "b")
         self.batches.append(batch)
-        return batch["candidate_skill_features"][:, :, 0]
+        return batch["current_state_vectors"]
 
 
 def sample(value, length=1):
@@ -41,9 +41,9 @@ def sample(value, length=1):
         "history_skill_ids": torch.full((1, length), value, dtype=torch.int64),
         "history_mask": torch.ones((1, length), dtype=torch.bool),
         "history_state_null_mask": torch.zeros((1, length, 1), dtype=torch.bool),
-        "candidate_skill_features": torch.tensor([[[float(value)], [0.0]]]),
+        "current_state_vectors": torch.tensor([[float(value), 0.0]]),
         "history_action_keys": [["a"] * length],
-        "candidate_action_keys": [["a", "b"]],
+        "action_keys": [["a", "b"]],
     }
 
 

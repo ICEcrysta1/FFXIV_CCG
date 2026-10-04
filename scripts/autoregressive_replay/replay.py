@@ -19,7 +19,7 @@ from scripts.convert_fflogs.cache import (
     load_raw_compiled_cache,
     precompile_raw_training_caches,
 )
-from common.policy.data import Normalizer, SkillVocab
+from common.policy.data import ActionSpace, Normalizer, SkillVocab
 from common.policy.data.compiled_cache import (
     CompiledCacheReader,
     CompiledShardCache,
@@ -105,21 +105,21 @@ def read_replay_cumulative_potency(backend: InProcessBackend, timestamp: float) 
         format="vector",
         next_observation_timestamp=float(timestamp),
     ).context
-    history = canonical.get("state_history_context", {})
+    history = canonical.get("current_state_context", {})
     tokens = history.get("tokens", []) if isinstance(history, dict) else []
     if not tokens:
-        return 0.0, 0.0
+        raise RuntimeError("C# vector observation lacks current request state")
     keys = history.get("target_buff_state_feature_keys", [])
     target = tokens[-1].get("target_buff_state", [])
     try:
-        potency_index = keys.index("after.target.cumulative_potency")
-        dot_index = keys.index("after.target.cumulative_dot_potency")
+        potency_index = keys.index("request_state.target.cumulative_potency")
+        dot_index = keys.index("request_state.target.cumulative_dot_potency")
         return float(target[potency_index]), float(target[dot_index])
     except (AttributeError, IndexError, ValueError, TypeError):
         raise RuntimeError("C# vector observation lacks cumulative potency fields") from None
 
 
-class NoLegalCandidateError(RuntimeError):
+class NoLegalActionError(RuntimeError):
     """当前时刻没有合法动作，但时间推进后可能恢复。"""
 
 
@@ -130,7 +130,7 @@ class ReplayRow:
     gcd_step: int
     action_key: str
     probability: float
-    top_candidates: tuple[tuple[str, float, float, bool], ...]
+    top_actions: tuple[tuple[str, float, float, bool], ...]
     forced: bool = False
     reference_action_key: str | None = None
 
@@ -145,7 +145,7 @@ class ReplaySnapshot:
 
     canonical: dict[str, object]
     reference_row: ReplayRow
-    # 调度阶段只用于调用方候选过滤，不作为模型数值输入。
+    # 调度阶段只用于调用方动作过滤，不作为模型数值输入。
     gcd_phase: bool
 
 
@@ -174,10 +174,12 @@ def _load_replay_cache(
     job_tag: str,
     normalizer: Normalizer,
     *,
+    expected_action_space: ActionSpace,
+    expected_skill_vocab: SkillVocab,
     shard_cache: CompiledShardCache | None = None,
     engine: InProcessEngine,
 ) -> CompiledCacheReader:
-    """读取 replay cache；缺失或过期时用 checkpoint 契约重建后重试。"""
+    """按模型保存的契约读取 cache；兼容当前转换配置时才允许补编译。"""
     if engine is None:
         raise ValueError("replay cache loading requires a shared engine")
     normalizer.ensure_job_resources(job_tag)
@@ -185,6 +187,8 @@ def _load_replay_cache(
     load_kwargs = {
         "cache_dir": config.cache_dir,
         "normalizer": normalizer,
+        "expected_action_space": expected_action_space,
+        "expected_skill_vocab": expected_skill_vocab,
         "int_dtype": precision.resolve_int_dtype(),
         "float_dtype": precision.resolve_float_dtype(),
         "shard_size": config.cache_shard_size,
@@ -201,6 +205,8 @@ def _load_replay_cache(
         [config.scene_json_path],
         job_tag=job_tag,
         normalizer=normalizer,
+        expected_action_space=expected_action_space,
+        expected_skill_vocab=expected_skill_vocab,
         int_dtype=load_kwargs["int_dtype"],
         float_dtype=load_kwargs["float_dtype"],
         cache_dir=config.cache_dir,
@@ -248,13 +254,19 @@ class ReplayCacheStore:
         *,
         job_tag: str,
         normalizer: Normalizer,
+        expected_action_space: ActionSpace,
+        expected_skill_vocab: SkillVocab,
         engine: InProcessEngine,
     ) -> CompiledCacheReader:
         """共享 reader 与 shard；并发首次加载只执行一次，缓存容量有界。"""
         with self._lock:
-            return self._load(config, job_tag=job_tag, normalizer=normalizer, engine=engine)
+            return self._load(
+                config, job_tag=job_tag, normalizer=normalizer,
+                expected_action_space=expected_action_space, engine=engine,
+                expected_skill_vocab=expected_skill_vocab,
+            )
 
-    def prepare(self, configs, *, job_tag, normalizer, engine, workers):
+    def prepare(self, configs, *, job_tag, normalizer, expected_action_space, expected_skill_vocab, engine, workers):
         """按缓存契约集中补编译；使用尚未被回放占用的共享队列容量。"""
         groups = {}
         for config in configs:
@@ -264,12 +276,14 @@ class ReplayCacheStore:
         for (cache_dir, shard_size, max_shards), paths in groups.items():
             precompile_raw_training_caches(
                 paths, job_tag=job_tag, normalizer=normalizer,
+                expected_action_space=expected_action_space,
+                expected_skill_vocab=expected_skill_vocab,
                 int_dtype=precision.resolve_int_dtype(), float_dtype=precision.resolve_float_dtype(),
                 cache_dir=cache_dir, shard_size=shard_size, max_shards=max_shards,
                 max_workers=workers, engine=engine,
             )
 
-    def _load(self, config, *, job_tag, normalizer, engine):
+    def _load(self, config, *, job_tag, normalizer, expected_action_space, expected_skill_vocab, engine):
         source_path = Path(config.scene_json_path).resolve()
         source_stat = source_path.stat()
         cache_path = cache_path_for_source(config.cache_dir, source_path).resolve()
@@ -296,6 +310,8 @@ class ReplayCacheStore:
             config.cache_shard_size,
             config.cache_max_shards,
             repr(normalizer_signature),
+            expected_action_space,
+            tuple(expected_skill_vocab),
             cache_fingerprint,
         )
         reader = self._readers.get(reader_key)
@@ -304,6 +320,8 @@ class ReplayCacheStore:
                 config,
                 job_tag,
                 normalizer,
+                expected_action_space=expected_action_space,
+                expected_skill_vocab=expected_skill_vocab,
                 shard_cache=self._shard_cache,
                 engine=engine,
             )
@@ -352,7 +370,7 @@ class AutoregressiveReplaySession:
                 f"replay job_tag mismatch: checkpoint={self.data_spec.job_tag!r} "
                 f"configured={config.job_tag!r}"
             )
-        self.vocab = SkillVocab.build_from_job_tag(self.data_spec.job_tag)
+        self.vocab = self.input_contract.create_skill_vocab()
         validate_backend_vocab(self.backend, self.vocab)
         self.normalizer = self.input_contract.create_normalizer()
         self.cache_store = (
@@ -395,6 +413,8 @@ class AutoregressiveReplaySession:
             config,
             job_tag=self.data_spec.job_tag,
             normalizer=self.normalizer,
+            expected_action_space=ActionSpace.from_data_spec(self.data_spec),
+            expected_skill_vocab=self.vocab,
             engine=self._engine,
         )
 
@@ -501,7 +521,8 @@ class AutoregressiveReplay:
             scene_provider=scene_provider,
             device=self.device,
             max_history=config.max_history,
-            candidate_action_keys=self.data_spec.candidate_action_keys,
+            action_keys=self.data_spec.action_keys,
+            action_is_gcd=self.data_spec.action_is_gcd,
         )
 
     def _sync_scene_state(self, state) -> object:
@@ -699,7 +720,7 @@ class AutoregressiveReplay:
                     gcd_step=gcd_step,
                     action_key=self.config.initial_action,
                     probability=1.0,
-                    top_candidates=(
+                    top_actions=(
                         (self.config.initial_action, 0.0, 1.0, True),
                     ),
                     forced=True,
@@ -743,14 +764,14 @@ class AutoregressiveReplay:
                     state,
                     gcd_step=gcd_step,
                 )
-            except NoLegalCandidateError:
+            except NoLegalActionError:
                 advanced = DecisionScheduler(
                     self._state_machine, self._observe_state, self.scene_provider,
                 ).advance_to_next_decision(state, end_time=end_time)
                 if advanced is None:
                     if end_time is not None and float(state.time) >= end_time - EVENT_TIME_EPSILON:
                         break
-                    raise RuntimeError("live state has no legal candidate and no future time event") from None
+                    raise RuntimeError("live state has no legal action and no future time event") from None
                 state = advanced
                 continue
             if row.action_key == OGCD_WAIT_ACTION_KEY:
@@ -811,10 +832,10 @@ class AutoregressiveReplay:
         gcd_step: int,
         max_history: int | None = None,
     ) -> ReplayRow:
-        batch, candidate_keys = self.batcher.build(state, max_history=max_history)
+        batch, action_keys = self.batcher.build(state, max_history=max_history)
         return self._score_row(
             batch,
-            candidate_keys,
+            action_keys,
             gcd_step=gcd_step,
         )
 
@@ -826,35 +847,35 @@ class AutoregressiveReplay:
         gcd_step: int,
         max_history: int,
     ) -> ReplayRow:
-        batch, candidate_keys = self.batcher.build_from_canonical(
+        batch, action_keys = self.batcher.build_from_canonical(
             canonical,
             gcd_phase=gcd_phase,
             max_history=max_history,
         )
         return self._score_row(
             batch,
-            candidate_keys,
+            action_keys,
             gcd_step=gcd_step,
         )
 
     def _score_row(
         self,
         batch,
-        candidate_keys: list[str],
+        action_keys: list[str],
         *,
         gcd_step: int,
     ) -> ReplayRow:
-        raw_logits = self.backend.raw_logits(batch, candidate_keys)
+        raw_logits = self.backend.raw_logits(batch, action_keys)
         logits = apply_repetition_penalty(
             raw_logits,
             batch,
             self.backend.repetition,
         )[0].float()
 
-        legal_mask = batch["candidate_legal_mask"][0].bool()
+        legal_mask = batch["action_legal_mask"][0].bool()
         legal_indices = legal_mask.nonzero(as_tuple=True)[0]
         if legal_indices.numel() == 0:
-            raise NoLegalCandidateError("live state has no legal candidate")
+            raise NoLegalActionError("live state has no legal action")
         legal_logits = logits.masked_fill(~legal_mask, float("-inf"))
         order = torch.argsort(legal_logits, descending=True)
         if self.config.temperature == 0.0:
@@ -868,11 +889,11 @@ class AutoregressiveReplay:
             ).item())
         return ReplayRow(
             gcd_step=gcd_step,
-            action_key=candidate_keys[selected_index],
+            action_key=action_keys[selected_index],
             probability=float(probabilities[selected_index].item()),
-            top_candidates=tuple(
+            top_actions=tuple(
                 (
-                    candidate_keys[index],
+                    action_keys[index],
                     float(logits[index].item()),
                     float(probabilities[index].item()),
                     bool(legal_mask[index].item()),
@@ -953,7 +974,7 @@ def _apply_top_p(
     descending_order: torch.Tensor,
     top_p: float,
 ) -> torch.Tensor:
-    """保留累计概率达到 top-p 的最小候选集合，并重新归一化。"""
+    """保留累计概率达到 top-p 的最小动作集合，并重新归一化。"""
     if top_p >= 1.0:
         return probabilities
 

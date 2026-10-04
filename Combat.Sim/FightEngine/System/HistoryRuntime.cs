@@ -60,7 +60,8 @@ public sealed class SystemHistoryRuntime
         double? requestTimestamp = null,
         double? castCompletedTimestamp = null,
         double? effectTimestamp = null,
-        Guid? actionInstanceId = null)
+        Guid? actionInstanceId = null,
+        ModelStateSnapshot? modelState = null)
     {
         var (before, after, consumed) = _buildTransition(previousState, nextState);
         nextState.History.Add(new ActionHistoryEntry(
@@ -91,7 +92,9 @@ public sealed class SystemHistoryRuntime
             RequestTimestamp: requestTimestamp,
             CastCompletedTimestamp: castCompletedTimestamp,
             EffectTimestamp: effectTimestamp,
-            ActionInstanceId: actionInstanceId));
+            ActionInstanceId: actionInstanceId,
+            ModelState: modelState,
+            HistorySequence: nextState.ReserveHistorySequence()));
 
         _retention.Trim(nextState.History);
     }

@@ -8,7 +8,7 @@ public sealed class JobSimulatorTests
     [Theory]
     [InlineData("black_mage", "fire_iii")]
     [InlineData("machinist", "heated_split_shot")]
-    public void 精简候选分支与完整分支在读条排队和场景事件下逐值相同(string job, string action)
+    public void 无历史策略分支与完整分支在读条排队和场景事件下逐值相同(string job, string action)
     {
         var simulator = new JobSimulator(CombatStateMachine.FromDefaultConfig(FindRepoRoot(), job));
         Assert.True(simulator.SubmitAction(0, action).Accepted);
@@ -24,25 +24,21 @@ public sealed class JobSimulatorTests
                         "target_count_changed", TargetCount: 2), Sequence: snapshot.NextSequence)).ToArray(),
                 NextSequence = snapshot.NextSequence + 1,
             });
-            foreach (var candidate in simulator.BuildCandidatePreviews())
+            var output = simulator.FormatVectorState();
+            var keys = (List<string>)output["action_keys"]!;
+            var legalMask = (List<bool>)output["action_legal_mask"]!;
+            for (var index = 0; index < keys.Count; index++)
             {
                 var full = simulator.Fork();
-                var submission = full.SubmitAction(time, candidate.Skill.Key);
-                Assert.Equal(submission.Accepted, candidate.IsLegal);
-                Assert.Equal(submission.Reason, candidate.InvalidReason);
-                if (!submission.Accepted)
-                {
-                    Assert.Null(candidate.CandidateAfterState);
-                    continue;
-                }
+                var light = simulator.ForkWithoutHistory();
+                var submission = full.SubmitAction(time, keys[index]);
+                var lightSubmission = light.SubmitAction(time, keys[index]);
+                Assert.Equal(submission.Accepted, legalMask[index]);
+                Assert.Equal(submission.Accepted, lightSubmission.Accepted);
+                Assert.Equal(submission.Reason, lightSubmission.Reason);
+                if (!submission.Accepted) continue;
                 var effectAt = submission.EffectTimestamp!.Value;
-                var next = full.AdvanceTo(effectAt);
-                Assert.Equal(StateJson(next), StateJson(candidate.NextState));
-                var timing = simulator.Rules.BuildActionTimingPlan(simulator.GetState(), candidate.Skill);
-                var delay = candidate.Skill.Kind == Combat.Sim.Models.Definitions.ActionKind.Gcd
-                    ? timing.NextGcdWindowSeconds : timing.ActualOccupancySeconds;
-                var after = full.AdvanceTo(Math.Max(effectAt, submission.AcceptedTimestamp!.Value + delay));
-                Assert.Equal(StateJson(after), StateJson(candidate.CandidateAfterState!));
+                Assert.Equal(StateJson(full.AdvanceTo(effectAt)), StateJson(light.AdvanceTo(effectAt)));
             }
         }
     }
@@ -287,17 +283,17 @@ public sealed class JobSimulatorTests
     }
 
     [Fact]
-    public void 候选预演从完整时间线分支且不污染主状态()
+    public void 当前状态和动作合法性输出不污染主时间线()
     {
         var simulator = new JobSimulator(FacadeKit.BuildMachine());
         var before = simulator.CreateSnapshot();
 
-        var candidates = simulator.BuildCandidatePreviews();
-
-        var gcd = candidates.Single(item => item.Skill.Key == "gcd_strike");
-        Assert.True(gcd.IsLegal);
-        Assert.NotNull(gcd.CandidateAfterState);
-        Assert.DoesNotContain(candidates, item => item.Skill.Key == "ogcd_wait");
+        var output = simulator.FormatVectorState();
+        var keys = (List<string>)output["action_keys"]!;
+        var mask = (List<bool>)output["action_legal_mask"]!;
+        Assert.True(mask[keys.IndexOf("gcd_strike")]);
+        Assert.DoesNotContain("ogcd_wait", keys);
+        Assert.Single((List<Dictionary<string, double[]>>)((Dictionary<string, object?>)output["current_state_context"]!)["tokens"]!);
         var after = simulator.CreateSnapshot();
         Assert.Equal(before.State.Time, after.State.Time);
         Assert.Equal(before.State.History.Count, after.State.History.Count);

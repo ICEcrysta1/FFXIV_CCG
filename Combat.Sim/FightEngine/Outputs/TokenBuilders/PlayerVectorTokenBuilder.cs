@@ -9,7 +9,7 @@ namespace Combat.Sim.Outputs.TokenBuilders;
 
 /// <summary>
 /// 玩家向量 token 装配器（对照 token_builders/player_vector_token_builder.py）。
-/// 当前态与历史态共用同一个向量装配函数，历史 token 只是 before/after 两段拼接。
+/// 当前态与历史态共用同一个向量装配函数，历史与最新 token 都拼接上一动作后与当前请求两段快照。
 /// 字段顺序以 schema.yaml 的 state_vector_fields.player_state 为权威，构造时缓存一次。
 /// </summary>
 public sealed class PlayerVectorTokenBuilder
@@ -21,8 +21,8 @@ public sealed class PlayerVectorTokenBuilder
     {
         _featureKeys = SchemaConfigLoader.RequireStateVectorFields("player_state").ToArray();
         _historyFeatureKeys = _featureKeys
-            .Select(key => $"before.{key}")
-            .Concat(_featureKeys.Select(key => $"after.{key}"))
+            .Select(key => $"previous_action_after.{key}")
+            .Concat(_featureKeys.Select(key => $"request_state.{key}"))
             .ToArray();
     }
 

@@ -9,7 +9,7 @@ namespace Combat.Sim.Outputs.TokenBuilders;
 
 /// <summary>
 /// 量谱向量 token 装配器（对照 token_builders/resource_vector_token_builder.py）。
-/// 历史与候选 token 只拼接 before / after；资源消耗由技能 token 携带。
+/// 历史与最新状态 token 都拼接上一动作后与当前请求快照；资源消耗由技能 token 携带。
 /// </summary>
 public sealed class ResourceVectorTokenBuilder
 {
@@ -22,8 +22,8 @@ public sealed class ResourceVectorTokenBuilder
         _resourceKeys = systemMachine.JobResourceVectorKeys("resource").ToArray();
         _featureKeys = BuildFeatureKeys();
         _historyFeatureKeys = _featureKeys
-            .Select(key => $"before.{key}")
-            .Concat(_featureKeys.Select(key => $"after.{key}"))
+            .Select(key => $"previous_action_after.{key}")
+            .Concat(_featureKeys.Select(key => $"request_state.{key}"))
             .ToArray();
     }
 
@@ -43,7 +43,7 @@ public sealed class ResourceVectorTokenBuilder
         IReadOnlyDictionary<string, object> after) =>
         BuildVector(before).Concat(BuildVector(after)).ToList();
 
-    /// <summary>单个量谱快照的向量装配；before / after 共用。</summary>
+    /// <summary>单个量谱快照的向量装配；两段共用。</summary>
     private IReadOnlyList<double> BuildVector(IReadOnlyDictionary<string, object> resources) =>
         _resourceKeys.Select(key => ValueUtils.ToFloat(resources[key])).ToList();
 

@@ -7,8 +7,7 @@ namespace Combat.Sim.Outputs.TokenBuilders;
 
 /// <summary>
 /// 统一技能 token 装配器（对照 token_builders/skill_token_builder.py）。
-/// 只提供这一个 build 函数：技能历史条目与候选技能条目都调用它，
-/// 只是调用方传入的属性来源不同（历史条目 vs 候选预演条目）。
+/// 技能历史与策略动作历史都通过同一个 build 函数生成固定字段。
 /// </summary>
 public static class SkillTokenBuilder
 {
@@ -27,8 +26,7 @@ public static class SkillTokenBuilder
         double nextCooldownSeconds,
         int availableCharges,
         int maxCharges,
-        IReadOnlyDictionary<string, object> jobResourcesConsumed,
-        double? timeSeconds = null)
+        IReadOnlyDictionary<string, object> jobResourcesConsumed)
     {
         var encodedKind = kind switch
         {
@@ -64,11 +62,6 @@ public static class SkillTokenBuilder
                 entry => entry.Key,
                 entry => (object?)entry.Value),
         };
-        if (timeSeconds is not null)
-        {
-            payload["time_seconds"] = Math.Round(timeSeconds.Value, 4);
-        }
-
         return payload;
     }
 }

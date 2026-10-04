@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import asdict
 from types import SimpleNamespace
 
 import pytest
 import torch
 
+from common.policy.data import ActionSpace, DataSpec
 from scripts.autoregressive_replay import config as replay_config_module
 from scripts.autoregressive_replay.config import load_replay_config
 from scripts.common.json_io import atomic_write_json
@@ -25,17 +27,20 @@ def test_replay_scene_defaults_to_prepared_cache(monkeypatch, tmp_path):
         return scene
 
     monkeypatch.setattr(replay_config_module, "find_prepared_scene_source", select)
-    normalizer = object()
+    normalizer, vocab = object(), object()
+    spec = DataSpec("black_mage", 2, 1, 1, 1, 1, ("a", "b"), ("kind",), (1, 2), (True, False))
     monkeypatch.setattr(
         replay_config_module.ModelInputContract, "from_dict",
-        lambda _payload: SimpleNamespace(create_normalizer=lambda: normalizer),
+        lambda _payload: SimpleNamespace(data_spec=asdict(spec), create_normalizer=lambda: normalizer,
+                                        create_skill_vocab=lambda: vocab),
     )
     kwargs = dict(raw_root=tmp_path, cache_dir=tmp_path / ".cache",
                   job_tag="black_mage", cache_shard_size=768, input_contract_payload={})
     assert replay_config_module._resolve_scene_json(None, **kwargs) == scene
     assert calls == [(tmp_path, dict(cache_dir=tmp_path / ".cache",
                                    job_tag="black_mage", cache_shard_size=768,
-                                   normalizer=normalizer))]
+                                   normalizer=normalizer, expected_action_space=ActionSpace.from_data_spec(spec),
+                                   expected_skill_vocab=vocab))]
 
     explicit = tmp_path / "explicit.json.br"
     atomic_write_json(explicit, {})
@@ -48,7 +53,7 @@ def test_replay_config_loads_dotenv_before_resolving_backend(monkeypatch, tmp_pa
     package = tmp_path / "deployment"
     package.mkdir()
     (package / "manifest.json").write_text(
-        '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":384}},"model":{"model_variant":"artzip"}}',
+        '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":300}},"model":{"model_variant":"artzip"}}',
         encoding="utf-8",
     )
     scene = tmp_path / "scene.json.br"
@@ -118,7 +123,7 @@ def test_replay_config_reads_env_overrides(monkeypatch, tmp_path):
     assert config.top_k == 6
     assert config.top_p == 0.9
     assert config.temperature == 0.8
-    assert config.max_history == 384
+    assert config.max_history == 300
     assert config.device == "cpu"
     assert config.job_tag == "black_mage"
     assert config.initial_action == "fire_iii"
@@ -162,7 +167,7 @@ def test_replay_config_routes_onnx_job_from_manifest(monkeypatch, tmp_path):
     package = tmp_path / "deployment"
     package.mkdir()
     (package / "manifest.json").write_text(
-        '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":384}},"model":{"model_variant":"artzip"}}',
+        '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":300}},"model":{"model_variant":"artzip"}}',
         encoding="utf-8",
     )
     scene = tmp_path / "scene.json.br"
@@ -180,7 +185,7 @@ def test_replay_config_routes_onnx_job_from_manifest(monkeypatch, tmp_path):
     assert config.onnx_package_path == package.resolve()
     assert config.checkpoint_path is None
     assert config.job_tag == "black_mage"
-    assert config.max_history == 384
+    assert config.max_history == 300
     assert config.cache_shard_size == 768
     assert config.cache_max_shards == 16
     assert config.device == "cpu"
@@ -201,7 +206,7 @@ def test_replay_config_derives_onnx_package_from_explicit_checkpoint(monkeypatch
     package = tmp_path / "artifacts" / "exports" / "black_mage" / "artzip_hotstart"
     package.mkdir(parents=True)
     (package / "manifest.json").write_text(
-        '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":384}},'
+        '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":300}},'
         '"model":{"model_variant":"artzip"}}',
         encoding="utf-8",
     )

@@ -10,6 +10,7 @@ import pytest
 import torch
 
 from common.torch_runtime import autocast_context, model_dtype
+from common.policy.data import SkillVocab
 from common.policy.model import RepetitionConfig
 from common.policy.replay import AutoregressiveReplayConfig
 from scripts.autoregressive_replay import main as replay_main_module
@@ -17,7 +18,7 @@ from scripts.autoregressive_replay.outputs.markdown import SKILL_NAMES, write_ma
 from scripts.autoregressive_replay.replay import (
     AutoregressiveReplay,
     AutoregressiveReplaySession,
-    NoLegalCandidateError,
+    NoLegalActionError,
     ReplayCacheStore,
     ReplayResult,
     ReplayRow,
@@ -29,6 +30,101 @@ from scripts.autoregressive_replay import replay as replay_module
 
 _FAKE_GCD_SKILL = SimpleNamespace(key="fire", kind=SimpleNamespace(value="gcd"))
 _FAKE_OGCD_SKILL = SimpleNamespace(key="ogcd_wait", kind=SimpleNamespace(value="ogcd"))
+
+
+@pytest.mark.parametrize("drift", ["reorder_disabled", "add_disabled", "remove_disabled"])
+@pytest.mark.parametrize("use_kv_cache", [False, True])
+def test_checkpoint_restores_history_embedding_and_logits_after_yaml_vocab_drift(tmp_path, monkeypatch, drift, use_kv_cache):
+    """真实模型、回放会话和 batcher 使用训练时词表，当前 YAML 改变不影响行身份。"""
+    from dataclasses import asdict
+    from common.config import load_project_config
+    from common.policy.config import ModelConfig
+    from common.policy.data import ActionSpace, DataSpec, ModelInputContract, Normalizer
+    from common.policy.data import skill_vocab as vocab_module
+    from common.policy.data.schema import SceneWindowSchema, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
+    from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
+    from common.policy.model import CausalPolicyModel
+    from scripts.autoregressive_replay.backends import PyTorchPolicyBackend
+    from scripts.autoregressive_replay.context import LiveBatchBuilder
+
+    project = load_project_config(job_tag="black_mage")
+    disabled = replace(project.job.skills[0], key="zzzz_disabled", game_id=900001, enabled=False)
+    original = replace(project, job=replace(project.job, skills=(*project.job.skills, disabled)))
+    vocab = SkillVocab.build_from_config(original)
+    actions = ActionSpace.from_config(original, skill_vocab=vocab)
+    keys = ("previous_action_after.time_seconds", "previous_action_after.mp",
+            "request_state.time_seconds", "request_state.mp")
+    schema = TrainingSchema(
+        serialization_format="test", sample_schema_version=TRAINING_SAMPLE_SCHEMA_VERSION,
+        context_schema_version=CANONICAL_CONTEXT_SCHEMA_VERSION, scene_context_mode="absolute",
+        scene_windows=(SceneWindowSchema.from_feature_keys(
+            context_key="targetable_window_context", scene_type_id=0,
+            feature_keys=("start_offset_seconds", "end_offset_seconds", "duration_seconds"),
+        ),), state_group_feature_keys={"player_state": keys},
+        skill_history_fields=("kind", "potency"),
+    )
+    spec = DataSpec("black_mage", len(actions.action_keys), 4, 3, 2, 1,
+                    actions.action_keys, ("kind", "potency"), actions.action_to_vocab_id, actions.action_is_gcd)
+    normalizer = Normalizer()
+    normalizer.ensure_job_resources("black_mage")
+    contract = ModelInputContract.from_training(data_spec=spec, schema=schema, normalizer=normalizer, skill_vocab=vocab)
+    config = ModelConfig(d_model=8, n_layers=1, n_heads=2, num_kv_heads=1, ff_dim=16,
+                         dropout=0.0, scene_capacity=1, history_capacity=4)
+    with torch.random.fork_rng():
+        torch.manual_seed(20261004)
+        model = CausalPolicyModel(spec, config, vocab_size=vocab.size()).eval()
+    path = tmp_path / "model.pt"
+    torch.save({"data_spec": asdict(spec), "model_config": asdict(config),
+                "input_contract": contract.to_dict(), "model_state_dict": model.state_dict()}, path)
+    canonical = {
+        "action_keys": actions.action_keys, "action_legal_mask": [True] * len(actions.action_keys),
+        "skill_history_context": [
+            {"skill_id": 3577, "skill_key": "fire_iv", "kind": 1, "potency": 310},
+            {"skill_id": 900001, "skill_key": "zzzz_disabled", "kind": 1, "potency": 0},
+            {"skill_id": 0, "skill_key": "ogcd_wait", "kind": 0, "potency": 0},
+        ],
+        "state_history_context": {"player_state_feature_keys": keys, "tokens": [
+            {"player_state": [0.0, 10000.0, 1.0, 8000.0]},
+            {"player_state": [2.0, 8000.0, 3.0, 6000.0]},
+            {"player_state": [3.0, 6000.0, 4.0, 6000.0]},
+        ]},
+        "current_state_context": {"player_state_feature_keys": keys, "tokens": [
+            {"player_state": [4.0, 6000.0, 5.0, 6200.0]},
+        ]},
+    }
+
+    def build(saved_vocab, saved_normalizer):
+        return LiveBatchBuilder(
+            backend=None, vocab=saved_vocab, normalizer=saved_normalizer, schema=schema,
+            skill_feature_names=spec.skill_feature_names, device=torch.device("cpu"), max_history=4,
+            action_keys=spec.action_keys, action_is_gcd=spec.action_is_gcd,
+            scene_provider=SimpleNamespace(at_time=lambda _: (torch.tensor([[0.0, 1.0, 1.0]]), torch.zeros(1, dtype=torch.long))),
+        ).build_from_canonical(canonical, gcd_phase=True, max_history=4)[0]
+
+    before = build(vocab, contract.create_normalizer())
+    reference = PyTorchPolicyBackend(path, device="cpu", use_kv_cache=use_kv_cache)
+    expected = reference.raw_logits(before, spec.action_keys)
+    if drift == "reorder_disabled":
+        modified_skills = (*project.job.skills, replace(disabled, key="aaa_disabled"))
+    elif drift == "add_disabled":
+        modified_skills = (*original.job.skills, replace(disabled, key="aaa_new_disabled", game_id=900002))
+    else:
+        modified_skills = project.job.skills
+    changed = replace(project, job=replace(project.job, skills=modified_skills))
+    assert dict(SkillVocab.build_from_config(changed)) != dict(vocab)
+    monkeypatch.setattr(vocab_module, "load_project_config", lambda *_a, **_kw: changed)
+    monkeypatch.setattr(replay_module, "load_project_config", lambda *_a, **_kw: changed)
+    backend = PyTorchPolicyBackend(path, device="cpu", use_kv_cache=use_kv_cache)
+    replay_config = SimpleNamespace(job_tag="black_mage", cache_max_shards=1)
+    with AutoregressiveReplaySession(replay_config, backend=backend, engine=SimpleNamespace(job_tag="black_mage")) as session:
+        after = build(session.vocab, session.normalizer)
+        assert session.vocab.to_dict() == vocab.to_dict()
+        assert after["history_skill_ids"].tolist() == [[vocab.lookup(3577), vocab.lookup(900001), vocab.lookup(0)]]
+        assert after["history_skill_ids"][0, -1] > 0
+        for name in before:
+            if isinstance(before[name], torch.Tensor):
+                torch.testing.assert_close(after[name], before[name], atol=0, rtol=0)
+        torch.testing.assert_close(backend.raw_logits(after, spec.action_keys), expected, atol=0, rtol=0)
 
 
 class _FakeBackend:
@@ -144,14 +240,22 @@ def test_replay_compiles_missing_cache_and_retries(monkeypatch, tmp_path):
     )
 
     engine = object()
-    assert replay_module._load_replay_cache(config, "black_mage", normalizer, engine=engine) is reader
+    action_space = replay_module.ActionSpace.from_job_tag("black_mage")
+    vocab = SkillVocab.build_from_job_tag("black_mage")
+    assert replay_module._load_replay_cache(
+        config, "black_mage", normalizer, engine=engine, expected_action_space=action_space,
+        expected_skill_vocab=vocab,
+    ) is reader
     assert len(load_calls) == 2
+    assert all(call[1]["expected_action_space"] == action_space for call in load_calls)
     assert compile_calls == [
         (
             ([config.scene_json_path],),
             {
                 "job_tag": "black_mage",
                 "normalizer": normalizer,
+                "expected_action_space": action_space,
+                "expected_skill_vocab": vocab,
                 "int_dtype": torch.int32,
                 "float_dtype": torch.float32,
                 "cache_dir": config.cache_dir,
@@ -186,10 +290,25 @@ def test_replay_cache_store_reuses_reader_for_unchanged_scene(monkeypatch, tmp_p
 
     store = ReplayCacheStore(max_shards=2)
     engine = object()
-    assert store.load(config, job_tag="black_mage", normalizer=normalizer, engine=engine) is reader
-    assert store.load(config, job_tag="black_mage", normalizer=normalizer, engine=engine) is reader
+    action_space = replay_module.ActionSpace.from_job_tag("black_mage")
+    vocab = SkillVocab.build_from_job_tag("black_mage")
+    kwargs = dict(job_tag="black_mage", normalizer=normalizer, engine=engine,
+                  expected_action_space=action_space, expected_skill_vocab=vocab)
+    assert store.load(config, **kwargs) is reader
+    assert store.load(config, **kwargs) is reader
     assert len(load_calls) == 1
     assert load_calls[0][1]["shard_cache"] is store._shard_cache
+    # 同一 source 的 reader 不能跨模型动作契约复用。
+    changed = replace(action_space, action_is_gcd=(not action_space.action_is_gcd[0], *action_space.action_is_gcd[1:]))
+    assert store.load(config, **{**kwargs, "expected_action_space": changed}) is reader
+    assert len(load_calls) == 2
+    assert load_calls[-1][1]["expected_action_space"] == changed
+    # 完整词表发生变化时，即使输出动作未变，也必须重新校验 reader。
+    entries = list(vocab)
+    entries[0], entries[1] = (entries[0][0], entries[1][1]), (entries[1][0], entries[0][1])
+    changed_vocab = SkillVocab.from_entries(entries)
+    assert store.load(config, **{**kwargs, "expected_skill_vocab": changed_vocab}) is reader
+    assert len(load_calls) == 3
 
 
 def test_replay_session_reset_reinitializes_backend_and_state_machine():
@@ -319,7 +438,8 @@ def test_replay_uses_session_normalizer_for_context_builders(monkeypatch, constr
         data_spec=SimpleNamespace(
             job_tag="black_mage",
             skill_feature_names=("kind",),
-            candidate_action_keys=("fire",),
+            action_keys=("fire",),
+            action_is_gcd=(True,),
         ),
         input_contract=input_contract,
         vocab=object(),
@@ -404,7 +524,7 @@ def test_replay_prediction_modes_and_result_helpers(monkeypatch, tmp_path):
         def build(_state, *, max_history=None):
             return (
                 {
-                    "candidate_legal_mask": torch.tensor([[True, False, True]]),
+                    "action_legal_mask": torch.tensor([[True, False, True]]),
                 },
                 ["first", "illegal", "third"],
             )
@@ -416,7 +536,7 @@ def test_replay_prediction_modes_and_result_helpers(monkeypatch, tmp_path):
         repetition = RepetitionConfig()
 
         @staticmethod
-        def raw_logits(_batch, _candidate_keys):
+        def raw_logits(_batch, _action_keys):
             return torch.tensor([[1.0, 100.0, 2.0]])
 
         @staticmethod
@@ -427,8 +547,8 @@ def test_replay_prediction_modes_and_result_helpers(monkeypatch, tmp_path):
     replay.backend = FakeBackend()
     row = replay._predict_row(SimpleNamespace(), gcd_step=2)
     assert row.action_key == "third"
-    assert row.top_candidates[0][0] == "third"
-    assert row.top_candidates[1][0] == "first"
+    assert row.top_actions[0][0] == "third"
+    assert row.top_actions[1][0] == "first"
 
     replay.config = SimpleNamespace(
         temperature=1.0,
@@ -451,11 +571,11 @@ def test_replay_prediction_modes_and_result_helpers(monkeypatch, tmp_path):
     assert torch.equal(sampled_probabilities[0], torch.tensor([0.0, 0.0, 1.0]))
     replay.batcher = SimpleNamespace(
         build=lambda _state, *, max_history=None: (
-            {"candidate_legal_mask": torch.zeros((1, 3), dtype=torch.bool)},
+            {"action_legal_mask": torch.zeros((1, 3), dtype=torch.bool)},
             ["a", "b", "c"],
         )
     )
-    with pytest.raises(RuntimeError, match="no legal candidate"):
+    with pytest.raises(RuntimeError, match="no legal action"):
         replay._predict_row(SimpleNamespace(), gcd_step=0)
 
     assert model_dtype("float32") is torch.float32
@@ -472,7 +592,7 @@ def test_replay_prediction_modes_and_result_helpers(monkeypatch, tmp_path):
     assert result.is_history_ablation is True
 
 
-def test_replay_respects_shared_candidate_mask():
+def test_replay_respects_shared_action_mask():
     replay = object.__new__(AutoregressiveReplay)
     replay.config = SimpleNamespace(
         temperature=0.0,
@@ -488,22 +608,22 @@ def test_replay_respects_shared_candidate_mask():
     )
     replay.backend = SimpleNamespace(
         repetition=RepetitionConfig(),
-        raw_logits=lambda _batch, _candidate_keys: torch.tensor(
+        raw_logits=lambda _batch, _action_keys: torch.tensor(
             [[100.0, 2.0, 90.0]],
         ),
     )
 
     row = replay._score_row(
-        {"candidate_legal_mask": torch.tensor([[False, True, False]])},
+        {"action_legal_mask": torch.tensor([[False, True, False]])},
         ["swiftcast", "fire", "potion"],
         gcd_step=1,
     )
 
     assert row.action_key == "fire"
-    assert row.top_candidates[0] == ("fire", 2.0, 1.0, True)
+    assert row.top_actions[0] == ("fire", 2.0, 1.0, True)
     assert all(
         legal is False
-        for action_key, _logit, _probability, legal in row.top_candidates
+        for action_key, _logit, _probability, legal in row.top_actions
         if action_key in {"swiftcast", "potion"}
     )
 
@@ -639,7 +759,7 @@ def test_replay_delegates_kv_cache_toggle_to_backend():
         def configure_cache(self, enabled):
             self.kv_cache_enabled = bool(enabled)
 
-        def raw_logits(self, _batch, _candidate_keys):
+        def raw_logits(self, _batch, _action_keys):
             assert self.kv_cache_enabled is True
             self.calls += 1
             return torch.tensor([[1.0, 2.0]])
@@ -648,7 +768,7 @@ def test_replay_delegates_kv_cache_toggle_to_backend():
         @staticmethod
         def build(_state, *, max_history=None):
             return (
-                {"candidate_legal_mask": torch.tensor([[True, True]])},
+                {"action_legal_mask": torch.tensor([[True, True]])},
                 ["first", "second"],
             )
 
@@ -769,7 +889,7 @@ def test_replay_no_legal_candidate_waits_until_next_event_and_continues():
 
     def predict(state, *, gcd_step):
         if state.gcd_remaining > 0.0:
-            raise NoLegalCandidateError("locked")
+            raise NoLegalActionError("locked")
         return ReplayRow(gcd_step, "fire", 1.0, (("fire", 1.0, 1.0, True),))
 
     replay._predict_row = predict
@@ -804,7 +924,7 @@ def test_replay_no_legal_candidate_reports_finished_fight():
     replay._state_machine = _FakeBackend(state, _FAKE_GCD_SKILL)
     replay.backend = SimpleNamespace(configure_cache=lambda _enabled: None)
     replay._predict_row = lambda *_args, **_kwargs: (_ for _ in ()).throw(
-        NoLegalCandidateError("finished")
+        NoLegalActionError("finished")
     )
 
     with pytest.raises(RuntimeError, match="no future time event"):

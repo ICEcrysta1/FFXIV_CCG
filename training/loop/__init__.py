@@ -6,8 +6,7 @@ from pathlib import Path
 
 import torch
 from common.policy.config import PROJECT_ROOT, resolve_policy_cache_dir
-from common.policy.data import SkillVocab
-from common.policy.model import CandidateTransformerModel
+from common.policy.model import CausalPolicyModel
 from common.project_config import resolve_registered_job_tags
 
 
@@ -77,8 +76,7 @@ def run_training(
         _save_checkpoint=_save_checkpoint,
         _resolve_cache_dir=resolve_policy_cache_dir,
         _registered_job_tags=lambda: resolve_registered_job_tags(PROJECT_ROOT),
-        _skill_vocab=SkillVocab,
-        _model_class=CandidateTransformerModel,
+        _model_class=CausalPolicyModel,
     )
 
 

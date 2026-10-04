@@ -9,6 +9,7 @@ import pytest
 import torch
 
 from common.policy.model import RepetitionConfig
+from common.policy.data import ActionSpace, DataSpec, SkillVocab
 from scripts.autoregressive_replay import main as replay_main_module
 from scripts.autoregressive_replay import parity as parity_module
 from scripts.autoregressive_replay.backends import compare_backend_logits
@@ -41,7 +42,7 @@ def test_bf16_float_compute_reference_keeps_quantized_checkpoint_weights(tmp_pat
 
     inputs = make_inputs(
         data_spec,
-        CapacityContract(3, 4, data_spec.num_candidates),
+        CapacityContract(3, 4),
         vocab_size=8,
         scene_valid=1,
         history_valid=1,
@@ -52,22 +53,22 @@ def test_bf16_float_compute_reference_keeps_quantized_checkpoint_weights(tmp_pat
         name: value.cuda()
         for name, value in zip(TENSOR_INPUT_NAMES, inputs, strict=True)
     }
-    batch["candidate_legal_mask"] = torch.ones(
-        (1, data_spec.num_candidates), dtype=torch.bool, device="cuda"
+    batch["action_legal_mask"] = torch.ones(
+        (1, data_spec.num_actions), dtype=torch.bool, device="cuda"
     )
-    logits = reference.raw_logits(batch, data_spec.candidate_action_keys)
+    logits = reference.raw_logits(batch, data_spec.action_keys)
     assert logits.dtype == torch.float32
     assert torch.equal(logits, logits.bfloat16().float())
     with pytest.raises(ValueError, match="fresh BF16 reference"):
         reference.enable_bf16_float_compute()
 
 
-def test_backend_parity_failure_reports_candidate_logits_and_actions():
+def test_backend_parity_failure_reports_compared_logits_and_actions():
     class FakeBackend:
         def __init__(self, logits):
             self.logits = logits
 
-        def raw_logits(self, _batch, _candidate_keys):
+        def raw_logits(self, _batch, _action_keys):
             return self.logits
 
     with pytest.raises(AssertionError) as error:
@@ -80,9 +81,9 @@ def test_backend_parity_failure_reports_candidate_logits_and_actions():
     message = str(error.value)
     assert "fire_iii" in message
     assert "reference_logit=1.00000000" in message
-    assert "candidate_logit=4.00000000" in message
+    assert "compared_logit=4.00000000" in message
     assert "reference_top1='blizzard_iii'" in message
-    assert "candidate_top1='fire_iii'" in message
+    assert "compared_top1='fire_iii'" in message
 
 
 def test_parity_fixed_capacity_batch_stays_on_reference_device(tmp_path):
@@ -107,7 +108,7 @@ def test_parity_fixed_capacity_batch_stays_on_reference_device(tmp_path):
         device="cuda",
         use_kv_cache=False,
     )
-    contract = CapacityContract(3, 4, data_spec.num_candidates)
+    contract = CapacityContract(3, 4)
     dynamic_inputs = slice_dynamic_inputs(
         make_inputs(
             data_spec,
@@ -124,15 +125,15 @@ def test_parity_fixed_capacity_batch_stays_on_reference_device(tmp_path):
     live_batch = dict(zip(TENSOR_INPUT_NAMES, dynamic_inputs, strict=True))
     live_batch.update(
         {
-            "candidate_legal_mask": torch.ones(
-                (1, data_spec.num_candidates), dtype=torch.bool
+            "action_legal_mask": torch.ones(
+                (1, data_spec.num_actions), dtype=torch.bool
             ),
-            "candidate_action_keys": [list(data_spec.candidate_action_keys)],
+            "action_keys": [list(data_spec.action_keys)],
             "history_action_keys": [["fire_iii", "fire_iv", "fire_iv"]],
         }
     )
 
-    b, s, h, c = 1, 3, 4, data_spec.num_candidates
+    b, s, h, c = 1, 3, 4, data_spec.num_actions
     sd, fd, xd = data_spec.state_dim, data_spec.skill_feature_dim, data_spec.scene_dim
 
     def tensor_inputs():
@@ -145,10 +146,8 @@ def test_parity_fixed_capacity_batch_stays_on_reference_device(tmp_path):
             TensorSpec("history_state_vectors", "tensor(float)", (b, h, sd), ""),
             TensorSpec("history_state_null_mask", "tensor(bool)", (b, h, sd), ""),
             TensorSpec("history_mask", "tensor(bool)", (b, h), ""),
-            TensorSpec("candidate_skill_ids", "tensor(int64)", (b, c), ""),
-            TensorSpec("candidate_skill_features", "tensor(float)", (b, c, fd), ""),
-            TensorSpec("candidate_state_vectors", "tensor(float)", (b, c, sd), ""),
-            TensorSpec("candidate_state_null_mask", "tensor(bool)", (b, c, sd), ""),
+            TensorSpec("current_state_vectors", "tensor(float)", (b, sd), ""),
+            TensorSpec("current_state_null_mask", "tensor(bool)", (b, sd), ""),
         )
 
     fake_contract = SimpleNamespace(
@@ -158,11 +157,11 @@ def test_parity_fixed_capacity_batch_stays_on_reference_device(tmp_path):
     )
     seen_device = {}
 
-    def fake_raw_logits(batch, candidate_action_keys):
+    def fake_raw_logits(batch, action_keys):
         seen_device["device"] = _require_tensor(batch, "scene_vectors").device
         return torch.tensor([[0.1, 0.2, 0.3]], dtype=torch.float32)
 
-    candidate = SimpleNamespace(
+    compared = SimpleNamespace(
         name="fake-ort",
         source_path=tmp_path / "fake.onnx",
         input_device=torch.device("cpu"),
@@ -176,10 +175,10 @@ def test_parity_fixed_capacity_batch_stays_on_reference_device(tmp_path):
         configure_cache=lambda enabled: None,
         metrics=lambda: None,
     )
-    parity = ParityPolicyBackend(reference, candidate, tolerance=1e-4)
-    logits = parity.raw_logits(live_batch, data_spec.candidate_action_keys)
+    parity = ParityPolicyBackend(reference, compared, tolerance=1e-4)
+    logits = parity.raw_logits(live_batch, data_spec.action_keys)
 
-    assert logits.shape == (1, data_spec.num_candidates)
+    assert logits.shape == (1, data_spec.num_actions)
     assert seen_device["device"].type == reference.input_device.type
 
 
@@ -190,14 +189,20 @@ def test_parity_failure_writes_auditable_partial_report(monkeypatch, tmp_path):
             self.logits = logits
             self.source_path = tmp_path / f"{name}.model"
             self.input_device = torch.device("cpu")
-            self.data_spec = SimpleNamespace(job_tag="black_mage")
-            self.input_contract = SimpleNamespace(to_dict=lambda: {"version": 1}, create_normalizer=lambda: object())
+            self.data_spec = DataSpec(
+                "black_mage", 3, 1, 1, 1, 1, ("fire_iii", "fire_iv", "blizzard_iii"),
+                ("kind",), (1, 2, 3), (True, True, True),
+            )
+            self.input_contract = SimpleNamespace(
+                to_dict=lambda: {"version": 1}, create_normalizer=lambda: object(),
+                create_skill_vocab=lambda: SkillVocab.from_entries(self.vocab_entries),
+            )
             self.repetition = RepetitionConfig()
             self.vocab_entries = ((100, 1), (200, 2), (300, 3))
             self.execution_provider = name
             self.contract = SimpleNamespace(precision="float32")
 
-        def raw_logits(self, _batch, _candidate_keys):
+        def raw_logits(self, _batch, _action_keys):
             return self.logits
 
         def configure_cache(self, _enabled):
@@ -208,9 +213,9 @@ def test_parity_failure_writes_auditable_partial_report(monkeypatch, tmp_path):
             return SimpleNamespace(to_dict=lambda: {"calls": 1})
 
     reference = FakeBackend("pytorch", torch.tensor([[1.0, 2.0, 3.0]]))
-    candidate = FakeBackend("onnxruntime", torch.tensor([[4.0, 2.0, 1.0]]))
-    candidate.package_dir = tmp_path / "deployment"
-    candidate.manifest = SimpleNamespace(payload={"runtime_targets": {}})
+    compared = FakeBackend("onnxruntime", torch.tensor([[4.0, 2.0, 1.0]]))
+    compared.package_dir = tmp_path / "deployment"
+    compared.manifest = SimpleNamespace(payload={"runtime_targets": {}})
 
     class FakeReplay:
         def __init__(self, _config, *, session):
@@ -219,14 +224,18 @@ def test_parity_failure_writes_auditable_partial_report(monkeypatch, tmp_path):
 
         def run(self):
             self.backend.raw_logits(
-                {"candidate_legal_mask": torch.tensor([[True, True, True]])},
+                {"action_legal_mask": torch.tensor([[True, True, True]])},
                 ("fire_iii", "fire_iv", "blizzard_iii"),
             )
             raise AssertionError("unreachable")
 
-    monkeypatch.setattr(parity_module, "OrtPolicyBackend", lambda *_args, **_kwargs: candidate)
+    monkeypatch.setattr(parity_module, "OrtPolicyBackend", lambda *_args, **_kwargs: compared)
     monkeypatch.setattr(parity_module, "PyTorchPolicyBackend", lambda *_args, **_kwargs: reference)
-    monkeypatch.setattr(parity_module.ReplayCacheStore, "prepare", lambda *_args, **_kwargs: None)
+    prepared_actions = []
+    monkeypatch.setattr(
+        parity_module.ReplayCacheStore, "prepare",
+        lambda *_args, **kwargs: prepared_actions.append(kwargs["expected_action_space"]),
+    )
 
     closed = []
     class FakeSession:
@@ -285,12 +294,13 @@ def test_parity_failure_writes_auditable_partial_report(monkeypatch, tmp_path):
         )
 
     report = json.loads(output.read_text(encoding="utf-8"))
+    assert prepared_actions == [ActionSpace.from_data_spec(reference.data_spec)]
     assert report["status"] == "failed"
     assert report["release_gate"] == {"enabled": False, "version": 1}
     assert report["error"]["type"] == "AssertionError"
     assert report["parity"]["passed"] is False
     assert report["parity"]["first_divergence"]["decision_index"] == 0
-    assert report["parity"]["decisions"][0]["max_diff_candidate"] == "fire_iii"
+    assert report["parity"]["decisions"][0]["max_diff_action"] == "fire_iii"
     assert report["rollout"]["action_sequence_match"] is False
 
     recorded = []
@@ -310,7 +320,7 @@ def test_parity_failure_writes_auditable_partial_report(monkeypatch, tmp_path):
         )
     assert recorded == [
         {
-            "package_dir": candidate.package_dir,
+            "package_dir": compared.package_dir,
             "parity_report_path": formal_output.resolve(),
         }
     ]
@@ -348,11 +358,11 @@ def test_parity_rejects_non_finite_or_negative_tolerance(
     tmp_path,
     tolerance,
 ):
-    candidate = SimpleNamespace(contract=SimpleNamespace(precision="float32"))
+    compared = SimpleNamespace(contract=SimpleNamespace(precision="float32"))
     monkeypatch.setattr(
         parity_module,
         "OrtPolicyBackend",
-        lambda *_args, **_kwargs: candidate,
+        lambda *_args, **_kwargs: compared,
     )
     config = AutoregressiveReplayConfig(
         checkpoint_path=tmp_path / "checkpoint.pt",

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ffxiv-ccg.local/schemas/onnx-manifest-v7.json",
+  "$id": "https://ffxiv-ccg.local/schemas/onnx-manifest-v11.json",
   "title": "FFXIV_CCG ONNX Deployment Manifest",
   "type": "object",
   "additionalProperties": false,
@@ -21,7 +21,7 @@
       "const": "manifest.schema.json"
     },
     "manifest_version": {
-      "const": 7
+      "const": 11
     },
     "format": {
       "const": "onnx"
@@ -229,7 +229,7 @@
       ],
       "properties": {
         "contract_version": {
-          "const": 13
+          "const": 18
         },
         "job_tag": {
           "type": "string",
@@ -243,7 +243,29 @@
           ]
         },
         "capacity": {
-          "type": "object"
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "scene_capacity", "history_capacity", "batch_size", "padding_direction",
+            "scene_padding_mask_value", "history_padding_mask_value", "position_ids", "over_capacity",
+            "history_capacity_unit", "history_tokens_per_action", "token_order",
+            "total_token_count", "effective_sequence_length"
+          ],
+          "properties": {
+            "scene_capacity": {"type": "integer", "minimum": 1},
+            "history_capacity": {"type": "integer", "minimum": 1},
+            "batch_size": {"const": 1},
+            "padding_direction": {"const": "right"},
+            "scene_padding_mask_value": {"const": false},
+            "history_padding_mask_value": {"const": false},
+            "position_ids": {"const": "logical per-sample positions; right padding excluded; separate skill/state positions; RoPE applied to Q/K"},
+            "over_capacity": {"const": "reject"},
+            "history_capacity_unit": {"const": "actions"},
+            "history_tokens_per_action": {"const": 2},
+            "token_order": {"const": "scene, (state_i, skill_i)*H, current_state"},
+            "total_token_count": {"type": "integer", "minimum": 4},
+            "effective_sequence_length": {"const": "scene_valid + 2 * history_valid + 1"}
+          }
         },
         "data_spec": {
           "type": "object"
@@ -350,8 +372,8 @@
         },
         "tensor_inputs": {
           "type": "array",
-          "minItems": 12,
-          "maxItems": 12,
+          "minItems": 10,
+          "maxItems": 10,
           "items": {
             "$ref": "#/$defs/tensorSpec"
           }
@@ -368,15 +390,15 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "candidate_legal_mask",
+            "action_legal_mask",
             "raw_logits_order",
             "repetition",
             "repetition_policy",
             "sampling_policy"
           ],
           "properties": {
-            "candidate_legal_mask": {"type": "object"},
-            "raw_logits_order": {"const": "data_spec.candidate_action_keys"},
+            "action_legal_mask": {"type": "object"},
+            "raw_logits_order": {"const": "data_spec.action_keys"},
             "repetition": {
               "type": "object",
               "additionalProperties": false,
@@ -437,7 +459,7 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "candidate_order_sha256",
+            "action_order_sha256",
             "skill_feature_order_sha256",
             "state_schema_sha256",
             "scene_schema_sha256",
@@ -448,7 +470,7 @@
             "deployment_contract_sha256"
           ],
           "properties": {
-            "candidate_order_sha256": {
+            "action_order_sha256": {
               "$ref": "#/$defs/sha256"
             },
             "skill_feature_order_sha256": {

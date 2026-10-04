@@ -1,4 +1,4 @@
-"""推理专用的场景/历史 prefix KV-cache。"""
+"""推理专用的稳定场景/历史因果 KV-cache。"""
 
 from __future__ import annotations
 
@@ -6,16 +6,13 @@ from dataclasses import dataclass
 
 import torch
 
-from .attention_masks import build_cached_candidate_mask
-from .split_encoder import (
-    run_cached_candidate_layer,
-    run_prefix_layer,
-)
+from .attention_masks import build_segment_mask
+from .causal_encoder import run_causal_layer
 
 
 @dataclass
 class TransformerKVCache:
-    """缓存稳定的 scene/history prefix 在每一层的 K/V。"""
+    """只缓存稳定场景和历史，各步当前状态按真实请求重新编码。"""
 
     prefix_tokens: torch.Tensor
     prefix_valid: torch.Tensor
@@ -24,98 +21,52 @@ class TransformerKVCache:
     value_cache: tuple[torch.Tensor, ...]
     scene_length: int
     history_length: int
+    history_token_length: int
 
 
-def encode_with_kv_cache(
-    encoder: torch.nn.Module,
-    encoded: dict[str, torch.Tensor | int],
-    cache: TransformerKVCache | None = None,
-) -> tuple[torch.Tensor, TransformerKVCache]:
-    """使用 prefix cache 编码当前候选集合。
-
-    scene/history prefix 逐层保持因果并缓存；候选在每次决策中只保留一份，
-    以非因果 SDPA 同时读取完整 prefix K/V 与全部候选 K/V。
-    """
-
+def encode_with_kv_cache(encoder, encoded, cache=None):
+    """复用因果前缀，用同一因果层编码本次最新状态。"""
     tokens = encoded["tokens"]
     prefix_length = int(encoded["prefix_length"])
-    candidate_count = int(encoded["candidate_count"])
     scene_length = int(encoded["scene_length"])
-
-    assert isinstance(tokens, torch.Tensor)
     prefix_tokens = tokens[:, :prefix_length]
     prefix_valid = encoded["prefix_valid"]
     position_ids = encoded["position_ids"]
-    candidate_valid = encoded["candidate_valid"]
-    assert isinstance(prefix_valid, torch.Tensor)
-    assert isinstance(position_ids, torch.Tensor)
-    assert isinstance(candidate_valid, torch.Tensor)
-
-    candidate_tokens = tokens[:, prefix_length : prefix_length + candidate_count]
-    attention_residual = getattr(encoder, "attention_residual", None)
-
-    prefix_position_ids = position_ids[:, :prefix_length]
-    candidate_position_ids = position_ids[:, prefix_length : prefix_length + candidate_count]
-    rotary_position_encoding = getattr(encoder, "rotary_position_encoding", None)
-    if rotary_position_encoding is None:
+    prefix_positions = position_ids[:, :prefix_length]
+    residual = getattr(encoder, "attention_residual", None)
+    rotary = getattr(encoder, "rotary_position_encoding", None)
+    if rotary is None:
         raise ValueError("encoder is missing the required RotaryPositionEncoding module")
-
-    if not _cache_matches(
-        cache,
-        prefix_tokens,
-        prefix_valid,
-        prefix_position_ids,
-        scene_length,
-    ):
+    if not _cache_matches(cache, prefix_tokens, prefix_valid, prefix_positions, scene_length):
         cache = _build_prefix_cache(
-            encoder,
-            prefix_tokens,
-            prefix_valid,
-            prefix_position_ids,
-            scene_length,
-            attention_residual=attention_residual,
-            rotary_position_encoding=rotary_position_encoding,
+            encoder, prefix_tokens, prefix_valid, prefix_positions, scene_length,
+            attention_residual=residual, rotary_position_encoding=rotary,
         )
     elif prefix_length > cache.prefix_tokens.shape[1]:
         cache = _append_prefix(
-            encoder,
-            cache,
-            prefix_tokens,
-            prefix_valid,
-            prefix_position_ids,
-            attention_residual=attention_residual,
-            rotary_position_encoding=rotary_position_encoding,
+            encoder, cache, prefix_tokens, prefix_valid, prefix_positions,
+            attention_residual=residual, rotary_position_encoding=rotary,
         )
-
-    candidate_hidden = candidate_tokens
-    candidate_sources = [candidate_tokens] if attention_residual is not None else None
-    # 候选 mask 只取决于本步的有效性布局，与层无关：一次算好复用，
-    # 避免每层重复构造并触发 device 到 host 的同步。
-    segment_mask = build_cached_candidate_mask(
-        cache.prefix_valid,
-        candidate_valid,
-        candidate_count=candidate_count,
+    hidden = tokens[:, prefix_length:]
+    sources = [hidden] if residual is not None else None
+    valid = encoded["valid"]
+    mask = build_segment_mask(
+        valid, query_count=1, key_count=valid.shape[1],
+        causal=True, causal_offset=prefix_length,
     )
-    for layer_index, layer in enumerate(encoder.layers):
-        candidate_hidden = run_cached_candidate_layer(
-            layer,
-            candidate_hidden,
-            prefix_key=cache.key_cache[layer_index],
-            prefix_value=cache.value_cache[layer_index],
-            prefix_valid=cache.prefix_valid,
-            candidate_position_ids=candidate_position_ids,
-            candidate_valid=candidate_valid,
-            rotary_position_encoding=rotary_position_encoding,
-            attention_residual=attention_residual,
-            candidate_sources=candidate_sources,
-            query_index=2 * layer_index,
-            segment_mask=segment_mask,
+    for index, layer in enumerate(encoder.layers):
+        hidden, _, _, _ = run_causal_layer(
+            layer, hidden, key_valid=valid,
+            position_ids=position_ids[:, prefix_length:],
+            rotary_position_encoding=rotary,
+            existing_key=cache.key_cache[index], existing_value=cache.value_cache[index],
+            existing_length=prefix_length,
+            attention_residual=residual, sources=sources, query_index=2 * index,
+            segment_mask=mask,
         )
-
     if encoder.norm is not None:
-        candidate_hidden = encoder.norm(candidate_hidden)
-
-    return candidate_hidden, cache
+        hidden = encoder.norm(hidden)
+    return hidden, cache
 
 
 def _cache_matches(
@@ -165,10 +116,10 @@ def _build_prefix_cache(
             value_cache.append(hidden.new_empty(empty_shape))
             continue
 
-        hidden, key, value = run_prefix_layer(
+        hidden, key, value, _ = run_causal_layer(
             layer,
             hidden,
-            prefix_valid=prefix_valid,
+            key_valid=prefix_valid,
             position_ids=prefix_position_ids,
             rotary_position_encoding=rotary_position_encoding,
             attention_residual=attention_residual,
@@ -186,7 +137,8 @@ def _build_prefix_cache(
         key_cache=tuple(key_cache),
         value_cache=tuple(value_cache),
         scene_length=scene_length,
-        history_length=prefix_length - scene_length,
+        history_length=(prefix_length - scene_length) // 2,
+        history_token_length=prefix_length - scene_length,
     )
 
 
@@ -214,10 +166,10 @@ def _append_prefix(
     value_cache = list(cache.value_cache)
 
     for layer_index, layer in enumerate(encoder.layers):
-        hidden, new_key, new_value = run_prefix_layer(
+        hidden, new_key, new_value, _ = run_causal_layer(
             layer,
             hidden,
-            prefix_valid=working_valid,
+            key_valid=working_valid,
             position_ids=new_position_ids,
             rotary_position_encoding=rotary_position_encoding,
             existing_key=key_cache[layer_index],
@@ -243,5 +195,6 @@ def _append_prefix(
         key_cache=tuple(key_cache),
         value_cache=tuple(value_cache),
         scene_length=cache.scene_length,
-        history_length=prefix_tokens.shape[1] - cache.scene_length,
+        history_length=(prefix_tokens.shape[1] - cache.scene_length) // 2,
+        history_token_length=prefix_tokens.shape[1] - cache.scene_length,
     )

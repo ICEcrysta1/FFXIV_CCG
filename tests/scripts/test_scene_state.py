@@ -161,3 +161,68 @@ def test_scene_facts_only_cover_injected_kinds():
 def _target_count_facts(scene_context: dict[str, object]):
     facts = SceneFactScheduler(scene_context).pop_facts_through(1_000.0)
     return [fact for fact in facts if fact.event_kind == TARGET_COUNT_CHANGED]
+
+
+def _state_rewrite_context(previous_time=9.0, request_time=12.0):
+    from common.schema_config import load_schema_config
+    fields = load_schema_config()["state_vector_fields"]["player_state"]
+    keys = [f"{prefix}.{field}" for prefix in ("previous_action_after", "request_state") for field in fields]
+    vector = [0.0] * len(keys)
+    vector[keys.index("previous_action_after.time_seconds")] = previous_time
+    vector[keys.index("request_state.time_seconds")] = request_time
+    return {"player_state_feature_keys": keys, "tokens": [{"player_state": vector}]}
+
+
+def test_scene_rewrite_reads_each_snapshot_time_without_skill_timestamp():
+    from types import SimpleNamespace
+    from scripts.common.scene_state import rewrite_scene_player_state
+    canonical = {
+        "current_state_context": _state_rewrite_context(9.0, 12.0),
+        "state_history_context": _state_rewrite_context(8.0, 11.0),
+        "skill_history_context": [{"skill_key": "fire_iv", "cast_time": {"seconds": 200.0}}],
+    }
+    queried = []
+    def lookup(timestamp):
+        queried.append(timestamp)
+        return SimpleNamespace(is_moving=timestamp >= 10.0, next_downtime_eta=30.0-timestamp, downtime_remaining=0.0)
+    rewrite_scene_player_state(canonical, observation_timestamp=99.0, next_observation_timestamp=200.0, scene_state_at=lookup)
+    assert queried == [8.0, 11.0, 9.0, 12.0]
+    for key, etas in (("state_history_context", [22.0, 19.0]), ("current_state_context", [21.0, 18.0])):
+        context = canonical[key]
+        keys = context["player_state_feature_keys"]
+        vector = context["tokens"][0]["player_state"]
+        assert [vector[keys.index(f"{prefix}.next_untargetable_in_seconds")] for prefix in ("previous_action_after", "request_state")] == etas
+
+
+def test_scene_rewrite_preserves_raw_boundary_precision_and_uses_names_with_reordered_fields():
+    from types import SimpleNamespace
+    from scripts.common.scene_state import rewrite_scene_player_state
+    context = _state_rewrite_context(9.99996, 10.0)
+    context["player_state_feature_keys"].reverse()
+    context["tokens"][0]["player_state"].reverse()
+    from copy import deepcopy
+    canonical = {"state_history_context": context, "current_state_context": deepcopy(context)}
+    rewrite_scene_player_state(canonical, observation_timestamp=0.0, next_observation_timestamp=None,
+                               scene_state_at=lambda t: SimpleNamespace(is_moving=t>=10.0, next_downtime_eta=0.0, downtime_remaining=0.0))
+    keys = context["player_state_feature_keys"]
+    vector = context["tokens"][0]["player_state"]
+    assert vector[keys.index("previous_action_after.is_moving")] == 0.0
+    assert vector[keys.index("request_state.is_moving")] == 1.0
+
+
+@pytest.mark.parametrize("invalid", [None, True, float("nan"), float("inf")])
+def test_scene_rewrite_rejects_missing_or_invalid_time(invalid):
+    from scripts.common.scene_state import rewrite_scene_player_state
+    from copy import deepcopy
+    context = _state_rewrite_context(invalid, 12.0)
+    canonical = {"state_history_context": context, "current_state_context": deepcopy(context)}
+    with pytest.raises(ValueError, match="time_seconds must be finite numeric"):
+        rewrite_scene_player_state(canonical, observation_timestamp=0.0, next_observation_timestamp=None, scene_state_at=lambda _: None)
+
+
+def test_scene_rewrite_rejects_missing_time_key():
+    from scripts.common.scene_state import rewrite_scene_player_state
+    context = _state_rewrite_context()
+    context["player_state_feature_keys"][context["player_state_feature_keys"].index("previous_action_after.time_seconds")] = "unknown"
+    with pytest.raises(ValueError, match="lacks previous_action_after"):
+        rewrite_scene_player_state({"state_history_context": context}, observation_timestamp=0.0, next_observation_timestamp=None, scene_state_at=lambda _: None)

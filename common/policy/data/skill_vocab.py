@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Iterator
 
@@ -11,11 +12,79 @@ from .policy_actions import load_policy_actions
 
 
 class SkillVocab:
-    """技能词表映射，只允许从正式项目配置构建。"""
+    """技能词表映射；新训练从配置构建，已有模型从保存的契约恢复。"""
 
     def __init__(self, vocab: dict[int, int], reverse: dict[int, int]):
-        self._vocab = vocab
-        self._reverse = reverse
+        self._vocab = dict(vocab)
+        self._reverse = dict(reverse)
+
+    @classmethod
+    def from_entries(cls, entries: Sequence[tuple[int, int]]) -> SkillVocab:
+        """恢复完整映射并校验每个 embedding 行，不读取项目配置。"""
+        vocab: dict[int, int] = {}
+        reverse: dict[int, int] = {}
+        for entry in entries:
+            if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+                raise ValueError("skill vocab entry must contain raw_skill_id and vocab_id")
+            raw_id, vocab_id = entry
+            if type(raw_id) is not int or type(vocab_id) is not int:
+                raise ValueError("skill vocab ids must be integers")
+            if vocab_id <= 0:
+                raise ValueError("skill vocab entries must not use padding row 0")
+            if raw_id in vocab or vocab_id in reverse:
+                raise ValueError("skill vocab raw ids and vocabulary rows must be unique")
+            vocab[raw_id] = vocab_id
+            reverse[vocab_id] = raw_id
+        if not vocab or sorted(reverse) != list(range(1, len(vocab) + 1)):
+            raise ValueError("skill vocab rows must exactly cover 1..N")
+        # 编号顺序是保存映射的唯一顺序；raw_id=0 可以是正式 policy 动作。
+        ordered = {reverse[row]: row for row in sorted(reverse)}
+        return cls(ordered, reverse)
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, object]) -> SkillVocab:
+        """恢复 checkpoint/部署包中完整的技能词表。"""
+        if not isinstance(payload, Mapping) or set(payload) != {"size", "padding_vocab_id", "entries"}:
+            raise ValueError("skill vocab contract must contain size, padding_vocab_id and entries")
+        if type(payload["padding_vocab_id"]) is not int or payload["padding_vocab_id"] != 0:
+            raise ValueError("skill vocab padding_vocab_id must be 0")
+        entries = payload["entries"]
+        if not isinstance(entries, (list, tuple)):
+            raise ValueError("skill vocab entries must be a list")
+        pairs = []
+        for entry in entries:
+            if not isinstance(entry, Mapping) or set(entry) != {"raw_skill_id", "vocab_id"}:
+                raise ValueError("skill vocab entry must contain raw_skill_id and vocab_id")
+            pairs.append((entry["raw_skill_id"], entry["vocab_id"]))
+        vocab = cls.from_entries(pairs)
+        if type(payload["size"]) is not int or payload["size"] != vocab.size():
+            raise ValueError("skill vocab size differs from its complete mapping")
+        return vocab
+
+    def to_dict(self) -> dict[str, object]:
+        """保存实际使用的完整映射，不从当前 YAML 重建。"""
+        return {
+            "size": self.size(),
+            "padding_vocab_id": 0,
+            "entries": [
+                {"raw_skill_id": raw_id, "vocab_id": vocab_id}
+                for raw_id, vocab_id in sorted(self, key=lambda entry: entry[1])
+            ],
+        }
+
+    def assert_matches(self, entries: Sequence[tuple[int, int]], *, context: str) -> None:
+        """直接比较完整映射，并报告首个缺失或错位的技能。"""
+        other = self.from_entries(entries)
+        if self._vocab == other._vocab:
+            return
+        for raw_id in sorted(self._vocab.keys() | other._vocab.keys()):
+            expected = self._vocab.get(raw_id)
+            actual = other._vocab.get(raw_id)
+            if expected != actual:
+                raise ValueError(
+                    f"{context} skill vocab mismatch: raw_skill_id={raw_id}, "
+                    f"expected vocab_id={expected}, actual vocab_id={actual}"
+                )
 
     @classmethod
     def build_from_job_tag(cls, job_tag: str, config_path: Path | None = None) -> SkillVocab:
@@ -43,7 +112,7 @@ class SkillVocab:
                 vocab[skill.game_id] = next_id
                 next_id += 1
 
-        # policy 动作不属于 SkillBook，但在模型候选和 label 中仍是正式 token。
+        # policy 动作不属于 SkillBook，但在模型输出和 label 中仍是正式 token。
         # 放在真实技能之后可保持既有真实技能 vocab id 稳定。
         for action in load_policy_actions():
             if action.raw_id in vocab:

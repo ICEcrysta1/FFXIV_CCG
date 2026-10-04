@@ -10,7 +10,7 @@ namespace Combat.Sim.Outputs.ContextBuilders;
 
 /// <summary>
 /// 状态历史上下文装配器（对照 history_context_builders/state_history_context_builder.py）。
-/// 与候选状态共用同一个 <see cref="StateTokenBuilder.Build"/>；
+/// 与当前状态共用同一个 <see cref="StateTokenBuilder.Build"/>；
 /// 增量缓存按条目引用身份复用固定 token，避免滑动窗口逐决策全量重建。
 /// </summary>
 public sealed class StateHistoryContextBuilder
@@ -42,8 +42,8 @@ public sealed class StateHistoryContextBuilder
             if (!tokenByEntry.TryGetValue(entry, out var token))
             {
                 token = _stateTokenBuilder.Build(
-                    entry.StateBefore,
-                    entry.StateAfter);
+                    entry.ModelState?.PreviousActionAfter ?? entry.StateBefore,
+                    entry.ModelState?.RequestState ?? entry.StateBefore);
             }
 
             tokens.Add(token);
@@ -60,6 +60,12 @@ public sealed class StateHistoryContextBuilder
             ["target_buff_state_feature_keys"] = _stateTokenBuilder.TargetBuffHistoryFeatureKeys.ToList(),
             ["resource_state_feature_keys"] = _stateTokenBuilder.ResourceHistoryFeatureKeys.ToList(),
             ["tokens"] = tokens,
+            // 真实执行统计不进入状态向量，独立保存并与历史行同步裁剪。
+            ["execution_metrics"] = history.Select(entry => new Dictionary<string, double>
+            {
+                ["cumulative_potency"] = entry.StateAfter.Target.CumulativePotency,
+                ["cumulative_dot_potency"] = entry.StateAfter.Target.CumulativeDotPotency,
+            }).ToList(),
         };
     }
 

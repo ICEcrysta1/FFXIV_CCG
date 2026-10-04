@@ -7,7 +7,7 @@ import torch
 
 from common.policy.config import ModelConfig
 from common.policy.data import DataSpec
-from common.policy.model import CandidateTransformerModel
+from common.policy.model import CausalPolicyModel
 
 
 def _make_model(
@@ -15,22 +15,22 @@ def _make_model(
     norm_first: bool = True,
     full_attention_residuals: bool = False,
     activation: str = "gelu",
-) -> CandidateTransformerModel:
+) -> CausalPolicyModel:
     data_spec = DataSpec(
         job_tag="black_mage",
-        num_candidates=3,
+        num_actions=3,
         state_dim=3,
         scene_dim=2,
         skill_feature_dim=2,
         num_scene_types=1,
-        candidate_action_keys=("fire_iii", "fire_iv", "blizzard_iii"),
+        action_to_vocab_id=tuple(range(1, (3) + 1)), action_keys=("fire_iii", "fire_iv", "blizzard_iii"),
+        action_is_gcd=(True, True, True),
         skill_feature_names=("potency", "cast_time.seconds"),
     )
-    model = CandidateTransformerModel(
+    model = CausalPolicyModel(
         data_spec,
         ModelConfig(
             d_model=16,
-            pair_embedding_dim=8,
             n_layers=2,
             n_heads=2,
             ff_dim=32,
@@ -64,7 +64,7 @@ def _make_model_pair(
     return cached_model, full_model
 
 
-def _make_batch(history_length: int, *, candidate_offset: float = 0.0, changed_history: bool = False):
+def _make_batch(history_length: int, *, current_state_offset: float = 0.0, changed_history: bool = False):
     history_features = torch.arange(history_length * 2, dtype=torch.float32).reshape(
         1, history_length, 2
     )
@@ -73,12 +73,7 @@ def _make_batch(history_length: int, *, candidate_offset: float = 0.0, changed_h
     )
     if changed_history and history_length:
         history_features[:, 0, 0] += 100.0
-    candidate_features = torch.tensor(
-        [[[1.0 + candidate_offset, 2.0], [3.0, 4.0 + candidate_offset], [5.0, 6.0]]]
-    )
-    candidate_states = torch.tensor(
-        [[[0.1 + candidate_offset, 0.2, 0.3], [0.4, 0.5, 0.6], [0.7, 0.8, 0.9]]]
-    )
+    current_state = torch.tensor([[0.1 + current_state_offset, 0.2, 0.3]])
     return {
         "history_skill_ids": torch.ones((1, history_length), dtype=torch.long),
         "history_skill_features": history_features,
@@ -87,11 +82,9 @@ def _make_batch(history_length: int, *, candidate_offset: float = 0.0, changed_h
             (1, history_length, 3), dtype=torch.bool
         ),
         "history_mask": torch.ones((1, history_length), dtype=torch.bool),
-        "candidate_skill_ids": torch.tensor([[1, 2, 3]], dtype=torch.long),
-        "candidate_skill_features": candidate_features,
-        "candidate_state_vectors": candidate_states,
-        "candidate_state_null_mask": torch.zeros((1, 3, 3), dtype=torch.bool),
-        "candidate_legal_mask": torch.ones((1, 3), dtype=torch.bool),
+        "current_state_vectors": current_state,
+        "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
+        "action_legal_mask": torch.ones((1, 3), dtype=torch.bool),
         "scene_vectors": torch.tensor([[[0.25, 0.5], [0.75, 1.0]]]),
         "scene_types": torch.zeros((1, 2), dtype=torch.long),
         "scene_mask": torch.ones((1, 2), dtype=torch.bool),
@@ -122,25 +115,125 @@ def test_kv_cache_matches_full_forward_when_history_appends(norm_first: bool, ac
             cached_output["logits"], full_logits, rtol=1e-5, atol=1e-6
         )
 
-    assert model._kv_cache.prefix_tokens.shape[1] == 4
-    assert model._kv_cache.key_cache[0].shape[2] == 4
+    assert model._kv_cache.prefix_tokens.shape[1] == 6
+    assert model._kv_cache.key_cache[0].shape[2] == 6
+    assert model._kv_cache.history_length == 2
+    assert model._kv_cache.history_token_length == 4
     assert not hasattr(model._kv_cache, "layer_outputs")
 
 
-def test_kv_cache_recomputes_dynamic_candidates_without_rebuilding_prefix():
+@pytest.mark.parametrize("full_attention_residuals", (False, True))
+def test_kv_cache_keeps_frozen_request_state_before_the_appended_skill(full_attention_residuals):
+    """上次最新状态进入历史后仍是同一 token，后续技能不能反向改变该状态。"""
+    torch.manual_seed(914)
+    model, full_model = _make_model_pair(full_attention_residuals=full_attention_residuals)
+    model.enable_kv_cache(True)
+    previous = _make_batch(0)
+    previous["current_state_null_mask"][0, 1] = True
+    previous_trace = full_model.trace(previous)
+    model(previous)
+
+    following = _make_batch(1, current_state_offset=10.0)
+    following["history_state_vectors"][:, 0] = previous["current_state_vectors"]
+    following["history_state_null_mask"][:, 0] = previous["current_state_null_mask"]
+    following_trace = full_model.trace(following)
+    state_position = following_trace.encoded["history_state_positions"][0, 0].item()
+    skill_position = following_trace.encoded["history_skill_positions"][0, 0].item()
+    assert state_position == previous_trace.encoded["current_state_position"]
+    assert skill_position == state_position + 1
+    torch.testing.assert_close(
+        following_trace.encoded["tokens"][:, state_position],
+        previous_trace.encoded["tokens"][:, state_position], atol=0, rtol=0,
+    )
+    torch.testing.assert_close(
+        following_trace.hidden[:, state_position],
+        previous_trace.hidden[:, state_position], rtol=1e-5, atol=1e-6,
+    )
+    torch.testing.assert_close(
+        model(following)["logits"], full_model(following)["logits"], rtol=1e-5, atol=1e-6,
+    )
+    cache = model._kv_cache
+
+    # 新请求和缺失值标记只更新末尾最新状态，不回填已冻结的历史状态。
+    following["current_state_vectors"][0, 1] += 20.0
+    following["current_state_null_mask"][0, 2] = True
+    torch.testing.assert_close(
+        model(following)["logits"], full_model(following)["logits"], rtol=1e-5, atol=1e-6,
+    )
+    assert model._kv_cache is cache
+    torch.testing.assert_close(
+        cache.prefix_tokens[:, state_position], previous_trace.encoded["tokens"][:, state_position],
+        atol=0, rtol=0,
+    )
+
+
+def test_kv_cache_recomputes_current_state_without_rebuilding_prefix():
     model, full_model = _make_model_pair()
     prefix_batch = _make_batch(2)
     model.enable_kv_cache(True)
     model(prefix_batch)
-    changed_candidates = _make_batch(2, candidate_offset=10.0)
+    original_cache = model._kv_cache
+    changed_current = _make_batch(2, current_state_offset=10.0)
+    changed_current["current_state_null_mask"][0, 1] = True
 
-    full_logits = full_model(changed_candidates)["logits"]
-    cached_output = model(changed_candidates)
+    full_logits = full_model(changed_current)["logits"]
+    cached_output = model(changed_current)
 
     torch.testing.assert_close(
         cached_output["logits"], full_logits, rtol=1e-5, atol=1e-6
     )
-    assert model._kv_cache.prefix_tokens.shape[1] == 4
+    assert model._kv_cache is original_cache
+    assert model._kv_cache.prefix_tokens.shape[1] == 6
+
+
+@pytest.mark.parametrize("full_attention_residuals", (False, True))
+@pytest.mark.parametrize(
+    "changed_field",
+    (
+        "history_state_vectors",
+        "history_state_null_mask",
+        "history_mask",
+        "scene_vectors",
+        "scene_mask",
+        "sliding_history",
+    ),
+)
+def test_kv_cache_rebuilds_for_state_masks_and_sliding_window(
+    changed_field: str, full_attention_residuals: bool,
+):
+    """历史状态、逻辑位置或固定窗口改变时，不沿用旧前缀。"""
+    model, full_model = _make_model_pair(
+        full_attention_residuals=full_attention_residuals,
+    )
+    model.enable_kv_cache(True)
+    model(_make_batch(2))
+    original_cache = model._kv_cache
+    changed_batch = _make_batch(2)
+    if changed_field == "sliding_history":
+        for key in ("history_skill_features", "history_state_vectors"):
+            changed_batch[key][:, 0] = changed_batch[key][:, 1].clone()
+            changed_batch[key][:, 1] += 10.0
+    elif changed_field in ("history_state_vectors", "scene_vectors"):
+        changed_batch[changed_field][0, 0, 0] += 10.0
+    elif changed_field == "history_state_null_mask":
+        changed_batch[changed_field][0, 0, 0] = True
+    else:
+        changed_batch[changed_field][0, 0] = False
+
+    full_logits = full_model(changed_batch)["logits"]
+    cached_output = model(changed_batch)
+
+    torch.testing.assert_close(
+        cached_output["logits"], full_logits, rtol=1e-5, atol=1e-6,
+    )
+    assert model._kv_cache is not original_cache
+    assert model._kv_cache.history_length == 2
+    assert model._kv_cache.history_token_length == 4
+    encoded = model.input_encoder(changed_batch)
+    torch.testing.assert_close(model._kv_cache.prefix_valid, encoded["prefix_valid"])
+    torch.testing.assert_close(
+        model._kv_cache.prefix_position_ids, encoded["position_ids"][:, :6],
+    )
 
 
 @pytest.mark.parametrize("full_attention_residuals", (False, True))
@@ -160,7 +253,7 @@ def test_kv_cache_rebuilds_when_history_is_not_an_append(
     torch.testing.assert_close(
         cached_output["logits"], full_logits, rtol=1e-5, atol=1e-6
     )
-    assert model._kv_cache.prefix_tokens.shape[1] == 4
+    assert model._kv_cache.prefix_tokens.shape[1] == 6
 
 
 @pytest.mark.parametrize("activation", ("gelu", "swiglu"))
@@ -178,9 +271,9 @@ def test_full_attention_residual_kv_cache_matches_full_forward(activation):
     assert len(trace.layer_hidden) == 2
     assert len(trace.attentions) == 2
 
-    changed_candidates = _make_batch(2, candidate_offset=10.0)
-    full_logits = full_model(changed_candidates)["logits"]
-    cached_logits = model(changed_candidates)["logits"]
+    changed_current = _make_batch(2, current_state_offset=10.0)
+    full_logits = full_model(changed_current)["logits"]
+    cached_logits = model(changed_current)["logits"]
     torch.testing.assert_close(cached_logits, full_logits, rtol=1e-5, atol=1e-6)
 
 
@@ -195,7 +288,7 @@ def test_kv_cache_is_eval_only_and_does_not_add_checkpoint_parameters():
 
 
 def test_kv_cache_attention_routes_through_sdpa(monkeypatch):
-    """KV-cache 前缀追加与候选块注意力必须经过标准 SDPA 入口。"""
+    """KV-cache 前缀追加与最新状态注意力经过标准 SDPA 入口。"""
     calls: list[tuple[tuple, dict]] = []
     original = torch.nn.functional.scaled_dot_product_attention
 
@@ -274,9 +367,9 @@ def test_kv_cache_matches_under_explicit_sdpa_backends():
         torch.testing.assert_close(cudnn_logits, full_logits, rtol=1e-3, atol=1e-4)
 
 
-def test_split_attention_zeroes_fully_blocked_rows():
+def test_causal_attention_zeroes_fully_blocked_rows():
     """全屏蔽 query 行输出必须为 0，不能是 NaN。"""
-    from common.policy.model.split_encoder import run_head_attention, split_heads
+    from common.policy.model.causal_encoder import run_head_attention, split_heads
 
     model = _make_model()
     layer = model.encoder.layers[0]

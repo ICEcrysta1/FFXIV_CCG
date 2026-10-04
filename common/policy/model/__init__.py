@@ -1,6 +1,6 @@
-"""候选 Transformer 策略模型及其运行组件。"""
+"""因果 Transformer 策略模型及其运行组件。"""
 
-from .attention import build_split_attention_mask
+from .attention import build_causal_attention_mask
 from .position_encoding import RotaryPositionEncoding
 from .repetition import (
     RepetitionConfig,
@@ -11,18 +11,18 @@ from .repetition import (
 
 def __getattr__(name: str):
     """按需加载完整模型，避免配置与模型包互相初始化。"""
-    if name == "CandidateTransformerModel":
-        from .model import CandidateTransformerModel
+    if name == "CausalPolicyModel":
+        from .model import CausalPolicyModel
 
-        return CandidateTransformerModel
+        return CausalPolicyModel
     raise AttributeError(name)
 
 
 __all__ = [
-    "CandidateTransformerModel",
+    "CausalPolicyModel",
     "RepetitionConfig",
     "RotaryPositionEncoding",
-    "build_split_attention_mask",
+    "build_causal_attention_mask",
     "parse_repetition_config",
     "repetition_config_from_checkpoint",
 ]

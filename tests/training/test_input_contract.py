@@ -4,27 +4,30 @@ from __future__ import annotations
 
 import pytest
 
-from common.policy.data import ModelInputContract, Normalizer
-from common.policy.data.schema import SceneWindowSchema, TrainingSchema
+from common.policy.data import ModelInputContract, Normalizer, SkillVocab
+from common.policy.data.schema import SceneWindowSchema, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
 from common.policy.data.spec import DataSpec
-from common.policy.data.input_contract import INPUT_CONTRACT_VERSION
+from common.policy.data.input_contract import INPUT_CONTRACT_VERSION, TOKEN_ENCODING_CONTRACT
+from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
 
 
 def _build_contract() -> ModelInputContract:
     data_spec = DataSpec(
         job_tag="black_mage",
-        num_candidates=1,
+        num_actions=1,
         state_dim=1,
         scene_dim=3,
         skill_feature_dim=1,
         num_scene_types=1,
-        candidate_action_keys=("fire_iii",),
+        action_keys=("fire_iii",),
         skill_feature_names=("potency",),
+        action_to_vocab_id=(1,),
+        action_is_gcd=(True,),
     )
     schema = TrainingSchema(
         serialization_format="test",
-        sample_schema_version=1,
-        context_schema_version=1,
+        sample_schema_version=TRAINING_SAMPLE_SCHEMA_VERSION,
+        context_schema_version=CANONICAL_CONTEXT_SCHEMA_VERSION,
         scene_context_mode="absolute",
         scene_windows=(
             SceneWindowSchema.from_feature_keys(
@@ -37,13 +40,13 @@ def _build_contract() -> ModelInputContract:
                 scene_type_id=0,
             ),
         ),
-        state_group_feature_keys={"player_state": ("before.time_seconds",)},
-        candidate_skill_fields=("potency",),
+        state_group_feature_keys={"player_state": ("previous_action_after.time_seconds",)},
         skill_history_fields=("skill_key",),
     )
     normalizer = Normalizer()
     normalizer.configure_job_resources("black_mage")
     return ModelInputContract.from_training(
+        skill_vocab=SkillVocab.from_entries([(152, 1), (900001, 2), (0, 3)]),
         data_spec=data_spec,
         schema=schema,
         normalizer=normalizer,
@@ -65,11 +68,14 @@ def test_model_input_contract_round_trips_without_project_yaml(monkeypatch):
     assert restored.data_spec == contract.data_spec
     assert restored.schema == contract.schema
     assert restored.normalizer_contract == contract.normalizer_contract
+    assert restored.create_skill_vocab().to_dict() == contract.create_skill_vocab().to_dict()
+    assert restored.create_skill_vocab().require_lookup(900001, context="disabled") == 2
+    assert restored.create_skill_vocab().require_lookup(0, context="wait") == 3
 
     normalizer = restored.create_normalizer()
     assert normalizer.normalize_value(
         "player_state",
-        "before.time_seconds",
+        "previous_action_after.time_seconds",
         900.0,
     ) == pytest.approx(0.5)
 
@@ -79,9 +85,94 @@ def test_model_input_contract_rejects_checkpoint_without_contract():
         ModelInputContract.from_checkpoint({"data_spec": {}})
 
 
-def test_model_input_contract_rejects_previous_state_semantics():
+def test_model_input_contract_rejects_previous_skill_first_contract():
     payload = _build_contract().to_dict()
     payload["version"] = INPUT_CONTRACT_VERSION - 1
+    payload["token_encoding"]["token_order"] = "scene, (skill_i, state_i)*H, current_state"
 
     with pytest.raises(ValueError, match="unsupported input contract version"):
         ModelInputContract.from_dict(payload)
+
+
+@pytest.mark.parametrize("change", ["missing", "role", "token_order", "output_projection", "state_encoder", "state_snapshots", "history_state_frozen_at"])
+def test_model_input_contract_requires_exact_independent_token_descriptor(change):
+    payload = _build_contract().to_dict()
+    assert payload["version"] == INPUT_CONTRACT_VERSION
+    assert payload["token_encoding"] == TOKEN_ENCODING_CONTRACT
+    if change == "missing":
+        payload.pop("token_encoding")
+    elif change == "role":
+        payload["token_encoding"]["role_ids"]["state"] = 2
+    elif change == "state_encoder":
+        payload["token_encoding"]["current_state_encoder"] = "separate_current_state_encoder"
+    elif change == "token_order":
+        payload["token_encoding"][change] = "scene, (skill_i, state_i)*H, current_state"
+    else:
+        payload["token_encoding"][change] = "legacy_fused_tokens"
+    with pytest.raises(ValueError, match="token_encoding"):
+        ModelInputContract.from_dict(payload)
+
+
+def test_serialized_token_descriptor_does_not_mutate_contract_authority():
+    contract = _build_contract()
+    payload = contract.to_dict()
+    payload["token_encoding"]["role_ids"]["state"] = 99
+    assert contract.to_dict()["token_encoding"] == TOKEN_ENCODING_CONTRACT
+
+
+@pytest.mark.parametrize("location", ["features", "fields"])
+def test_current_input_contract_rejects_removed_skill_time(location):
+    """仅更新版本号不能把带旧技能时间的契约变成新版输入。"""
+    payload = _build_contract().to_dict()
+    if location == "features":
+        payload["data_spec"]["skill_feature_names"] = ("potency", "time_seconds")
+        payload["data_spec"]["skill_feature_dim"] = 2
+    else:
+        payload["schema"]["skill_history_fields"] = ("skill_key", "time_seconds")
+    with pytest.raises(ValueError, match="removed skill time_seconds"):
+        ModelInputContract.from_dict(payload)
+
+
+def test_data_spec_rejects_removed_column_hidden_by_feature_names():
+    payload = _build_contract().to_dict()["data_spec"]
+    payload["skill_feature_dim"] += 1
+    with pytest.raises(ValueError, match="skill feature order length"):
+        DataSpec.from_dict(payload)
+
+
+def test_model_input_contract_requires_complete_vocabulary():
+    payload = _build_contract().to_dict()
+    payload.pop("skill_vocab")
+    with pytest.raises(ValueError, match="missing complete skill_vocab"):
+        ModelInputContract.from_dict(payload)
+
+
+def test_model_input_contract_rejects_embedding_row_count_drift():
+    contract = _build_contract()
+    contract.assert_matches_embedding(4)
+    with pytest.raises(ValueError, match="embedding row count"):
+        contract.assert_matches_embedding(3)
+
+
+@pytest.mark.parametrize("entries", [
+    [], [(1, 0)], [(1, 1), (2, 1)], [(1, 1), (1, 2)], [(1, 1), (2, 3)],
+    [(True, 1)], [(1, True)], [("1", 1)], [(1, 1.0)], [(1,)],
+])
+def test_full_skill_vocab_rejects_ambiguous_or_incomplete_rows(entries):
+    with pytest.raises(ValueError, match="skill vocab"):
+        SkillVocab.from_entries(entries)
+
+
+@pytest.mark.parametrize("field,value", [("size", 99), ("padding_vocab_id", 1), ("size", True)])
+def test_full_skill_vocab_rejects_inconsistent_metadata(field, value):
+    payload = _build_contract().create_skill_vocab().to_dict()
+    payload[field] = value
+    with pytest.raises(ValueError, match="skill vocab"):
+        SkillVocab.from_dict(payload)
+
+
+def test_full_skill_vocab_compares_mapping_instead_of_entry_order():
+    vocab = SkillVocab.from_entries([(152, 1), (900001, 2), (0, 3)])
+    vocab.assert_matches([(0, 3), (900001, 2), (152, 1)], context="test")
+    with pytest.raises(ValueError, match="raw_skill_id=152.*expected vocab_id=1.*actual vocab_id=2"):
+        vocab.assert_matches([(152, 2), (900001, 1), (0, 3)], context="test")

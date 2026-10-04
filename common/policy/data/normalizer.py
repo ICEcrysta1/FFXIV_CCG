@@ -293,6 +293,8 @@ class Normalizer:
 
     def normalize_skill_features(self, tensor, feature_names):
         """按 skill 字段名归一化技能数值特征。"""
+        if any(str(name).split(".")[-1] == "time_seconds" for name in feature_names):
+            raise ValueError("skill features must not include time_seconds; rebuild old input artifacts")
         result = tensor.clone()
         for index, feature_name in enumerate(feature_names):
             _apply_skill_normalize_inplace(
@@ -439,9 +441,6 @@ def _apply_skill_normalize_inplace(
     if leaf_name in {"actual_mp_cost", "mp_cost"}:
         values.clamp_(min=0.0, max=config.mp_max).div_(config.mp_max)
         return
-    if leaf_name == "time_seconds":
-        _apply_normalize_inplace(values, "clip_divide_fight_time_max", config)
-        return
     resource_max = resource_limits.get(leaf_name)
     if resource_max is not None:
         _apply_normalize_inplace(
@@ -516,7 +515,7 @@ _BINARY_FIELDS = frozenset(
 
 
 def _strip_prefix(name: str) -> str:
-    for prefix in ("before.", "after."):
+    for prefix in ("previous_action_after.", "request_state."):
         if name.startswith(prefix):
             return name[len(prefix) :]
     return name

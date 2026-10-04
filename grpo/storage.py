@@ -14,7 +14,8 @@ import torch
 from common.torch_serialization import safe_torch_load
 
 
-GRPO_ROLLOUT_FORMAT = 1
+# 技能时间列移除，旧轨迹的技能 tensor 不能静默复用。
+GRPO_ROLLOUT_FORMAT = 4
 
 
 @dataclass(frozen=True)
@@ -22,7 +23,7 @@ class GrpoDecision:
     """一条采样轨迹中的决策 token 及其行为策略概率。"""
 
     batch: dict[str, object]
-    candidate_keys: tuple[str, ...]
+    action_keys: tuple[str, ...]
     action_index: int
     old_logprob: float
 
@@ -44,7 +45,7 @@ def _decision_to_payload(decision: GrpoDecision) -> dict[str, object]:
     """将决策转换成仅含 tensor/基础类型的安全序列化结构。"""
     return {
         "batch": decision.batch,
-        "candidate_keys": list(decision.candidate_keys),
+        "action_keys": list(decision.action_keys),
         "action_index": int(decision.action_index),
         "old_logprob": float(decision.old_logprob),
     }
@@ -55,12 +56,12 @@ def _decision_from_payload(payload: object) -> GrpoDecision:
     if not isinstance(payload, Mapping):
         raise ValueError("GRPO decision payload must be a mapping")
     batch = payload.get("batch")
-    candidate_keys = payload.get("candidate_keys")
-    if not isinstance(batch, Mapping) or not isinstance(candidate_keys, (list, tuple)):
-        raise ValueError("GRPO decision payload is missing batch or candidate_keys")
+    action_keys = payload.get("action_keys")
+    if not isinstance(batch, Mapping) or not isinstance(action_keys, (list, tuple)):
+        raise ValueError("GRPO decision payload is missing batch or action_keys")
     return GrpoDecision(
         batch=dict(batch),
-        candidate_keys=tuple(str(key) for key in candidate_keys),
+        action_keys=tuple(str(key) for key in action_keys),
         action_index=int(payload["action_index"]),
         old_logprob=float(payload["old_logprob"]),
     )

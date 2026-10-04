@@ -13,9 +13,11 @@ import pytest
 import torch
 
 from common.policy.config import ModelConfig
-from common.policy.data import DataSpec, ModelInputContract, Normalizer
-from common.policy.data.schema import SceneWindowSchema, TrainingSchema
-from common.policy.model import CandidateTransformerModel
+from common.policy.data import DataSpec, ModelInputContract, Normalizer, SkillVocab
+from common.policy.data.schema import SceneWindowSchema, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
+from common.policy.data.input_contract import INPUT_CONTRACT_VERSION
+from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
+from common.policy.model import CausalPolicyModel
 from common.torch_serialization import safe_torch_load
 from scripts.autoregressive_replay.backends import (
     OrtPolicyBackend,
@@ -28,6 +30,7 @@ from scripts.onnx_export.contracts.contract import make_inputs, slice_dynamic_in
 from scripts.onnx_export.contracts.deployment_profile import DeploymentProfile
 from scripts.onnx_export.contracts.deployment_contract import (
     DEPLOYMENT_CONTRACT_VERSION,
+    DEPLOYMENT_MANIFEST_VERSION,
     DeploymentContract,
 )
 from scripts.onnx_export.export import environment as environment_module
@@ -97,10 +100,47 @@ def test_exception_note_uses_supported_add_note(capsys):
 
 def test_capacity_contract_rejects_invalid_or_oversized_layout():
     with pytest.raises(ValueError, match="scene_capacity"):
-        CapacityContract(0, 1, 3).validate()
-    contract = CapacityContract(3, 8, 3)
+        CapacityContract(0, 1).validate()
+    contract = CapacityContract(3, 8)
     contract.validate()
-    assert contract.total_token_count == 14
+    assert contract.total_token_count == 20
+    assert CapacityContract(200, 300).total_token_count == 801
+    assert CapacityContract(200, 384).total_token_count == 969
+    assert CapacityContract.from_dict(contract.to_dict()) == contract
+
+
+@pytest.mark.parametrize(("field", "value", "message"), (
+    ("history_tokens_per_action", 1, "two tokens per action"),
+    ("history_capacity_unit", "tokens", "two tokens per action"),
+    ("token_order", "scene, (skill_i, state_i)*H, current_state", "token order"),
+    ("total_token_count", 12, "total token count"),
+))
+def test_capacity_contract_rejects_old_fusion_or_wrong_token_semantics(field, value, message):
+    payload = CapacityContract(3, 8).to_dict()
+    payload[field] = value
+    with pytest.raises(ValueError, match=message):
+        CapacityContract.from_dict(payload)
+
+
+@pytest.mark.parametrize(("field", "value"), (
+    ("history_tokens_per_action", 1),
+    ("history_capacity_unit", "tokens"),
+    ("token_order", "scene, fused_pair_i, current_state"),
+    ("token_order", "scene, (skill_i, state_i)*H, current_state"),
+    ("effective_sequence_length", "scene_valid + history_valid + 1"),
+    ("unsupported_capacity", 10),
+))
+def test_manifest_schema_strictly_rejects_fused_capacity_metadata(field, value):
+    jsonschema = pytest.importorskip("jsonschema")
+    schema_path = Path(export_module.__file__).parents[1] / "manifest.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    capacity_schema = schema["$defs"]["contract"]["properties"]["capacity"]
+    validator = jsonschema.Draft202012Validator(capacity_schema)
+    payload = CapacityContract(3, 8).to_dict()
+    validator.validate(payload)
+    payload[field] = value
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(payload)
 
 
 def test_failed_export_keeps_previous_valid_directory(tmp_path, monkeypatch):
@@ -197,9 +237,9 @@ def test_zero_padding_fill_clears_all_padding_dtypes():
         num_scene_types=4,
         skill_feature_dim=3,
         state_dim=5,
-        num_candidates=2,
+        num_actions=2,
     )
-    contract = CapacityContract(3, 4, 2)
+    contract = CapacityContract(3, 4)
     values = make_inputs(
         data_spec,
         contract,
@@ -456,6 +496,10 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["contract"]["capacity"]["padding_direction"] == "right"
     assert manifest["contract"]["capacity"]["history_capacity"] == 4
+    assert manifest["contract"]["capacity"]["history_capacity_unit"] == "actions"
+    assert manifest["contract"]["capacity"]["history_tokens_per_action"] == 2
+    assert manifest["contract"]["capacity"]["total_token_count"] == 12
+    assert manifest["contract"]["capacity"]["token_order"] == "scene, (state_i, skill_i)*H, current_state"
     provenance = manifest["contract"]["capacity_provenance"]
     assert provenance["history_capacity_source"] == (
         "checkpoint.model_config.history_capacity"
@@ -475,7 +519,7 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
     loaded = DeploymentManifest.load(output / "manifest.json")
     assert loaded.contract.data_spec == data_spec
 
-    # 即使候选布局一致，精简状态输入前的部署包也必须被版本门禁拒绝。
+    # 即使输入张量宽度一致，旧历史融合布局也必须被版本门禁拒绝。
     previous_state_contract = deepcopy(manifest["contract"])
     previous_state_contract["contract_version"] = DEPLOYMENT_CONTRACT_VERSION - 1
     with pytest.raises(ValueError, match="unsupported deployment contract version"):
@@ -498,8 +542,8 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
     live_batch = dict(zip(TENSOR_INPUT_NAMES, dynamic_inputs, strict=True))
     live_batch.update(
         {
-            "candidate_legal_mask": torch.tensor([[True, False, True]]),
-            "candidate_action_keys": [list(data_spec.candidate_action_keys)],
+            "action_legal_mask": torch.tensor([[True, False, True]]),
+            "action_keys": [list(data_spec.action_keys)],
             "history_action_keys": [["fire_iii", "fire_iv", "fire_iv"]],
         }
     )
@@ -513,16 +557,16 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
         pytorch_backend,
         ort_backend,
         live_batch,
-        data_spec.candidate_action_keys,
+        data_spec.action_keys,
     )
     assert parity["max_abs_diff"] <= 1e-4
     assert parity["top1_match"] is True
     assert parity["top3_set_match"] is True
-    assert parity["reference_top3"] == parity["candidate_top3"]
+    assert parity["reference_top3"] == parity["compared_top3"]
 
     tampered = deepcopy(manifest)
-    tampered["contract"]["data_spec"]["candidate_action_keys"][0:2] = reversed(
-        tampered["contract"]["data_spec"]["candidate_action_keys"][0:2]
+    tampered["contract"]["data_spec"]["action_keys"][0:2] = reversed(
+        tampered["contract"]["data_spec"]["action_keys"][0:2]
     )
     tampered_path = output / "tampered-manifest.json"
     tampered_path.write_text(json.dumps(tampered), encoding="utf-8")
@@ -906,7 +950,7 @@ def test_small_bf16_model_exports_and_runs_on_strict_cuda(tmp_path, activation):
     )
 
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["manifest_version"] == 7
+    assert manifest["manifest_version"] == DEPLOYMENT_MANIFEST_VERSION
     assert manifest["contract"]["contract_version"] == DEPLOYMENT_CONTRACT_VERSION
     assert manifest["contract"]["precision"] == "bf16"
     assert manifest["model"]["compute_precision"] == "float32"
@@ -923,6 +967,8 @@ def test_small_bf16_model_exports_and_runs_on_strict_cuda(tmp_path, activation):
     }
     assert model_metadata["ffxiv.precision"] == "bf16"
     assert model_metadata["ffxiv.compute_precision"] == "float32"
+    assert model_metadata["ffxiv.history_tokens_per_action"] == "2"
+    assert model_metadata["ffxiv.total_token_count"] == "12"
     report = json.loads((output / "export_report.json").read_text(encoding="utf-8"))
     assert report["status"] == "graph_validated"
     assert report["release_gate"] == "requires_rollout_parity"
@@ -944,6 +990,40 @@ def test_small_bf16_model_exports_and_runs_on_strict_cuda(tmp_path, activation):
     ) <= parity_max_abs_tolerance("bf16")
 
 
+def test_export_uses_checkpoint_vocab_instead_of_stale_profile(tmp_path):
+    from scripts.onnx_export.export.checkpoint import load_policy_contracts
+
+    checkpoint, profile = tmp_path / "checkpoint.pt", tmp_path / "profile.json"
+    _, saved = _write_small_checkpoint(checkpoint)
+    _write_small_profile(profile)
+    payload = json.loads(profile.read_text(encoding="utf-8"))
+    entries = payload["vocab_entries"]
+    entries[0]["vocab_id"], entries[1]["vocab_id"] = entries[1]["vocab_id"], entries[0]["vocab_id"]
+    profile.write_text(json.dumps(payload), encoding="utf-8", newline="\n")
+    contracts = load_policy_contracts(checkpoint_path=checkpoint, deployment_profile_path=profile, precision="float32")
+    assert contracts.deployment_contract.vocab_entries == saved.skill_vocab_entries
+    assert contracts.contract_payload["vocab"] == saved.create_skill_vocab().to_dict()
+    assert contracts.capacity_report["vocab_entries"] == saved.create_skill_vocab().to_dict()["entries"]
+
+
+def test_deployment_rejects_reassigned_vocab_rows_even_with_recomputed_signatures(tmp_path):
+    from dataclasses import replace
+    from scripts.onnx_export.export.checkpoint import load_policy_contracts
+
+    checkpoint, profile = tmp_path / "checkpoint.pt", tmp_path / "profile.json"
+    _write_small_checkpoint(checkpoint)
+    _write_small_profile(profile)
+    contracts = load_policy_contracts(checkpoint_path=checkpoint, deployment_profile_path=profile, precision="float32")
+    entries = list(contracts.deployment_contract.vocab_entries)
+    entries[0], entries[1] = (entries[0][0], entries[1][1]), (entries[1][0], entries[0][1])
+    wrong = replace(contracts.deployment_contract, vocab_entries=tuple(entries))
+    with pytest.raises(ValueError, match="deployment skill vocab mismatch"):
+        wrong.validate(embedding_vocab_size=8)
+    # 签名与内容一致也不能把错误映射变成 checkpoint 的权威词表。
+    with pytest.raises(ValueError, match="deployment skill vocab mismatch"):
+        DeploymentContract.from_dict(wrong.to_dict())
+
+
 def test_load_policy_rejects_removed_candidate_shared_semantics(tmp_path):
     checkpoint = tmp_path / "checkpoint.pt"
     _write_small_checkpoint(checkpoint)
@@ -952,7 +1032,27 @@ def test_load_policy_rejects_removed_candidate_shared_semantics(tmp_path):
     payload["model_config"]["position_id_semantics"] = "candidate_block_shared"
     torch.save(payload, checkpoint)
 
-    with pytest.raises(ValueError, match="removed candidate-shared RoPE"):
+    with pytest.raises(ValueError, match="removed model options"):
+        export_module.load_policy(checkpoint, precision="float32")
+
+
+def test_load_policy_rejects_stage1_fusion_config_and_input_contract(tmp_path):
+    checkpoint = tmp_path / "checkpoint.pt"
+    _write_small_checkpoint(checkpoint)
+    payload = safe_torch_load(checkpoint)
+    payload["model_config"]["pair_embedding_dim"] = 8
+    torch.save(payload, checkpoint)
+    with pytest.raises(ValueError, match="pair_embedding_dim is removed"):
+        export_module.load_policy(checkpoint, precision="float32")
+    payload["model_config"].pop("pair_embedding_dim")
+    payload["input_contract"]["version"] = 10
+    torch.save(payload, checkpoint)
+    with pytest.raises(ValueError, match="input contract version"):
+        export_module.load_policy(checkpoint, precision="float32")
+    payload["input_contract"]["version"] = INPUT_CONTRACT_VERSION
+    payload["input_contract"].pop("token_encoding")
+    torch.save(payload, checkpoint)
+    with pytest.raises(ValueError, match="token_encoding"):
         export_module.load_policy(checkpoint, precision="float32")
 
 
@@ -981,17 +1081,18 @@ def _write_small_checkpoint(
 ) -> tuple[DataSpec, ModelInputContract]:
     data_spec = DataSpec(
         job_tag="black_mage",
-        num_candidates=3,
+        num_actions=3,
         state_dim=3,
         scene_dim=3,
         skill_feature_dim=2,
         num_scene_types=4,
-        candidate_action_keys=("fire_iii", "fire_iv", "blizzard_iii"),
+        action_keys=("fire_iii", "fire_iv", "blizzard_iii"),
+        action_to_vocab_id=(2, 4, 1),
+        action_is_gcd=(True, True, True),
         skill_feature_names=("potency", "cast_time.seconds"),
     )
     config = ModelConfig(
         d_model=16,
-        pair_embedding_dim=8,
         n_layers=2,
         n_heads=2,
         ff_dim=32,
@@ -1002,7 +1103,7 @@ def _write_small_checkpoint(
     )
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(20260813)
-        model = CandidateTransformerModel(data_spec, config, vocab_size=8).eval()
+        model = CausalPolicyModel(data_spec, config, vocab_size=8).eval()
     normalizer = Normalizer()
     normalizer.configure_job_resources("black_mage")
     scene_windows = tuple(
@@ -1018,21 +1119,21 @@ def _write_small_checkpoint(
         for scene_type_id in range(data_spec.num_scene_types)
     )
     input_contract = ModelInputContract.from_training(
+        skill_vocab=SkillVocab.from_entries([(1000 + row, row) for row in range(1, 8)]),
         data_spec=data_spec,
         schema=TrainingSchema(
             serialization_format="test",
-            sample_schema_version=1,
-            context_schema_version=1,
+            sample_schema_version=TRAINING_SAMPLE_SCHEMA_VERSION,
+            context_schema_version=CANONICAL_CONTEXT_SCHEMA_VERSION,
             scene_context_mode="absolute",
             scene_windows=scene_windows,
             state_group_feature_keys={
                 "player_state": (
-                    "before.time_seconds",
-                    "before.current_gcd_seconds",
-                    "before.mp",
+                    "previous_action_after.time_seconds",
+                    "previous_action_after.current_gcd_seconds",
+                    "previous_action_after.mp",
                 )
             },
-            candidate_skill_fields=data_spec.skill_feature_names,
             skill_history_fields=("skill_key",),
         ),
         normalizer=normalizer,

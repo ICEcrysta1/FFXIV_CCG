@@ -8,6 +8,7 @@ import logging
 from dataclasses import replace
 from pathlib import Path
 
+from common.policy.data import ActionSpace
 from scripts.onnx_export.release.release import (
     RELEASE_GATE_VERSION,
     package_runtime_targets,
@@ -35,22 +36,22 @@ def run_rollout_parities(
         raise ValueError("rollout parity requires a PyTorch checkpoint")
     if any(config.checkpoint_path != first.checkpoint_path or config.device != first.device for config in configs):
         raise ValueError("parallel parity requires one checkpoint and device")
-    candidate = OrtPolicyBackend(onnx_package_path, provider=provider)
-    resolved_tolerance = parity_max_abs_tolerance(candidate.contract.precision) if tolerance is None else float(tolerance)
+    compared = OrtPolicyBackend(onnx_package_path, provider=provider)
+    resolved_tolerance = parity_max_abs_tolerance(compared.contract.precision) if tolerance is None else float(tolerance)
     if not math.isfinite(resolved_tolerance) or resolved_tolerance < 0:
         raise ValueError("parity tolerance must be finite and >= 0")
     artifacts = parity_artifact_bindings(
-        manifest=candidate.manifest, manifest_path=candidate.package_dir / "manifest.json",
+        manifest=compared.manifest, manifest_path=compared.package_dir / "manifest.json",
         checkpoint_path=first.checkpoint_path,
     )
     reference = PyTorchPolicyBackend(
         first.checkpoint_path, device=first.device, use_kv_cache=False,
-        precision=candidate.contract.precision,
+        precision=compared.contract.precision,
     )
-    if candidate.contract.precision == "bf16" and candidate.compute_precision == "float32":
+    if compared.contract.precision == "bf16" and compared.compute_precision == "float32":
         reference.enable_bf16_float_compute()
     tasks = [(replace(config, backend="pytorch", use_kv_cache=False, onnx_package_path=None,
-                      policy_precision=candidate.contract.precision), path)
+                      policy_precision=compared.contract.precision), path)
              for config, path in zip(configs, paths, strict=True)]
     failures = []
     with ParallelRollouts(reference, job_tag=reference.data_spec.job_tag, workers=workers) as pool:
@@ -61,6 +62,8 @@ def run_rollout_parities(
                 cache.prepare(
                     [config for config, _ in items], job_tag=reference.data_spec.job_tag,
                     normalizer=reference.input_contract.create_normalizer(), engine=engine, workers=pool.workers,
+                    expected_action_space=ActionSpace.from_data_spec(reference.data_spec),
+                    expected_skill_vocab=reference.input_contract.create_skill_vocab(),
                 )
             except Exception:
                 # 每个会话仍使用本引擎重试自己的来源，并将失败写入独立报告。
@@ -68,7 +71,7 @@ def run_rollout_parities(
 
         def policy_factory(_item):
             # 每条队列独立记录对齐结果，底层模型只加载一份。
-            return ParityPolicyBackend(reference, candidate, tolerance=resolved_tolerance)
+            return ParityPolicyBackend(reference, compared, tolerance=resolved_tolerance)
 
         def run(item, policy, engine):
             config, path = item
@@ -80,7 +83,7 @@ def run_rollout_parities(
             except Exception as exc:
                 failure = exc
             return _build_report(
-                config, policy, result, failure, candidate=candidate,
+                config, policy, result, failure, compared=compared,
                 onnx_package_path=onnx_package_path, artifacts=artifacts,
                 resolved_tolerance=resolved_tolerance, release_gate=release_gate,
             ), path
@@ -90,7 +93,7 @@ def run_rollout_parities(
             path.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
             if release_gate:
                 try:
-                    record_parity_result(package_dir=candidate.package_dir, parity_report_path=path)
+                    record_parity_result(package_dir=compared.package_dir, parity_report_path=path)
                 except Exception as exc:
                     failures.append(f"{path}: release state update failed: {exc}")
             if report["status"] != "passed":
@@ -100,7 +103,7 @@ def run_rollout_parities(
     return paths
 
 
-def _build_report(config, parity_backend, result, failure, *, candidate,
+def _build_report(config, parity_backend, result, failure, *, compared,
                   onnx_package_path, artifacts, resolved_tolerance, release_gate):
     parity_report = parity_backend.report()
     parity_rows = parity_report["decisions"]
@@ -110,18 +113,18 @@ def _build_report(config, parity_backend, result, failure, *, candidate,
         first = parity_report["first_divergence"]
         failure = AssertionError(
             "policy backend parity failed at decision "
-            f"{first['decision_index']}: candidate={first['max_diff_candidate']!r}, "
+            f"{first['decision_index']}: compared={first['max_diff_action']!r}, "
             f"reference_logit={first['reference_logit']:.8f}, "
-            f"candidate_logit={first['candidate_logit']:.8f}, "
+            f"compared_logit={first['compared_logit']:.8f}, "
             f"max_abs_diff={first['max_abs_diff']:.8f}, "
             f"reference_top1={first['reference_top1']!r}, "
-            f"candidate_top1={first['candidate_top1']!r}, "
+            f"compared_top1={first['compared_top1']!r}, "
             f"top1_match={first['top1_match']}, "
             f"reference_top3={first['reference_top3']!r}, "
-            f"candidate_top3={first['candidate_top3']!r}, "
+            f"compared_top3={first['compared_top3']!r}, "
             f"top3_set_match={first['top3_set_match']}, "
             f"reference_final_action={first['reference_final_action']!r}, "
-            f"candidate_final_action={first['candidate_final_action']!r}, "
+            f"compared_final_action={first['compared_final_action']!r}, "
             f"final_selection_match={first['final_selection_match']}"
         )
     first_action_divergence = next(
@@ -147,7 +150,7 @@ def _build_report(config, parity_backend, result, failure, *, candidate,
             }
         ),
         "tolerance": resolved_tolerance,
-        "precision": candidate.contract.precision,
+        "precision": compared.contract.precision,
         "release_gate": {
             "enabled": bool(release_gate),
             "version": RELEASE_GATE_VERSION,
@@ -156,8 +159,8 @@ def _build_report(config, parity_backend, result, failure, *, candidate,
         "onnx_package": str(Path(onnx_package_path).resolve()),
         "artifacts": artifacts,
         "runtime_targets": package_runtime_targets(
-            package_dir=candidate.package_dir,
-            manifest=candidate.manifest,
+            package_dir=compared.package_dir,
+            manifest=compared.manifest,
         ),
         "job_tag": parity_backend.data_spec.job_tag,
         "scene_mode": config.scene_mode,

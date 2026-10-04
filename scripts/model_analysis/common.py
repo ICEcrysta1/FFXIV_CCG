@@ -24,24 +24,25 @@ from common.project_config import resolve_project_job_tag, resolve_project_path
 from scripts.common.scene_source import find_prepared_scene_source
 from common.torch_runtime import autocast_context, model_dtype, move_batch
 from common.torch_serialization import safe_torch_load
-from common.policy.data import Normalizer, SkillVocab
+from common.policy.data import ModelInputContract, Normalizer, SkillVocab
 from training import TrainingCollator, TrainingDataset
 from common.policy.data.policy_actions import load_policy_actions
-from common.policy.data import DataSpec
+from common.policy.data import ActionSpace, DataSpec
 from common.policy.model import (
-    CandidateTransformerModel,
+    CausalPolicyModel,
     repetition_config_from_checkpoint,
 )
-from .token_metadata import ANALYSIS_FEATURES, build_token_metadata
+from .token_metadata import ANALYSIS_FEATURES, build_token_metadata, current_state_mask
+from common.policy.model.input_encoder import ROLE_SCENE, ROLE_STATE, ROLE_SKILL
 
 
 logger = logging.getLogger(__name__)
 MODEL_ANALYSIS_SCENE_JSON_ENV = "MODEL_ANALYSIS_SCENE_JSON"
 
 ROLE_NAMES = {
-    0: "scene",
-    1: "history_pair",
-    2: "candidate_pair",
+    ROLE_SCENE: "scene",
+    ROLE_STATE: "state",
+    ROLE_SKILL: "skill",
 }
 
 # 模型分析统一使用 attention 图的黑色到白金色阶；有明确正负语义的图仍保留专用发散色阶。
@@ -89,7 +90,7 @@ class ModelAnalysisContext:
     checkpoint_path: Path
     source_path: Path
     output_dir: Path
-    model: CandidateTransformerModel
+    model: CausalPolicyModel
     dataset: TrainingDataset
     data_spec: DataSpec
     vocab: SkillVocab
@@ -107,6 +108,7 @@ class AnalysisContext(ModelAnalysisContext):
 
     layer_vectors: list[np.ndarray]
     layer_roles: list[np.ndarray]
+    layer_current_state_masks: list[np.ndarray]
     layer_metadata: list[dict[str, np.ndarray]]
 
 
@@ -125,7 +127,6 @@ def load_analysis_context(
     batch_size: int,
     device_name: str,
     precision: str,
-    candidate_order_file: Path | None = None,
 ) -> AnalysisContext:
     """加载 checkpoint/compiled cache 并提取每个 Transformer layer 的有效 token hidden。"""
     runtime = _load_model_analysis_context(
@@ -136,7 +137,6 @@ def load_analysis_context(
         max_history=max_history,
         cache_shard_size=cache_shard_size,
         cache_max_shards=cache_max_shards,
-        candidate_order_file=candidate_order_file,
         output_dir=output_dir,
         device_name=device_name,
         precision=precision,
@@ -152,6 +152,7 @@ def load_analysis_context(
 
     layer_rows: list[list[np.ndarray]] = [[] for _ in model.encoder.layers]
     role_rows: list[list[np.ndarray]] = [[] for _ in model.encoder.layers]
+    current_rows: list[list[np.ndarray]] = [[] for _ in model.encoder.layers]
     metadata_rows: list[dict[str, list[np.ndarray]]] = [
         {feature: [] for feature in ANALYSIS_FEATURES}
         for _ in model.encoder.layers
@@ -172,6 +173,7 @@ def load_analysis_context(
             ]
             valid_rows = valid.detach().cpu().numpy()
             role_rows_batch = encoded["role_ids"].detach().cpu().numpy()
+            current_rows_batch = current_state_mask(encoded)
 
             with runtime.autocast():
                 logits = model.score_hidden(encoded, trace.hidden, batch_device)
@@ -188,23 +190,27 @@ def load_analysis_context(
                     continue
                 flat_vectors = hidden_rows[valid_rows]
                 flat_roles = role_rows_batch[valid_rows]
+                flat_current = current_rows_batch[valid_rows]
                 flat_metadata = {
-                    feature: values[valid_rows]
-                    for feature, values in token_metadata.items()
+                    feature: token_metadata[feature][valid_rows]
+                    for feature in ANALYSIS_FEATURES
                 }
                 remaining = max_tokens - collected_tokens[layer_index]
                 if remaining <= 0:
                     continue
                 if len(flat_vectors) > remaining:
-                    indices = np.linspace(0, len(flat_vectors) - 1, remaining, dtype=int)
+                    # 最新状态是决策分析 query，限额采样优先保留它，防止只剩前缀。
+                    indices = _analysis_token_indices(flat_current, remaining)
                     flat_vectors = flat_vectors[indices]
                     flat_roles = flat_roles[indices]
+                    flat_current = flat_current[indices]
                     flat_metadata = {
                         feature: values[indices]
                         for feature, values in flat_metadata.items()
                     }
                 layer_rows[layer_index].append(flat_vectors)
                 role_rows[layer_index].append(flat_roles)
+                current_rows[layer_index].append(flat_current)
                 for feature, values in flat_metadata.items():
                     metadata_rows[layer_index][feature].append(values)
                 collected_tokens[layer_index] += len(flat_vectors)
@@ -218,6 +224,7 @@ def load_analysis_context(
                 layer_hidden_rows,
                 valid_rows,
                 role_rows_batch,
+                current_rows_batch,
                 logits,
                 token_metadata,
             )
@@ -253,8 +260,22 @@ def load_analysis_context(
         precision=runtime.precision,
         layer_vectors=layer_vectors,
         layer_roles=layer_roles,
+        layer_current_state_masks=[
+            _concat_arrays(rows, empty_shape=(0,), dtype=bool) for rows in current_rows
+        ],
         layer_metadata=layer_metadata,
     )
+
+
+def _analysis_token_indices(current_mask: np.ndarray, limit: int) -> np.ndarray:
+    """在总 token 限额内保留最新状态，再均匀采样场景和历史。"""
+    current = np.flatnonzero(current_mask)
+    if len(current) >= limit:
+        return current[np.linspace(0, len(current) - 1, limit, dtype=int)]
+    others = np.flatnonzero(~current_mask)
+    slots = min(limit - len(current), len(others))
+    selected = others[np.linspace(0, len(others) - 1, slots, dtype=int)] if slots else np.array([], dtype=int)
+    return np.sort(np.concatenate((current, selected)))
 
 
 def load_loss_landscape_context(
@@ -269,7 +290,6 @@ def load_loss_landscape_context(
     output_dir: Path,
     device_name: str,
     precision: str,
-    candidate_order_file: Path | None = None,
 ) -> ModelAnalysisContext:
     """只加载损失地图所需模型与数据，不提取 hidden、attention 或 PCA 输入。"""
     return _load_model_analysis_context(
@@ -280,7 +300,6 @@ def load_loss_landscape_context(
         max_history=max_history,
         cache_shard_size=cache_shard_size,
         cache_max_shards=cache_max_shards,
-        candidate_order_file=candidate_order_file,
         output_dir=output_dir,
         device_name=device_name,
         precision=precision,
@@ -299,7 +318,6 @@ def _load_model_analysis_context(
     output_dir: Path,
     device_name: str,
     precision: str,
-    candidate_order_file: Path | None,
 ) -> ModelAnalysisContext:
     """统一加载分析模型和 dataset；模型 dtype 与 autocast 共用同一 precision。"""
     checkpoint_path = Path(checkpoint_path)
@@ -307,20 +325,31 @@ def _load_model_analysis_context(
     if precision != "float32" and device.type != "cuda":
         raise RuntimeError(f"model analysis precision {precision} requires CUDA")
     checkpoint = safe_torch_load(checkpoint_path)
+    # 先拒绝旧输入契约，避免在旧 DataSpec 字段上变成不明确的 KeyError。
+    model_config = CausalPolicyModel.checkpoint_model_config(checkpoint)
     data_spec = DataSpec.from_dict(checkpoint["data_spec"])
+    input_contract = ModelInputContract.from_checkpoint(checkpoint)
+    input_contract.assert_matches_data_spec(data_spec)
     job_tag = resolve_project_job_tag(project_root=PROJECT_ROOT)
     if job_tag != data_spec.job_tag:
         raise ValueError(
             f"configured job_tag {job_tag!r} does not match checkpoint job_tag {data_spec.job_tag!r}"
         )
-    vocab = SkillVocab.build_from_job_tag(job_tag)
+    vocab = input_contract.create_skill_vocab()
+    normalizer = input_contract.create_normalizer()
+    embedding = checkpoint["model_state_dict"].get("input_encoder.skill_embed.weight")
+    if not isinstance(embedding, torch.Tensor) or embedding.ndim != 2:
+        raise ValueError("checkpoint missing skill embedding weight")
+    input_contract.assert_matches_embedding(int(embedding.shape[0]))
+    action_space = ActionSpace.from_data_spec(data_spec)
     source_path = _resolve_analysis_source(
         source_path, raw_root=raw_root, cache_dir=cache_dir,
         job_tag=job_tag, cache_shard_size=cache_shard_size,
+        expected_action_space=action_space,
+        normalizer=normalizer, skill_vocab=vocab,
     )
-    model_config = CandidateTransformerModel.checkpoint_model_config(checkpoint)
     repetition_config = repetition_config_from_checkpoint(checkpoint)
-    model = CandidateTransformerModel(
+    model = CausalPolicyModel(
         data_spec,
         model_config,
         vocab_size=vocab.size(),
@@ -336,14 +365,16 @@ def _load_model_analysis_context(
         max_history=max_history,
         cache_shard_size=cache_shard_size,
         cache_max_shards=cache_max_shards,
-        candidate_order_file=candidate_order_file,
         job_tag=job_tag,
         skill_vocab=vocab,
+        normalizer=normalizer,
+        expected_action_space=action_space,
     )
     if len(dataset) == 0:
         raise ValueError("dataset is empty, cannot load model analysis context")
     dataset_spec = DataSpec.from_dataset(dataset)
     data_spec.assert_compatible_with(dataset_spec)
+    input_contract.schema.assert_compatible_with(dataset.schema)
     output_dir.mkdir(parents=True, exist_ok=True)
     return ModelAnalysisContext(
         checkpoint_path=checkpoint_path,
@@ -487,6 +518,9 @@ def save_figure(fig: Figure, path: Path, *, dpi: int | None = None) -> None:
 def _resolve_analysis_source(
     explicit: Path | None, *, raw_root: Path, cache_dir: Path,
     job_tag: str, cache_shard_size: int,
+    expected_action_space: ActionSpace,
+    normalizer: Normalizer,
+    skill_vocab: SkillVocab,
 ) -> Path:
     """显式参数优先，其次分析专用环境变量，最后选择已有缓存。"""
     raw = explicit or os.environ.get(MODEL_ANALYSIS_SCENE_JSON_ENV, "").strip()
@@ -495,6 +529,8 @@ def _resolve_analysis_source(
     return find_prepared_scene_source(
         raw_root, cache_dir=cache_dir, job_tag=job_tag,
         cache_shard_size=cache_shard_size,
+        expected_action_space=expected_action_space,
+        normalizer=normalizer, expected_skill_vocab=skill_vocab,
     )
 
 
@@ -507,23 +543,22 @@ def _load_analysis_dataset(
     cache_max_shards: int,
     job_tag: str,
     skill_vocab: SkillVocab,
-    candidate_order_file: Path | None = None,
+    normalizer: Normalizer,
+    expected_action_space: ActionSpace,
 ) -> TrainingDataset:
     """读取分析用 cache；缺失或过期时调用转换 CLI 后重试。"""
-    normalizer = Normalizer()
-    normalizer.configure_job_resources(job_tag)
     precision = load_precision_config()
     dataset_kwargs = {
         "normalizer": normalizer,
         "job_tag": job_tag,
         "skill_vocab": skill_vocab,
+        "expected_action_space": expected_action_space,
         "max_history": max_history,
         "int_dtype": precision.resolve_int_dtype(),
         "float_dtype": precision.resolve_float_dtype(),
         "cache_dir": cache_dir,
         "compiled_cache_shard_size": cache_shard_size,
         "compiled_cache_max_shards": cache_max_shards,
-        "candidate_order_file": candidate_order_file,
     }
     try:
         return TrainingDataset([source_path], **dataset_kwargs)
@@ -534,6 +569,8 @@ def _load_analysis_dataset(
             cache_dir=cache_dir,
             cache_shard_size=cache_shard_size,
             job_tag=job_tag,
+            expected_action_space=expected_action_space,
+            normalizer=normalizer, expected_skill_vocab=skill_vocab,
         )
         return TrainingDataset([source_path], **dataset_kwargs)
 

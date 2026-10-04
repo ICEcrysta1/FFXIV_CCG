@@ -30,8 +30,8 @@ public sealed class TargetBuffVectorTokenBuilder
         _registeredDotKeys = systemMachine.RegisteredTargetDotKeys.ToArray();
         _featureKeys = BuildFeatureKeys();
         _historyFeatureKeys = _featureKeys
-            .Select(key => $"before.{key}")
-            .Concat(_featureKeys.Select(key => $"after.{key}"))
+            .Select(key => $"previous_action_after.{key}")
+            .Concat(_featureKeys.Select(key => $"request_state.{key}"))
             .ToArray();
     }
 

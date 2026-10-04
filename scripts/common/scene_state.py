@@ -15,6 +15,8 @@ scene 窗口的时间轴与状态机一致（原点都是 fight 起点），因�
 
 from __future__ import annotations
 
+import math
+
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -26,7 +28,6 @@ from common.contracts import (
     TARGETABLE_WINDOW_CONTEXT_KEY,
     TARGET_COUNT_WINDOW_CONTEXT_KEY,
 )
-from common.schema_config import load_schema_config
 from common.scene_window import feature_index_map
 
 BOSS_TARGETABLE_CHANGED = "boss_targetable_changed"
@@ -158,79 +159,47 @@ def rewrite_scene_player_state(
     next_observation_timestamp: float | None,
     scene_state_at,
 ) -> dict[str, object]:
-    """按场景上下文原地改写 canonical context 的 player 场景字段。
-
-    改写 `state_history_context.tokens` 与 `candidate_state_context.tokens` 的
-    player_state 段（before ‖ after）：移动位、下次停手 ETA（秒）及
-    停手剩余秒数。非法候选的 after 段是 null，逐位置跳过；Boss 可选中不再改写，
-    由状态机自己维护。
-
-    时刻取值：历史条目 before = 生效时刻 − 实际读条时长、after = 生效时刻；
-    候选 before = 本次观测时刻、after = 观测时刻 + 该技能自身窗口
-    （policy 候选则取调用方约定的下一次观测时刻）。
-    """
-    offset = len(_player_state_fields())
-
-    history_tokens = _context_tokens(canonical, "state_history_context")
-    history_skills = _context_entries(canonical, "skill_history_context")
-    for index, token in enumerate(history_tokens):
-        skill = history_skills[index] if index < len(history_skills) else {}
-        effect_time = _optional_float(skill.get("time_seconds"))
-        if effect_time is None:
-            continue
-        cast_seconds = _nested_float(skill, "cast_time", "seconds") or 0.0
-        _rewrite_state_token(
-            token,
-            offset=offset,
-            before_timestamp=effect_time - cast_seconds,
-            after_timestamp=effect_time,
-            scene_state_at=scene_state_at,
-        )
-
-    candidate_tokens = _context_tokens(canonical, "candidate_state_context")
-    candidate_skills = _context_entries(canonical, "candidate_skill_context")
-    for index, token in enumerate(candidate_tokens):
-        skill = candidate_skills[index] if index < len(candidate_skills) else {}
-        window_seconds = _nested_float(skill, "gcd_window", "seconds") or 0.0
-        if _is_policy_candidate(skill) and next_observation_timestamp is not None:
-            after_timestamp = next_observation_timestamp
-        else:
-            after_timestamp = observation_timestamp + window_seconds
-        _rewrite_state_token(
-            token,
-            offset=offset,
-            before_timestamp=observation_timestamp,
-            after_timestamp=after_timestamp,
-            scene_state_at=scene_state_at,
-        )
+    """使用两段状态自身的原始秒数改写场景字段；所有动作及最新状态共用同一规则。"""
+    del observation_timestamp, next_observation_timestamp
+    for context_key in ("state_history_context", "current_state_context"):
+        context = canonical.get(context_key)
+        if not isinstance(context, dict):
+            raise ValueError(f"{context_key} must be a mapping")
+        keys = context.get("player_state_feature_keys")
+        if not isinstance(keys, list) or not all(isinstance(key, str) for key in keys):
+            raise ValueError(f"{context_key} lacks player_state_feature_keys")
+        if len(set(keys)) != len(keys):
+            raise ValueError(f"{context_key} has duplicate player state feature keys")
+        positions = {key: index for index, key in enumerate(keys)}
+        fields = ("time_seconds", "is_moving", "next_untargetable_in_seconds", "downtime_remaining_seconds")
+        prefixes = ("previous_action_after", "request_state")
+        for prefix in prefixes:
+            for field in fields:
+                if f"{prefix}.{field}" not in positions:
+                    raise ValueError(f"{context_key} lacks {prefix}.{field}")
+        tokens = context.get("tokens")
+        if not isinstance(tokens, list):
+            raise ValueError(f"{context_key}.tokens must be a list")
+        for index, token in enumerate(tokens):
+            vector = token.get("player_state") if isinstance(token, dict) else None
+            label = f"{context_key} token={index}"
+            if not isinstance(vector, list) or len(vector) != len(keys):
+                raise ValueError(f"{label} player state width mismatch")
+            for prefix in prefixes:
+                timestamp = vector[positions[f"{prefix}.time_seconds"]]
+                if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)) or not math.isfinite(timestamp):
+                    raise ValueError(f"{label} {prefix}.time_seconds must be finite numeric")
+                state = scene_state_at(float(timestamp))
+                values = {
+                    "is_moving": 1.0 if state.is_moving else 0.0,
+                    "next_untargetable_in_seconds": state.next_downtime_eta,
+                    "downtime_remaining_seconds": state.downtime_remaining,
+                }
+                for field, value in values.items():
+                    position = positions[f"{prefix}.{field}"]
+                    if vector[position] is not None:
+                        vector[position] = float(value)
     return canonical
-
-
-def _rewrite_state_token(
-    token: object,
-    *,
-    offset: int,
-    before_timestamp: float,
-    after_timestamp: float,
-    scene_state_at,
-) -> None:
-    if not isinstance(token, dict):
-        return
-    vector = token.get("player_state")
-    if not isinstance(vector, list) or len(vector) < offset * 2:
-        return
-    for segment_start, timestamp in ((0, before_timestamp), (offset, after_timestamp)):
-        state = scene_state_at(timestamp)
-        values = {
-            "is_moving": 1.0 if state.is_moving else 0.0,
-            "next_untargetable_in_seconds": state.next_downtime_eta,
-            "downtime_remaining_seconds": state.downtime_remaining,
-        }
-        for field, value in values.items():
-            position = segment_start + _player_field_index(field)
-            if position >= len(vector) or vector[position] is None:
-                continue
-            vector[position] = float(value)
 
 
 def _build_scene_facts(scene_context: dict[str, object] | None) -> list[SceneFact]:
@@ -414,63 +383,6 @@ def _token_value(index: dict[str, int], token: list[float], feature_key: str) ->
     if feature_key not in index:
         raise KeyError(f"scene window token is missing feature key: {feature_key}")
     return float(token[index[feature_key]])
-
-
-def _context_tokens(canonical: dict[str, object], context_key: str) -> list[object]:
-    context = canonical.get(context_key)
-    if not isinstance(context, dict):
-        return []
-    tokens = context.get("tokens", [])
-    return list(tokens) if isinstance(tokens, list) else []
-
-
-def _context_entries(canonical: dict[str, object], context_key: str) -> list[object]:
-    entries = canonical.get(context_key, [])
-    return list(entries) if isinstance(entries, list) else []
-
-
-def _is_policy_candidate(skill: object) -> bool:
-    """policy 控制动作不属于游戏技能，raw skill id 固定为 0。"""
-    return isinstance(skill, dict) and _optional_float(skill.get("skill_id")) == 0.0
-
-
-@lru_cache(maxsize=1)
-def _player_state_fields() -> tuple[str, ...]:
-    fields = load_schema_config()["state_vector_fields"]["player_state"]
-    return tuple(str(field) for field in fields)
-
-
-@lru_cache(maxsize=1)
-def _player_field_indices() -> dict[str, int]:
-    return {field: index for index, field in enumerate(_player_state_fields())}
-
-
-def _player_field_index(field: str) -> int:
-    try:
-        return _player_field_indices()[field]
-    except KeyError as error:
-        raise KeyError(
-            f"player_state 向量缺少字段 {field!r}；"
-            "请确认 config/schema.yaml 的 state_vector_fields.player_state 与改写层同步"
-        ) from error
-
-
-def _optional_float(value: object) -> float | None:
-    if value is None or isinstance(value, bool):
-        return None
-    try:
-        return float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
-
-
-def _nested_float(payload: object, *path: str) -> float | None:
-    current: object = payload
-    for key in path:
-        if not isinstance(current, dict):
-            return None
-        current = current.get(key)
-    return _optional_float(current)
 
 
 def _round_time(value: float) -> float:

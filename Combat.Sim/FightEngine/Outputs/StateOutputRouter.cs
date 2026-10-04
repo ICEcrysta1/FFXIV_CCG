@@ -4,7 +4,6 @@
 // See LICENSE and LICENSE-FightEngine-Linking-Exception in the repository root.
 
 using Combat.Sim.Config;
-using Combat.Sim.Facade;
 using Combat.Sim.Jobs;
 using Combat.Sim.Models.Combat;
 using Combat.Sim.System;
@@ -57,18 +56,22 @@ public sealed class StateOutputRouter
     /// <summary>输出单个状态快照的 canonical 模型结果（对照 format_vectors）。</summary>
     public Dictionary<string, object?> FormatVectors(
         CombatState state,
-        IReadOnlyList<CandidatePreview> candidatePreviews) =>
+        IReadOnlyList<string> actionKeys,
+        IReadOnlyList<bool> actionLegalMask,
+        IReadOnlyList<double> actionValues) =>
         ModelVectorFormatter.Format(
-            _contextBuilder.BuildContext(state, candidatePreviews));
+            _contextBuilder.BuildContext(state, actionKeys, actionLegalMask, actionValues));
 
     /// <summary>输出单个状态快照的 tensor 友好模型结果（对照 format_tensors，懒加载精度配置）。</summary>
     public object? FormatTensors(
         CombatState state,
-        IReadOnlyList<CandidatePreview> candidatePreviews)
+        IReadOnlyList<string> actionKeys,
+        IReadOnlyList<bool> actionLegalMask,
+        IReadOnlyList<double> actionValues)
     {
         _modelTensorFormatter ??= LoadTensorFormatter();
         return _modelTensorFormatter.Format(
-            _contextBuilder.BuildContext(state, candidatePreviews));
+            _contextBuilder.BuildContext(state, actionKeys, actionLegalMask, actionValues));
     }
 
     /// <summary>输出状态上下文原料（对照 build_state_context）。</summary>
@@ -78,10 +81,8 @@ public sealed class StateOutputRouter
     internal IReadOnlyDictionary<string, object> BuildNoopResourceTransition(CombatState state) =>
         _contextBuilder.BuildNoopResourceTransition(state);
 
-    internal Dictionary<string, double[]> BuildStateTransitionToken(
-        CombatState before,
-        CombatState after) =>
-        _contextBuilder.BuildStateTransitionToken(before, after);
+    internal Dictionary<string, double[]> BuildModelStateToken(ModelStateSnapshot snapshot) =>
+        _contextBuilder.BuildModelStateToken(snapshot);
 
     private ModelTensorFormatter LoadTensorFormatter()
     {

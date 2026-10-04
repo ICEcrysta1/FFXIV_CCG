@@ -13,9 +13,11 @@ from scripts.autoregressive_replay.ppg import (
     _infer_initial_base_gcd,
     _run_rollout,
     _run_rollout_until_time,
-    _select_legal_candidate,
+    _select_legal_action,
 )
+from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
 from common.policy.data import Normalizer
+from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION
 from scripts.autoregressive_replay.context import LiveBatchBuilder
 
 
@@ -41,10 +43,10 @@ class _FakeBackend:
         self.state.time = float(timestamp)
         if format == "vector":
             context = {
-                "state_history_context": {
+                "current_state_context": {
                     "target_buff_state_feature_keys": [
-                        "after.target.cumulative_potency",
-                        "after.target.cumulative_dot_potency",
+                        "request_state.target.cumulative_potency",
+                        "request_state.target.cumulative_dot_potency",
                     ],
                     "tokens": [
                         {
@@ -103,7 +105,7 @@ class _FakeBatcher:
     @staticmethod
     def build(_state):
         return (
-            {"candidate_legal_mask": torch.tensor([[True, False]])},
+            {"action_legal_mask": torch.tensor([[True, False]])},
             ["gcd", "illegal"],
         )
 
@@ -123,10 +125,12 @@ def test_real_ppg_counts_queued_gcds_and_masks_policy_wait(cs_backend, monkeypat
     cs_backend.submit_action(0.0, "swiftcast")
     cs_backend.submit_action(0.0, "triplecast")
     canonical = cs_backend.observe_at(0.0, format="vector", next_observation_timestamp=0.0).context
-    state_context = canonical["candidate_state_context"]
+    state_context = canonical["current_state_context"]
     groups = {group: state_context[f"{group}_feature_keys"]
               for group in ("player_state", "buff_state", "target_buff_state", "resource_state")}
-    keys = tuple(token["skill_key"] for token in canonical["candidate_skill_context"])
+    keys = tuple(canonical["action_keys"])
+    from common.policy.data.action_space import ActionSpace
+    action_space = ActionSpace.from_job_tag("black_mage")
     builder = LiveBatchBuilder(
         backend=cs_backend,
         vocab=SimpleNamespace(require_lookup=lambda value, **kwargs: value),
@@ -138,6 +142,7 @@ def test_real_ppg_counts_queued_gcds_and_masks_policy_wait(cs_backend, monkeypat
         skill_feature_names=("kind",),
         scene_provider=SimpleNamespace(at_time=lambda _: (torch.zeros((0, 1)), torch.zeros(0, dtype=torch.int32))),
         device=torch.device("cpu"), max_history=20,
+        action_keys=keys, action_is_gcd=action_space.action_is_gcd,
     )
 
     class Model:
@@ -158,7 +163,7 @@ def test_real_ppg_counts_queued_gcds_and_masks_policy_wait(cs_backend, monkeypat
 
     monkeypatch.setattr(cs_backend, "submit_action", tracked_submit)
     result = _run_rollout(Model(), cs_backend, builder, gcd_count=3, normalization=1000.0,
-                          precision="float32", device=torch.device("cpu"), expected_candidate_keys=keys)
+                          precision="float32", device=torch.device("cpu"), expected_action_keys=keys)
     assert result.output_gcds == 3
     assert result.cumulative_potency > 0
     assert len(submissions) == 3
@@ -173,13 +178,13 @@ def test_real_ppg_counts_queued_gcds_and_masks_policy_wait(cs_backend, monkeypat
         ([1.0, 10.0], [False, False], 0, False),
     ),
 )
-def test_select_legal_candidate_returns_index_and_legality(
+def test_select_legal_action_returns_index_and_legality(
     logits,
     legal,
     expected_index,
     expected_has_legal,
 ):
-    selected_index, has_legal = _select_legal_candidate(
+    selected_index, has_legal = _select_legal_action(
         torch.tensor(logits),
         torch.tensor(legal),
     )
@@ -197,7 +202,7 @@ def test_ppg_rollout_counts_output_gcds_and_includes_dot_potency():
         normalization=1000.0,
         precision="float32",
         device=torch.device("cpu"),
-        expected_candidate_keys=("gcd", "illegal"),
+        expected_action_keys=("gcd", "illegal"),
     )
 
     assert result.output_gcds == 3
@@ -207,8 +212,8 @@ def test_ppg_rollout_counts_output_gcds_and_includes_dot_potency():
     assert result.normalized_ppg == pytest.approx(0.12)
 
 
-def test_ppg_rollout_rejects_candidate_order_mismatch():
-    with pytest.raises(ValueError, match="candidate action order mismatch"):
+def test_ppg_rollout_rejects_action_order_mismatch():
+    with pytest.raises(ValueError, match="action order mismatch"):
         _run_rollout(
             _FakeModel(),
             _FakeBackend(),
@@ -217,7 +222,7 @@ def test_ppg_rollout_rejects_candidate_order_mismatch():
             normalization=1000.0,
             precision="float32",
             device=torch.device("cpu"),
-            expected_candidate_keys=("illegal", "gcd"),
+            expected_action_keys=("illegal", "gcd"),
         )
 
 
@@ -269,7 +274,7 @@ def test_validation_rollout_stops_at_fight_end_and_uses_executed_history():
         normalization=1000.0,
         precision="float32",
         device=torch.device("cpu"),
-        expected_candidate_keys=("gcd", "illegal"),
+        expected_action_keys=("gcd", "illegal"),
         source_label="test-fight",
     )
 
@@ -281,12 +286,12 @@ def test_validation_rollout_stops_at_fight_end_and_uses_executed_history():
     assert result.normalized_ppg == pytest.approx(0.12)
 
 
-def test_validation_rollout_skips_fight_when_all_candidates_are_illegal(caplog):
+def test_validation_rollout_skips_fight_when_all_actions_are_illegal(caplog):
     class NoLegalBatcher:
         @staticmethod
         def build(_state):
             return (
-                {"candidate_legal_mask": torch.tensor([[False, False]])},
+                {"action_legal_mask": torch.tensor([[False, False]])},
                 ["gcd", "illegal"],
             )
 
@@ -313,7 +318,7 @@ def test_validation_rollout_skips_fight_when_all_candidates_are_illegal(caplog):
             normalization=1000.0,
             precision="float32",
             device=torch.device("cpu"),
-            expected_candidate_keys=("gcd", "illegal"),
+            expected_action_keys=("gcd", "illegal"),
             source_label="skipped-fight",
         )
 
@@ -325,28 +330,56 @@ def test_validation_rollout_skips_fight_when_all_candidates_are_illegal(caplog):
     assert "跳过本副本并记 PPG=0" in caplog.text
 
 
-def test_validation_ppg_recovers_initial_base_gcd_from_cached_candidate_token():
+@pytest.mark.parametrize("base_gcd,haste", ((2.4, False), (2.07, True)))
+def test_validation_ppg_recovers_initial_base_gcd_from_saved_current_state(base_gcd, haste):
     normalizer = Normalizer()
+    from common.policy.data.schema import TrainingSchema
+    schema = TrainingSchema(
+        serialization_format="raw_training_source_v1", sample_schema_version=TRAINING_SAMPLE_SCHEMA_VERSION,
+        context_schema_version=CANONICAL_CONTEXT_SCHEMA_VERSION, scene_context_mode="absolute_from_fight_scene_context", scene_windows=(),
+        state_group_feature_keys={
+            "player_state": ("previous_action_after.current_gcd_seconds", "request_state.current_gcd_seconds"),
+            "buff_state": ("previous_action_after.job.ley_lines.active", "request_state.job.ley_lines.active"),
+        }, skill_history_fields=(),
+    )
+    normalizer.register_schema(schema)
+    actual_gcd = base_gcd * (0.85 if haste else 1.0)
+    previous_gcd = normalizer.normalize_value("player_state", "previous_action_after.current_gcd_seconds", 2.9)
+    request_gcd = normalizer.normalize_value("player_state", "request_state.current_gcd_seconds", actual_gcd)
 
     class Reader:
         @staticmethod
         def sample(_index):
             return {
-                "candidate_skill_features": torch.tensor(
-                    [
-                        [0.0, 0.0, 2.5 / 120.0],
-                        [0.0, 1.0, 2.4 / 120.0],
-                        [1.0, 1.0, 2.4 / 120.0],
-                    ]
-                ),
-                "candidate_legal_mask": torch.tensor([False, True, True]),
+                "current_state_vectors": torch.tensor([previous_gcd, request_gcd, float(not haste), float(haste)]),
+                "current_state_null_mask": torch.zeros(4, dtype=torch.bool),
             }
+    Reader.schema = schema
 
     assert _infer_initial_base_gcd(
         Reader(),
         normalizer=normalizer,
-        skill_feature_names=("kind", "is_legal", "gcd_window.seconds"),
-    ) == pytest.approx(2.4)
+        job_tag="black_mage",
+    ) == pytest.approx(base_gcd)
+
+
+@pytest.mark.parametrize("missing_state,null_gcd,gcd", ((True, False, 2.5), (False, True, 2.5), (False, False, 0.0)))
+def test_initial_ppg_state_cannot_silently_fall_back_to_local_gcd(missing_state, null_gcd, gcd):
+    normalizer = Normalizer()
+    keys = ("previous_action_after.current_gcd_seconds", "request_state.current_gcd_seconds")
+    normalizer.register_feature_keys("player_state", list(keys))
+    normalized = normalizer.normalize_value("player_state", keys[0], gcd)
+    schema = SimpleNamespace(
+        state_group_feature_keys={"player_state": keys}, state_vector_dim=lambda: 2,
+        state_group_slices=lambda: {"player_state": slice(0, 2)},
+    )
+    values = {} if missing_state else {
+        "current_state_vectors": torch.tensor([normalized, normalized]),
+        "current_state_null_mask": torch.tensor([False, null_gcd]),
+    }
+    reader = SimpleNamespace(schema=schema, sample=lambda _index: values)
+    with pytest.raises(ValueError, match="missing initial current state|has null|invalid initial base GCD"):
+        _infer_initial_base_gcd(reader, normalizer=normalizer, job_tag="machinist")
 
 
 def test_real_validation_runs_to_end_with_a_small_history_window():
@@ -364,14 +397,14 @@ def test_real_validation_runs_to_end_with_a_small_history_window():
                     def build(self, state):
                         legal = backend.validate_at(state.time, "heated_split_shot").legal
                         wait = gcd_request_delay(state) > 1e-6
-                        return ({"candidate_legal_mask": torch.tensor([[legal, wait]])},
+                        return ({"action_legal_mask": torch.tensor([[legal, wait]])},
                                 ("heated_split_shot", "ogcd_wait"))
 
                 result = _run_rollout_until_time(
                     _FakeModel(), backend, Batcher(), scene_provider=None,
                     end_time=180, normalization=1000, precision="float32",
                     device=torch.device("cpu"),
-                    expected_candidate_keys=("heated_split_shot", "ogcd_wait"),
+                    expected_action_keys=("heated_split_shot", "ogcd_wait"),
                     source_label="full-duration-regression",
                 )
                 assert backend.statistics()["timestamp"] == pytest.approx(180)
@@ -418,7 +451,7 @@ def test_validation_ppg_reads_history_capacity_from_model_config(
                 timestamp=self.state.time,
                 next_scheduled_event_time=None,
                 context=(
-                    {"state_history_context": {"tokens": []}}
+                    {"current_state_context": {"target_buff_state_feature_keys": ["request_state.target.cumulative_potency", "request_state.target.cumulative_dot_potency"], "tokens": [{"target_buff_state": [0.0, 0.0]}]}}
                     if format == "vector"
                     else {
                         "time_seconds": self.state.time,
@@ -454,7 +487,7 @@ def test_validation_ppg_reads_history_capacity_from_model_config(
         def __init__(self, **kwargs):
             captured["batcher_max_history"] = kwargs["max_history"]
 
-    monkeypatch.setattr(ppg_module, "Normalizer", FakeNormalizer)
+    monkeypatch.setattr(ppg_module, "_dataset_normalizer", lambda _dataset: FakeNormalizer())
     monkeypatch.setattr(
         "scripts.common.inprocess_backend.InProcessEngine.create_backend",
         lambda engine, **kwargs: FakeBackend(job_tag=engine.job_tag, engine=engine, **kwargs),
@@ -488,7 +521,8 @@ def test_validation_ppg_reads_history_capacity_from_model_config(
     )
     data_spec = SimpleNamespace(
         job_tag="black_mage",
-        candidate_action_keys=("fire",),
+        action_keys=("fire",),
+        action_is_gcd=(True,),
     )
     cache_events = []
 

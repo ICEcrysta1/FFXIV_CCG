@@ -11,7 +11,7 @@ namespace FightEngine.Tests.Facade;
 public class SequenceRunnerTests
 {
     [Fact]
-    public void 绝对时间序列只保留最终候选快照()
+    public void 绝对时间序列只保留最终请求状态()
     {
         using var engine = CreateEngine();
         using var session = engine.CreateSession(null);
@@ -36,8 +36,8 @@ public class SequenceRunnerTests
         var finalOutput = Assert.IsType<Dictionary<string, object?>>(summary["final_output"]);
         var skillHistory = Assert.IsType<List<Dictionary<string, object?>>>(finalOutput["skill_history_context"]);
         Assert.Equal("gcd_strike", skillHistory[^1]["skill_key"]);
-        var candidateSkills = Assert.IsType<List<Dictionary<string, object?>>>(finalOutput["candidate_skill_context"]);
-        Assert.DoesNotContain(candidateSkills, item => Equals(item["skill_key"], "ogcd_wait"));
+        var keys = Assert.IsType<List<string>>(finalOutput["action_keys"]);
+        Assert.DoesNotContain("ogcd_wait", keys);
     }
 
     [Fact]
@@ -62,10 +62,8 @@ public class SequenceRunnerTests
         var stateTokens = Assert.IsAssignableFrom<IReadOnlyList<object>>(stateHistory["tokens"]);
         Assert.Equal(requests.Length, stateTokens.Count);
 
-        var candidateSkills = Assert.IsType<List<Dictionary<string, object?>>>(finalOutput["candidate_skill_context"]);
-        var candidateStates = Assert.IsType<Dictionary<string, object?>>(finalOutput["candidate_state_context"]);
-        var candidateStateTokens = Assert.IsAssignableFrom<IReadOnlyList<object>>(candidateStates["tokens"]);
-        Assert.Equal(candidateSkills.Count, candidateStateTokens.Count);
+        var currentState = Assert.IsType<Dictionary<string, object?>>(finalOutput["current_state_context"]);
+        Assert.Single(Assert.IsAssignableFrom<IReadOnlyList<object>>(currentState["tokens"]));
     }
     private static SimulationEngine CreateEngine()
     {

@@ -19,8 +19,10 @@ CANONICAL_CONTEXT_TOP_LEVEL_KEYS = tuple(_output["top_level_keys"])
 SCENE_CONTEXT_KEY = CANONICAL_CONTEXT_TOP_LEVEL_KEYS[2]
 SKILL_HISTORY_CONTEXT_KEY = CANONICAL_CONTEXT_TOP_LEVEL_KEYS[3]
 STATE_HISTORY_CONTEXT_KEY = CANONICAL_CONTEXT_TOP_LEVEL_KEYS[4]
-CANDIDATE_SKILL_CONTEXT_KEY = CANONICAL_CONTEXT_TOP_LEVEL_KEYS[5]
-CANDIDATE_STATE_CONTEXT_KEY = CANONICAL_CONTEXT_TOP_LEVEL_KEYS[6]
+CURRENT_STATE_CONTEXT_KEY = CANONICAL_CONTEXT_TOP_LEVEL_KEYS[5]
+ACTION_KEYS_KEY = CANONICAL_CONTEXT_TOP_LEVEL_KEYS[6]
+ACTION_LEGAL_MASK_KEY = CANONICAL_CONTEXT_TOP_LEVEL_KEYS[7]
+ACTION_VALUES_KEY = CANONICAL_CONTEXT_TOP_LEVEL_KEYS[8]
 STATE_CONTEXT_TOKEN_KEY = str(_output["token_key"])
 
 
@@ -62,15 +64,17 @@ def extract_state_feature_keys(state_context: dict[str, object]) -> dict[str, li
 def build_output_context_schema_metadata(output_context: dict[str, object]) -> dict[str, object]:
     """构造 canonical 输出的正式 schema 元数据。"""
     history_state_context = _expect_dict(output_context, STATE_HISTORY_CONTEXT_KEY)
-    candidate_state_context = _expect_dict(output_context, CANDIDATE_STATE_CONTEXT_KEY)
+    current_state_context = _expect_dict(output_context, CURRENT_STATE_CONTEXT_KEY)
     return {
         "schema_version": int(output_context["schema_version"]),
         "top_level_keys": list(CANONICAL_CONTEXT_TOP_LEVEL_KEYS),
         "scene_context_key": SCENE_CONTEXT_KEY,
         "skill_history_context_key": SKILL_HISTORY_CONTEXT_KEY,
         "state_history_context_key": STATE_HISTORY_CONTEXT_KEY,
-        "candidate_skill_context_key": CANDIDATE_SKILL_CONTEXT_KEY,
-        "candidate_state_context_key": CANDIDATE_STATE_CONTEXT_KEY,
+        "current_state_context_key": CURRENT_STATE_CONTEXT_KEY,
+        "action_keys_key": ACTION_KEYS_KEY,
+        "action_legal_mask_key": ACTION_LEGAL_MASK_KEY,
+        "action_values_key": ACTION_VALUES_KEY,
         "state_context_token_key": STATE_CONTEXT_TOKEN_KEY,
         "state_vector_group_keys": [
             group_schema.group_key
@@ -81,7 +85,7 @@ def build_output_context_schema_metadata(output_context: dict[str, object]) -> d
             for group_schema in STATE_VECTOR_GROUP_SCHEMAS
         },
         "state_history_feature_keys": extract_state_feature_keys(history_state_context),
-        "candidate_state_feature_keys": extract_state_feature_keys(candidate_state_context),
+        "current_state_feature_keys": extract_state_feature_keys(current_state_context),
     }
 
 

@@ -43,11 +43,11 @@ public sealed class PolicyDecisionHistory
         var before = simulator.GetStateWithoutHistory();
         if (nextObservationTimestamp < timestamp)
             throw new ArgumentOutOfRangeException(nameof(nextObservationTimestamp));
-        var branch = simulator.ForkForPreview();
-        branch.AdvanceClockTo(nextObservationTimestamp);
-        var after = branch.GetStateWithoutHistory();
+        var (modelState, historySequence) = simulator.RecordModelDecision(Guid.NewGuid(), before, completed: true);
+        // wait 无即时游戏效果，其动作后状态为落实决策时的真实状态；后续变化由真实推进产生。
+        var after = before.CloneWithoutHistory();
         var decision = new PolicyDecision(action, timestamp, before.GcdIndex,
-            before, after);
+            before, after, modelState, historySequence);
         _entries.Add(decision);
         Retention.Trim(_entries);
         return decision.DeepClone();

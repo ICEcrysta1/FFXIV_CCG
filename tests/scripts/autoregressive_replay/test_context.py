@@ -44,7 +44,7 @@ class _SceneWindow:
 
 class _SceneSchema:
     scene_windows = (_SceneWindow(),)
-    state_group_feature_keys = {"player_state": ("before.mp",)}
+    state_group_feature_keys = {"player_state": ("previous_action_after.mp",)}
 
     @staticmethod
     def scene_feature_dim():
@@ -381,344 +381,234 @@ def test_scene_template_provider_syncs_movement_with_slidecast_boundary():
     assert (61.0, "target_count_changed", {"target_count": 1}) in backend.events
 
 
-def test_live_batch_builder_builds_padded_history_and_state_vectors():
-    class FakeNormalizer:
-        @staticmethod
-        def normalize_skill_features(values, _names):
-            normalized = values + 1.0
-            normalized[..., 0] = values[..., 0]
-            return normalized
+def _live_builder_fixture(*, max_history=2, reorder_state_fields=False):
+    from copy import deepcopy
 
-        @staticmethod
-        def normalize(values, _group, *, null_mask):
-            return values + 2.0
+    player_keys = ("previous_action_after.time_seconds", "previous_action_after.mp",
+                   "request_state.time_seconds", "request_state.mp")
+    if reorder_state_fields:
+        player_keys = tuple(reversed(player_keys))
+    initial_values = {"previous_action_after.time_seconds": 0.0, "previous_action_after.mp": 200.0,
+                      "request_state.time_seconds": 0.0, "request_state.mp": 200.0}
+    canonical = {
+        "action_keys": ["fire", "ogcd_wait"],
+        "action_legal_mask": [True, True],
+        "skill_history_context": [],
+        "state_history_context": {"player_state_feature_keys": player_keys, "tokens": []},
+        "current_state_context": {"player_state_feature_keys": player_keys,
+                                  "tokens": [{"player_state": [initial_values[key] for key in player_keys]}]},
+    }
 
-    class FakeVocab:
-        @staticmethod
-        def require_lookup(value, *, context):
-            assert context == "live replay"
-            return int(value) + 100
-
-    class FakeProvider:
-        def target_count_at(self, time):
-            return 2
-
-        def at_time(self, time):
-            return torch.tensor([[2.0, 0.0]]), torch.tensor([SCENE_TYPE_TARGET_COUNT], dtype=torch.int32)
-
-    class FakeBackend:
-        @staticmethod
-        def observe_at(_timestamp, *, format, next_observation_timestamp):
-            del format, next_observation_timestamp
-            return SimpleNamespace(
-                timestamp=float(_timestamp),
-                next_scheduled_event_time=None,
-                context={
-                    "candidate_skill_context": [
-                        {
-                            "skill_id": 10,
-                            "skill_key": "a",
-                            "kind": 1,
-                            "potency": 100,
-                            "cast_time": {"seconds": 2.5},
-                            "is_legal": True,
-                        },
-                        {"skill_id": 11, "skill_key": "b", "kind": 0, "is_legal": False},
-                    ],
-                    "candidate_state_context": {
-                        "player_state_feature_keys": ["before.mp"],
-                        "tokens": [
-                            {"player_state": [0.0], "resource_state": [None]},
-                            {"player_state": [0.2], "resource_state": [True]},
-                        ]
-                    },
-                    "skill_history_context": [
-                        {"skill_id": 12, "skill_key": "old", "kind": 1, "potency": 10},
-                        {"skill_id": 13, "skill_key": "new", "kind": 0, "potency": 20},
-                    ],
-                    "state_history_context": {
-                        "tokens": [
-                            {"player_state": [0.0], "resource_state": [False]},
-                            {"player_state": [0.0], "resource_state": [None]},
-                        ]
-                    },
-                },
-            )
+    class Backend:
+        def observe_at(self, timestamp, *, format, next_observation_timestamp):
+            assert format == "vector"
+            return SimpleNamespace(context=deepcopy(canonical))
 
     schema = SimpleNamespace(
-        state_group_feature_keys={"player_state": ("mp",), "resource_state": ("af",)},
-        state_vector_dim=lambda: 2,
-        scene_feature_dim=lambda: 2,
+        state_group_feature_keys={"player_state": player_keys},
+        state_vector_dim=lambda: 4, scene_feature_dim=lambda: 2,
     )
     builder = LiveBatchBuilder(
-        backend=FakeBackend(),
-        vocab=FakeVocab(),
-        normalizer=FakeNormalizer(),
-        schema=schema,
-        skill_feature_names=("kind", "potency", "cast_time.seconds"),
-        scene_provider=FakeProvider(),
-        device=torch.device("cpu"),
-        max_history=1,
-        candidate_action_keys=("b", "a"),
+        backend=Backend(), vocab=SimpleNamespace(require_lookup=lambda value, **kwargs: int(value)),
+        normalizer=SimpleNamespace(
+            normalize=lambda value, *args, **kwargs: value,
+            normalize_skill_features=lambda value, *args: value,
+        ), schema=schema, skill_feature_names=("kind", "potency"),
+        scene_provider=SimpleNamespace(at_time=lambda _: (torch.empty((0, 2)), torch.empty(0, dtype=torch.int32))),
+        device=torch.device("cpu"), max_history=max_history,
+        action_keys=("fire", "ogcd_wait"), action_is_gcd=(True, False),
     )
-    state = SimpleNamespace(time=1.0, target_count=1, gcd_remaining=0.0)
-    batch, keys = builder.build(state)
-    assert keys == ["b", "a"]
-    assert batch["history_action_keys"] == [["new"]]
-    assert batch["history_skill_ids"].tolist() == [[113]]
-    assert batch["history_skill_features"].tolist() == [[[0.0, 21.0, 1.0]]]
-    assert batch["candidate_skill_ids"].tolist() == [[111, 110]]
-    assert batch["candidate_skill_features"].tolist() == [[[0.0, 1.0, 1.0], [1.0, 101.0, 3.5]]]
-    assert batch["candidate_legal_mask"].tolist() == [[False, True]]
-    assert batch["history_state_vectors"].tolist() == [[[2.0, 2.0]]]
-    assert batch["history_state_null_mask"].tolist() == [[[False, True]]]
-    torch.testing.assert_close(
-        batch["candidate_state_vectors"],
-        torch.tensor([[[2.2, 3.0], [2.0, 2.0]]]),
-    )
-    assert batch["candidate_state_null_mask"].tolist() == [[[False, False], [False, True]]]
-    assert batch["scene_vectors"].shape == (1, 1, 2)
+    return builder, canonical
 
-    empty_state_values, empty_state_null_mask = builder._build_state_tensors([])
-    assert empty_state_values.shape == (0, 2)
-    assert empty_state_null_mask.shape == (0, 2)
-    assert builder._build_skill_features([]).shape == (0, 3)
-    with pytest.raises(ValueError, match="player_state vector width mismatch"):
-        builder._build_state_tensors(
-            [{"player_state": [0.0, 1.0], "resource_state": [None]}]
+
+def _append_live_history(canonical, index, *, after=100.0, request_time=None, skill_id=None):
+    canonical["skill_history_context"].append({
+        "skill_id": index if skill_id is None else skill_id, "skill_key": "fire", "kind": 1, "potency": 50.0,
+    })
+    state_values = {"previous_action_after.time_seconds": float(index - 1), "previous_action_after.mp": 200.0,
+                    "request_state.time_seconds": float(index) if request_time is None else request_time,
+                    "request_state.mp": after}
+    canonical["state_history_context"]["tokens"].append({
+        "player_state": [state_values[key] for key in canonical["state_history_context"]["player_state_feature_keys"]],
+    })
+
+
+@pytest.mark.parametrize("remaining,expected", ((0.0, [True, False]), (1.0, [False, True])))
+def test_live_current_state_is_independent_of_action_legality_and_preserves_phase(remaining, expected):
+    builder, canonical = _live_builder_fixture()
+    batch, keys = builder.build(SimpleNamespace(time=1.0, gcd_remaining=remaining))
+    assert keys == ["fire", "ogcd_wait"]
+    assert batch["current_state_vectors"].shape == (1, 4)
+    assert batch["current_state_vectors"].tolist() == [[0.0, 200.0, 0.0, 200.0]]
+    assert batch["current_state_null_mask"].tolist() == [[False, False, False, False]]
+    assert batch["history_skill_ids"].shape == (1, 0)
+    assert batch["action_legal_mask"].tolist() == [expected]
+    canonical["action_legal_mask"] = [False, False]
+    new_batch, _ = builder.build(SimpleNamespace(time=2.0, gcd_remaining=remaining))
+    torch.testing.assert_close(new_batch["current_state_vectors"], batch["current_state_vectors"])
+    assert not new_batch["action_legal_mask"].any()
+
+
+def test_live_history_window_keeps_matching_skill_and_state_rows():
+    builder, canonical = _live_builder_fixture(max_history=2)
+    for index in (1, 2, 3):
+        _append_live_history(canonical, index, after=float(index))
+    batch, _ = builder.build(SimpleNamespace(time=4.0, gcd_remaining=0.0))
+    assert batch["history_skill_ids"].tolist() == [[2, 3]]
+    assert batch["history_state_vectors"].tolist() == [[[1.0, 200.0, 2.0, 2.0], [2.0, 200.0, 3.0, 3.0]]]
+    assert batch["history_skill_features"].tolist() == [[[1.0, 50.0], [1.0, 50.0]]]
+    assert batch["history_action_keys"] == [["fire", "fire"]]
+    empty, _ = builder.build(SimpleNamespace(time=4.0, gcd_remaining=0.0), max_history=0)
+    assert empty["history_skill_ids"].shape == (1, 0)
+    assert empty["current_state_vectors"].shape == (1, 4)
+
+
+@pytest.mark.parametrize("context_key", ["state_history_context", "current_state_context"])
+@pytest.mark.parametrize("change", ["missing", "reordered", "renamed"])
+def test_live_batch_rejects_same_width_state_field_drift(context_key, change):
+    builder, canonical = _live_builder_fixture()
+    _append_live_history(canonical, 1)
+    context = canonical[context_key]
+    if change == "missing":
+        context.pop("player_state_feature_keys")
+    elif change == "reordered":
+        context["player_state_feature_keys"] = tuple(reversed(context["player_state_feature_keys"]))
+        for token in context["tokens"]:
+            token["player_state"].reverse()
+    else:
+        context["player_state_feature_keys"] = ("wrong.time_seconds", *context["player_state_feature_keys"][1:])
+    with pytest.raises(ValueError, match="feature keys differ from model input contract"):
+        builder.build_from_canonical(canonical, gcd_phase=True, max_history=2)
+
+
+@pytest.mark.parametrize("raw_id", [None, 900001])
+def test_live_history_does_not_map_missing_or_unknown_skill_to_padding(raw_id):
+    from common.policy.data import SkillVocab
+
+    builder, canonical = _live_builder_fixture()
+    builder._vocab = SkillVocab.from_entries([(3577, 1), (0, 2)])
+    _append_live_history(canonical, 1)
+    canonical["skill_history_context"][0]["skill_id"] = raw_id
+    with pytest.raises(ValueError, match="live replay raw_skill_id"):
+        builder.build_from_canonical(canonical, gcd_phase=True, max_history=2)
+
+
+def test_live_history_cache_reuses_unchanged_rows_and_refreshes_mutated_rows(monkeypatch):
+    builder, canonical = _live_builder_fixture(max_history=3)
+    calls = []
+    real_build = builder._build_cached_history_row
+
+    def track(*args, **kwargs):
+        calls.append(args[0]["skill_id"])
+        return real_build(*args, **kwargs)
+
+    monkeypatch.setattr(builder, "_build_cached_history_row", track)
+    _append_live_history(canonical, 1)
+    _append_live_history(canonical, 2)
+    state = SimpleNamespace(time=3.0, gcd_remaining=0.0)
+    first, _ = builder.build(state)
+    repeated, _ = builder.build(state)
+    assert calls == [1, 2]
+    assert repeated["history_state_vectors"].data_ptr() == first["history_state_vectors"].data_ptr()
+    canonical["current_state_context"]["tokens"][0]["player_state"] = [0.0, 150.0, 0.0, 150.0]
+    refreshed, _ = builder.build(state)
+    assert calls == [1, 2]
+    assert refreshed["current_state_vectors"].tolist() == [[0.0, 150.0, 0.0, 150.0]]
+    _append_live_history(canonical, 3)
+    builder.build(state)
+    assert calls == [1, 2, 3]
+    _append_live_history(canonical, 4)
+    slid, _ = builder.build(state)
+    assert calls == [1, 2, 3, 4]
+    assert slid["history_skill_ids"].tolist() == [[2, 3, 4]]
+    canonical["state_history_context"]["tokens"][-1]["player_state"] = [3.0, 10.0, 4.0, None]
+    changed, _ = builder.build(state)
+    assert calls[-1] == 4
+    assert changed["history_state_null_mask"][0, -1].tolist() == [False, False, False, True]
+
+
+@pytest.mark.parametrize("mutation,error", (
+    (lambda c: c.update(action_keys=[]), "nonempty"),
+    (lambda c: c.update(action_keys=["ogcd_wait", "fire"]), "order differs"),
+    (lambda c: c.update(action_legal_mask=[True]), "legality width"),
+    (lambda c: c["current_state_context"].update(tokens=[]), "exactly one"),
+    (lambda c: c["current_state_context"].update(tokens=[{"player_state": [1.0]}]), "vector width"),
+))
+def test_live_builder_rejects_incomplete_or_reordered_action_contract(mutation, error):
+    builder, canonical = _live_builder_fixture()
+    mutation(canonical)
+    with pytest.raises(ValueError, match=error):
+        builder.build(SimpleNamespace(time=0.0, gcd_remaining=0.0))
+
+
+def test_live_and_cached_decisions_use_identical_caller_phase():
+    builder, canonical = _live_builder_fixture()
+    state = SimpleNamespace(time=1.0, gcd_remaining=0.03)
+    batch, _ = builder.build(state)
+    cached, _ = builder.build_from_canonical(canonical, gcd_phase=True, max_history=2)
+    torch.testing.assert_close(batch["action_legal_mask"], cached["action_legal_mask"])
+    torch.testing.assert_close(batch["current_state_vectors"], cached["current_state_vectors"])
+
+@pytest.mark.parametrize("reordered_fields", [False, True])
+@pytest.mark.parametrize("identical_snapshots", [False, True])
+def test_live_history_cache_preserves_same_skill_same_time_rows_and_sliding_window(
+    monkeypatch, reordered_fields, identical_snapshots,
+):
+    from copy import deepcopy
+
+    builder, canonical = _live_builder_fixture(max_history=2, reorder_state_fields=reordered_fields)
+    calls = []
+    real_build = builder._build_cached_history_row
+
+    def track(*args, **kwargs):
+        calls.append(args[0]["skill_id"])
+        return real_build(*args, **kwargs)
+
+    monkeypatch.setattr(builder, "_build_cached_history_row", track)
+    _append_live_history(canonical, 1, after=100.0, request_time=10.0, skill_id=7)
+    _append_live_history(canonical, 2, after=120.0, request_time=10.0, skill_id=7)
+    if identical_snapshots:
+        canonical["state_history_context"]["tokens"][1] = deepcopy(
+            canonical["state_history_context"]["tokens"][0]
         )
+    state = SimpleNamespace(time=12.0, gcd_remaining=0.0)
+    first, _ = builder.build(state)
+    assert first["history_skill_ids"].tolist() == [[7, 7]]
+    assert len(builder._cached_history_rows) == 2
+    assert builder._cached_history_rows[0].identity == builder._cached_history_rows[1].identity
+    assert builder._cached_history_rows[0].identity[-1] == 10.0
+    repeated, _ = builder.build(state)
+    assert calls == [7, 7]
+    assert repeated["history_state_vectors"].data_ptr() == first["history_state_vectors"].data_ptr()
 
-    with pytest.raises(ValueError, match="max_history"):
-        replay_context_module._tail_history([], -1)
-    assert flatten_numeric_mapping(
-        {"flag": True, "kind": "x", "nested": {"keep": 2, "drop": 3}},
-        ignored_keys={"kind", "drop"},
-    ) == {"flag": 1.0, "nested.keep": 2.0}
-    with pytest.raises(ValueError, match="must be a list"):
-        replay_context_module._extract_nullable_vector(None)
-    with pytest.raises(ValueError, match="unsupported"):
-        replay_context_module._extract_nullable_vector([object()])
+    _append_live_history(canonical, 3, after=140.0, request_time=10.0, skill_id=7)
+    slid, _ = builder.build(state)
+    mp_index = canonical["state_history_context"]["player_state_feature_keys"].index("request_state.mp")
+    assert slid["history_skill_ids"].tolist() == [[7, 7]]
+    assert slid["history_state_vectors"][0, :, mp_index].tolist() == [
+        100.0 if identical_snapshots else 120.0, 140.0,
+    ]
+    assert calls == [7, 7, 7]
 
-    class EmptyBackend:
-        @staticmethod
-        def observe_at(_timestamp, *, format, next_observation_timestamp):
-            del format, next_observation_timestamp
-            return SimpleNamespace(
-                timestamp=1.0,
-                next_scheduled_event_time=None,
-                context={
-                    "candidate_skill_context": [],
-                    "candidate_state_context": {"tokens": []},
-                    "skill_history_context": [],
-                    "state_history_context": {"tokens": []},
-                },
-            )
-
-    empty_builder = LiveBatchBuilder(
-        backend=EmptyBackend(),
-        vocab=FakeVocab(),
-        normalizer=FakeNormalizer(),
-        schema=schema,
-        skill_feature_names=(),
-        scene_provider=FakeProvider(),
-        device=torch.device("cpu"),
-        max_history=1,
-        candidate_action_keys=("a",),
-    )
-    with pytest.raises(RuntimeError, match="no candidate actions"):
-        empty_builder.build(state)
+    canonical["skill_history_context"][-1]["potency"] = 99.0
+    changed, _ = builder.build(state)
+    assert changed["history_skill_features"][0, -1].tolist() == [1.0, 99.0]
+    assert calls == [7, 7, 7, 7]
 
 
-def test_live_batch_builder_reuses_history_rows_and_refreshes_changed_rows():
-    class FakeNormalizer:
-        @staticmethod
-        def normalize_skill_features(values, _names):
-            normalized = values + 1.0
-            normalized[..., 0] = values[..., 0]
-            return normalized
-
-        @staticmethod
-        def normalize(values, _group, *, null_mask):
-            del null_mask
-            return values + 2.0
-
-    class CountingBuilder(LiveBatchBuilder):
-        def __init__(self, **kwargs):
-            super().__init__(**kwargs)
-            self.built_history_keys = []
-
-        def _build_cached_history_row(self, skill_token, state_token, identity):
-            self.built_history_keys.append(str(skill_token.get("skill_key", "")))
-            return super()._build_cached_history_row(skill_token, state_token, identity)
-
-    def make_builder():
-        schema = SimpleNamespace(
-            state_group_feature_keys={
-                "player_state": ("mp",),
-                "resource_state": ("af",),
-            },
-            state_vector_dim=lambda: 2,
-            scene_feature_dim=lambda: 1,
-        )
-        class FakeSceneProvider:
-            def __init__(self):
-                self.calls = 0
-
-            def at_time(self, _time):
-                self.calls += 1
-                return (
-                    torch.zeros((0, 1), dtype=torch.float32),
-                    torch.zeros((0,), dtype=torch.int32),
-                )
-
-        scene_provider = FakeSceneProvider()
-        builder = CountingBuilder(
-            backend=SimpleNamespace(),
-            vocab=SimpleNamespace(
-                require_lookup=lambda value, **_kwargs: int(value) + 100
-            ),
-            normalizer=FakeNormalizer(),
-            schema=schema,
-            skill_feature_names=("kind", "potency"),
-            scene_provider=scene_provider,
-            device=torch.device("cpu"),
-            max_history=2,
-            candidate_action_keys=("candidate",),
-        )
-        builder.fake_scene_provider = scene_provider
-        return builder
-
-    def make_context(history, *, candidate_legal=True, candidate_mp=0.0):
-        skill_history = [
-            {
-                "skill_id": skill_id,
-                "skill_key": key,
-                "kind": 1,
-                "potency": potency,
-                "time_seconds": float(skill_id),
-                "gcd_index": skill_id,
-            }
-            for skill_id, key, potency in history
-        ]
-        state_history = [
-            {
-                "player_state": [float(skill_id)],
-                "resource_state": [bool(skill_id % 2)],
-            }
-            for skill_id, _key, _potency in history
-        ]
-        return {
-            "candidate_skill_context": [
-                {
-                    "skill_id": 99,
-                    "skill_key": "candidate",
-                    "kind": 1,
-                    "potency": 50,
-                    "is_legal": candidate_legal,
-                }
-            ],
-            "candidate_state_context": {
-                "player_state_feature_keys": ["before.mp"],
-                "tokens": [
-                    {
-                        "player_state": [candidate_mp],
-                        "resource_state": [True],
-                    }
-                ],
-            },
-            "skill_history_context": skill_history,
-            "state_history_context": {"tokens": state_history},
-        }
-
-    def assert_batches_equal(actual, expected):
-        actual_batch, actual_keys = actual
-        expected_batch, expected_keys = expected
-        assert actual_keys == expected_keys
-        assert actual_batch.keys() == expected_batch.keys()
-        for name, actual_value in actual_batch.items():
-            expected_value = expected_batch[name]
-            if isinstance(actual_value, torch.Tensor):
-                assert torch.equal(actual_value, expected_value), name
-            else:
-                assert actual_value == expected_value, name
-
-    builder = make_builder()
-    first = make_context([(1, "first", 10), (2, "second", 20)])
-    first_batch, _ = builder.build_from_canonical(first, gcd_phase=True, max_history=2)
-    assert builder.built_history_keys == ["first", "second"]
-    repeated_batch, _ = builder.build_from_canonical(first, gcd_phase=True, max_history=2)
-    assert repeated_batch["scene_vectors"] is first_batch["scene_vectors"]
-    assert (
-        repeated_batch["history_skill_features"].data_ptr()
-        == first_batch["history_skill_features"].data_ptr()
-    )
-    assert builder.fake_scene_provider.calls == 1
-
-    # 历史窗口滚动时复用仍在窗口内的行，只转换新追加的一行。
-    appended = make_context([(1, "first", 10), (2, "second", 20), (3, "third", 30)])
-    cached_appended = builder.build_from_canonical(appended, gcd_phase=True, max_history=2)
-    assert builder.built_history_keys == ["first", "second", "third"]
-    fresh_appended = make_builder().build_from_canonical(appended, gcd_phase=True, max_history=2)
-    assert_batches_equal(cached_appended, fresh_appended)
-
-    # 同一事件标识的历史内容若变化，必须重算该行，不能命中旧特征。
-    changed = make_context([(2, "second", 20), (3, "third", 300)])
-    changed["state_history_context"]["tokens"][1]["player_state"] = [300.0]
-    cached_changed = builder.build_from_canonical(changed, gcd_phase=True, max_history=2)
-    assert builder.built_history_keys == ["first", "second", "third", "third"]
-    assert cached_changed[0]["history_skill_features"][0, -1, 1].item() == 301.0
-    fresh_changed = make_builder().build_from_canonical(changed, gcd_phase=True, max_history=2)
-    assert_batches_equal(cached_changed, fresh_changed)
-
-    # 候选状态每步重建；候选变化不能被历史缓存遮蔽。
-    dynamic = make_context(
-        [(2, "second", 20), (3, "third", 300)],
-        candidate_legal=False,
-        candidate_mp=0.75,
-    )
-    dynamic["state_history_context"]["tokens"][1]["player_state"] = [300.0]
-    cached_dynamic = builder.build_from_canonical(dynamic, gcd_phase=False, max_history=2)
-    assert builder.built_history_keys == ["first", "second", "third", "third"]
-    assert cached_dynamic[0]["candidate_legal_mask"].tolist() == [[False]]
-    fresh_dynamic = make_builder().build_from_canonical(dynamic, gcd_phase=False, max_history=2)
-    assert_batches_equal(cached_dynamic, fresh_dynamic)
+@pytest.mark.parametrize("invalid_time", [None, True, float("nan"), float("inf")])
+def test_live_history_rejects_invalid_request_timestamp(invalid_time):
+    builder, canonical = _live_builder_fixture()
+    _append_live_history(canonical, 1)
+    request_index = canonical["state_history_context"]["player_state_feature_keys"].index("request_state.time_seconds")
+    canonical["state_history_context"]["tokens"][0]["player_state"][request_index] = invalid_time
+    with pytest.raises(ValueError, match="request_state.time_seconds must be finite numeric"):
+        builder.build_from_canonical(canonical, gcd_phase=True, max_history=2)
 
 
-@pytest.mark.parametrize("remaining,expected", [
-    (2.45, [False, True, True]),
-    (0.05, [True, False, False]),
-    (0.0, [True, False, False]),
-])
-def test_live_and_cached_decisions_use_caller_phase_without_model_timing_fields(remaining, expected):
-    canonical = {
-        "candidate_skill_context": [
-            {"skill_id": i, "skill_key": key, "kind": kind, "is_legal": True}
-            for i, (key, kind) in enumerate([("fire", 1), ("swiftcast", 0), ("ogcd_wait", 0)])
-        ],
-        "candidate_state_context": {
-            "player_state_feature_keys": ["before.mp"],
-            "tokens": [{"player_state": [6000.0]} for _ in range(3)],
-        },
-        "skill_history_context": [],
-        "state_history_context": {"tokens": []},
-    }
-    builder = LiveBatchBuilder(
-        backend=SimpleNamespace(observe_at=lambda *args, **kwargs: SimpleNamespace(context=canonical)),
-        vocab=SimpleNamespace(require_lookup=lambda value, **kwargs: value),
-        normalizer=SimpleNamespace(normalize=lambda values, *args, **kwargs: values,
-                                   normalize_skill_features=lambda values, *args: values),
-        schema=SimpleNamespace(state_group_feature_keys={"player_state": ["before.mp"]},
-                               state_vector_dim=lambda: 1, scene_feature_dim=lambda: 1),
-        skill_feature_names=("kind",),
-        scene_provider=SimpleNamespace(at_time=lambda _: (torch.zeros((0, 1)), torch.zeros(0, dtype=torch.int32))),
-        device=torch.device("cpu"), max_history=4,
-    )
-    live, _ = builder.build(SimpleNamespace(time=0, gcd_remaining=remaining))
-    cached, _ = builder.build_from_canonical(
-        canonical, gcd_phase=expected[0], max_history=0,
-    )
-    assert live["candidate_legal_mask"].tolist() == [expected]
-    assert torch.equal(live["candidate_legal_mask"], cached["candidate_legal_mask"])
-    # 同样的模型数值输入，过滤阶段完全由调用方决定。
-    assert live["candidate_state_vectors"].tolist() == [[[6000.0]] * 3]
-    assert torch.equal(live["candidate_state_vectors"], cached["candidate_state_vectors"])
+def test_live_history_rejects_old_skill_timestamp_even_with_new_state_schema():
+    builder, canonical = _live_builder_fixture()
+    _append_live_history(canonical, 1)
+    canonical["skill_history_context"][0]["time_seconds"] = 1.0
+    with pytest.raises(ValueError, match="live skill token must not include time_seconds"):
+        builder.build_from_canonical(canonical, gcd_phase=True, max_history=2)

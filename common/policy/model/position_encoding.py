@@ -10,7 +10,7 @@ class RotaryPositionEncoding(nn.Module):
     """对 attention 的 Q/K 应用 RoPE。
 
     位置编号由输入编码器按样本生成；本模块只负责频率表和 Q/K 旋转，
-    不感知 scene、history、candidate 等业务分区。
+    不感知场景、历史与当前状态等业务分区。
 
     旋转采用与 LLaMA/Hugging Face/GPT-NeoX 一致的标准正旋转 R(+θ)，
     外部复刻（C# 推理、独立参考实现）可直接套用主流 rotate_half 公式。

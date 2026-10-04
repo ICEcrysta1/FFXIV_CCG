@@ -6,6 +6,10 @@
 
 ### Added
 
+- 新增请求时冻结的 `ModelStateSnapshot`，以动作实例身份关联上一动作后与本次请求快照；历史裁剪、fork 和 restore 保留已知前序状态，真实执行前后快照仍独立保存。
+- 新增独立历史技能与状态 embedding 的 PCA 视图，分别拟合有效 token、排除 padding，并支持空历史与单条历史；原始技能词表 embedding 图继续保留。
+- 新增固定动作词表 `ActionSpace`，将启用的真实技能与 policy 动作按稳定 Ordinal 顺序合并；`action_keys`、`action_to_vocab_id` 和 `action_is_gcd` 随缓存与 checkpoint 输入契约保存，离线恢复不依赖本机当前 YAML 重建输出顺序或动作类型。
+- 新增完全因果策略模型的六阶段修改计划，记录已完成的候选移除、独立 embedding、跨步状态语义、回退规则、技能时间字段删除和状态在前的 601 个非场景 token 布局，补齐最终字段及归一化对照；100 份数据训练由用户本人执行。
 - 新增共享模型和多队列引擎的批量回放入口 `run_replays()`，以及命令行 `--scenes` / `--workers`；各场景使用独立会话与随机流，按输入顺序输出独立报告。根目录 `.env` 的 `AUTOREGRESSIVE_REPLAY_WORKERS` 统一限制验证 PPG、GRPO 和普通回放的存活队列数及 PyTorch 推理 batch，未配置时为 1，示例配置为 4，可设置为 16。
 - 新增统一多队列状态机 `SimulationEngine` / `SimulationSession` 与 Python `InProcessEngine`：默认最多容纳 16 个队列，共享同一职业的规则、配置和技能表，各队列独立保存基础 GCD、战斗状态、事件时间线、策略历史和输出缓存；支持同一 Python 进程内多线程驱动，按队列加锁并原子返回执行结果与时间游标，提供独立重置、释放和统计接口。容量耗尽立即报错，关闭后的句柄永久失效，单队列请求错误不关闭其他队列。
 - 新增 BC 与 GRPO 共用的优化器装配和独立 `optimizer.yaml`：通过 `optimizers.bc`、`optimizers.grpo` 分别选择 `adamw` 或 `muon`，集中配置各阶段的学习率、权重衰减、warmup 与 Muon 参数。`adamw` 更新全部参数；`muon` 将 Transformer 主干 Attention/FFN 矩阵交给原生 Muon，输入编码、embedding、评分头、归一化和 bias 继续使用 AdamW，并记录参数分组与更新设置。
@@ -19,6 +23,24 @@
 
 ### Changed
 
+- 完成因果策略模型阶段 5：正式输入改为 `scene, S1, A1, ..., SH, AH, S_current`，历史状态位于对应技能之前，最新状态沿用普通状态的字段、编码参数与类型；每个有效 token 独立使用连续 RoPE 位置，padding 不占逻辑位置。黑魔 Artzip 采用用户设置的 `history_capacity: 300`，单位仍为动作条数，600 个历史 token 加最新状态共 601 个非场景 token，场景容量 200 时最大物理容量为 801。
+- 同步调整状态与技能的显式位置、角色编号、因果方向测试、KV-cache、分析及 ONNX 校验；checkpoint 输入契约升级为 14、ONNX 部署契约升级为 18，manifest 保持 11，明确拒绝技能在前的旧 checkpoint 与部署包。原始字段与完整 history bank 未变，compiled cache v21/转换 v23 继续复用，历史窗口不进入缓存身份。
+- 阶段 5 全量 Python 验证为 1392 项通过、4 项按条件跳过，包含 GELU/SwiGLU 的 FP32 CPU 与严格 BF16 CUDA 四套小模型 ONNX 导出。指定 M5s 的 491 个样本、102150 行历史访问通过最终顺序检查；直接初始化 768 维、12 层 BF16 完整模型，真实状态机驱动 M5s Top-1 216 次及空场景采样 330 次决策，共核对 77070 行历史，覆盖 `ogcd_wait`、两段累计 DoT 推进和 300 对历史滑窗，违例为 0。模型未加载 checkpoint、未训练，权重哈希前后相同；本阶段未修改 C# 状态机或桥接契约。
+- 完成因果策略模型阶段 4：黑魔技能数值输入由 19 维减为 18 维，其余技能字段（包括合法性）、取值与归一化保持；历史和最新状态仍为 86 维，保留两段各自的时间、累计直接与 DoT 威力。技能输入输出继续共享语义 embedding，主干宽度保持 768；阶段 4 验收时仍为 384 条动作、技能在前的过渡布局，最终顺序和容量见阶段 5。
+- 在线历史缓存使用状态的 `request_state.time_seconds` 和技能身份定位，并继续逐字段比较完整技能与状态；转换、缓存、checkpoint 与在线输入明确拒绝旧技能时间字段和不匹配的技能宽度。同步升级为 PythonBridge 15、canonical 13、checkpoint 输入 13、训练样本 10、compiled cache v21/转换 v23、ONNX 部署 17/manifest 11、GRPO 轨迹 4；归一化契约保持 2，旧产物需重建。
+- 阶段 4 全量 Python 验证为 1367 项通过、4 项按条件跳过，C# 为 292 项通过，PythonBridge 重建成功；GELU/SwiGLU 的 FP32 CPU 与严格 BF16 CUDA 四套小模型 ONNX 导出及对齐验证通过。指定 M5s 的 491 个样本对照中，旧技能矩阵删除时间列后与新 18 维矩阵完全相同，其余 bank 和样本字段一致；完整历史 120295 行及 384 动作窗口 114624 行访问均无错行。未启动训练，真实已训练 checkpoint 的完整部署验收留待后续。
+- 实现因果策略模型阶段 3 的跨步状态语义：历史与最新状态统一使用 `previous_action_after.*`、`request_state.*`，分别表示上一步动作后与当前请求时状态；无法取得前序后状态时，两段均复制本次请求状态。两段继续保留累计直接与 DoT 威力，黑魔状态 86 维、技能数值特征 19 维不变。
+- `ogcd_wait` 与真实技能共用状态字段、编码和回退规则，等待决策落实时保存真实后状态，删除 fork 推进到未来观测时刻的预演；排队动作冻结原始请求快照，较早动作后来生效不能覆盖较新的等待或动作后基准。
+- 场景字段改写按两段状态自身的原始秒数与 feature keys 查询，不再从技能生效时间减读条时长推算请求时刻。历史真实执行统计通过独立 `execution_metrics` 保存且不进入 embedding；回放最终累计威力、基础 GCD 和黑魔状态分析读取当前 `request_state`。
+- 跨步状态与稳定历史契约同步升级为 PythonBridge 14、canonical 12、checkpoint 输入 12、训练样本 9、compiled cache v20/转换 v22、ONNX 部署 16/manifest 10、GRPO 轨迹 3；归一化契约保持 2。旧状态语义或历史错行缓存需要重编译，旧 checkpoint、轨迹与部署包明确拒绝。技能时间字段和 384 条动作的过渡布局暂时保留，字段删减与最终 601 token 布局属于后续阶段。
+- 阶段 3 初始单元与导出验证为 Python 1340 项通过、4 项按条件跳过，清理复验 48 项通过，C# 286 项通过，PythonBridge 重建无 warning/error；GELU/SwiGLU 的 FP32 CPU 与严格 BF16 CUDA 四套小模型 ONNX 导出通过。历史缓存修复后，关联 Python 回归 199 项、C# 全量 290 项通过，指定 M5s 的 491 个样本通过 compiled 历史输入整链路验收。
+- 完成无候选因果策略模型迁移的阶段 1、2：技能、状态和场景分别直接编码到 `d_model`（当前黑魔配置为 768）并独立 LayerNorm，历史与当前状态共用状态投影、null 投影、归一化和 state 类型；正式输入暂为 `scene, skill_i, state_i, ..., current_state`，全部采用因果注意力。阶段 1、2 交付时保留黑魔技能 19 维、状态 86 维、原 before/after 语义、null masks 与合法性字段；跨步状态语义已在阶段 3 完成，最终 601 token 交错上下文属于后续阶段。
+- `CausalPolicyModel` 从最新状态 hidden 预测固定动作词表：删除 `output_adapter`，直接与 `input_encoder.skill_embed.weight[action_to_vocab_id]` 点积。技能输入和输出共用唯一的 d_model 维语义参数表及 FP32 主权重，输出映射支持非 identity 索引，不扩大 Muon 参数范围。
+- 阶段 2 的历史读取窗口为 384 条动作，每条展开为技能与状态两个 token；场景容量 200 时最多为 `200 + 2×384 + 1 = 969` 个物理 token。有效技能和状态使用各自连续的 RoPE 位置，padding 不占逻辑位置；KV-cache 分别记录动作数与 token 数，训练诊断、trace、分析和 ONNX 同步消费新布局。模型分析按显式位置识别当前状态 query，避免将历史状态混入决策 PCA 或错误绑定技能身份。
+- 阶段 1 将 C# canonical 输出改为单个 `current_state_context` 与 `action_keys/action_legal_mask/action_values`：当时的过渡状态两段均取请求时快照，阶段 3 已统一改为“上一步动作后＋当前请求时”的跨步语义。合法性按真实动作提交与排队语义校验；动作 mask 和动态 value 只用于执行或监督，不生成 Transformer token。转换、缓存、BC、GRPO、回放、根 CLI、分析和 ONNX 同步使用新契约，回放保留 GCD/oGCD 阶段筛选，ONNX 输入由 12 项改为 10 项。
+- 验证 PPG 从初始当前状态和保存的归一化契约恢复基础 GCD，处理黑魔魔纹加速，拒绝缺失、null 或零 GCD；继续只统计实际执行历史的直接与 DoT 威力，保留无法推进时全零失败及逐副本平均规则。compiled cache 继续保存完整 history bank，读取窗口调整复用同一新格式缓存。
+- 阶段 2 的 checkpoint 输入契约升级为 11，保存严格的独立 token 编码描述；ONNX 部署契约升级为 15、manifest 升级为 9，明确历史容量单位、每动作两个 token、顺序和长度关系，外部输入保持 10 项。桥接 12、canonical 11、训练样本 8、compiled cache v19/转换 v20、GRPO 轨迹 2 与归一化契约保持阶段 1 版本，原始字段和完整 bank 未变，因此阶段 1 缓存继续复用；旧候选或融合 checkpoint、部署包和配置明确拒绝。
+- 补充独立编码公式与隔离、共享状态参数、共享技能 embedding 梯度与优化器唯一性、因果顺序、padding 逻辑位置、KV-cache 复用与失效、旧融合契约拒绝、分析和 ONNX 回归。阶段 2 全量 Python 验证为 1329 项通过、4 项按条件跳过；GELU/SwiGLU 的 FP32 CPU 和 BF16 CUDA 四套小模型真实 ONNX 导出通过，CUDA 禁止 CPU 算子 fallback。C# 与转换语义沿用阶段 1 已验证的实现，真实新 checkpoint 的完整部署回放及 100 份数据训练留待后续阶段。
 - 将剩余回放入口接入共享多队列：历史消融支持跨场景并行并保留各场景独立参考轨迹；ONNX `workflow all` 的空场景与真实场景验收共用一份 PyTorch 模型、一份 ORT 后端和一个状态机引擎，每条轨迹独立记录报告，失败后继续完成其他验收，发布状态由调用线程串行登记。正式 PT/ORT 对比仍保持固定 batch=1；普通 ONNX 回放也统一使用批量入口。
 - 回放与 GRPO 在每批轨迹启动前，借用同一引擎并行补齐缺失缓存，再申请回放队列；缓存编译的并发数受宿主引擎容量限制，任务只释放自己的队列，不关闭借用的引擎。模型分析缓存补编译从 Python 子进程改为进程内批量 API，并提前建立公共缓存目录，避免 Windows 并发首次创建目录时的路径解析差异；转换继续保存完整 history bank。
 - 移除单条调用自动创建独立引擎或会话的兼容路径，以及 `build_backend`、`compile_raw_training_cache`、`run_rollout_parity` 等单条包装入口。底层队列、转换任务和 replay session 必须显式接收共享引擎，回放必须接收已有 session；单条任务也通过 `run_replays`、`run_rollout_parities` 或 `compile_raw_training_caches` 提交单元素序列。同步更新调用方、公共导出和接口说明。
@@ -77,6 +99,13 @@
 
 ### Fixed
 
+- 修复 checkpoint 未保存完整输入技能词表，导致本机 YAML 增删或重排禁用技能后 embedding 行身份漂移的问题：输入契约保存全部 `raw_skill_id` ↔ `vocab_id` 映射（含禁用技能和 `ogcd_wait`），PyTorch 回放、模型分析与 ONNX 导出统一从 checkpoint 恢复；BC 复用数据集词表，续训核对完整映射及 embedding 行数。
+- 缓存读取、场景选择与 GRPO 回放按调用方提供的完整词表校验；重编译在写入前核对当前动作空间与完整词表，worker 复用父进程映射，兼容的完整 history bank 继续复用。ONNX profile 仅提供容量证据，部署词表必须与 checkpoint 一致。
+- 模型分析恢复 checkpoint 的 schema 和归一化规则；在线历史与最新状态逐项校验字段名称和顺序，缺失或未知技能 ID 明确报错，避免同宽错列或静默使用 padding。词表兼容性直接比较保存的映射，不用 YAML 哈希代替语义校验。
+- checkpoint 输入契约升级为 v15，明确拒绝缺少完整词表的旧 checkpoint；compiled cache v21、转换版本 v23 保持不变。全量 Python 测试 1431 项通过、4 项跳过，覆盖禁用技能增删与排序变化下的真实模型输入、KV cache 和 logits 一致性，以及 GRPO checkpoint 恢复和 ONNX 导出。
+- 修复同刻真实技能与 `ogcd_wait` 因时间舍入改变历史前缀的问题：真实技能生效和等待决策落实时共用递增 `HistorySequence`，按实际写入顺序合并；序号随 clone、fork 和 restore 保存，历史裁剪不重置。compiled bank 追加前校验已有技能、状态与执行统计前缀，拒绝重排或回填。
+- 重新转换 M5s 的 `fflogs_2CHK3gRfrNJxhmwb_f1_Arcadia_Petralia.json.br`，491 个样本全部通过验收：原有 9 个等待遗漏、9 个真实技能重复及 479 个样本历史输入错行均降为 0；完整历史 120295 行访问和 384 条动作窗口 114624 行访问逐项一致，491 个最新状态与修复前保持一致。
+- 清理六处仍描述候选职责的陈旧注释，并将随机回放异常提示改为“合法动作”；算法、技能字段与状态契约不变。
 - 修复动作事件载荷与策略等待快照继续持有旧历史列表导致的内存增长；状态快照只保留执行所需数据，已取消事件在失效堆条目超过阈值时重建队列，释放过期载荷与旧堆数组，避免长时间运行后持续积压。
 - 修复 BF16/FP16 模型直接更新低精度权重时，小增量在每一步被舍入丢失的问题：BC 与 GRPO 的共享 AdamW/Muon 装配统一使用 FP32 主权重及优化器状态累计更新，再同步至低精度模型，保持模型前向与 checkpoint 模型权重精度不变；更新后释放临时 FP32 梯度。优化器 checkpoint 保存主权重、原生状态及参数契约，续训保留尚未体现在低精度模型上的增量；旧 checkpoint 从已恢复的模型权重初始化主权重、提升动量精度，并明确提示历史舍入损失无法恢复。
 - GRPO 首轮回滚快照改为复制至 CPU，避免 FP32 主权重额外常驻一份 GPU 副本；磁盘与内存回滚同步恢复主权重、两套优化器状态和调度器。补充小更新累计、独立 FP32 参考、新旧 checkpoint 迁移、梯度生命周期、CUDA BF16 前后向及 GRPO 回滚回归，相关 409 项测试通过，并验证真实旧 AdamW checkpoint 的完整模型迁移。
@@ -87,6 +116,12 @@
 - PowerShell 菜单的 FFLogs 下载改用模块入口，URL 下载显式传入 `single` 子命令，修复旧调用与参数解析器不匹配的问题；CLI 示例同步修正。
 - 下载命令在事件数量或分页超限、分页时间不前进、响应缺失时拒绝保存不完整分析输入；JSON 使用 UTF-8/LF 和原子替换写入，序列化失败保留已有文件，不留下会被批量任务误跳过的半文件。
 - 战斗选择按真实 fight ID 匹配，不再把不存在的 ID 当成列表序号；`fight=last` 保存实际战斗 ID，并校验选定玩家属于下载战斗。
+
+### Removed
+
+- 从真实技能和 `ogcd_wait` 的 canonical token、技能字段模板、数值特征、归一化装配及完整 history bank 中移除绝对时间 `time_seconds`，不保留默认填零的时间列；场景查询继续使用两段状态自身的时间，内部请求、生效、读条结束及历史排序时序保留。
+- 移除历史技能/状态 pair fusion、`pair_embedding_dim` 配置、公共二次 token 投影、重复 segment embedding、输出维度适配和旧 pair embedding 分析模块，旧布局仅保留明确拒绝检查。
+- 彻底移除 C# 候选预演、候选上下文 builder 与非法候选状态生成，以及 Python 候选字段、候选顺序模块/YAML、shuffle、split attention 双向块、候选 scorer 和相关测试 helper；正式链路只保留固定输出动作词表，不保留候选 token、伪候选或候选空数组入口。
 
 ## [0.1.1] - 2026-09-26
 

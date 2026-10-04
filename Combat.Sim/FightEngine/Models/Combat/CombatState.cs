@@ -3,6 +3,8 @@
 // Additional permission: FightEngine GPLv3 Linking Exception, Version 1.0.
 // See LICENSE and LICENSE-FightEngine-Linking-Exception in the repository root.
 
+using Combat.Sim.Outputs;
+
 namespace Combat.Sim.Models.Combat;
 
 /// <summary>
@@ -79,6 +81,12 @@ public sealed class CombatState
     public Dictionary<string, StatusState> Statuses { get; set; } = new();
     public Dictionary<string, DotState> Dots { get; set; } = new();
     public List<ActionHistoryEntry> History { get; set; } = new();
+    // 与历史保留窗口独立；只跟踪最近一次已接受的真实或 policy 请求。
+    internal Guid? LastDecisionId { get; set; }
+    internal StateContext? LastDecisionAfter { get; set; }
+    // 真实技能生效与 policy 记录共用递增序号，独立于历史裁剪和输出时间舍入。
+    internal long LastHistorySequence { get; set; }
+    internal long ReserveHistorySequence() => LastHistorySequence = checked(LastHistorySequence + 1);
 
     /// <summary>
     /// 显式复制战斗状态：标量直接值拷贝，容器与元素复制；
@@ -117,6 +125,9 @@ public sealed class CombatState
             Statuses = Statuses.ToDictionary(pair => pair.Key, pair => pair.Value.Clone()),
             Dots = Dots.ToDictionary(pair => pair.Key, pair => pair.Value.Clone()),
             History = copyHistory ? new List<ActionHistoryEntry>(History) : History,
+            LastDecisionId = LastDecisionId,
+            LastDecisionAfter = LastDecisionAfter,
+            LastHistorySequence = LastHistorySequence,
         };
         clone.SetTimelineTime(Time);
         return clone;

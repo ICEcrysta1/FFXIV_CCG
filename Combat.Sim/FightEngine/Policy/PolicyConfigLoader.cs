@@ -38,7 +38,7 @@ public static class PolicyConfigLoader
             key,
             YamlValues.ToInt(YamlValues.RequireKey(data, "raw_id", path), path),
             YamlValues.ToText(YamlValues.RequireKey(data, "name", path)),
-            YamlValues.ToText(YamlValues.RequireKey(data, "candidate_kind", path)),
+            YamlValues.ToText(YamlValues.RequireKey(data, "kind", path)),
             YamlValues.ToText(YamlValues.RequireKey(data, "behavior", path)),
             YamlValues.ToDouble(YamlValues.Get(data, "value", 1.0), path),
             tags);

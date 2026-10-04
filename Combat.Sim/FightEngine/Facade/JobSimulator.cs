@@ -96,13 +96,15 @@ public sealed class JobSimulator
             requestState,
             skill,
             actualCastSeconds);
+        var modelState = RecordModelDecision(actionId, requestState, completed: false).Snapshot;
         var payload = new ActionLifecyclePayload(
             actionId,
             request,
             skill,
             requestState,
             timing,
-            submission.AcceptedTimestamp);
+            submission.AcceptedTimestamp,
+            modelState);
         _timeline.Schedule(new TimelineEvent(
             submission.AcceptedTimestamp,
             TimelineEventPriority.ActionAccepted,
@@ -179,28 +181,55 @@ public sealed class JobSimulator
     public void RestoreSnapshot(SimulationSnapshot snapshot) => _timeline.RestoreSnapshot(snapshot.DeepClone());
 
     public JobSimulator Fork() => new(_machine, _timeline.Fork(), _historyRetention);
-    // 预演只读取战斗状态，历史不参与职业规则；待结算事件及其载荷仍完整隔离。
-    internal JobSimulator ForkForPreview() => new(_machine, _timeline.Fork(includeHistory: false), _historyRetention);
+    // 策略历史快照不携带历史前缀，待结算事件与队列载荷仍完整隔离。
+    internal JobSimulator ForkWithoutHistory() => new(_machine, _timeline.Fork(includeHistory: false), _historyRetention);
 
     public Dictionary<string, object?> FormatState(string mode = "seconds") =>
         OutputRouter.Format(GetState(), mode);
 
-    public Dictionary<string, object?> FormatVectorState()
+    public Dictionary<string, object?> FormatVectorState() => FormatVectorState(GetState());
+
+    internal Dictionary<string, object?> FormatVectorState(CombatState state)
     {
-        var state = GetState();
-        return OutputRouter.FormatVectors(state, BuildCandidatePreviews());
+        var actions = BuildActionOutput(state);
+        return OutputRouter.FormatVectors(state, actions.Keys, actions.LegalMask, actions.Values);
     }
 
     public object? FormatTensorState()
     {
         var state = GetState();
-        return OutputRouter.FormatTensors(state, BuildCandidatePreviews());
+        var actions = BuildActionOutput(state);
+        return OutputRouter.FormatTensors(state, actions.Keys, actions.LegalMask, actions.Values);
     }
 
-    internal IReadOnlyList<CandidatePreview> BuildCandidatePreviews() =>
-        CandidatePreviewBuilder.BuildEntries(this, _machine);
+    private (List<string> Keys, List<bool> LegalMask, List<double> Values) BuildActionOutput(CombatState state)
+    {
+        var skills = _machine.SkillBook.EnabledSkills().OrderBy(skill => skill.Key, StringComparer.Ordinal).ToArray();
+        var queueOccupied = HasQueuedAction();
+        // 与真实 SubmitAction 使用同一接受规则；仅判断请求，不推进技能生效或复制未来状态。
+        return (skills.Select(skill => skill.Key).ToList(),
+            skills.Select(skill => _machine.EvaluateActionSubmission(state, skill, queueOccupied).Accepted).ToList(),
+            skills.Select(skill => _machine.JobMachine.ResolveActionValue(state, skill, skill.Value)).ToList());
+    }
 
     internal CombatStateMachine Rules => _machine;
+
+    /// <summary>真实动作和 policy 动作共用请求关联与状态冻结；不改变战斗时钟。</summary>
+    internal (ModelStateSnapshot Snapshot, long HistorySequence) RecordModelDecision(
+        Guid decisionId, CombatState requestState, bool completed)
+    {
+        var modelState = ModelStateSnapshot.Capture(
+            requestState.LastDecisionAfter, OutputRouter.BuildStateContext(requestState));
+        long historySequence = 0;
+        _timeline.ApplyMutation(new TimelineMutation(ApplyState: state =>
+        {
+            state.LastDecisionId = decisionId;
+            state.LastDecisionAfter = completed ? modelState.RequestState : null;
+            // 等待在决策落实时进入历史；真实技能在后续生效记录时领取序号。
+            if (completed) historySequence = state.ReserveHistorySequence();
+        }));
+        return (modelState, historySequence);
+    }
 
     internal (int History, int PendingEvents, int QueueEntries, int PendingSettlements) GetStatistics() =>
         (_timeline.HistoryCount, _timeline.PendingEventCount,
@@ -272,7 +301,8 @@ public sealed class JobSimulator
                 payload.ActionInstanceId,
                 payload.Request.Timestamp,
                 payload.AcceptedTimestamp + payload.Timing.ActualCastSeconds,
-                item.Timestamp);
+                item.Timestamp,
+                payload.ModelState);
             _historyRetention.Trim(target.History);
         });
     }

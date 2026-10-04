@@ -26,29 +26,29 @@ def test_normalizer_does_not_treat_midfield_seconds_name_as_time_rule():
     normalizer = Normalizer()
     normalizer.register_feature_keys(
         "player_state",
-        ["before.some_seconds_counter", "before.real_remaining_seconds"],
+        ["previous_action_after.some_seconds_counter", "previous_action_after.real_remaining_seconds"],
     )
 
-    assert normalizer.normalize_value("player_state", "before.some_seconds_counter", 7.0) == 7.0
-    assert normalizer.normalize_value("player_state", "before.real_remaining_seconds", 60.0) == pytest.approx(0.5)
+    assert normalizer.normalize_value("player_state", "previous_action_after.some_seconds_counter", 7.0) == 7.0
+    assert normalizer.normalize_value("player_state", "previous_action_after.real_remaining_seconds", 60.0) == pytest.approx(0.5)
 
 
 def test_normalizer_uses_fight_time_max_for_player_time_seconds():
     normalizer = Normalizer()
     normalizer.register_feature_keys(
         "player_state",
-        ["before.time_seconds", "after.time_seconds"],
+        ["previous_action_after.time_seconds", "request_state.time_seconds"],
     )
 
-    assert normalizer.normalize_value("player_state", "before.time_seconds", 900.0) == pytest.approx(0.5)
+    assert normalizer.normalize_value("player_state", "previous_action_after.time_seconds", 900.0) == pytest.approx(0.5)
     assert normalizer.normalize_value(
         "player_state",
-        "after.time_seconds",
+        "request_state.time_seconds",
         900.0,
     ) == pytest.approx(0.5)
     assert normalizer.normalize_value(
         "player_state",
-        "after.time_seconds",
+        "request_state.time_seconds",
         1800.0,
     ) == pytest.approx(1.0)
 
@@ -82,16 +82,16 @@ def test_normalizer_caches_job_max_cooldown_for_remaining_seconds(monkeypatch):
 
     normalizer = Normalizer()
     normalizer.configure_job_resources("black_mage")
-    normalizer.register_feature_keys("player_state", ["before.next_cooldown_seconds"])
+    normalizer.register_feature_keys("player_state", ["previous_action_after.next_cooldown_seconds"])
 
     assert normalizer.normalize_value(
         "player_state",
-        "before.next_cooldown_seconds",
+        "previous_action_after.next_cooldown_seconds",
         270.0,
     ) == pytest.approx(1.0)
     assert normalizer.normalize_value(
         "player_state",
-        "before.next_cooldown_seconds",
+        "previous_action_after.next_cooldown_seconds",
         135.0,
     ) == pytest.approx(0.5)
 
@@ -99,36 +99,35 @@ def test_normalizer_caches_job_max_cooldown_for_remaining_seconds(monkeypatch):
     assert calls == ["black_mage"]
 
 
-def test_normalizer_uses_fight_time_max_for_skill_time_seconds():
+def test_normalizer_rejects_removed_skill_time_feature():
     torch = pytest.importorskip("torch")
     normalizer = Normalizer()
     values = torch.tensor([[900.0], [1800.0], [1900.0]])
 
-    normalized = normalizer.normalize_skill_features(values, ("time_seconds",))
-
-    assert normalized[:, 0].tolist() == pytest.approx([0.5, 1.0, 1.0])
+    with pytest.raises(ValueError, match="skill features must not include time_seconds"):
+        normalizer.normalize_skill_features(values, ("time_seconds",))
 
 
 def test_normalizer_uses_2500_current_potency_max():
     normalizer = Normalizer()
     normalizer.register_feature_keys(
         "target_buff_state",
-        ["before.target.current_potency"],
+        ["previous_action_after.target.current_potency"],
     )
 
     assert normalizer.normalize_value(
         "target_buff_state",
-        "before.target.current_potency",
+        "previous_action_after.target.current_potency",
         1250.0,
     ) == pytest.approx(0.5)
     assert normalizer.normalize_value(
         "target_buff_state",
-        "before.target.current_potency",
+        "previous_action_after.target.current_potency",
         2500.0,
     ) == pytest.approx(1.0)
     assert normalizer.normalize_value(
         "target_buff_state",
-        "before.target.current_potency",
+        "previous_action_after.target.current_potency",
         3000.0,
     ) == pytest.approx(1.0)
 
@@ -138,26 +137,26 @@ def test_normalizer_honors_cumulative_potency_mode():
     log1p_normalizer.register_feature_keys(
         "target_buff_state",
         [
-            "before.target.cumulative_potency",
-            "before.target.current_gcd_dot_potency",
+            "previous_action_after.target.cumulative_potency",
+            "previous_action_after.target.current_gcd_dot_potency",
         ],
     )
     assert log1p_normalizer.normalize_value(
         "target_buff_state",
-        "before.target.cumulative_potency",
+        "previous_action_after.target.cumulative_potency",
         900.0,
     ) == pytest.approx(math.log1p(900.0))
     assert log1p_normalizer.normalize_value(
         "target_buff_state",
-        "before.target.current_gcd_dot_potency",
+        "previous_action_after.target.current_gcd_dot_potency",
         1250.0,
     ) == pytest.approx(0.5)
 
     divide_normalizer = Normalizer(config=NormalizerConfig(cumulative_potency_mode="divide"))
-    divide_normalizer.register_feature_keys("target_buff_state", ["before.target.cumulative_potency"])
+    divide_normalizer.register_feature_keys("target_buff_state", ["previous_action_after.target.cumulative_potency"])
     assert divide_normalizer.normalize_value(
         "target_buff_state",
-        "before.target.cumulative_potency",
+        "previous_action_after.target.cumulative_potency",
         900.0,
     ) == pytest.approx(0.5)
 
@@ -181,7 +180,6 @@ def test_normalizer_scales_scene_time_to_1800_seconds_and_preserves_other_fields
         scene_context_mode="test",
         scene_windows=(targetable_schema, target_count_schema),
         state_group_feature_keys={},
-        candidate_skill_fields=(),
         skill_history_fields=(),
     )
     values = torch.tensor(
@@ -227,20 +225,20 @@ def test_scene_window_schema_resolves_indices_once_and_reports_missing_fields():
 
 def test_normalizer_infers_job_agnostic_ready_and_timer_fields():
     normalizer = Normalizer()
-    normalizer.register_feature_keys("resource_state", ["before.some_ready", "before.some_timer"])
+    normalizer.register_feature_keys("resource_state", ["previous_action_after.some_ready", "previous_action_after.some_timer"])
 
-    assert normalizer.normalize_value("resource_state", "before.some_ready", 1.0) == 1.0
-    assert normalizer.normalize_value("resource_state", "before.some_timer", 60.0) == pytest.approx(0.5)
+    assert normalizer.normalize_value("resource_state", "previous_action_after.some_ready", 1.0) == 1.0
+    assert normalizer.normalize_value("resource_state", "previous_action_after.some_timer", 60.0) == pytest.approx(0.5)
 
 
 def test_normalizer_uses_job_resource_limits_for_state_and_skill_features():
     torch = pytest.importorskip("torch")
     normalizer = Normalizer()
     normalizer.configure_job_resources("black_mage")
-    normalizer.register_feature_keys("resource_state", ["before.astral_soul", "before.polyglot_timer"])
+    normalizer.register_feature_keys("resource_state", ["previous_action_after.astral_soul", "previous_action_after.polyglot_timer"])
 
-    assert normalizer.normalize_value("resource_state", "before.astral_soul", 99.0) == pytest.approx(1.0)
-    assert normalizer.normalize_value("resource_state", "before.polyglot_timer", 99.0) == pytest.approx(1.0)
+    assert normalizer.normalize_value("resource_state", "previous_action_after.astral_soul", 99.0) == pytest.approx(1.0)
+    assert normalizer.normalize_value("resource_state", "previous_action_after.polyglot_timer", 99.0) == pytest.approx(1.0)
 
     values = torch.tensor([[6.0, 30.0]])
     normalized = normalizer.normalize_skill_features(
@@ -257,9 +255,9 @@ def test_normalizer_uses_system_and_job_status_max_stacks():
     normalizer.register_feature_keys(
         "buff_state",
         [
-            "before.system.burst_potion.stacks",
-            "before.job.triplecast.stacks",
-            "before.target.high_thunder.stacks",
+            "previous_action_after.system.burst_potion.stacks",
+            "previous_action_after.job.triplecast.stacks",
+            "previous_action_after.target.high_thunder.stacks",
         ],
     )
 

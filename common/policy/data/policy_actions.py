@@ -11,12 +11,12 @@ from common.yaml_config import load_yaml_mapping
 
 @dataclass(frozen=True)
 class PolicyActionDefinition:
-    """不进入游戏技能表、但会进入模型候选与词表的控制动作。"""
+    """不进入游戏技能表、但会进入模型动作空间与词表的控制动作。"""
 
     key: str
     raw_id: int
     name: str
-    candidate_kind: str
+    kind: str
     behavior: str
     value: float
     tags: tuple[str, ...]
@@ -48,14 +48,14 @@ def load_policy_actions(path: Path | None = None) -> tuple[PolicyActionDefinitio
             raise ValueError(f"duplicate policy action raw_id: {raw_id}")
         raw_ids.add(raw_id)
 
-        candidate_kind = _require_text(
+        kind = _require_text(
             raw_definition,
-            "candidate_kind",
+            "kind",
             action_key=key,
         )
-        if candidate_kind not in {"gcd", "ogcd"}:
+        if kind not in {"gcd", "ogcd"}:
             raise ValueError(
-                f"unsupported policy candidate kind for {key}: {candidate_kind}"
+                f"unsupported policy action kind for {key}: {kind}"
             )
 
         raw_tags = raw_definition.get("tags", ())
@@ -67,7 +67,7 @@ def load_policy_actions(path: Path | None = None) -> tuple[PolicyActionDefinitio
                 key=key,
                 raw_id=raw_id,
                 name=_require_text(raw_definition, "name", action_key=key),
-                candidate_kind=candidate_kind,
+                kind=kind,
                 behavior=_require_text(raw_definition, "behavior", action_key=key),
                 value=float(raw_definition.get("value", 1.0)),
                 tags=tuple(str(tag) for tag in raw_tags),
