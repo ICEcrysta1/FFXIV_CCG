@@ -85,16 +85,54 @@ def test_model_input_contract_rejects_checkpoint_without_contract():
         ModelInputContract.from_checkpoint({"data_spec": {}})
 
 
+def test_model_input_contract_describes_post_role_parameterless_rms():
+    """保存精确编码位置与参数，避免将归一化放在 role 相加之前。"""
+    payload = _build_contract().to_dict()
+    assert payload["version"] == 16
+    encoding = payload["token_encoding"]
+    assert encoding["skill"] == "E[id] + Linear(skill_features)"
+    assert encoding["state"] == "Linear(state_values) + Linear(null_mask, bias=False)"
+    assert encoding["scene"] == "Linear_by_scene_type(scene_values)"
+    assert encoding["token_normalization"] == {
+        "type": "RMSNorm",
+        "position": "after_content_plus_role",
+        "eps": 1e-5,
+        "elementwise_affine": False,
+        "applications": 1,
+    }
+
+
+def test_model_input_contract_rejects_previous_content_layernorm_version():
+    """版本 15 即使使用新版描述，也不能静默恢复到新版架构。"""
+    payload = _build_contract().to_dict()
+    payload["version"] = 15
+    with pytest.raises(ValueError, match="unsupported input contract version"):
+        ModelInputContract.from_dict(payload)
+
+
+def test_model_input_contract_rejects_legacy_content_layernorm_descriptor():
+    """仅改版本号不能将三路 LayerNorm checkpoint 冒充统一 RMS 输入。"""
+    payload = _build_contract().to_dict()
+    payload["token_encoding"].update({
+        "skill": "LayerNorm(E[id] + Linear(skill_features))",
+        "state": "LayerNorm(Linear(state_values) + Linear(null_mask, bias=False))",
+        "scene": "LayerNorm(Linear_by_scene_type(scene_values))",
+    })
+    payload["token_encoding"].pop("token_normalization")
+    with pytest.raises(ValueError, match="token_encoding"):
+        ModelInputContract.from_dict(payload)
+
+
 def test_model_input_contract_rejects_previous_skill_first_contract():
     payload = _build_contract().to_dict()
-    payload["version"] = INPUT_CONTRACT_VERSION - 1
+    payload["version"] = 14
     payload["token_encoding"]["token_order"] = "scene, (skill_i, state_i)*H, current_state"
 
     with pytest.raises(ValueError, match="unsupported input contract version"):
         ModelInputContract.from_dict(payload)
 
 
-@pytest.mark.parametrize("change", ["missing", "role", "token_order", "output_projection", "state_encoder", "state_snapshots", "history_state_frozen_at"])
+@pytest.mark.parametrize("change", ["missing", "role", "token_order", "output_projection", "state_encoder", "state_snapshots", "history_state_frozen_at", "token_normalization"])
 def test_model_input_contract_requires_exact_independent_token_descriptor(change):
     payload = _build_contract().to_dict()
     assert payload["version"] == INPUT_CONTRACT_VERSION

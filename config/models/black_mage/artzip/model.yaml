@@ -22,19 +22,19 @@ precision: bf16
 
 model:
   # Transformer token 的主维度；必须能被 n_heads 整除。
-  d_model: 768
+  d_model: 384
 
   # Transformer 编码层数。
-  n_layers: 12
+  n_layers: 6
 
   # 注意力头数量；d_model 必须能被该值整除。
-  n_heads: 12
+  n_heads: 6
 
   # K/V 头数量；1 表示 MQA，可改为 n_heads 的合法因数做 GQA。
   num_kv_heads: 1
 
   # FFN 隐藏宽度；SwiGLU 的门控投影会按模型实现使用对应内部宽度。
-  ff_dim: 3072
+  ff_dim: 1536
 
   # Transformer 每层采用 Pre-LN；LayerNorm 位于注意力/FFN 子层之前。
   transformer_norm_first: true

@@ -90,6 +90,30 @@ def _validate(context, *, optimizer=None, force=False):
 
 
 @pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("legacy_encoding", ["version_15", "content_layernorm"])
+def test_resume_rejects_legacy_input_encoding_even_when_forcing_data_mismatch(
+    resume_context, force, legacy_encoding
+):
+    """数据规模豁免不能绕过输入归一化架构契约。"""
+    payload = resume_context.checkpoint["input_contract"]
+    if legacy_encoding == "version_15":
+        payload["version"] = 15
+        message = "unsupported input contract version"
+    else:
+        payload["token_encoding"].update({
+            "skill": "LayerNorm(E[id] + Linear(skill_features))",
+            "state": "LayerNorm(Linear(state_values) + Linear(null_mask, bias=False))",
+            "scene": "LayerNorm(Linear_by_scene_type(scene_values))",
+        })
+        payload["token_encoding"].pop("token_normalization")
+        message = "token_encoding"
+    # 同时制造数据规模差异；即使请求豁免，也必须先拒绝旧输入架构。
+    resume_context.checkpoint["run_config"]["max_files"] = 10
+    with pytest.raises(ValueError, match=message):
+        _validate(resume_context, force=force)
+
+
+@pytest.mark.parametrize("force", [False, True])
 def test_resume_rejects_inactive_vocab_row_drift_even_when_outputs_match(resume_context, force):
     resume_context.input_contract = replace(
         resume_context.input_contract,

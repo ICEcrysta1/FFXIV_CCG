@@ -176,8 +176,9 @@ def test_scene_projection_selects_each_type_without_data_dependent_branch(scene_
         ],
         dim=1,
     )
-    expected = model.input_encoder.scene_norm(expected)
     expected = expected + model.input_encoder.role_embed(encoded["role_ids"][:, : len(scene_types)])
+    # 场景投影先与角色相加，再和其他 token 共用一次无参数 RMS 归一化。
+    expected = expected / torch.sqrt(expected.square().mean(dim=-1, keepdim=True) + 1e-5)
     torch.testing.assert_close(encoded["tokens"][:, : len(scene_types)], expected)
 
 

@@ -16,7 +16,9 @@ from torch import nn
 
 import common.cache_compilation as cache_compilation
 from common.torch_serialization import safe_torch_load
-from common.policy.model.input_encoder import ROLE_SCENE, ROLE_STATE, ROLE_SKILL
+from common.policy.model.input_encoder import (
+    ROLE_SCENE, ROLE_STATE, ROLE_SKILL, build_position_ids, build_role_ids,
+)
 from scripts.model_analysis.common import pca_projection, skill_name_by_vocab_id
 from scripts.model_analysis import common as analysis_common
 from scripts.model_analysis.job_labels import decision_state_labels
@@ -354,6 +356,34 @@ def _analysis_context(tmp_path):
         layer_current_state_masks=[current_mask, current_mask],
         layer_metadata=layer_metadata,
     )
+
+
+def _history_input_encoding(skill, state, history_mask, *, scene_length=2):
+    """完整编码结果替身：scene/current 占位与交错历史必须可明确区分。"""
+    batch_size, history_length, dim = skill.shape
+    current = scene_length + 2 * history_length
+    tokens = torch.full((batch_size, current + 1, dim), -1000.0)
+    state_positions = (scene_length + 2 * torch.arange(history_length)).unsqueeze(0).expand(batch_size, -1)
+    skill_positions = state_positions + 1
+    tokens.scatter_(1, state_positions.unsqueeze(-1).expand(-1, -1, dim), state)
+    tokens.scatter_(1, skill_positions.unsqueeze(-1).expand(-1, -1, dim), skill)
+    tokens[:, current] = 1000.0
+    scene_mask = torch.ones((batch_size, scene_length), dtype=torch.bool)
+    prefix_valid = torch.cat((scene_mask, history_mask.repeat_interleave(2, dim=1)), dim=1)
+    valid = torch.cat((prefix_valid, torch.ones((batch_size, 1), dtype=torch.bool)), dim=1)
+    return {
+        'tokens': tokens, 'padding_mask': ~valid, 'valid': valid, 'prefix_valid': prefix_valid,
+        'scene_length': scene_length, 'history_length': history_length,
+        'history_token_length': 2 * history_length, 'prefix_length': current,
+        'position_ids': build_position_ids(
+            batch_size=batch_size, scene_length=scene_length, history_length=history_length,
+            device='cpu', scene_mask=scene_mask, history_mask=history_mask),
+        'role_ids': build_role_ids(
+            batch_size=batch_size, scene_length=scene_length, history_length=history_length, device='cpu'),
+        'history_skill_positions': skill_positions, 'history_state_positions': state_positions,
+        'current_state_position': current,
+        'current_state_positions': torch.full((batch_size,), current, dtype=torch.long),
+    }
 
 
 def test_model_analysis_metadata_and_black_mage_fallbacks():
@@ -721,11 +751,10 @@ def test_model_analysis_outputs_generate_pngs(monkeypatch, tmp_path):
     assert skill_path.is_file()
 
     class FakeHistoryEncoder:
-        @staticmethod
-        def embed_history(batch):
+        def __call__(self, batch):
             size = batch["history_skill_ids"].shape[0]
             values = torch.arange(size * 2 * 3, dtype=torch.float32).reshape(size, 2, 3)
-            return {"skill": values, "state": values + 1.0}
+            return _history_input_encoding(values, values + 1.0, batch['history_mask'])
 
     context.model.input_encoder = FakeHistoryEncoder()
     monkeypatch.setattr(history_output, "TrainingCollator", lambda: (lambda samples: {
@@ -794,7 +823,8 @@ def test_real_causal_trace_loads_metadata_and_keeps_current_query_under_token_ca
     for roles, metadata in zip(context.layer_roles, context.layer_metadata):
         assert roles.tolist() == [ROLE_STATE]
         assert set(metadata) == set(analysis_common.ANALYSIS_FEATURES)
-        assert metadata["model_logit"][0] == pytest.approx(expected_logit)
+        # trace 与 SDPA 存在 FP32 舍入差异；接近 0 时补绝对容差，保留原相对阈值。
+        assert metadata["model_logit"][0] == pytest.approx(expected_logit, rel=1e-6, abs=1e-6)
     assert all(mask.tolist() == [True] for mask in context.layer_current_state_masks)
     layer_projections, query_projections = pca_output._build_pca_cache(context)
     assert layer_projections[0][0].shape == (1, 3)
@@ -806,10 +836,9 @@ def test_history_embedding_views_exclude_padding_and_support_empty_history(monke
     context = _analysis_context(tmp_path)
     context.output_dir.mkdir(parents=True)
     class Encoder:
-        @staticmethod
-        def embed_history(_batch):
+        def __call__(self, batch):
             values = torch.tensor([[[1.0, 2.0], [float("nan"), float("nan")]]])
-            return {"skill": values, "state": values + 3.0}
+            return _history_input_encoding(values, values + 3.0, batch['history_mask'])
     context.model.input_encoder = Encoder()
     monkeypatch.setattr(history_output, "skill_name_by_vocab_id", lambda _context: {1: "fire"})
     values = {
@@ -823,14 +852,26 @@ def test_history_embedding_views_exclude_padding_and_support_empty_history(monke
 
 
 def test_history_skill_and_state_pca_fit_distinct_valid_observations(monkeypatch, tmp_path):
-    """技能与状态各拟合真实观测，padding 的 NaN 不进入任何一张图。"""
+    """显式位置只选归一化后的历史输入，scene/current 与 padding 都不能混入。"""
     context = _analysis_context(tmp_path)
     context.output_dir.mkdir(parents=True)
     observed = {
         "skill": torch.tensor([[[0.0, 1.0], [2.0, 3.0], [float("nan"), float("nan")]]]),
         "state": torch.tensor([[[10.0, 0.0], [0.0, 10.0], [float("nan"), float("nan")]]]),
     }
-    context.model.input_encoder = SimpleNamespace(embed_history=lambda _batch: observed)
+    class Encoder:
+        def __call__(self, batch):
+            encoded = _history_input_encoding(observed['skill'], observed['state'], batch['history_mask'])
+            assert encoded['history_state_positions'].tolist() == [[2, 4, 6]]
+            assert encoded['history_skill_positions'].tolist() == [[3, 5, 7]]
+            assert encoded['current_state_positions'].tolist() == [8]
+            return encoded
+
+        @staticmethod
+        def embed_history(_batch):
+            pytest.fail('PCA 必须使用正式 forward 输出，不能直接读取原始 content')
+
+    context.model.input_encoder = Encoder()
     monkeypatch.setattr(history_output, "skill_name_by_vocab_id", lambda _context: {1: "fire", 2: "ice"})
     monkeypatch.setattr(history_output, "TrainingCollator", lambda: (lambda _samples: {
         "history_skill_ids": torch.tensor([[1, 2, 0]]),
@@ -852,6 +893,51 @@ def test_history_skill_and_state_pca_fit_distinct_valid_observations(monkeypatch
     assert len(fitted) == 2
     np.testing.assert_array_equal(fitted[0], observed["skill"][0, :2].numpy())
     np.testing.assert_array_equal(fitted[1], observed["state"][0, :2].numpy())
+
+
+def test_history_pca_uses_actual_normalized_input_encoder_output(monkeypatch, tmp_path):
+    """用真实编码器核对 post-role 输入，不在分析或测试中复制 RMS 公式。"""
+    from common.policy.config import ModelConfig
+    from common.policy.model.input_encoder import CausalInputEncoder
+    from tests.training._causal_fixtures import make_batch, make_data_spec
+
+    torch.manual_seed(81)
+    encoder = CausalInputEncoder(
+        make_data_spec(), ModelConfig(d_model=8, n_layers=1, n_heads=2, ff_dim=16), vocab_size=3)
+    batch = make_batch(batch_size=2, scene_length=2, history_length=2)
+    batch['history_skill_ids'] = torch.tensor([[1, 0], [2, 1]])
+    batch['history_mask'] = torch.tensor([[True, False], [True, True]])
+    batch['scene_mask'] = torch.tensor([[False, True], [True, True]])
+    batch['history_state_vectors'] = torch.randn(2, 2, 4)
+    batch['history_skill_features'] = torch.randn(2, 2, 2)
+    batch['current_state_vectors'] = torch.randn(2, 4)
+    context = _analysis_context(tmp_path)
+    context.output_dir.mkdir(parents=True)
+    context.model.input_encoder = encoder
+    monkeypatch.setattr(history_output, 'TrainingCollator', lambda: (lambda _samples: batch))
+    monkeypatch.setattr(history_output, 'skill_name_by_vocab_id', lambda _context: {1: 'fire', 2: 'ice'})
+    returned = []
+    handle = encoder.register_forward_hook(lambda _module, _args, output: returned.append(output))
+    fitted = []
+    original = history_output.pca_projection
+
+    def record(values, components):
+        fitted.append(values.copy())
+        return original(values, components)
+
+    monkeypatch.setattr(history_output, 'pca_projection', record)
+    try:
+        paths = history_output.plot_history_embeddings(context, batch_size=2)
+    finally:
+        handle.remove()
+    assert all(path.is_file() for path in paths)
+    assert len(returned) == 1 and len(fitted) == 2
+    encoded = returned[0]
+    for actual, kind in zip(fitted, ('skill', 'state')):
+        positions = encoded[f'history_{kind}_positions']
+        expected = encoded['tokens'].gather(1, positions.unsqueeze(-1).expand(-1, -1, 8))
+        np.testing.assert_array_equal(actual, expected[batch['history_mask']].numpy())
+        np.testing.assert_allclose(np.sqrt(np.mean(actual ** 2, axis=1)), 1.0, atol=2e-5, rtol=0)
 
 
 def test_loss_landscape_directions_are_filter_normalized_and_orthogonal():

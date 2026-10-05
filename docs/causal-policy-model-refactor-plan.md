@@ -60,7 +60,7 @@ scene tokens, S1, A1, S2, A2, ..., SH, AH, S_current
 | policy wait | 不提交真实游戏技能；当前 policy 历史 after 通过分支推进到下一观测时刻获得 | [policy 历史](../Combat.Sim/FightEngine/Policy/PolicyDecisionHistory.cs) |
 | 历史容量 | 当前 `history_capacity: 384` 以历史动作条数计量；compiled cache 固定保存完整历史，窗口只在读取侧生效 | [模型 YAML](../config/models/black_mage/artzip/model.yaml)、[compiled cache](../common/policy/data/compiled_cache.py) |
 
-当前主干为 `d_model: 768`、12 层、12 个 Q head、1 个 KV head、`ff_dim: 3072`、Pre-LN、SwiGLU，Full AttnRes 关闭。本次模型迁移不同时调整这些参数或优化器算法。
+当前黑魔 Artzip 主线为 `d_model: 384`、6 层、6 个 Q head、1 个 KV head、`ff_dim: 1536`、Pre-LN、SwiGLU，Full AttnRes 关闭。输入内容独立投影，与 role 相加后统一执行一次无参数 RMSNorm（epsilon=1e-5）；主干和最终读出保留 LayerNorm。下文阶段 2 的三路输入 LayerNorm 记录迁移时的历史实现，已由上述统一输入归一化替代；checkpoint 输入契约现为 16，部署契约为 19，原始 cache 和字段归一化契约保持不变。
 
 ## 阶段顺序与检查点
 

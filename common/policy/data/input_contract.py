@@ -26,14 +26,23 @@ from .spec import DataSpec
 # 13：技能数值特征完全移除绝对时间，状态时间与其余技能字段口径保持。
 # 14：历史顺序改为状态在技能之前，因果可见范围变化，旧顺序权重不兼容。
 # 15：保存完整输入技能词表；旧 checkpoint 缺少 embedding 行的原始技能身份。
-INPUT_CONTRACT_VERSION = 15
+# 16：取消技能、状态、场景的独立 LayerNorm，content 与 role 相加后统一执行
+#     一次无参数 RMSNorm；字段、历史布局和状态机执行语义保持不变。
+INPUT_CONTRACT_VERSION = 16
 
 # 描述固定的输入结构，不作为可调运行参数；d_model 仍由保存的 model_config 提供。
 # 数据 bank 的字段与时间语义由 schema 与转换版本负责，不把读取窗口加入 cache 身份。
 TOKEN_ENCODING_CONTRACT = {
-    "skill": "LayerNorm(E[id] + Linear(skill_features))",
-    "state": "LayerNorm(Linear(state_values) + Linear(null_mask, bias=False))",
-    "scene": "LayerNorm(Linear_by_scene_type(scene_values))",
+    "skill": "E[id] + Linear(skill_features)",
+    "state": "Linear(state_values) + Linear(null_mask, bias=False)",
+    "scene": "Linear_by_scene_type(scene_values)",
+    "token_normalization": {
+        "type": "RMSNorm",
+        "position": "after_content_plus_role",
+        "eps": 1e-5,
+        "elementwise_affine": False,
+        "applications": 1,
+    },
     "role_ids": {"scene": 0, "state": 1, "skill": 2},
     "current_state_encoder": "shared_with_history_state",
     "state_snapshots": ["previous_action_after", "request_state"],

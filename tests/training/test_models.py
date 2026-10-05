@@ -507,7 +507,7 @@ def test_history_uses_independent_tokens_and_current_state_has_no_skill():
     assert encoded["history_state_positions"].tolist() == [[1, 3]]
 
 
-def test_input_encoder_routes_each_token_source_through_its_own_norm():
+def test_input_encoder_routes_all_sources_through_one_post_role_rms(monkeypatch):
     torch = pytest.importorskip("torch")
     data_spec = DataSpec(
         job_tag="black_mage",
@@ -543,24 +543,27 @@ def test_input_encoder_routes_each_token_source_through_its_own_norm():
         "scene_types": torch.zeros((1, 1), dtype=torch.int64),
         "scene_mask": torch.ones((1, 1), dtype=torch.bool),
     }
-    captured = {}
+    captured = []
+    original_rms = torch.nn.functional.rms_norm
 
-    def capture(name):
-        def hook(_module, inputs, _output):
-            captured.setdefault(name, []).append(tuple(inputs[0].shape))
-        return hook
+    def capture_rms(values, normalized_shape, *, eps):
+        captured.append((values.detach().clone(), normalized_shape, eps))
+        return original_rms(values, normalized_shape, eps=eps)
 
-    handles = [getattr(model.input_encoder, name).register_forward_hook(capture(name))
-               for name in ("skill_norm", "state_norm", "scene_norm")]
-    try:
-        model.input_encoder(batch)
-    finally:
-        for handle in handles:
-            handle.remove()
+    monkeypatch.setattr(torch.nn.functional, "rms_norm", capture_rms)
+    encoded = model.input_encoder(batch)
 
-    assert captured["skill_norm"] == [(1, 2, 8)]
-    assert captured["state_norm"] == [(1, 2, 8), (1, 8)]
-    assert captured["scene_norm"] == [(1, 1, 8)]
+    # 全部场景、交错历史和最新状态合成后，仅进入同一处 RMSNorm。
+    assert len(captured) == 1
+    values, normalized_shape, eps = captured[0]
+    assert values.shape == (1, 6, 8)
+    assert normalized_shape == (8,)
+    assert eps == 1e-5
+    scene_content = model.input_encoder.scene_proj[0](batch["scene_vectors"])
+    scene_role = model.input_encoder.role_embed(encoded["role_ids"][:, :1])
+    torch.testing.assert_close(values[:, :1], scene_content + scene_role)
+    assert not any(isinstance(module, torch.nn.LayerNorm)
+                   for module in model.input_encoder.modules())
     assert model.input_encoder.scene_proj[0].out_features == 8
     assert model.input_encoder.role_embed.num_embeddings == 3
     assert "input_encoder.cls_token" not in model.state_dict()
@@ -659,11 +662,12 @@ def test_job_model_config_loads_runtime_debug_switch(tmp_path):
 def test_black_mage_artzip_uses_current_mainline_architecture():
     config = load_run_config(Path("config/models/black_mage/artzip/config.yaml"))
 
-    assert config.model.d_model == 768
-    assert config.model.n_layers == 12
-    assert config.model.n_heads == 12
+    assert config.model.d_model == 384
+    assert config.model.n_layers == 6
+    assert config.model.n_heads == 6
     assert config.model.num_kv_heads == 1
-    assert config.model.ff_dim == 3072
+    assert config.model.ff_dim == 1536
+    assert config.model.transformer_norm_first is True
     assert config.model.transformer_activation == "swiglu"
     assert config.model.history_capacity == 300
     assert config.model.full_attention_residuals is False

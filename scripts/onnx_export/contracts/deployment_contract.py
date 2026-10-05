@@ -33,7 +33,8 @@ from ..runtime.tensor_runtime import GOLDEN_FORMAT, golden_encoding
 # 16：状态改为请求时冻结的跨步快照，同宽旧状态语义与旧部署包不兼容。
 # 17：技能数值输入删除绝对时间列，旧技能宽度与对应部署包不兼容。
 # 18：历史 token 改为状态、技能顺序，拒绝同宽但因果语义不同的旧部署包。
-DEPLOYMENT_CONTRACT_VERSION = 18
+# 19：删除独立内容 LayerNorm，内容与角色相加后统一无参数 RMS 归一化。
+DEPLOYMENT_CONTRACT_VERSION = 19
 DEPLOYMENT_MANIFEST_VERSION = 11
 MANIFEST_SCHEMA_FILENAME = "manifest.schema.json"
 

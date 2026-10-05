@@ -28,15 +28,12 @@ class CausalInputEncoder(nn.Module):
         self.config = config
         self.skill_embed = nn.Embedding(vocab_size, d_model, padding_idx=0)
         self.skill_feat_proj = nn.Linear(data_spec.skill_feature_dim, d_model)
-        self.skill_norm = nn.LayerNorm(d_model)
         self.state_proj = nn.Linear(data_spec.state_dim, d_model)
         self.state_null_proj = nn.Linear(data_spec.state_dim, d_model, bias=False)
-        self.state_norm = nn.LayerNorm(d_model)
         self.scene_proj = nn.ModuleList(
             nn.Linear(data_spec.scene_dim, d_model)
             for _ in range(data_spec.num_scene_types)
         )
-        self.scene_norm = nn.LayerNorm(d_model)
         self.role_embed = nn.Embedding(3, d_model)
 
     @property
@@ -78,14 +75,12 @@ class CausalInputEncoder(nn.Module):
             dim=2,
             index=scene_type_indices.expand(-1, -1, 1, d_model),
         ).squeeze(2)
-        scene_embeds = self.scene_norm(scene_embeds)
-
         history = self.embed_history(batch)
         # 请求时冻结的状态位于该次技能之前；技能只能读取此前已知的状态。
         history_tokens = torch.stack((history["state"], history["skill"]), dim=2).reshape(
             batch_size, history_token_length, d_model,
         )
-        # 历史与最新状态使用同一个投影和归一化，不增加特殊当前状态参数。
+        # 历史与最新状态使用同一个投影，不增加特殊当前状态参数。
         current_state = self._embed_state(
             batch["current_state_vectors"],
             batch.get("current_state_null_mask"),
@@ -111,6 +106,8 @@ class CausalInputEncoder(nn.Module):
             device=device,
         )
         tokens = content_tokens + self.role_embed(role_ids)
+        # 全部角色合成后统一尺度，不去均值，也不引入可学习仿射参数。
+        tokens = torch.nn.functional.rms_norm(tokens, (d_model,), eps=1e-5)
 
         current_state_position = scene_length + history_token_length
         current_state_positions = torch.full(
@@ -147,14 +144,12 @@ class CausalInputEncoder(nn.Module):
         }
 
     def embed_history(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-        """返回独立的历史技能、状态 embedding，均为 d_model 维。"""
+        """返回历史技能、状态的原始 content；role 和 RMSNorm 由 forward 统一施加。"""
         self._materialize_compact_history(batch)
         self._validate_batch(batch)
         return {
-            "skill": self.skill_norm(
-                self.skill_embed(batch["history_skill_ids"])
-                + self.skill_feat_proj(batch["history_skill_features"]),
-            ),
+            "skill": self.skill_embed(batch["history_skill_ids"])
+            + self.skill_feat_proj(batch["history_skill_features"]),
             "state": self._embed_state(
                 batch["history_state_vectors"],
                 batch.get("history_state_null_mask"),
@@ -162,12 +157,10 @@ class CausalInputEncoder(nn.Module):
         }
 
     def _embed_state(self, values: torch.Tensor, null_mask: torch.Tensor | None) -> torch.Tensor:
-        """历史状态和当前状态共用相同的数值、缺失值投影与归一化。"""
+        """历史状态和当前状态共用相同的数值与缺失值投影。"""
         if null_mask is None:
             null_mask = torch.zeros_like(values, dtype=torch.bool)
-        return self.state_norm(
-            self.state_proj(values) + self.state_null_proj(null_mask.to(dtype=values.dtype)),
-        )
+        return self.state_proj(values) + self.state_null_proj(null_mask.to(dtype=values.dtype))
 
     def _materialize_compact_history(self, batch: dict[str, torch.Tensor]) -> None:
         """在 GPU 上按 end/length 从 source bank gather 出模型原有的 dense 窗口。"""

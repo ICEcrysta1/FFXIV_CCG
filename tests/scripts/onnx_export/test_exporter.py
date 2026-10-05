@@ -519,11 +519,11 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
     loaded = DeploymentManifest.load(output / "manifest.json")
     assert loaded.contract.data_spec == data_spec
 
-    # 即使输入张量宽度一致，旧历史融合布局也必须被版本门禁拒绝。
-    previous_state_contract = deepcopy(manifest["contract"])
-    previous_state_contract["contract_version"] = DEPLOYMENT_CONTRACT_VERSION - 1
+    # 即使张量布局一致，仍使用独立内容 LayerNorm 的旧部署契约也必须拒绝。
+    previous_input_norm_contract = deepcopy(manifest["contract"])
+    previous_input_norm_contract["contract_version"] = DEPLOYMENT_CONTRACT_VERSION - 1
     with pytest.raises(ValueError, match="unsupported deployment contract version"):
-        DeploymentContract.from_dict(previous_state_contract)
+        DeploymentContract.from_dict(previous_input_norm_contract)
 
     fixed_inputs = make_inputs(
         data_spec,

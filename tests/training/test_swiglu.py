@@ -251,16 +251,15 @@ def test_independent_skill_and_state_embeddings_match_explicit_formula(activatio
     state_content = F.linear(batch["history_state_vectors"], encoder.state_proj.weight, encoder.state_proj.bias) + F.linear(
         batch["history_state_null_mask"].double(), encoder.state_null_proj.weight,
     )
-    expected_skill = F.layer_norm(skill_content, (8,), encoder.skill_norm.weight, encoder.skill_norm.bias, encoder.skill_norm.eps)
-    expected_state = F.layer_norm(state_content, (8,), encoder.state_norm.weight, encoder.state_norm.bias, encoder.state_norm.eps)
-    torch.testing.assert_close(actual["skill"], expected_skill, atol=1e-12, rtol=1e-12)
-    torch.testing.assert_close(actual["state"], expected_state, atol=1e-12, rtol=1e-12)
+    # 独立内容投影不先归一化；role 相加后的统一 RMS 由完整编码入口负责。
+    torch.testing.assert_close(actual["skill"], skill_content, atol=1e-12, rtol=1e-12)
+    torch.testing.assert_close(actual["state"], state_content, atol=1e-12, rtol=1e-12)
     assert not any("pair_fusion" in name for name, _ in encoder.named_parameters())
 
 
 @pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
 def test_model_resolves_one_activation_for_every_activation_site(activation):
-    """保留全部主干激活覆盖，输入三路编码保持独立线性投影与归一化。"""
+    """保留全部主干激活和 LayerNorm，输入内容保持独立线性投影。"""
     model = CausalPolicyModel(
         _activation_spec(),
         _activation_config(activation),
@@ -269,9 +268,10 @@ def test_model_resolves_one_activation_for_every_activation_site(activation):
     expected = resolve_pointwise_activation(activation)
 
     assert model.encoder.layers[0].activation is expected
-    assert isinstance(model.input_encoder.skill_norm, nn.LayerNorm)
-    assert isinstance(model.input_encoder.state_norm, nn.LayerNorm)
-    assert isinstance(model.input_encoder.scene_norm, nn.LayerNorm)
+    assert not any(isinstance(module, nn.LayerNorm) for module in model.input_encoder.modules())
+    assert all(isinstance(layer.norm1, nn.LayerNorm) and isinstance(layer.norm2, nn.LayerNorm)
+               for layer in model.encoder.layers)
+    assert isinstance(model.encoder.norm, nn.LayerNorm)
     model.eval()
     assert model(_activation_batch())["logits"].shape == (1, 2)
 
