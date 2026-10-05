@@ -88,7 +88,7 @@ def test_model_input_contract_rejects_checkpoint_without_contract():
 def test_model_input_contract_describes_post_role_parameterless_rms():
     """保存精确编码位置与参数，避免将归一化放在 role 相加之前。"""
     payload = _build_contract().to_dict()
-    assert payload["version"] == 16
+    assert payload["version"] == 17
     encoding = payload["token_encoding"]
     assert encoding["skill"] == "E[id] + Linear(skill_features)"
     assert encoding["state"] == "Linear(state_values) + Linear(null_mask, bias=False)"
@@ -100,6 +100,45 @@ def test_model_input_contract_describes_post_role_parameterless_rms():
         "elementwise_affine": False,
         "applications": 1,
     }
+
+
+def test_model_input_contract_describes_parameterless_backbone_rms():
+    """主干两处子层和最终输出固定使用同一无参数 RMS 规则。"""
+    encoding = _build_contract().to_dict()["token_encoding"]
+    assert encoding["backbone_normalization"] == {
+        "type": "RMSNorm",
+        "positions": [
+            "encoder.layers[*].norm1",
+            "encoder.layers[*].norm2",
+            "encoder.norm",
+        ],
+        "eps": 1e-5,
+        "elementwise_affine": False,
+    }
+
+
+def test_model_input_contract_rejects_previous_backbone_layernorm_version():
+    """版本 16 的主干 LayerNorm 权重不能通过新版输入字段静默复用。"""
+    payload = _build_contract().to_dict()
+    payload["version"] = 16
+    payload["token_encoding"].pop("backbone_normalization")
+    with pytest.raises(ValueError, match="unsupported input contract version"):
+        ModelInputContract.from_dict(payload)
+
+
+@pytest.mark.parametrize("legacy_backbone", ["missing", "layernorm", "gamma_rms"])
+def test_model_input_contract_rejects_forged_parameterless_backbone_descriptor(legacy_backbone):
+    """仅把旧模型的版本号改成 17，不能掩盖主干归一化算法或参数差异。"""
+    payload = _build_contract().to_dict()
+    backbone = payload["token_encoding"]["backbone_normalization"]
+    if legacy_backbone == "missing":
+        payload["token_encoding"].pop("backbone_normalization")
+    elif legacy_backbone == "layernorm":
+        backbone.update({"type": "LayerNorm", "elementwise_affine": True})
+    else:
+        backbone["elementwise_affine"] = True
+    with pytest.raises(ValueError, match="token_encoding"):
+        ModelInputContract.from_dict(payload)
 
 
 def test_model_input_contract_rejects_previous_content_layernorm_version():
@@ -132,7 +171,7 @@ def test_model_input_contract_rejects_previous_skill_first_contract():
         ModelInputContract.from_dict(payload)
 
 
-@pytest.mark.parametrize("change", ["missing", "role", "token_order", "output_projection", "state_encoder", "state_snapshots", "history_state_frozen_at", "token_normalization"])
+@pytest.mark.parametrize("change", ["missing", "role", "token_order", "output_projection", "state_encoder", "state_snapshots", "history_state_frozen_at", "token_normalization", "backbone_normalization"])
 def test_model_input_contract_requires_exact_independent_token_descriptor(change):
     payload = _build_contract().to_dict()
     assert payload["version"] == INPUT_CONTRACT_VERSION

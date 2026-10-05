@@ -28,7 +28,9 @@ from .spec import DataSpec
 # 15：保存完整输入技能词表；旧 checkpoint 缺少 embedding 行的原始技能身份。
 # 16：取消技能、状态、场景的独立 LayerNorm，content 与 role 相加后统一执行
 #     一次无参数 RMSNorm；字段、历史布局和状态机执行语义保持不变。
-INPUT_CONTRACT_VERSION = 16
+# 17：主干 attention/FFN 子层与最终输出改用无参数 RMSNorm，固定保存主干
+#     归一化位置；旧 LayerNorm 和带可学习尺度的 RMSNorm 权重均不兼容。
+INPUT_CONTRACT_VERSION = 17
 
 # 描述固定的输入结构，不作为可调运行参数；d_model 仍由保存的 model_config 提供。
 # 数据 bank 的字段与时间语义由 schema 与转换版本负责，不把读取窗口加入 cache 身份。
@@ -42,6 +44,16 @@ TOKEN_ENCODING_CONTRACT = {
         "eps": 1e-5,
         "elementwise_affine": False,
         "applications": 1,
+    },
+    "backbone_normalization": {
+        "type": "RMSNorm",
+        "positions": [
+            "encoder.layers[*].norm1",
+            "encoder.layers[*].norm2",
+            "encoder.norm",
+        ],
+        "eps": 1e-5,
+        "elementwise_affine": False,
     },
     "role_ids": {"scene": 0, "state": 1, "skill": 2},
     "current_state_encoder": "shared_with_history_state",
@@ -107,7 +119,7 @@ class ModelInputContract:
                 f"{version!r} != {INPUT_CONTRACT_VERSION}"
             )
         if payload.get("token_encoding") != TOKEN_ENCODING_CONTRACT:
-            raise ValueError("input contract token_encoding does not match independent skill/state tokens")
+            raise ValueError("input contract token_encoding does not match the fixed token and backbone encoding")
         if not isinstance(payload.get("skill_vocab"), Mapping):
             raise ValueError("input contract missing complete skill_vocab; restore it from the original training metadata")
         skill_vocab = SkillVocab.from_dict(payload["skill_vocab"])

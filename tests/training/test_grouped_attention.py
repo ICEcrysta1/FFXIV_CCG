@@ -35,7 +35,7 @@ def _make_encoder(
             norm_first=True,
         ),
         1,
-        norm=nn.LayerNorm(8),
+        norm=nn.RMSNorm(8, eps=1e-5, elementwise_affine=False),
     ).eval()
     encoder.rotary_position_encoding = RotaryPositionEncoding(8 // num_heads)
     return encoder

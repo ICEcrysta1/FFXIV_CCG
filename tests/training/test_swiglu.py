@@ -124,6 +124,9 @@ def test_existing_ffn_keeps_torch_weights_forward_and_gradients(activation, norm
     )
     torch.manual_seed(41)
     original = nn.TransformerEncoderLayer(**kwargs)
+    # 参考层只替换归一化；投影初始化、FFN、attention 和残差布局继续由 PyTorch 实现。
+    original.norm1 = nn.RMSNorm(8, eps=1e-5, elementwise_affine=False, dtype=torch.float64)
+    original.norm2 = nn.RMSNorm(8, eps=1e-5, elementwise_affine=False, dtype=torch.float64)
     torch.manual_seed(41)
     current = TraceableTransformerEncoderLayer(**kwargs)
 
@@ -145,23 +148,99 @@ def test_existing_ffn_keeps_torch_weights_forward_and_gradients(activation, norm
         torch.testing.assert_close(parameter.grad, original_parameter.grad, atol=0, rtol=0)
 
 
+@pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
 @pytest.mark.parametrize("norm_first", (True, False))
-def test_swiglu_eval_does_not_bypass_gate_with_fused_gelu_path(norm_first, monkeypatch):
+def test_eval_does_not_bypass_rms_norm_with_fused_layer_norm_path(activation, norm_first, monkeypatch):
     layer = TraceableTransformerEncoderLayer(
         d_model=8, nhead=2, dim_feedforward=24, dropout=0.0,
-        activation="swiglu", batch_first=True, norm_first=norm_first,
+        activation=activation, batch_first=True, norm_first=norm_first,
         dtype=torch.float64,
     ).eval()
     x = torch.randn(2, 3, 8, dtype=torch.float64)
     expected = layer(x)
 
     def reject_gelu_fastpath(*args, **kwargs):
-        pytest.fail("SwiGLU must not use the fused ReLU/GELU encoder path")
+        pytest.fail("RMSNorm must not use the fused LayerNorm encoder path")
 
     monkeypatch.setattr(torch, "_transformer_encoder_layer_fwd", reject_gelu_fastpath)
     with torch.no_grad():
         actual = layer(x)
     torch.testing.assert_close(actual, expected, atol=1e-12, rtol=1e-12)
+
+
+@pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
+@pytest.mark.parametrize("norm_first", (True, False))
+def test_outer_encoder_eval_keeps_unparameterized_rms_path(activation, norm_first, monkeypatch):
+    """外层 Encoder 也不能把无参数 RMS 的层交给 LayerNorm 专用融合路径。"""
+    layer = TraceableTransformerEncoderLayer(
+        d_model=8, nhead=2, dim_feedforward=24, dropout=0.0,
+        activation=activation, batch_first=True, norm_first=norm_first,
+        dtype=torch.float64,
+    )
+    encoder = nn.TransformerEncoder(
+        layer, 2,
+        norm=nn.RMSNorm(8, eps=1e-5, elementwise_affine=False, dtype=torch.float64),
+    ).eval()
+    x = torch.randn(2, 3, 8, dtype=torch.float64)
+    expected = encoder(x)
+
+    def reject_layer_norm_fastpath(*args, **kwargs):
+        pytest.fail("RMSNorm encoder must not use the fused LayerNorm path")
+
+    monkeypatch.setattr(torch, "_transformer_encoder_layer_fwd", reject_layer_norm_fastpath)
+    with torch.no_grad():
+        actual = encoder(x)
+    torch.testing.assert_close(actual, expected, atol=1e-12, rtol=1e-12)
+
+
+def test_layer_rms_norm_honors_custom_epsilon_without_affine_parameters():
+    layer = TraceableTransformerEncoderLayer(
+        d_model=8, nhead=2, layer_norm_eps=2e-4, dtype=torch.float64,
+    )
+    for norm in (layer.norm1, layer.norm2):
+        assert isinstance(norm, nn.RMSNorm)
+        assert norm.eps == 2e-4
+        assert norm.elementwise_affine is False
+        assert list(norm.parameters()) == []
+
+
+@pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
+def test_model_rms_norm_preserves_nonzero_mean_and_shared_forward_gradients(activation):
+    """以非零均值输入区分 RMS 与 LN，并验证正式前向和 trace 共用归一化。"""
+    torch.manual_seed(57)
+    model = CausalPolicyModel(
+        _activation_spec(), _activation_config(activation), vocab_size=4,
+    ).double().eval()
+    norms = [model.encoder.norm]
+    for layer in model.encoder.layers:
+        norms.extend((layer.norm1, layer.norm2))
+    values = torch.arange(1, 9, dtype=torch.float64).reshape(1, 8).requires_grad_(True)
+    expected = values / torch.sqrt(values.square().mean(dim=-1, keepdim=True) + 1e-5)
+    for norm in norms:
+        assert norm.elementwise_affine is False
+        assert norm.eps == 1e-5
+        assert list(norm.parameters()) == []
+        actual = norm(values)
+        torch.testing.assert_close(actual, expected, atol=1e-12, rtol=1e-12)
+        assert actual.mean() > 0
+        gradient = torch.autograd.grad(actual.square().sum(), values)[0]
+        assert torch.isfinite(gradient).all()
+        assert torch.count_nonzero(gradient) > 0
+
+    batch = {
+        key: value.double() if value.is_floating_point() else value
+        for key, value in _activation_batch().items()
+    }
+    output = model(batch)
+    traced = model.trace(batch)
+    torch.testing.assert_close(
+        output["logits"], model.score_hidden(traced.encoded, traced.hidden, batch),
+        atol=1e-12, rtol=1e-12,
+    )
+    output["logits"].square().mean().backward()
+    for parameter in model.parameters():
+        assert parameter.grad is not None
+        assert torch.isfinite(parameter.grad).all()
 
 
 @pytest.mark.parametrize("activation", ("gelu", "relu", "swiglu"))
@@ -259,7 +338,7 @@ def test_independent_skill_and_state_embeddings_match_explicit_formula(activatio
 
 @pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
 def test_model_resolves_one_activation_for_every_activation_site(activation):
-    """保留全部主干激活和 LayerNorm，输入内容保持独立线性投影。"""
+    """保留全部主干激活，支路与最终输出统一使用无参数 RMSNorm。"""
     model = CausalPolicyModel(
         _activation_spec(),
         _activation_config(activation),
@@ -269,9 +348,10 @@ def test_model_resolves_one_activation_for_every_activation_site(activation):
 
     assert model.encoder.layers[0].activation is expected
     assert not any(isinstance(module, nn.LayerNorm) for module in model.input_encoder.modules())
-    assert all(isinstance(layer.norm1, nn.LayerNorm) and isinstance(layer.norm2, nn.LayerNorm)
+    assert all(isinstance(layer.norm1, nn.RMSNorm) and isinstance(layer.norm2, nn.RMSNorm)
                for layer in model.encoder.layers)
-    assert isinstance(model.encoder.norm, nn.LayerNorm)
+    assert isinstance(model.encoder.norm, nn.RMSNorm)
+    assert not any(isinstance(module, nn.LayerNorm) for module in model.encoder.modules())
     model.eval()
     assert model(_activation_batch())["logits"].shape == (1, 2)
 

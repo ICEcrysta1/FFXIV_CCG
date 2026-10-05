@@ -114,6 +114,31 @@ def test_resume_rejects_legacy_input_encoding_even_when_forcing_data_mismatch(
 
 
 @pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("legacy_backbone", ["version_16", "missing", "layernorm", "gamma_rms"])
+def test_resume_rejects_legacy_backbone_even_when_forcing_data_mismatch(
+    resume_context, force, legacy_backbone
+):
+    """输入字段相同时，数据规模豁免仍不能跳过主干归一化契约。"""
+    payload = resume_context.checkpoint["input_contract"]
+    if legacy_backbone == "version_16":
+        payload["version"] = 16
+        payload["token_encoding"].pop("backbone_normalization")
+        message = "unsupported input contract version"
+    elif legacy_backbone == "missing":
+        payload["token_encoding"].pop("backbone_normalization")
+        message = "token_encoding"
+    else:
+        backbone = payload["token_encoding"]["backbone_normalization"]
+        backbone["elementwise_affine"] = True
+        if legacy_backbone == "layernorm":
+            backbone["type"] = "LayerNorm"
+        message = "token_encoding"
+    resume_context.checkpoint["run_config"]["max_files"] = 10
+    with pytest.raises(ValueError, match=message):
+        _validate(resume_context, force=force)
+
+
+@pytest.mark.parametrize("force", [False, True])
 def test_resume_rejects_inactive_vocab_row_drift_even_when_outputs_match(resume_context, force):
     resume_context.input_contract = replace(
         resume_context.input_contract,

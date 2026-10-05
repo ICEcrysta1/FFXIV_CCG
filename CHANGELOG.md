@@ -23,10 +23,12 @@
 
 ### Changed
 
-- 将技能、状态和场景输入的独立 LayerNorm 合并为统一输入 RMSNorm：内容投影与 scene/state/skill 的 role embedding 相加后，只执行一次无参数 RMSNorm（`eps=1e-5`），不去均值；历史与当前状态继续共享投影，技能输入与输出继续共享语义 embedding。主干仍采用带可学习缩放、偏移的 Pre-LN LayerNorm。
+- Transformer 主干 attention、FFN 的子层归一化及最终输出归一化统一改为无参数 RMSNorm（`eps=1e-5`），不去均值、不设置可学习缩放或偏移；正式模型保留 Pre-Norm 残差结构。全部激活显式关闭 PyTorch 的 LayerNorm 专用融合路径，普通前向、trace、KV-cache 与 ONNX 使用一致的归一化计算。
+- 将技能、状态和场景输入的独立 LayerNorm 合并为统一输入 RMSNorm：内容投影与 scene/state/skill 的 role embedding 相加后，只执行一次无参数 RMSNorm（`eps=1e-5`），不去均值；历史与当前状态继续共享投影，技能输入与输出继续共享语义 embedding。
 - 黑魔 Artzip 的正式模型规模调整为 6 层、384 维、6 个 Query 头、FFN 1536 维；保留 1 个 KV 头、SwiGLU、300 条历史动作和 200 个场景 token 容量。
-- checkpoint 输入契约升级为 16、ONNX 部署契约升级为 19，manifest 保持 11；明确拒绝旧输入归一化契约及其 checkpoint、部署包。原始字段、状态机与完整 history bank 未变，compiled cache v21/转换 v23 和 PythonBridge 15 继续复用。
+- checkpoint 输入契约升级为 17、ONNX 部署契约升级为 20，manifest 保持 11；固定保存主干无参数 RMSNorm 的类型、位置与 epsilon，明确拒绝旧输入编码、LayerNorm 主干或带可学习尺度的 RMSNorm checkpoint 和对应部署包。原始字段、状态机与完整 history bank 未变，compiled cache v21/转换 v23 和 PythonBridge 15 继续复用。
 - 历史技能、状态 PCA 改为读取正式输入编码器产生的 content + role + RMSNorm token，并排除 padding；补齐统一归一化次数、空场景/历史、dense/compact 一致性、BF16 梯度、旧 checkpoint 拒绝和 ONNX 导出回归验证。
+- 主干 RMSNorm 相关验证为 527 项通过、1 项按条件跳过，覆盖非零均值、无参数、有限梯度、activation checkpoint、Muon 参数边界和 KV-cache 一致性；GELU/SwiGLU 的 FP32 CPU 与严格 BF16 CUDA 四套小模型 ONNX 实际导出、padding 与动作一致性校验通过，CUDA BF16 训练反向和参数更新通过。此次为架构与部署图验证，训练后的 std 趋势及真实 checkpoint 完整回放仍需新训练产物确认。
 - 完成因果策略模型阶段 5：正式输入改为 `scene, S1, A1, ..., SH, AH, S_current`，历史状态位于对应技能之前，最新状态沿用普通状态的字段、编码参数与类型；每个有效 token 独立使用连续 RoPE 位置，padding 不占逻辑位置。黑魔 Artzip 采用用户设置的 `history_capacity: 300`，单位仍为动作条数，600 个历史 token 加最新状态共 601 个非场景 token，场景容量 200 时最大物理容量为 801。
 - 同步调整状态与技能的显式位置、角色编号、因果方向测试、KV-cache、分析及 ONNX 校验；checkpoint 输入契约升级为 14、ONNX 部署契约升级为 18，manifest 保持 11，明确拒绝技能在前的旧 checkpoint 与部署包。原始字段与完整 history bank 未变，compiled cache v21/转换 v23 继续复用，历史窗口不进入缓存身份。
 - 阶段 5 全量 Python 验证为 1392 项通过、4 项按条件跳过，包含 GELU/SwiGLU 的 FP32 CPU 与严格 BF16 CUDA 四套小模型 ONNX 导出。指定 M5s 的 491 个样本、102150 行历史访问通过最终顺序检查；直接初始化 768 维、12 层 BF16 完整模型，真实状态机驱动 M5s Top-1 216 次及空场景采样 330 次决策，共核对 77070 行历史，覆盖 `ogcd_wait`、两段累计 DoT 推进和 300 对历史滑窗，违例为 0。模型未加载 checkpoint、未训练，权重哈希前后相同；本阶段未修改 C# 状态机或桥接契约。

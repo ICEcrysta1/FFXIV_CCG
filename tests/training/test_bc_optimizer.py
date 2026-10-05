@@ -98,7 +98,11 @@ def test_muon_groups_only_transformer_projection_matrices(num_kv_heads):
     assert {id(parameter) for parameter in grouped} == {id(parameter) for parameter in model.parameters()}
     adamw_names = set(groups["adamw"]["param_names"])
     assert "encoder.attention_residual.pseudo_queries" in adamw_names
-    assert "encoder.layers.0.norm1.weight" in adamw_names
+    assert "encoder.attention_residual.key_norms.0.weight" in adamw_names
+    # 主干 RMSNorm 无参数；Full AttnRes 路由自身的尺度仍归 AdamW 管理。
+    assert all(not name.startswith((
+        "encoder.layers.0.norm1.", "encoder.layers.0.norm2.", "encoder.norm.",
+    )) for name in muon_names | adamw_names)
     assert all(name in adamw_names for name, _ in model.named_parameters() if (
         name.startswith("input_encoder.") or name.endswith(".bias")
     ))

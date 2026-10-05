@@ -143,6 +143,18 @@ def test_manifest_schema_strictly_rejects_fused_capacity_metadata(field, value):
         validator.validate(payload)
 
 
+@pytest.mark.parametrize("previous_version", (18, 19))
+def test_manifest_schema_rejects_previous_layernorm_deployment_versions(previous_version):
+    jsonschema = pytest.importorskip("jsonschema")
+    schema_path = Path(export_module.__file__).parents[1] / "manifest.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    version_schema = schema["$defs"]["contract"]["properties"]["contract_version"]
+    validator = jsonschema.Draft202012Validator(version_schema)
+    validator.validate(DEPLOYMENT_CONTRACT_VERSION)
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(previous_version)
+
+
 def test_failed_export_keeps_previous_valid_directory(tmp_path, monkeypatch):
     checkpoint = tmp_path / "checkpoint.pt"
     checkpoint.write_bytes(b"checkpoint")
@@ -460,7 +472,7 @@ def test_ort_session_failure_reports_dependency_reinstall(tmp_path):
 
 @pytest.mark.parametrize("activation", ("gelu", "swiglu"))
 def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activation):
-    pytest.importorskip("onnx")
+    onnx = pytest.importorskip("onnx")
     pytest.importorskip("onnxruntime")
     pytest.importorskip("onnxscript")
     checkpoint = tmp_path / "checkpoint.pt"
@@ -494,6 +506,9 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
         "torch_export_report.md",
     } <= {path.name for path in output.iterdir()}
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["manifest_version"] == DEPLOYMENT_MANIFEST_VERSION
+    assert manifest["contract"]["contract_version"] == DEPLOYMENT_CONTRACT_VERSION
+    assert manifest["contract"]["model_input_contract"] == json.loads(json.dumps(_input_contract.to_dict()))
     assert manifest["contract"]["capacity"]["padding_direction"] == "right"
     assert manifest["contract"]["capacity"]["history_capacity"] == 4
     assert manifest["contract"]["capacity"]["history_capacity_unit"] == "actions"
@@ -508,22 +523,23 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
     assert manifest["contract"]["model_config"]["d_model"] == 16
     assert manifest["contract"]["model_config"]["transformer_activation"] == activation
     assert manifest["model"]["external_data"] is False
-    # RoPE 删除了原先的大型 learned absolute position table；小 fixture 中
-    # 重复的 LayerNorm 常量会被 ONNX exporter 去重，因此该统计值不再等价于
-    # “所有 PyTorch 参数逐元素保留”，但仍需覆盖绝大多数模型权重。
+    # 导出常量折叠可能合并初始化值，因此仍以保留绝大多数模型权重作为验收。
     assert manifest["model"]["retained_float_initializer_ratio"] >= 0.98
     assert manifest["model"]["onnx_other_float_initializer_max_elements"] <= 1
+    exported_model = onnx.load(output / "model.onnx")
+    assert not any(node.op_type == "LayerNormalization" for node in exported_model.graph.node)
+    assert not any(".norm" in tensor.name for tensor in exported_model.graph.initializer)
     assert [
         item["name"] for item in manifest["contract"]["tensor_outputs"]
     ] == ["raw_logits"]
     loaded = DeploymentManifest.load(output / "manifest.json")
     assert loaded.contract.data_spec == data_spec
 
-    # 即使张量布局一致，仍使用独立内容 LayerNorm 的旧部署契约也必须拒绝。
-    previous_input_norm_contract = deepcopy(manifest["contract"])
-    previous_input_norm_contract["contract_version"] = DEPLOYMENT_CONTRACT_VERSION - 1
+    # 同宽且仍保留主干 LayerNorm 的旧部署契约必须拒绝。
+    previous_layernorm_contract = deepcopy(manifest["contract"])
+    previous_layernorm_contract["contract_version"] = DEPLOYMENT_CONTRACT_VERSION - 1
     with pytest.raises(ValueError, match="unsupported deployment contract version"):
-        DeploymentContract.from_dict(previous_input_norm_contract)
+        DeploymentContract.from_dict(previous_layernorm_contract)
 
     fixed_inputs = make_inputs(
         data_spec,
@@ -926,7 +942,7 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 @pytest.mark.parametrize("activation", ("gelu", "swiglu"))
 def test_small_bf16_model_exports_and_runs_on_strict_cuda(tmp_path, activation):
-    pytest.importorskip("onnx")
+    onnx = pytest.importorskip("onnx")
     ort = pytest.importorskip("onnxruntime")
     pytest.importorskip("onnxscript")
     if "CUDAExecutionProvider" not in ort.get_available_providers():
@@ -935,7 +951,7 @@ def test_small_bf16_model_exports_and_runs_on_strict_cuda(tmp_path, activation):
         pytest.skip("CUDA device does not support BF16")
 
     checkpoint = tmp_path / "checkpoint.pt"
-    _write_small_checkpoint(checkpoint, activation=activation)
+    _, input_contract = _write_small_checkpoint(checkpoint, activation=activation)
     profile = tmp_path / "deployment-profile.json"
     _write_small_profile(profile)
     output = export_package(
@@ -952,6 +968,7 @@ def test_small_bf16_model_exports_and_runs_on_strict_cuda(tmp_path, activation):
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["manifest_version"] == DEPLOYMENT_MANIFEST_VERSION
     assert manifest["contract"]["contract_version"] == DEPLOYMENT_CONTRACT_VERSION
+    assert manifest["contract"]["model_input_contract"] == json.loads(json.dumps(input_contract.to_dict()))
     assert manifest["contract"]["precision"] == "bf16"
     assert manifest["model"]["compute_precision"] == "float32"
     assert manifest["exporter"]["onnxscript"] == BF16_TARGET_ONNXSCRIPT_VERSION
@@ -961,10 +978,10 @@ def test_small_bf16_model_exports_and_runs_on_strict_cuda(tmp_path, activation):
     assert manifest["golden"]["float_encoding"] == GOLDEN_BF16_ENCODING
     assert manifest["model"]["onnx_other_float_initializer_max_elements"] <= 1
     assert manifest["model"]["onnx_float_initializer_dtype_counts"]["bfloat16"] > 0
-    model_metadata = {
-        item.key: item.value
-        for item in pytest.importorskip("onnx").load(output / "model.onnx").metadata_props
-    }
+    exported_model = onnx.load(output / "model.onnx")
+    assert not any(node.op_type == "LayerNormalization" for node in exported_model.graph.node)
+    assert not any(".norm" in tensor.name for tensor in exported_model.graph.initializer)
+    model_metadata = {item.key: item.value for item in exported_model.metadata_props}
     assert model_metadata["ffxiv.precision"] == "bf16"
     assert model_metadata["ffxiv.compute_precision"] == "float32"
     assert model_metadata["ffxiv.history_tokens_per_action"] == "2"

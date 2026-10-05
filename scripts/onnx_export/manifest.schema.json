@@ -229,7 +229,7 @@
       ],
       "properties": {
         "contract_version": {
-          "const": 19
+          "const": 20
         },
         "job_tag": {
           "type": "string",

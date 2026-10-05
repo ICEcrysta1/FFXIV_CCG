@@ -63,11 +63,11 @@ class CausalPolicyModel(nn.Module):
             batch_first=True,
             norm_first=config.transformer_norm_first,
         )
-        # Pre-LN 保留残差路径的稳定尺度，末尾 LayerNorm 统一输出头和分析的输入尺度。
+        # PreNorm 支路与最终输出统一使用无参数 RMSNorm，不对残差流施加幅度上限。
         self.encoder = nn.TransformerEncoder(
             encoder_layer,
             config.n_layers,
-            norm=nn.LayerNorm(config.d_model),
+            norm=nn.RMSNorm(config.d_model, eps=1e-5, elementwise_affine=False),
         )
         # 位置编码属于 attention 执行边界；输入编码器只提供逻辑 position_ids。
         self.encoder.rotary_position_encoding = RotaryPositionEncoding(

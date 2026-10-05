@@ -623,7 +623,7 @@ def test_model_and_trace_helpers_cover_error_and_norm_paths():
             batch_first=True,
         ),
         1,
-        norm=nn.LayerNorm(4),
+        norm=nn.RMSNorm(4, eps=1e-5, elementwise_affine=False),
     ).eval())
     encoded = {
         "tokens": tokens,
@@ -638,7 +638,7 @@ def test_model_and_trace_helpers_cover_error_and_norm_paths():
     assert trace.attentions[0].shape[-2:] == (2, 2)
 
 
-def test_model_defaults_to_pre_ln_gelu_with_final_layer_norm():
+def test_model_defaults_to_pre_norm_gelu_with_parameterless_rms():
     from torch.nn import functional as F
 
     from common.policy.model import CausalPolicyModel
@@ -652,7 +652,11 @@ def test_model_defaults_to_pre_ln_gelu_with_final_layer_norm():
     layer = model.encoder.layers[0]
     assert layer.norm_first is True
     assert layer.activation is F.gelu
-    assert isinstance(model.encoder.norm, nn.LayerNorm)
+    for norm in (layer.norm1, layer.norm2, model.encoder.norm):
+        assert isinstance(norm, nn.RMSNorm)
+        assert norm.eps == 1e-5
+        assert norm.elementwise_affine is False
+        assert tuple(norm.parameters()) == ()
     assert layer.activation_checkpoint_ffn is False
     assert layer.activation_checkpoint_attention is False
 
@@ -768,7 +772,9 @@ def test_attention_block_checkpoint_matches_sdpa_checkpoint():
         layer.set_activation_checkpoint_attention(True)
         layer.set_activation_checkpoint_attention_block(block)
         return _attach_rope(
-            nn.TransformerEncoder(layer, 1, norm=nn.LayerNorm(8)).train()
+            nn.TransformerEncoder(
+                layer, 1, norm=nn.RMSNorm(8, eps=1e-5, elementwise_affine=False),
+            ).train()
         )
 
     base_tokens = torch.randn(2, 4, 8)
@@ -824,11 +830,13 @@ def test_attention_activation_checkpoint_preserves_forward_and_gradients(num_kv_
     checkpointed_layer = TraceableTransformerEncoderLayer(**layer_kwargs)
     checkpointed_layer.load_state_dict(eager_layer.state_dict())
     checkpointed_layer.set_activation_checkpoint_attention(True)
-    eager = _attach_rope(nn.TransformerEncoder(eager_layer, 1, norm=nn.LayerNorm(8)).train())
+    eager = _attach_rope(nn.TransformerEncoder(
+        eager_layer, 1, norm=nn.RMSNorm(8, eps=1e-5, elementwise_affine=False),
+    ).train())
     checkpointed = _attach_rope(nn.TransformerEncoder(
         checkpointed_layer,
         1,
-        norm=nn.LayerNorm(8),
+        norm=nn.RMSNorm(8, eps=1e-5, elementwise_affine=False),
     ).train())
     checkpointed.norm.load_state_dict(eager.norm.state_dict())
 
@@ -888,11 +896,13 @@ def test_full_attention_residual_checkpoint_recomputes_source_path_and_preserves
     }
     eager_layer = TraceableTransformerEncoderLayer(**layer_kwargs)
     checkpointed_layer = TraceableTransformerEncoderLayer(**layer_kwargs)
-    eager = _attach_rope(nn.TransformerEncoder(eager_layer, 2, norm=nn.LayerNorm(8)).train())
+    eager = _attach_rope(nn.TransformerEncoder(
+        eager_layer, 2, norm=nn.RMSNorm(8, eps=1e-5, elementwise_affine=False),
+    ).train())
     checkpointed = _attach_rope(nn.TransformerEncoder(
         checkpointed_layer,
         2,
-        norm=nn.LayerNorm(8),
+        norm=nn.RMSNorm(8, eps=1e-5, elementwise_affine=False),
     ).train())
     eager.attention_residual = FullAttentionResidual(d_model=8, num_queries=5)
     checkpointed.attention_residual = FullAttentionResidual(d_model=8, num_queries=5)
@@ -956,7 +966,7 @@ def test_full_attention_residual_checkpoint_preserves_partial_layer_granularity(
     encoder = _attach_rope(nn.TransformerEncoder(
         TraceableTransformerEncoderLayer(**layer_kwargs),
         2,
-        norm=nn.LayerNorm(8),
+        norm=nn.RMSNorm(8, eps=1e-5, elementwise_affine=False),
     ).train())
     encoder.attention_residual = FullAttentionResidual(d_model=8, num_queries=5)
     encoder.layers[0].set_activation_checkpoint_ffn(True)
