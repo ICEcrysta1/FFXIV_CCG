@@ -232,15 +232,24 @@ def test_raw_head_uses_independent_action_vectors_and_configured_softcap(
     assert trace.encoded["role_ids"].tolist() == [[0, 0, 0, 0, 1, 2, 1, 2, 1]]
 
 
-@pytest.mark.parametrize("bf16_float_compute", (False, True))
+@pytest.mark.parametrize(
+    ("dtype", "bf16_float_compute"),
+    (
+        (torch.float32, False),
+        (torch.float16, False),
+        (torch.bfloat16, False),
+        (torch.bfloat16, True),
+    ),
+)
 def test_forward_and_trace_delegate_action_readout_to_public_model_method(
     monkeypatch,
+    dtype: torch.dtype,
     bf16_float_compute: bool,
 ):
     model = _make_model()
-    dtype = torch.bfloat16 if bf16_float_compute else torch.float32
     model.to(dtype=dtype)
-    sentinel = torch.tensor([[7.0, -3.0, 2.0]], dtype=torch.float32)
+    # 非低精度格点的 FP32 分数同时验证最终输出的目标精度舍入。
+    sentinel = torch.tensor([[7.0003, -3.0003, 2.0003]], dtype=torch.float32)
     calls = []
 
     def compute_action_logits(current_hidden):
@@ -258,14 +267,49 @@ def test_forward_and_trace_delegate_action_readout_to_public_model_method(
         traced = policy.trace(*_tensor_args(batch))
 
     torch.testing.assert_close(actual, sentinel.to(dtype=dtype), rtol=0, atol=0)
-    torch.testing.assert_close(traced.logits, sentinel, rtol=0, atol=0)
+    torch.testing.assert_close(traced.logits, sentinel.to(dtype=dtype), rtol=0, atol=0)
     assert len(calls) == 2
     assert calls[0].shape == calls[1].shape == (1, model.config.d_model)
-    assert calls[0].dtype == torch.float32
+    assert calls[0].dtype == (torch.float32 if bf16_float_compute else dtype)
     assert calls[1].dtype == dtype
     if bf16_float_compute:
         assert policy.model.output_head.weight.dtype == torch.bfloat16
         assert policy.compute_model.output_head.weight.dtype == torch.float32
+
+
+@pytest.mark.parametrize("activation", ("gelu", "swiglu"))
+@pytest.mark.parametrize("full_attention_residuals", (False, True))
+def test_float16_policy_and_trace_cast_after_fp32_softcap(
+    activation: str,
+    full_attention_residuals: bool,
+):
+    model = _make_model(
+        activation=activation,
+        full_attention_residuals=full_attention_residuals,
+        logit_softcap=2.5,
+    ).to(dtype=torch.float16)
+    policy = OnnxPolicy(model)
+    batch = {
+        key: value.half() if value.is_floating_point() else value
+        for key, value in _make_batch().items()
+    }
+    with torch.no_grad():
+        actual = policy(*_tensor_args(batch))
+        traced = policy.trace(*_tensor_args(batch))
+        current_hidden = traced.hidden[:, traced.encoded["current_state_position"]]
+        raw_logits = torch.nn.functional.linear(current_hidden, model.output_head.weight)
+        expected_fp32 = 2.5 * torch.tanh(raw_logits.float() / 2.5)
+        expected_forward = model(batch)["logits"]
+
+    assert actual.dtype == traced.logits.dtype == torch.float16
+    assert expected_forward.dtype == model.compute_action_logits(current_hidden).dtype == torch.float32
+    assert torch.isfinite(actual).all() and torch.isfinite(traced.logits).all()
+    torch.testing.assert_close(traced.logits, expected_fp32.half(), rtol=0, atol=0)
+    # 正式 SDPA 与显式 mask 入口沿用项目既有 FP16 门槛。
+    from scripts.onnx_export.runtime.precision import precision_tolerances
+
+    rtol, atol = precision_tolerances(torch.float16)
+    torch.testing.assert_close(actual, expected_forward.half(), rtol=rtol, atol=atol)
 
 
 @pytest.mark.parametrize("history_capacity", (300, 384))
@@ -328,10 +372,18 @@ def test_onnx_policy_matches_raw_model_logits_and_ignores_string_policy_metadata
 
 @pytest.mark.parametrize("full_attention_residuals", (False, True))
 @pytest.mark.parametrize("activation", ("gelu", "swiglu"))
-def test_onnx_policy_exports_with_tensor_only_user_inputs(full_attention_residuals: bool, activation: str):
-    batch = _make_batch()
+@pytest.mark.parametrize("dtype", (torch.float32, torch.float16))
+def test_onnx_policy_exports_with_tensor_only_user_inputs(
+    full_attention_residuals: bool,
+    activation: str,
+    dtype: torch.dtype,
+):
+    batch = {
+        key: value.to(dtype=dtype) if value.is_floating_point() else value
+        for key, value in _make_batch().items()
+    }
     policy = OnnxPolicy(
-        _make_model(full_attention_residuals=full_attention_residuals, activation=activation)
+        _make_model(full_attention_residuals=full_attention_residuals, activation=activation).to(dtype=dtype)
     )
     inputs = _tensor_args(batch)
     exported = torch.export.export(policy, inputs)
@@ -339,6 +391,7 @@ def test_onnx_policy_exports_with_tensor_only_user_inputs(full_attention_residua
     with torch.no_grad():
         exported_logits = exported.module()(*inputs)
         pytorch_logits = policy(*inputs)
+    assert exported_logits.dtype == pytorch_logits.dtype == dtype
     torch.testing.assert_close(exported_logits, pytorch_logits, rtol=1e-5, atol=1e-6)
 
     user_inputs = [

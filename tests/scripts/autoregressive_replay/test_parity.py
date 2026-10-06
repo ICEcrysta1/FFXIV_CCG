@@ -3,17 +3,108 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
 import torch
 
-from common.policy.model import RepetitionConfig
+from common.policy.config import ModelConfig
 from common.policy.data import ActionSpace, DataSpec, SkillVocab
+from common.policy.model import CausalPolicyModel, RepetitionConfig
+from common.policy.model import repetition as repetition_module
+from scripts.autoregressive_replay import backends as backends_module
 from scripts.autoregressive_replay import main as replay_main_module
 from scripts.autoregressive_replay import parity as parity_module
-from scripts.autoregressive_replay.backends import compare_backend_logits
+from scripts.autoregressive_replay.backends import (
+    ParityPolicyBackend,
+    PyTorchPolicyBackend,
+    compare_backend_logits,
+)
 from scripts.autoregressive_replay.config import AutoregressiveReplayConfig
+from tests.training._causal_fixtures import make_data_spec
+
+
+def test_fp16_parity_rounds_real_fp32_softcap_before_host_policy(monkeypatch):
+    """真实半精度动作头经 FP32 cap 后，接口舍入会把两个不同分数变为平局。"""
+    spec = make_data_spec()
+    model = CausalPolicyModel(
+        spec,
+        ModelConfig(d_model=8, n_layers=1, n_heads=2, num_kv_heads=1,
+                    ff_dim=16, dropout=0.0, logit_softcap=15.0),
+        vocab_size=3,
+    ).half()
+    with torch.no_grad():
+        model.output_head.weight.zero_()
+        model.output_head.weight[:, 0].copy_(torch.tensor([8.9296875, 8.9375]))
+    hidden = torch.zeros((1, 8), dtype=torch.float16)
+    hidden[:, 0] = 1.0
+    # CPU 测试只复用真实动作读出，避免为设备选择与完整主干启动 CUDA。
+    reference = PyTorchPolicyBackend.__new__(PyTorchPolicyBackend)
+    reference.precision = "float16"
+    reference.input_device = torch.device("cpu")
+    reference.execution_provider = "PyTorch:cpu"
+    reference._bf16_float_compute = False
+    reference._fp16_output_quantization = False
+    reference.model = lambda _batch: {"logits": model.compute_action_logits(hidden)}
+    reference._start_measurement = lambda: 0.0
+    reference._finish_measurement = lambda _started: None
+    reference.data_spec = spec
+    reference.input_contract = SimpleNamespace(to_dict=lambda: {"version": 1})
+    reference.vocab_entries = ((100, 1), (200, 2))
+    reference.repetition = RepetitionConfig(mode="blacklist", skills=("second",), penalty=.003)
+    monkeypatch.setattr(backends_module, "autocast_context", lambda *_args: nullcontext())
+    batch = {"action_legal_mask": torch.ones((1, 2), dtype=torch.bool),
+             "action_keys": [list(spec.action_keys)], "history_action_keys": [["second"]]}
+    ordinary_logits = reference.raw_logits(batch, spec.action_keys)
+    expected = 15.0 * torch.tanh(torch.tensor([[8.9296875, 8.9375]]) / 15.0)
+    assert ordinary_logits.dtype == torch.float32
+    torch.testing.assert_close(ordinary_logits, expected, rtol=0, atol=0)
+    rounded = ordinary_logits.half().float()
+    assert ordinary_logits.argmax().item() == 1
+    assert rounded.argmax().item() == 0
+    compared = SimpleNamespace(
+        data_spec=spec, input_contract=reference.input_contract,
+        repetition=reference.repetition, vocab_entries=reference.vocab_entries,
+        source_path="fake.onnx", input_device=torch.device("cpu"),
+        execution_provider="CPUExecutionProvider",
+        raw_logits=lambda *_args: rounded,
+    )
+    with pytest.raises(AssertionError, match="reference_top1='second'.*compared_top1='first'"):
+        compare_backend_logits(reference, compared, batch, spec.action_keys, tolerance=.005)
+    reference.enable_fp16_output_quantization()
+    comparison = compare_backend_logits(reference, compared, batch, spec.action_keys, tolerance=0.0)
+    assert comparison["top1_match"] and comparison["top3_set_match"]
+    assert comparison["max_abs_diff"] == 0.0
+    penalty_inputs = []
+    apply_penalty = repetition_module.apply_repetition_penalty
+
+    def record_penalty(logits, values, config):
+        penalty_inputs.append(logits.detach().clone())
+        return apply_penalty(logits, values, config)
+
+    monkeypatch.setattr(repetition_module, "apply_repetition_penalty", record_penalty)
+    parity = ParityPolicyBackend(reference, compared, tolerance=0.0)
+    torch.testing.assert_close(parity.raw_logits(batch, spec.action_keys), rounded, rtol=0, atol=0)
+    assert parity.rows[0]["passed"] and parity.rows[0]["final_selection_match"]
+    assert parity.rows[0]["reference_final_action"] == "first"
+    assert len(penalty_inputs) == 2  # 双方各在量化后执行一次宿主惩罚。
+    for values in penalty_inputs:
+        torch.testing.assert_close(values, rounded, rtol=0, atol=0)
+    # 量化只属于参考后端，没有改动正式模型的 FP32 softcap。
+    torch.testing.assert_close(model.compute_action_logits(hidden), ordinary_logits, rtol=0, atol=0)
+    with pytest.raises(ValueError, match="fresh FP16 reference"):
+        reference.enable_fp16_output_quantization()
+
+
+@pytest.mark.parametrize("precision", ("float32", "bf16"))
+def test_fp16_output_quantization_rejects_other_reference_precisions(precision):
+    reference = PyTorchPolicyBackend.__new__(PyTorchPolicyBackend)
+    reference.precision = precision
+    reference._fp16_output_quantization = False
+    with pytest.raises(ValueError, match="fresh FP16 reference"):
+        reference.enable_fp16_output_quantization()
+    assert reference._fp16_output_quantization is False
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
@@ -182,7 +273,14 @@ def test_parity_fixed_capacity_batch_stays_on_reference_device(tmp_path):
     assert seen_device["device"].type == reference.input_device.type
 
 
-def test_parity_failure_writes_auditable_partial_report(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("precision", "compute_precision", "reference_mode"),
+    (("float32", "float32", None), ("float16", "float16", "fp16_output"),
+     ("bf16", "bf16", None), ("bf16", "float32", "bf16_float_compute")),
+)
+def test_parity_failure_writes_auditable_partial_report(
+    monkeypatch, tmp_path, precision, compute_precision, reference_mode,
+):
     class FakeBackend:
         def __init__(self, name, logits):
             self.name = name
@@ -200,7 +298,15 @@ def test_parity_failure_writes_auditable_partial_report(monkeypatch, tmp_path):
             self.repetition = RepetitionConfig()
             self.vocab_entries = ((100, 1), (200, 2), (300, 3))
             self.execution_provider = name
-            self.contract = SimpleNamespace(precision="float32")
+            self.contract = SimpleNamespace(precision=precision)
+            self.compute_precision = compute_precision
+            self.reference_modes = []
+
+        def enable_fp16_output_quantization(self):
+            self.reference_modes.append("fp16_output")
+
+        def enable_bf16_float_compute(self):
+            self.reference_modes.append("bf16_float_compute")
 
         def raw_logits(self, _batch, _action_keys):
             return self.logits
@@ -294,6 +400,8 @@ def test_parity_failure_writes_auditable_partial_report(monkeypatch, tmp_path):
         )
 
     report = json.loads(output.read_text(encoding="utf-8"))
+    expected_modes = [] if reference_mode is None else [reference_mode]
+    assert reference.reference_modes == expected_modes
     assert prepared_actions == [ActionSpace.from_data_spec(reference.data_spec)]
     assert report["status"] == "failed"
     assert report["release_gate"] == {"enabled": False, "version": 1}
@@ -347,6 +455,7 @@ def test_parity_failure_writes_auditable_partial_report(monkeypatch, tmp_path):
     assert empty_report["parity"]["decision_count"] == 0
     assert empty_report["rollout"]["action_sequence_match"] is False
     assert len(closed) == 3
+    assert reference.reference_modes == expected_modes * 3
 
 
 @pytest.mark.parametrize(

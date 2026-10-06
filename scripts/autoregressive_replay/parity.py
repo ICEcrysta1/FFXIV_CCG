@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-import math
 import logging
+import math
 from dataclasses import replace
 from pathlib import Path
 
@@ -50,6 +50,8 @@ def run_rollout_parities(
     )
     if compared.contract.precision == "bf16" and compared.compute_precision == "float32":
         reference.enable_bf16_float_compute()
+    elif compared.contract.precision == "float16":
+        reference.enable_fp16_output_quantization()
     tasks = [(replace(config, backend="pytorch", use_kv_cache=False, onnx_package_path=None,
                       policy_precision=compared.contract.precision), path)
              for config, path in zip(configs, paths, strict=True)]

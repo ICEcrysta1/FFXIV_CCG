@@ -59,6 +59,7 @@ from scripts.onnx_export.runtime.precision import (
     onnx_torch_dtype,
     parity_max_abs_tolerance,
     precision_onnx_data_type,
+    precision_tolerances,
 )
 from scripts.onnx_export.runtime.runtime_targets import (
     BF16_TARGET_ONNX_VERSION,
@@ -67,6 +68,7 @@ from scripts.onnx_export.runtime.runtime_targets import (
 )
 from scripts.onnx_export.runtime.tensor_runtime import (
     GOLDEN_BF16_ENCODING,
+    run_ort_tensors,
     tensor_to_golden_array,
 )
 
@@ -1001,6 +1003,90 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
     with pytest.raises(ValueError, match="requirements differ"):
         verify_release(output)
     (output / "release_report.json").write_bytes(release_before)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+@pytest.mark.parametrize("activation", ("gelu", "swiglu"))
+def test_small_float16_model_exports_and_runs_on_strict_cuda(tmp_path, activation):
+    """FP32 softcap 后返回 FP16，真实图、manifest 与严格 CUDA ORT 必须一致。"""
+    onnx = pytest.importorskip("onnx")
+    ort = pytest.importorskip("onnxruntime")
+    pytest.importorskip("onnxscript")
+    if "CUDAExecutionProvider" not in ort.get_available_providers():
+        pytest.skip("ORT CUDAExecutionProvider is unavailable")
+
+    checkpoint = tmp_path / "checkpoint.pt"
+    data_spec, input_contract = _write_small_checkpoint(
+        checkpoint, activation=activation, logit_softcap=7.5,
+    )
+    profile = tmp_path / "deployment-profile.json"
+    _write_small_profile(profile)
+    output = export_package(
+        checkpoint_path=checkpoint,
+        output_dir=tmp_path / "deployment",
+        deployment_profile_path=profile,
+        opset=18,
+        precision="float16",
+        ort_provider="CUDAExecutionProvider",
+        validation_devices=("cuda",),
+        overwrite=False,
+    )
+
+    loaded = DeploymentManifest.load(output / "manifest.json", verify_files=True)
+    manifest = loaded.payload
+    assert manifest["contract"]["precision"] == "float16"
+    assert manifest["contract"]["model_input_contract"] == json.loads(json.dumps(input_contract.to_dict()))
+    assert manifest["contract"]["model_config"]["logit_softcap"] == 7.5
+    assert manifest["contract"]["tensor_outputs"][0]["dtype"] == "tensor(float16)"
+    assert manifest["model"]["compute_precision"] == "float16"
+
+    exported_model = onnx.load(output / "model.onnx")
+    assert exported_model.graph.output[0].name == "raw_logits"
+    assert exported_model.graph.output[0].type.tensor_type.elem_type == onnx.TensorProto.FLOAT16
+    # cap 仍在 FP32 运算；输出的最终舍入不能把 Tanh 本身降成 FP16。
+    inferred = onnx.shape_inference.infer_shapes(exported_model)
+    value_types = {
+        value.name: value.type.tensor_type.elem_type
+        for value in (*inferred.graph.input, *inferred.graph.value_info, *inferred.graph.output)
+    }
+    tanh_nodes = [node for node in inferred.graph.node if node.op_type == "Tanh"]
+    assert tanh_nodes
+    for node in tanh_nodes:
+        assert value_types[node.input[0]] == value_types[node.output[0]] == onnx.TensorProto.FLOAT
+
+    report = json.loads((output / "export_report.json").read_text(encoding="utf-8"))
+    assert report["status"] == "graph_validated"
+    assert report["ort_provider"] == "CUDAExecutionProvider"
+    assert report["ort_cpu_fallback_disabled"] is True
+    assert report["ort_padding_matrix"]
+    assert all(row["argmax_match"] for row in report["ort_padding_matrix"])
+    assert max(row["max_logit_abs_diff"] for row in report["ort_padding_matrix"]) <= parity_max_abs_tolerance("float16")
+
+    session, _, active = create_ort_session(ort, output / "model.onnx", "CUDAExecutionProvider")
+    assert active[0] == "CUDAExecutionProvider"
+    assert session.get_outputs()[0].type == "tensor(float16)"
+    policy, _, vocab_size, dtype, saved = export_module.load_policy(checkpoint, precision="float16")
+    assert dtype == torch.float16
+    torch.testing.assert_close(
+        policy.model.output_head.weight,
+        saved["model_state_dict"]["output_head.weight"].half(),
+        rtol=0,
+        atol=0,
+    )
+    inputs = make_inputs(
+        data_spec, loaded.contract.capacity,
+        vocab_size=vocab_size, scene_valid=2, history_valid=3,
+        dtype=dtype, seed=73,
+    )
+    policy.to(device="cuda")
+    with torch.no_grad():
+        expected = policy(*(tensor.cuda() for tensor in inputs))
+    actual = run_ort_tensors(session, dict(zip(TENSOR_INPUT_NAMES, inputs, strict=True)))[0]
+    assert actual.dtype == expected.dtype == torch.float16
+    assert torch.isfinite(actual).all()
+    rtol, atol = precision_tolerances(torch.float16)
+    torch.testing.assert_close(actual, expected, rtol=rtol, atol=atol)
+    assert torch.equal(actual.argmax(dim=-1), expected.argmax(dim=-1))
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
 from collections import deque
+from collections.abc import Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -29,6 +29,7 @@ from scripts.onnx_export.runtime.ort_runtime import (
 )
 from scripts.onnx_export.runtime.precision import (
     PRECISION_BF16,
+    PRECISION_FLOAT16,
     onnx_torch_dtype,
 )
 from scripts.onnx_export.runtime.tensor_runtime import run_ort_tensors
@@ -182,6 +183,7 @@ class PyTorchPolicyBackend(_MeasuredBackend):
         )
         self.model.eval()
         self._bf16_float_compute = False
+        self._fp16_output_quantization = False
         self.configure_cache(use_kv_cache)
 
     def enable_bf16_float_compute(self) -> None:
@@ -194,6 +196,15 @@ class PyTorchPolicyBackend(_MeasuredBackend):
         self._bf16_float_compute = True
         self.execution_provider = (
             f"PyTorch:{self.input_device.type}:bf16_weights_fp32_compute"
+        )
+
+    def enable_fp16_output_quantization(self) -> None:
+        """仅为部署 parity 模拟 FP32 softcap 后的 FP16 输出接口舍入。"""
+        if self.precision != PRECISION_FLOAT16 or self._fp16_output_quantization:
+            raise ValueError("FP16 output quantization requires a fresh FP16 reference")
+        self._fp16_output_quantization = True
+        self.execution_provider = (
+            f"PyTorch:{self.input_device.type}:fp16_output_quantization"
         )
 
     def raw_logits(
@@ -222,11 +233,12 @@ class PyTorchPolicyBackend(_MeasuredBackend):
             with torch.no_grad(), context:
                 output = self.model(values)
                 logits = output["logits"]
-                return (
-                    logits.bfloat16().float()
-                    if self._bf16_float_compute
-                    else logits.float()
-                )
+                if self._bf16_float_compute:
+                    return logits.bfloat16().float()
+                if self._fp16_output_quantization:
+                    # 宿主重复惩罚接收部署接口的舍入值；模型内部仍用 FP32 softcap。
+                    return logits.half().float()
+                return logits.float()
         finally:
             self._finish_measurement(started_at)
 

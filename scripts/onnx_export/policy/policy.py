@@ -79,7 +79,8 @@ class OnnxPolicy(nn.Module):
             force_explicit_mask=True,
         )
         logits = _raw_logits(compute_model, encoded, hidden)
-        return logits.to(torch.bfloat16) if self.compute_model is not None else logits
+        # softcap 内部使用 FP32，部署输出仍匹配原模型的目标精度。
+        return logits.to(self.model.output_head.weight.dtype)
 
     @torch.no_grad()
     def trace(self, *inputs: torch.Tensor) -> "OnnxPolicyTrace":
@@ -137,9 +138,9 @@ def _build_batch(*inputs: torch.Tensor) -> dict[str, torch.Tensor]:
 
 
 def _raw_logits(model, encoded, hidden):
-    """复用正式动作读出，输出不包含宿主合法性或重复惩罚。"""
+    """复用正式动作读出并恢复模型精度，不包含宿主合法性或重复惩罚。"""
     current_hidden = hidden[:, encoded["current_state_position"], :]
-    return model.compute_action_logits(current_hidden)
+    return model.compute_action_logits(current_hidden).to(model.output_head.weight.dtype)
 
 
 def stable_masked_softmax(
