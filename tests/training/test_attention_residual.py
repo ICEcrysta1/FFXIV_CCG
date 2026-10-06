@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import math
-
 import torch
 
 from common.policy.model.attention_residual import FullAttentionResidual
@@ -37,7 +35,7 @@ def test_full_attention_residual_query_receives_gradient():
     assert torch.count_nonzero(residual.pseudo_queries.grad[1]) > 0
 
 
-def test_depth_attention_scales_query_key_logits_by_model_width():
+def test_depth_attention_uses_unscaled_rms_normalized_key_logits():
     residual = FullAttentionResidual(d_model=4, num_queries=1)
     with torch.no_grad():
         residual.pseudo_queries[0].copy_(torch.tensor([2.0, 0.0, 0.0, 0.0]))
@@ -50,7 +48,7 @@ def test_depth_attention_scales_query_key_logits_by_model_width():
     values = torch.stack(sources, dim=0)
     keys = residual.key_norms[0](values)
     logits = torch.einsum("d,sbtd->sbt", residual.pseudo_queries[0], keys)
-    weights = torch.softmax(logits / math.sqrt(4), dim=0)
+    weights = torch.softmax(logits, dim=0)
     expected = torch.einsum("sbt,sbtd->btd", weights, values)
 
     torch.testing.assert_close(output, expected)
@@ -69,7 +67,6 @@ def test_streaming_depth_attention_matches_stacked_reference():
     values = torch.stack(tuple(reference_sources), dim=0)
     keys = reference.key_norms[1](values)
     logits = torch.einsum("d,sbtd->sbt", reference.pseudo_queries[1], keys)
-    logits = logits * reference._logit_scale
     weights = torch.softmax(logits, dim=0)
     expected = torch.einsum("sbt,sbtd->btd", weights, values)
 

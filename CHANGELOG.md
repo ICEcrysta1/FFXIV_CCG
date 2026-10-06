@@ -23,6 +23,7 @@
 
 ### Changed
 
+- Full AttnRes 的深度 softmax 打分直接使用 `qᵀ RMSNorm(source)`，移除额外的 `1/√d_model` 缩放；保留 query 零初始化和深度源加权平均，普通 token attention 的 Q/K 缩放不变。普通前向、trace、KV-cache 与 ONNX 共用该实现，相关公式、前向和梯度回归验证为 235 项通过。使用旧缩放训练的 Full AttnRes checkpoint 在新公式下的路由会变化，应重新训练。
 - Full AttnRes 关闭时，正式残差路径改为每层先计算 `r×x + a×x0`，再累加 attention 与 FFN 输出；每层分别学习 `r`、`a`，初始化沿深度从 `1.15→1.05`、`0.20→0.05` 线性变化，端点由模型 YAML 保存。`x0` 始终来自统一输入 RMSNorm 后的原始 token，保留梯度并在每层重新注入；Full AttnRes 继续使用独立聚合路径，不创建闲置系数。
 - 普通前向、trace、KV-cache、ONNX 与 loss landscape 共用正式残差计算；缓存前缀、历史追加和当前状态读出均使用各自 token 的原始 `x0`。残差系数沿用 AdamW 分组及低精度训练的 FP32 主权重，支持参数更新和连续恢复。
 - checkpoint 输入契约升级为 18、ONNX 部署契约升级为 21、manifest 升级为 12，固定保存实际残差机制与四个初始化端点，恢复时从权重加载已学习的系数；明确拒绝旧版本、缺少配置或机制不一致的产物。原始字段与完整 history bank 未变，compiled cache v21/转换 v23 和 PythonBridge 15 继续复用。
