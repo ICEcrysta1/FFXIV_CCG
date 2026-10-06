@@ -322,17 +322,20 @@ class _LayerForward:
                 encoded = context.model.input_encoder(batch)
                 self.encoded = encoded
                 hidden = encoded["tokens"]
-                for layer in context.model.encoder.layers[:layer_index]:
-                    hidden = self._step(layer, hidden)
+                for index, layer in enumerate(context.model.encoder.layers[:layer_index]):
+                    hidden = self._step(layer, hidden, index)
                 self.hidden = hidden
 
-    def _step(self, layer, hidden):
+    def _step(self, layer, hidden, layer_index):
         encoded = self.encoded
         return run_causal_layer(
             layer, hidden,
             key_valid=encoded["valid"],
             position_ids=encoded["position_ids"],
             rotary_position_encoding=self.context.model.encoder.rotary_position_encoding,
+            residual_mix=getattr(self.context.model.encoder, "residual_mix", None),
+            initial_tokens=encoded["tokens"],
+            layer_index=layer_index,
         )[0]
 
     def logits(self):
@@ -342,8 +345,10 @@ class _LayerForward:
                 # 不计算训练用 top-k 和重复的低精度交叉熵。
                 return model({k: v for k, v in self.batch.items() if k != "label_index"})["logits"]
             hidden = self.hidden
-            for layer in model.encoder.layers[self.layer_index:]:
-                hidden = self._step(layer, hidden)
+            for index, layer in enumerate(
+                model.encoder.layers[self.layer_index:], start=self.layer_index,
+            ):
+                hidden = self._step(layer, hidden, index)
             if model.encoder.norm is not None:
                 hidden = model.encoder.norm(hidden)
             return model.score_hidden(self.encoded, hidden, self.batch)

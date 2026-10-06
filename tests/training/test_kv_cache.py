@@ -186,6 +186,68 @@ def test_kv_cache_recomputes_current_state_without_rebuilding_prefix():
     assert model._kv_cache.prefix_tokens.shape[1] == 6
 
 
+@pytest.mark.parametrize("norm_first", (True, False))
+def test_kv_mixing_aligns_x0_for_prefix_append_current_and_rebuild(norm_first):
+    """不同于默认初值的真实 mix，必须对齐当前正在编码块的原始 token。"""
+    model, full_model = _make_model_pair(norm_first=norm_first, activation="swiglu")
+    with torch.no_grad():
+        model.encoder.residual_mix.r.copy_(torch.tensor([0.7, 1.4]))
+        model.encoder.residual_mix.a.copy_(torch.tensor([0.6, -0.2]))
+    full_model.load_state_dict(model.state_dict())
+    model.double()
+    full_model.double()
+    model.enable_kv_cache(True)
+    captured, calls = {}, []
+    input_hook = model.input_encoder.register_forward_hook(
+        lambda module, args, output: captured.update(encoded=output))
+    mix_hook = model.encoder.residual_mix.register_forward_hook(
+        lambda module, args, output: calls.append(args))
+    requests = [(0, 0.0, False), (1, 0.0, False), (1, 10.0, False),
+                (2, 0.0, False), (2, 0.0, True)]
+    previous_prefix_length = 0
+    try:
+        for step, (history_length, current_offset, rebuild) in enumerate(requests):
+            calls.clear()
+            batch = _make_batch(history_length, current_state_offset=current_offset)
+            batch = {key: value.double() if value.is_floating_point() else value
+                     for key, value in batch.items()}
+            if rebuild:
+                batch["scene_vectors"][0, 0, 0] += 7.0
+            actual = model(batch)["logits"]
+            torch.testing.assert_close(actual, full_model(batch)["logits"], rtol=1e-12, atol=1e-12)
+            encoded = captured["encoded"]
+            prefix_length = encoded["prefix_length"]
+            if step == 0 or rebuild:
+                expected_blocks = [encoded["tokens"][:, :prefix_length]]
+            elif prefix_length > previous_prefix_length:
+                expected_blocks = [encoded["tokens"][:, previous_prefix_length:prefix_length]]
+            else:
+                expected_blocks = []
+            expected_blocks.append(encoded["tokens"][:, prefix_length:])
+            assert len(calls) == len(expected_blocks) * model.config.n_layers
+            for block_index, expected in enumerate(expected_blocks):
+                for layer_index in range(model.config.n_layers):
+                    args = calls[block_index * model.config.n_layers + layer_index]
+                    assert args[2] == layer_index
+                    torch.testing.assert_close(args[1], expected, rtol=0, atol=0)
+            previous_prefix_length = prefix_length
+    finally:
+        input_hook.remove()
+        mix_hook.remove()
+
+
+def test_kv_mixing_handles_empty_scene_and_history_prefix():
+    model, full_model = _make_model_pair(activation="swiglu")
+    model.enable_kv_cache(True)
+    batch = _make_batch(0)
+    batch["scene_vectors"] = batch["scene_vectors"][:, :0]
+    batch["scene_types"] = batch["scene_types"][:, :0]
+    batch["scene_mask"] = batch["scene_mask"][:, :0]
+    torch.testing.assert_close(model(batch)["logits"], full_model(batch)["logits"], rtol=1e-5, atol=1e-6)
+    assert model._kv_cache.prefix_tokens.shape[1] == 0
+    assert all(key.shape[2] == 0 for key in model._kv_cache.key_cache)
+
+
 @pytest.mark.parametrize("full_attention_residuals", (False, True))
 @pytest.mark.parametrize(
     "changed_field",

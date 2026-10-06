@@ -37,6 +37,9 @@ def run_causal_layer(
     existing_value: torch.Tensor | None = None,
     existing_length: int = 0,
     attention_residual=None,
+    residual_mix=None,
+    initial_tokens: torch.Tensor | None = None,
+    layer_index: int = 0,
     sources: list[torch.Tensor] | None = None,
     query_index: int = 0,
     collect_attention: bool = False,
@@ -44,6 +47,13 @@ def run_causal_layer(
     segment_mask=None,
 ):
     """编码完整序列或新增因果后缀，返回 hidden、本层新增 K/V 与注意力。"""
+    if residual_mix is not None:
+        if attention_residual is not None:
+            raise ValueError("learned residual mixing and Full AttnRes are mutually exclusive")
+        if initial_tokens is None or initial_tokens.shape != hidden.shape:
+            raise ValueError("residual mixing requires initial tokens aligned with the encoded block")
+        # 混合后的 hidden 同时作为 attention 输入和该层 skip；FFN 不再次混合。
+        hidden = residual_mix(hidden, initial_tokens, layer_index)
     if attention_residual is not None:
         if not layer.norm_first or sources is None:
             raise ValueError("Full AttnRes requires Pre-LN layers and a source list")
@@ -134,6 +144,7 @@ def run_causal_encoder(
         force_explicit_mask=force_explicit_mask,
     )
     residual = getattr(encoder, "attention_residual", None)
+    residual_mix = getattr(encoder, "residual_mix", None)
 
     def run_path(path_tokens, path_valid):
         hidden = path_tokens
@@ -147,6 +158,9 @@ def run_causal_encoder(
                 position_ids=position_ids,
                 rotary_position_encoding=rotary,
                 attention_residual=residual,
+                residual_mix=residual_mix,
+                initial_tokens=path_tokens,
+                layer_index=index,
                 sources=sources,
                 query_index=2 * index,
                 collect_attention=collect_attention,

@@ -21,7 +21,7 @@
       "const": "manifest.schema.json"
     },
     "manifest_version": {
-      "const": 11
+      "const": 12
     },
     "format": {
       "const": "onnx"
@@ -218,6 +218,7 @@
         "data_spec",
         "model_input_contract",
         "model_config",
+        "residual_composition",
         "vocab",
         "state_layout",
         "scene_layout",
@@ -227,9 +228,34 @@
         "capacity_provenance",
         "signatures"
       ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "model_config": {
+                "properties": {"full_attention_residuals": {"const": true}}
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "residual_composition": {
+                "properties": {"type": {"const": "full_attention_residual"}}
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "residual_composition": {
+                "properties": {"type": {"const": "learned_residual_mix"}}
+              }
+            }
+          }
+        }
+      ],
       "properties": {
         "contract_version": {
-          "const": 20
+          "const": 21
         },
         "job_tag": {
           "type": "string",
@@ -271,10 +297,208 @@
           "type": "object"
         },
         "model_input_contract": {
-          "type": "object"
+          "type": "object",
+          "required": [
+            "version",
+            "token_encoding"
+          ],
+          "properties": {
+            "version": {
+              "const": 18
+            },
+            "token_encoding": {
+              "const": {
+                "skill": "E[id] + Linear(skill_features)",
+                "state": "Linear(state_values) + Linear(null_mask, bias=False)",
+                "scene": "Linear_by_scene_type(scene_values)",
+                "token_normalization": {
+                  "type": "RMSNorm",
+                  "position": "after_content_plus_role",
+                  "eps": 1e-05,
+                  "elementwise_affine": false,
+                  "applications": 1
+                },
+                "backbone_normalization": {
+                  "type": "RMSNorm",
+                  "positions": [
+                    "encoder.layers[*].norm1",
+                    "encoder.layers[*].norm2",
+                    "encoder.norm"
+                  ],
+                  "eps": 1e-05,
+                  "elementwise_affine": false
+                },
+                "backbone_residual": {
+                  "selection": "model_config.full_attention_residuals",
+                  "ordinary": {
+                    "type": "learned_residual_mix",
+                    "position": "before_each_transformer_layer",
+                    "formula": "mixed = r[layer] * hidden + a[layer] * x0",
+                    "attention_and_skip_input": "mixed",
+                    "x0": "input_encoder.output_after_token_rmsnorm",
+                    "x0_detached": false,
+                    "parameters": [
+                      "encoder.residual_mix.r",
+                      "encoder.residual_mix.a"
+                    ],
+                    "parameter_shape": "[model_config.n_layers]",
+                    "initialization": {
+                      "r": "linspace(model_config.residual_mix_r_start, model_config.residual_mix_r_end)",
+                      "a": "linspace(model_config.residual_mix_a_start, model_config.residual_mix_a_end)"
+                    }
+                  },
+                  "full_attention": {
+                    "type": "full_attention_residual",
+                    "depth_sources": "initial_tokens_and_previous_sublayer_outputs",
+                    "learned_residual_mix": false
+                  }
+                },
+                "role_ids": {
+                  "scene": 0,
+                  "state": 1,
+                  "skill": 2
+                },
+                "current_state_encoder": "shared_with_history_state",
+                "state_snapshots": [
+                  "previous_action_after",
+                  "request_state"
+                ],
+                "history_state_frozen_at": "request",
+                "output_projection": "hidden @ E[action_to_vocab_id].T",
+                "token_order": "scene, (state_i, skill_i)*H, current_state",
+                "history_capacity_unit": "actions",
+                "history_tokens_per_action": 2
+              }
+            }
+          }
         },
         "model_config": {
-          "type": "object"
+          "type": "object",
+          "required": [
+            "residual_mix_r_start",
+            "residual_mix_r_end",
+            "residual_mix_a_start",
+            "residual_mix_a_end",
+            "full_attention_residuals"
+          ],
+          "properties": {
+            "residual_mix_r_start": {
+              "type": "number"
+            },
+            "residual_mix_r_end": {
+              "type": "number"
+            },
+            "residual_mix_a_start": {
+              "type": "number"
+            },
+            "residual_mix_a_end": {
+              "type": "number"
+            },
+            "full_attention_residuals": {
+              "type": "boolean"
+            }
+          }
+        },
+        "residual_composition": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "type",
+                "position",
+                "formula",
+                "attention_and_skip_input",
+                "x0",
+                "x0_detached",
+                "parameters",
+                "parameter_shape",
+                "initialization"
+              ],
+              "properties": {
+                "type": {
+                  "const": "learned_residual_mix"
+                },
+                "position": {
+                  "const": "before_each_transformer_layer"
+                },
+                "formula": {
+                  "const": "mixed = r[layer] * hidden + a[layer] * x0"
+                },
+                "attention_and_skip_input": {
+                  "const": "mixed"
+                },
+                "x0": {
+                  "const": "input_encoder.output_after_token_rmsnorm"
+                },
+                "x0_detached": {
+                  "const": false
+                },
+                "parameters": {
+                  "const": [
+                    "encoder.residual_mix.r",
+                    "encoder.residual_mix.a"
+                  ]
+                },
+                "parameter_shape": {
+                  "const": "[model_config.n_layers]"
+                },
+                "initialization": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "r",
+                    "a",
+                    "method"
+                  ],
+                  "properties": {
+                    "method": {
+                      "const": "linspace"
+                    },
+                    "r": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "start",
+                        "end"
+                      ],
+                      "properties": {
+                        "start": {
+                          "type": "number"
+                        },
+                        "end": {
+                          "type": "number"
+                        }
+                      }
+                    },
+                    "a": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "start",
+                        "end"
+                      ],
+                      "properties": {
+                        "start": {
+                          "type": "number"
+                        },
+                        "end": {
+                          "type": "number"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "const": {
+                "type": "full_attention_residual",
+                "depth_sources": "initial_tokens_and_previous_sublayer_outputs",
+                "learned_residual_mix": false
+              }
+            }
+          ]
         },
         "vocab": {
           "type": "object",

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import asdict, dataclass
+import math
 
 from .normalizer import Normalizer
 from .schema import TrainingSchema
@@ -30,7 +31,63 @@ from .spec import DataSpec
 #     一次无参数 RMSNorm；字段、历史布局和状态机执行语义保持不变。
 # 17：主干 attention/FFN 子层与最终输出改用无参数 RMSNorm，固定保存主干
 #     归一化位置；旧 LayerNorm 和带可学习尺度的 RMSNorm 权重均不兼容。
-INPUT_CONTRACT_VERSION = 17
+# 18：普通 Transformer 每层先以可学习 r/a 混合当前 hidden 和初始输入 x0，
+#     Full AttnRes 仍使用独立深度残差路径；旧普通残差权重必须重新训练。
+INPUT_CONTRACT_VERSION = 18
+
+RESIDUAL_MIX_CONFIG_FIELDS = (
+    "residual_mix_r_start", "residual_mix_r_end",
+    "residual_mix_a_start", "residual_mix_a_end",
+)
+
+BACKBONE_RESIDUAL_CONTRACT = {
+    "selection": "model_config.full_attention_residuals",
+    "ordinary": {
+        "type": "learned_residual_mix",
+        "position": "before_each_transformer_layer",
+        "formula": "mixed = r[layer] * hidden + a[layer] * x0",
+        "attention_and_skip_input": "mixed",
+        "x0": "input_encoder.output_after_token_rmsnorm",
+        "x0_detached": False,
+        "parameters": ["encoder.residual_mix.r", "encoder.residual_mix.a"],
+        "parameter_shape": "[model_config.n_layers]",
+        "initialization": {
+            "r": "linspace(model_config.residual_mix_r_start, model_config.residual_mix_r_end)",
+            "a": "linspace(model_config.residual_mix_a_start, model_config.residual_mix_a_end)",
+        },
+    },
+    "full_attention": {
+        "type": "full_attention_residual",
+        "depth_sources": "initial_tokens_and_previous_sublayer_outputs",
+        "learned_residual_mix": False,
+    },
+}
+
+
+def residual_composition_contract(model_config: Mapping[str, object]) -> dict[str, object]:
+    """从保存的架构字段选择残差机制，禁止给旧 checkpoint 补初始化默认值。"""
+    missing = [key for key in RESIDUAL_MIX_CONFIG_FIELDS if key not in model_config]
+    if missing:
+        raise ValueError("model_config missing residual mix initialization fields: " + ", ".join(missing))
+    values = {}
+    for key in RESIDUAL_MIX_CONFIG_FIELDS:
+        value = model_config[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError(f"model_config.{key} must be a finite number")
+        values[key] = float(value)
+    full_attention = model_config.get("full_attention_residuals")
+    if not isinstance(full_attention, bool):
+        # 与其他 checkpoint 契约格式错误统一使用 ValueError。
+        raise ValueError("model_config.full_attention_residuals must be a saved boolean")  # noqa: TRY004
+    if full_attention:
+        return deepcopy(BACKBONE_RESIDUAL_CONTRACT["full_attention"])
+    descriptor = deepcopy(BACKBONE_RESIDUAL_CONTRACT["ordinary"])
+    descriptor["initialization"] = {
+        "r": {"start": values["residual_mix_r_start"], "end": values["residual_mix_r_end"]},
+        "a": {"start": values["residual_mix_a_start"], "end": values["residual_mix_a_end"]},
+        "method": "linspace",
+    }
+    return descriptor
 
 # 描述固定的输入结构，不作为可调运行参数；d_model 仍由保存的 model_config 提供。
 # 数据 bank 的字段与时间语义由 schema 与转换版本负责，不把读取窗口加入 cache 身份。
@@ -55,6 +112,7 @@ TOKEN_ENCODING_CONTRACT = {
         "eps": 1e-5,
         "elementwise_affine": False,
     },
+    "backbone_residual": BACKBONE_RESIDUAL_CONTRACT,
     "role_ids": {"scene": 0, "state": 1, "skill": 2},
     "current_state_encoder": "shared_with_history_state",
     "state_snapshots": ["previous_action_after", "request_state"],
@@ -106,6 +164,9 @@ class ModelInputContract:
         payload = checkpoint.get("input_contract")
         if not isinstance(payload, Mapping):
             raise ValueError("checkpoint missing input_contract")
+        state_dict = checkpoint.get("model_state_dict")
+        if isinstance(state_dict, Mapping) and any(str(key).endswith("_experiment_guard") for key in state_dict):
+            raise ValueError("checkpoint contains an isolated experiment guard; retrain with the production model")
         return cls.from_dict(payload)
 
     @classmethod

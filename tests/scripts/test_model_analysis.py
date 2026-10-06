@@ -1341,6 +1341,11 @@ def test_loss_landscape_cached_grid_matches_full_forward(full_attention_residual
         pytest.skip("Full AttnRes requires Pre-LN")
     torch.manual_seed(19)
     model = _make_model(norm_first=norm_first, full_attention_residuals=full_attention_residuals)
+    if not full_attention_residuals:
+        # 使用差异明显的系数，确保缓存路径没有漏混合或错误复用第一层系数。
+        with torch.no_grad():
+            model.encoder.residual_mix.r.copy_(torch.tensor([0.8, 1.4]))
+            model.encoder.residual_mix.a.copy_(torch.tensor([0.35, -0.15]))
     model.repetition = RepetitionConfig(mode="blacklist", skills=("fire_iv",), penalty=2.0)
     first = {key: torch.cat((value, value), dim=0) for key, value in _make_batch(3).items()}
     batches = (first, _make_batch(1))

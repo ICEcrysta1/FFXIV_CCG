@@ -72,6 +72,10 @@ class ModelConfig:
     transformer_norm_first: bool = True
     transformer_activation: str = "gelu"
     full_attention_residuals: bool = False
+    residual_mix_r_start: float = 1.15
+    residual_mix_r_end: float = 1.05
+    residual_mix_a_start: float = 0.20
+    residual_mix_a_end: float = 0.05
     dropout: float = 0.1
     rope_theta: float = 10_000.0
     history_capacity: int = 128
@@ -98,6 +102,10 @@ class ModelConfig:
             raise ValueError(
                 "model.full_attention_residuals requires transformer_norm_first=true"
             )
+        for name in ("residual_mix_r_start", "residual_mix_r_end",
+                     "residual_mix_a_start", "residual_mix_a_end"):
+            if not math.isfinite(getattr(self, name)):
+                raise ValueError(f"model.{name} must be finite")
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, object] | None = None) -> "ModelConfig":
@@ -147,6 +155,10 @@ class ModelConfig:
                 values.get("full_attention_residuals", cls.full_attention_residuals),
                 field_name="model.full_attention_residuals",
             ),
+            residual_mix_r_start=float(values.get("residual_mix_r_start", cls.residual_mix_r_start)),
+            residual_mix_r_end=float(values.get("residual_mix_r_end", cls.residual_mix_r_end)),
+            residual_mix_a_start=float(values.get("residual_mix_a_start", cls.residual_mix_a_start)),
+            residual_mix_a_end=float(values.get("residual_mix_a_end", cls.residual_mix_a_end)),
             dropout=float(values.get("dropout", cls.dropout)),
             rope_theta=float(values.get("rope_theta", cls.rope_theta)),
             history_capacity=int(values.get("history_capacity", cls.history_capacity)),

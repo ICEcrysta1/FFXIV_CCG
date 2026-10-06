@@ -46,6 +46,13 @@ model:
   # 沿深度对 embedding、attention/FFN 输出做 Full AttnRes；启用后需重新训练。
   full_attention_residuals: false
 
+  # 普通残差每层先执行 r*x+a*x0；r/a 可学习，x0 为统一 RMS 后的初始 token。
+  # 初值按层在以下端点之间线性插值；Full AttnRes 启用时不创建这组参数。
+  residual_mix_r_start: 1.15
+  residual_mix_r_end: 1.05
+  residual_mix_a_start: 0.20
+  residual_mix_a_end: 0.05
+
   # Transformer 的 dropout 概率。
   dropout: 0.1
 

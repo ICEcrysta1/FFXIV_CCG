@@ -10,6 +10,7 @@ from pathlib import Path
 import torch
 
 from common.policy.data import DataSpec, ModelInputContract, SkillVocab
+from common.policy.data.input_contract import residual_composition_contract
 from common.policy.model.repetition import parse_repetition_config
 
 from ..io.artifact_io import file_sha256
@@ -35,8 +36,9 @@ from ..runtime.tensor_runtime import GOLDEN_FORMAT, golden_encoding
 # 18：历史 token 改为状态、技能顺序，拒绝同宽但因果语义不同的旧部署包。
 # 19：删除独立内容 LayerNorm，内容与角色相加后统一无参数 RMS 归一化。
 # 20：主干两处子层归一化及最终归一化统一为无参数 RMSNorm，拒绝旧 LayerNorm 图。
-DEPLOYMENT_CONTRACT_VERSION = 20
-DEPLOYMENT_MANIFEST_VERSION = 11
+# 21：普通残差路径改为每层可学习 r/a 与初始输入混合，旧普通残差图不兼容。
+DEPLOYMENT_CONTRACT_VERSION = 21
+DEPLOYMENT_MANIFEST_VERSION = 12
 MANIFEST_SCHEMA_FILENAME = "manifest.schema.json"
 
 
@@ -121,6 +123,7 @@ class DeploymentContract:
                 "data_spec",
                 "model_input_contract",
                 "model_config",
+                "residual_composition",
                 "vocab",
                 "state_layout",
                 "scene_layout",
@@ -217,6 +220,7 @@ class DeploymentContract:
         return contract
 
     def validate(self, *, embedding_vocab_size: int) -> None:
+        residual_composition_contract(self.model_config)
         if self.precision not in SUPPORTED_PRECISIONS:
             raise ValueError(
                 "deployment precision must be bf16, float32 or float16"
@@ -403,6 +407,7 @@ class DeploymentContract:
             "data_spec": asdict(self.data_spec),
             "model_input_contract": self.input_contract.to_dict(),
             "model_config": dict(self.model_config),
+            "residual_composition": residual_composition_contract(self.model_config),
             "vocab": vocab,
             "state_layout": state_layout,
             "scene_layout": scene_layout,

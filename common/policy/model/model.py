@@ -14,6 +14,7 @@ from .input_encoder import CausalInputEncoder
 from .kv_cache import TransformerKVCache, encode_with_kv_cache
 from .position_encoding import RotaryPositionEncoding
 from .repetition import RepetitionConfig, apply_repetition_penalty
+from .residual_mix import LearnedResidualMix
 from .causal_encoder import run_causal_encoder
 from ..data.input_contract import ModelInputContract
 from ..data.spec import DataSpec
@@ -79,6 +80,15 @@ class CausalPolicyModel(nn.Module):
             self.encoder.attention_residual = FullAttentionResidual(
                 d_model=config.d_model,
                 num_queries=2 * config.n_layers + 1,
+            )
+        else:
+            # 普通残差独立学习逐层尺度和初始 token 注入，不与 Full AttnRes 叠加。
+            self.encoder.residual_mix = LearnedResidualMix(
+                config.n_layers,
+                r_start=config.residual_mix_r_start,
+                r_end=config.residual_mix_r_end,
+                a_start=config.residual_mix_a_start,
+                a_end=config.residual_mix_a_end,
             )
         self._init_weights()
         self._kv_cache_enabled = False
@@ -234,4 +244,8 @@ class CausalPolicyModel(nn.Module):
             raise ValueError("checkpoint uses an unsupported fused/scoring architecture; retrain")
         if "history_capacity" not in payload:
             raise ValueError("checkpoint missing model.history_capacity")
+        for name in ("residual_mix_r_start", "residual_mix_r_end",
+                     "residual_mix_a_start", "residual_mix_a_end"):
+            if name not in payload:
+                raise ValueError(f"checkpoint missing model.{name}; retrain")
         return ModelConfig.from_mapping(payload)

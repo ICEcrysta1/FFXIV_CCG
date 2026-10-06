@@ -23,6 +23,10 @@
 
 ### Changed
 
+- Full AttnRes 关闭时，正式残差路径改为每层先计算 `r×x + a×x0`，再累加 attention 与 FFN 输出；每层分别学习 `r`、`a`，初始化沿深度从 `1.15→1.05`、`0.20→0.05` 线性变化，端点由模型 YAML 保存。`x0` 始终来自统一输入 RMSNorm 后的原始 token，保留梯度并在每层重新注入；Full AttnRes 继续使用独立聚合路径，不创建闲置系数。
+- 普通前向、trace、KV-cache、ONNX 与 loss landscape 共用正式残差计算；缓存前缀、历史追加和当前状态读出均使用各自 token 的原始 `x0`。残差系数沿用 AdamW 分组及低精度训练的 FP32 主权重，支持参数更新和连续恢复。
+- checkpoint 输入契约升级为 18、ONNX 部署契约升级为 21、manifest 升级为 12，固定保存实际残差机制与四个初始化端点，恢复时从权重加载已学习的系数；明确拒绝旧版本、缺少配置或机制不一致的产物。原始字段与完整 history bank 未变，compiled cache v21/转换 v23 和 PythonBridge 15 继续复用。
+- 可学习残差相关回归验证为 1104 项通过、1 项按条件跳过，覆盖残差公式、输入梯度、activation checkpoint、低精度优化器恢复、KV-cache 与部署契约；正式 6 层模型通过真实 batch 20 的 CUDA BF16 反向和恢复校验。GELU/SwiGLU 的 FP32 CPU 与 BF16 存储及 I/O 的 CUDA 四套小模型 ONNX 实际导出、padding 与动作一致性校验通过。
 - Transformer 主干 attention、FFN 的子层归一化及最终输出归一化统一改为无参数 RMSNorm（`eps=1e-5`），不去均值、不设置可学习缩放或偏移；正式模型保留 Pre-Norm 残差结构。全部激活显式关闭 PyTorch 的 LayerNorm 专用融合路径，普通前向、trace、KV-cache 与 ONNX 使用一致的归一化计算。
 - 将技能、状态和场景输入的独立 LayerNorm 合并为统一输入 RMSNorm：内容投影与 scene/state/skill 的 role embedding 相加后，只执行一次无参数 RMSNorm（`eps=1e-5`），不去均值；历史与当前状态继续共享投影，技能输入与输出继续共享语义 embedding。
 - 黑魔 Artzip 的正式模型规模调整为 6 层、384 维、6 个 Query 头、FFN 1536 维；保留 1 个 KV 头、SwiGLU、300 条历史动作和 200 个场景 token 容量。

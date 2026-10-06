@@ -143,7 +143,7 @@ def test_manifest_schema_strictly_rejects_fused_capacity_metadata(field, value):
         validator.validate(payload)
 
 
-@pytest.mark.parametrize("previous_version", (18, 19))
+@pytest.mark.parametrize("previous_version", (18, 19, 20))
 def test_manifest_schema_rejects_previous_layernorm_deployment_versions(previous_version):
     jsonschema = pytest.importorskip("jsonschema")
     schema_path = Path(export_module.__file__).parents[1] / "manifest.schema.json"
@@ -522,6 +522,12 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
     assert provenance["scene_capacity_source"] == "checkpoint.model_config.scene_capacity"
     assert manifest["contract"]["model_config"]["d_model"] == 16
     assert manifest["contract"]["model_config"]["transformer_activation"] == activation
+    residual = manifest["contract"]["residual_composition"]
+    assert residual["type"] == "learned_residual_mix"
+    assert residual["initialization"] == {
+        "method": "linspace", "r": {"start": 1.15, "end": 1.05},
+        "a": {"start": .20, "end": .05},
+    }
     assert manifest["model"]["external_data"] is False
     # 导出常量折叠可能合并初始化值，因此仍以保留绝大多数模型权重作为验收。
     assert manifest["model"]["retained_float_initializer_ratio"] >= 0.98
@@ -535,7 +541,19 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
     loaded = DeploymentManifest.load(output / "manifest.json")
     assert loaded.contract.data_spec == data_spec
 
-    # 同宽且仍保留主干 LayerNorm 的旧部署契约必须拒绝。
+    # 机制、初始化元数据及版本均由 checkpoint 权威配置决定。
+    for missing_field in ("residual_mix_r_start", "residual_mix_r_end", "residual_mix_a_start", "residual_mix_a_end"):
+        incomplete = deepcopy(manifest["contract"])
+        incomplete["model_config"].pop(missing_field)
+        with pytest.raises(ValueError, match="missing residual mix initialization fields"):
+            DeploymentContract.from_dict(incomplete)
+    for field in ("formula", "x0", "attention_and_skip_input", "initialization"):
+        forged = deepcopy(manifest["contract"])
+        forged["residual_composition"][field] = "legacy"
+        with pytest.raises(ValueError, match="authoritative layouts"):
+            DeploymentContract.from_dict(forged)
+
+    # 同宽旧普通残差部署图也必须拒绝。
     previous_layernorm_contract = deepcopy(manifest["contract"])
     previous_layernorm_contract["contract_version"] = DEPLOYMENT_CONTRACT_VERSION - 1
     with pytest.raises(ValueError, match="unsupported deployment contract version"):
@@ -580,6 +598,18 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
     assert parity["top3_set_match"] is True
     assert parity["reference_top3"] == parity["compared_top3"]
 
+    # 已学习的 scalar 影响真实 logits；导出 parity 不能仅覆盖初始化 ramp。
+    mix = pytorch_backend.model.encoder.residual_mix
+    saved_r, saved_a = mix.r.detach().clone(), mix.a.detach().clone()
+    with torch.no_grad():
+        learned_logits = pytorch_backend.model(live_batch)["logits"]
+        mix.r.copy_(torch.linspace(1.15, 1.05, 2))
+        mix.a.copy_(torch.linspace(.20, .05, 2))
+        initialized_logits = pytorch_backend.model(live_batch)["logits"]
+        mix.r.copy_(saved_r)
+        mix.a.copy_(saved_a)
+    assert (learned_logits - initialized_logits).abs().max().item() > 1e-4
+
     tampered = deepcopy(manifest)
     tampered["contract"]["data_spec"]["action_keys"][0:2] = reversed(
         tampered["contract"]["data_spec"]["action_keys"][0:2]
@@ -588,12 +618,13 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
     tampered_path.write_text(json.dumps(tampered), encoding="utf-8")
     with pytest.raises(ValueError, match="mismatch|differ"):
         DeploymentManifest.load(tampered_path, verify_files=False)
-    legacy = deepcopy(manifest)
-    legacy["manifest_version"] = 1
-    legacy_path = output / "legacy-manifest.json"
-    legacy_path.write_text(json.dumps(legacy), encoding="utf-8")
-    with pytest.raises(ValueError, match="re-export"):
-        DeploymentManifest.load(legacy_path, verify_files=False)
+    for previous_manifest_version in (1, 11):
+        legacy = deepcopy(manifest)
+        legacy["manifest_version"] = previous_manifest_version
+        legacy_path = output / "legacy-manifest.json"
+        legacy_path.write_text(json.dumps(legacy), encoding="utf-8")
+        with pytest.raises(ValueError, match="re-export"):
+            DeploymentManifest.load(legacy_path, verify_files=False)
     malformed = deepcopy(manifest)
     malformed["manifest_version"] = {"unexpected": 2}
     malformed_path = output / "malformed-manifest.json"
@@ -970,6 +1001,7 @@ def test_small_bf16_model_exports_and_runs_on_strict_cuda(tmp_path, activation):
     assert manifest["contract"]["contract_version"] == DEPLOYMENT_CONTRACT_VERSION
     assert manifest["contract"]["model_input_contract"] == json.loads(json.dumps(input_contract.to_dict()))
     assert manifest["contract"]["precision"] == "bf16"
+    assert manifest["contract"]["residual_composition"]["type"] == "learned_residual_mix"
     assert manifest["model"]["compute_precision"] == "float32"
     assert manifest["exporter"]["onnxscript"] == BF16_TARGET_ONNXSCRIPT_VERSION
     assert manifest["contract"]["tensor_outputs"][0]["dtype"] == (
@@ -1021,6 +1053,52 @@ def test_export_uses_checkpoint_vocab_instead_of_stale_profile(tmp_path):
     assert contracts.deployment_contract.vocab_entries == saved.skill_vocab_entries
     assert contracts.contract_payload["vocab"] == saved.create_skill_vocab().to_dict()
     assert contracts.capacity_report["vocab_entries"] == saved.create_skill_vocab().to_dict()["entries"]
+
+
+@pytest.mark.parametrize("full_attention_residuals", [False, True])
+def test_deployment_contract_preserves_actual_residual_path(tmp_path, full_attention_residuals):
+    from scripts.onnx_export.export.checkpoint import load_policy_contracts
+    jsonschema = pytest.importorskip("jsonschema")
+    checkpoint, profile = tmp_path / "checkpoint.pt", tmp_path / "profile.json"
+    _write_small_checkpoint(checkpoint, full_attention_residuals=full_attention_residuals)
+    _write_small_profile(profile)
+    contracts = load_policy_contracts(checkpoint_path=checkpoint, deployment_profile_path=profile, precision="float32")
+    payload = contracts.deployment_contract.to_dict()
+    expected = "full_attention_residual" if full_attention_residuals else "learned_residual_mix"
+    assert payload["residual_composition"]["type"] == expected
+    restored = DeploymentContract.from_dict(payload)
+    assert restored.to_dict() == payload
+    schema_path = Path(export_module.__file__).parents[1] / "manifest.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    validator = jsonschema.Draft202012Validator({"$ref": "#/$defs/contract", "$defs": schema["$defs"]})
+    validator.validate(payload)
+    wrong = deepcopy(payload)
+    wrong["model_config"]["full_attention_residuals"] = not full_attention_residuals
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(wrong)
+    with pytest.raises(ValueError, match="authoritative layouts"):
+        DeploymentContract.from_dict(wrong)
+
+
+@pytest.mark.parametrize("field", ["residual_mix_r_start", "residual_mix_r_end", "residual_mix_a_start", "residual_mix_a_end"])
+def test_load_policy_requires_all_saved_residual_initialization_fields(tmp_path, field):
+    checkpoint = tmp_path / "checkpoint.pt"
+    _write_small_checkpoint(checkpoint)
+    payload = safe_torch_load(checkpoint)
+    payload["model_config"].pop(field)
+    torch.save(payload, checkpoint)
+    with pytest.raises(ValueError, match="residual.*initialization|residual_mix"):
+        export_module.load_policy(checkpoint, precision="float32")
+
+
+def test_load_policy_rejects_experiment_guard_even_with_current_contract(tmp_path):
+    checkpoint = tmp_path / "checkpoint.pt"
+    _write_small_checkpoint(checkpoint)
+    payload = safe_torch_load(checkpoint)
+    payload["model_state_dict"]["_learned_residual_mix_experiment_guard"] = torch.tensor(1)
+    torch.save(payload, checkpoint)
+    with pytest.raises(ValueError, match="isolated experiment guard"):
+        export_module.load_policy(checkpoint, precision="float32")
 
 
 def test_deployment_rejects_reassigned_vocab_rows_even_with_recomputed_signatures(tmp_path):
@@ -1094,7 +1172,7 @@ def test_load_policy_preserves_ffn_weights_and_rejects_mislabeled_activation(tmp
 
 
 def _write_small_checkpoint(
-    path: Path, *, activation: str = "gelu",
+    path: Path, *, activation: str = "gelu", full_attention_residuals: bool = False,
 ) -> tuple[DataSpec, ModelInputContract]:
     data_spec = DataSpec(
         job_tag="black_mage",
@@ -1117,10 +1195,16 @@ def _write_small_checkpoint(
         history_capacity=4,
         scene_capacity=3,
         transformer_activation=activation,
+        full_attention_residuals=full_attention_residuals,
     )
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(20260813)
         model = CausalPolicyModel(data_spec, config, vocab_size=8).eval()
+        # 模拟训练后的 scalar；真实导出必须使用权重，不能重建初始化 ramp。
+        with torch.no_grad():
+            if not full_attention_residuals:
+                model.encoder.residual_mix.r.copy_(torch.tensor([.93, 1.27]))
+                model.encoder.residual_mix.a.copy_(torch.tensor([-.07, .13]))
     normalizer = Normalizer()
     normalizer.configure_job_resources("black_mage")
     scene_windows = tuple(
