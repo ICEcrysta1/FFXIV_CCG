@@ -139,6 +139,32 @@ def test_resume_rejects_legacy_backbone_even_when_forcing_data_mismatch(
 
 
 @pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("incompatible", ["version_18", "missing_scale", "scale_mismatch"])
+def test_resume_cannot_bypass_qk_normalization_contract(resume_context, force, incompatible):
+    """数据规模豁免不能绕过 Q/K 算法版本、已保存尺度或架构一致性。"""
+    if incompatible == "version_18":
+        resume_context.checkpoint["input_contract"]["version"] = 18
+        message = "unsupported input contract version"
+    elif incompatible == "missing_scale":
+        resume_context.checkpoint["model_config"].pop("qk_norm_scale")
+        message = "missing model.qk_norm_scale"
+    else:
+        resume_context.checkpoint["model_config"]["qk_norm_scale"] = 0.7
+        message = "model config mismatch"
+    resume_context.checkpoint["run_config"]["max_files"] = 10
+    with pytest.raises(ValueError, match=message):
+        _validate(resume_context, force=force)
+
+
+def test_resume_preserves_matching_nondefault_qk_scale(resume_context):
+    """合法续训沿用 checkpoint 尺度，不补回正式配置的默认 1.2。"""
+    model_config = replace(resume_context.config.model, qk_norm_scale=1.7)
+    resume_context.config = replace(resume_context.config, model=model_config)
+    resume_context.checkpoint["model_config"] = asdict(model_config)
+    assert _validate(resume_context) == 1
+
+
+@pytest.mark.parametrize("force", [False, True])
 def test_resume_rejects_inactive_vocab_row_drift_even_when_outputs_match(resume_context, force):
     resume_context.input_contract = replace(
         resume_context.input_contract,

@@ -23,6 +23,9 @@
 
 ### Changed
 
+- Q/K 在 RoPE 后逐 head 执行无参数 RMSNorm（`eps=None`），再乘统一固定尺度；黑魔 Artzip 的 `model.yaml` 新增 `qk_norm_scale: 1.2`，尺度随 checkpoint 的模型配置保存。训练、trace、KV-cache、Full AttnRes 与 ONNX 共用该路径；缓存仅对新 K 归一化一次，V 和普通 token attention 的 `1/√head_dim` 缩放保持不变。
+- checkpoint 输入契约升级为 19、ONNX 部署契约升级为 22、manifest 升级为 13，固定保存 Q/K 归一化算法并校验实际尺度；拒绝旧契约、缺失或无效尺度，BC 连续续训拒绝尺度不一致，即使强制忽略数据差异也不能绕过。旧 checkpoint 需重新训练；原始 token、状态机与完整 history bank 未变，compiled cache v21/转换 v23 和 PythonBridge 15 继续复用。
+- 补充 Q/K 归一化公式、梯度、RoPE 后执行顺序、MQA/GQA、KV-cache 增量、activation checkpoint 和非默认尺度恢复回归；GELU/SwiGLU 的 FP32 CPU 与严格 BF16 CUDA ONNX 实际导出及 ORT 一致性校验通过。
 - Full AttnRes 的深度 softmax 打分直接使用 `qᵀ RMSNorm(source)`，移除额外的 `1/√d_model` 缩放；保留 query 零初始化和深度源加权平均，普通 token attention 的 Q/K 缩放不变。普通前向、trace、KV-cache 与 ONNX 共用该实现，相关公式、前向和梯度回归验证为 235 项通过。使用旧缩放训练的 Full AttnRes checkpoint 在新公式下的路由会变化，应重新训练。
 - Full AttnRes 关闭时，正式残差路径改为每层先计算 `r×x + a×x0`，再累加 attention 与 FFN 输出；每层分别学习 `r`、`a`，初始化沿深度从 `1.15→1.05`、`0.20→0.05` 线性变化，端点由模型 YAML 保存。`x0` 始终来自统一输入 RMSNorm 后的原始 token，保留梯度并在每层重新注入；Full AttnRes 继续使用独立聚合路径，不创建闲置系数。
 - 普通前向、trace、KV-cache、ONNX 与 loss landscape 共用正式残差计算；缓存前缀、历史追加和当前状态读出均使用各自 token 的原始 `x0`。残差系数沿用 AdamW 分组及低精度训练的 FP32 主权重，支持参数更新和连续恢复。

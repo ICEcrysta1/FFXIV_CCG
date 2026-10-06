@@ -9,6 +9,7 @@ from pathlib import Path
 
 import torch
 
+from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, ModelInputContract, SkillVocab
 from common.policy.data.input_contract import residual_composition_contract
 from common.policy.model.repetition import parse_repetition_config
@@ -37,8 +38,9 @@ from ..runtime.tensor_runtime import GOLDEN_FORMAT, golden_encoding
 # 19：删除独立内容 LayerNorm，内容与角色相加后统一无参数 RMS 归一化。
 # 20：主干两处子层归一化及最终归一化统一为无参数 RMSNorm，拒绝旧 LayerNorm 图。
 # 21：普通残差路径改为每层可学习 r/a 与初始输入混合，旧普通残差图不兼容。
-DEPLOYMENT_CONTRACT_VERSION = 21
-DEPLOYMENT_MANIFEST_VERSION = 12
+# 22：RoPE 后逐 head 归一化 Q/K，尺度由 checkpoint 保存的 model_config 提供。
+DEPLOYMENT_CONTRACT_VERSION = 22
+DEPLOYMENT_MANIFEST_VERSION = 13
 MANIFEST_SCHEMA_FILENAME = "manifest.schema.json"
 
 
@@ -221,6 +223,10 @@ class DeploymentContract:
 
     def validate(self, *, embedding_vocab_size: int) -> None:
         residual_composition_contract(self.model_config)
+        if "qk_norm_scale" not in self.model_config:
+            raise ValueError("deployment model_config missing qk_norm_scale; re-export the package")
+        # 复用模型配置的数值校验，但禁止给旧部署元数据补默认尺度。
+        ModelConfig.from_mapping(self.model_config)
         if self.precision not in SUPPORTED_PRECISIONS:
             raise ValueError(
                 "deployment precision must be bf16, float32 or float16"

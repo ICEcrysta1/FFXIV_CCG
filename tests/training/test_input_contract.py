@@ -91,7 +91,7 @@ def test_model_input_contract_rejects_checkpoint_without_contract():
 def test_model_input_contract_describes_post_role_parameterless_rms():
     """保存精确编码位置与参数，避免将归一化放在 role 相加之前。"""
     payload = _build_contract().to_dict()
-    assert payload["version"] == 18
+    assert payload["version"] == 19
     encoding = payload["token_encoding"]
     assert encoding["skill"] == "E[id] + Linear(skill_features)"
     assert encoding["state"] == "Linear(state_values) + Linear(null_mask, bias=False)"
@@ -118,6 +118,45 @@ def test_model_input_contract_describes_parameterless_backbone_rms():
         "eps": 1e-5,
         "elementwise_affine": False,
     }
+
+
+def test_model_input_contract_describes_post_rope_per_head_qk_rms():
+    """Q/K 共用保存的尺度，缓存仅归一化新 K，不固定 autocast 的张量 dtype。"""
+    encoding = _build_contract().to_dict()["token_encoding"]
+    assert encoding["attention_qk_normalization"] == {
+        "type": "RMSNorm",
+        "position": "after_RoPE_before_attention",
+        "normalized_shape": "head_dim",
+        "eps": None,
+        "elementwise_affine": False,
+        "scale": "model_config.qk_norm_scale",
+        "applies_to": ["query", "key"],
+        "key_cache": "normalize_new_keys_once_before_append",
+    }
+
+
+def test_model_input_contract_rejects_previous_unnormalized_qk_version():
+    payload = _build_contract().to_dict()
+    payload["version"] = 18
+    payload["token_encoding"].pop("attention_qk_normalization")
+    with pytest.raises(ValueError, match="unsupported input contract version"):
+        ModelInputContract.from_checkpoint({"input_contract": payload})
+
+
+@pytest.mark.parametrize("field,value", [
+    ("position", "before_RoPE"),
+    ("normalized_shape", "d_model"),
+    ("eps", 1e-5),
+    ("elementwise_affine", True),
+    ("scale", 1.2),
+    ("applies_to", ["query"]),
+    ("key_cache", "normalize_all_cached_keys"),
+])
+def test_model_input_contract_rejects_forged_qk_normalization(field, value):
+    payload = _build_contract().to_dict()
+    payload["token_encoding"]["attention_qk_normalization"][field] = value
+    with pytest.raises(ValueError, match="token_encoding"):
+        ModelInputContract.from_checkpoint({"input_contract": payload})
 
 
 def test_model_input_contract_rejects_previous_backbone_layernorm_version():
@@ -174,7 +213,7 @@ def test_model_input_contract_rejects_previous_skill_first_contract():
         ModelInputContract.from_dict(payload)
 
 
-@pytest.mark.parametrize("change", ["missing", "role", "token_order", "output_projection", "state_encoder", "state_snapshots", "history_state_frozen_at", "token_normalization", "backbone_normalization", "backbone_residual"])
+@pytest.mark.parametrize("change", ["missing", "role", "token_order", "output_projection", "state_encoder", "state_snapshots", "history_state_frozen_at", "token_normalization", "backbone_normalization", "backbone_residual", "attention_qk_normalization"])
 def test_model_input_contract_requires_exact_independent_token_descriptor(change):
     payload = _build_contract().to_dict()
     assert payload["version"] == INPUT_CONTRACT_VERSION

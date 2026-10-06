@@ -33,7 +33,9 @@ from .spec import DataSpec
 #     归一化位置；旧 LayerNorm 和带可学习尺度的 RMSNorm 权重均不兼容。
 # 18：普通 Transformer 每层先以可学习 r/a 混合当前 hidden 和初始输入 x0，
 #     Full AttnRes 仍使用独立深度残差路径；旧普通残差权重必须重新训练。
-INPUT_CONTRACT_VERSION = 18
+# 19：RoPE 后对每个 Q/K head 执行无参数 RMSNorm，并使用 checkpoint 保存的共同尺度；
+#     旧的未归一化 Q/K 权重不得静默套用新注意力算法。
+INPUT_CONTRACT_VERSION = 19
 
 RESIDUAL_MIX_CONFIG_FIELDS = (
     "residual_mix_r_start", "residual_mix_r_end",
@@ -113,6 +115,16 @@ TOKEN_ENCODING_CONTRACT = {
         "elementwise_affine": False,
     },
     "backbone_residual": BACKBONE_RESIDUAL_CONTRACT,
+    "attention_qk_normalization": {
+        "type": "RMSNorm",
+        "position": "after_RoPE_before_attention",
+        "normalized_shape": "head_dim",
+        "eps": None,
+        "elementwise_affine": False,
+        "scale": "model_config.qk_norm_scale",
+        "applies_to": ["query", "key"],
+        "key_cache": "normalize_new_keys_once_before_append",
+    },
     "role_ids": {"scene": 0, "state": 1, "skill": 2},
     "current_state_encoder": "shared_with_history_state",
     "state_snapshots": ["previous_action_after", "request_state"],

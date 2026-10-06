@@ -8,7 +8,14 @@ import torch
 from torch.utils.checkpoint import checkpoint
 
 from .attention_masks import build_segment_mask
-from .attention_utils import finish_layer, kv_head_count, project_qkv, rotate_qk, split_heads
+from .attention_utils import (
+    finish_layer,
+    kv_head_count,
+    normalize_qk,
+    project_qkv,
+    rotate_qk,
+    split_heads,
+)
 from .attention_variants import run_head_attention
 
 
@@ -68,6 +75,10 @@ def run_causal_layer(
             split_heads(key, kv_head_count(layer.self_attn)),
             position_ids,
             position_ids,
+        )
+        # 只归一化本次投影的新 K；缓存已保存归一化后的 K，拼接时不再处理。
+        query_heads, key_heads = normalize_qk(
+            query_heads, key_heads, scale=layer.qk_norm_scale,
         )
         value_heads = split_heads(value, kv_head_count(layer.self_attn))
         if existing_key is None:

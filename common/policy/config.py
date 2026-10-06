@@ -60,6 +60,21 @@ def _parse_strict_bool(value: object, *, field_name: str) -> bool:
     )
 
 
+def _parse_qk_norm_scale(value: object) -> float:
+    """解析 Q/K 共用的正有限尺度，避免布尔值被 float() 静默接受。"""
+    message = "model.qk_norm_scale must be finite and positive"
+    if isinstance(value, bool):
+        # 架构配置错误统一使用 ValueError，与 checkpoint/续训校验保持一致。
+        raise ValueError(message)  # noqa: TRY004
+    try:
+        scale = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(message) from exc
+    if not math.isfinite(scale) or scale <= 0:
+        raise ValueError(message)
+    return scale
+
+
 @dataclass(frozen=True)
 class ModelConfig:
     """只保存策略模型架构超参数，数据维度由 DataSpec 提供。"""
@@ -78,6 +93,7 @@ class ModelConfig:
     residual_mix_a_end: float = 0.05
     dropout: float = 0.1
     rope_theta: float = 10_000.0
+    qk_norm_scale: float = 1.2
     history_capacity: int = 128
     scene_capacity: int = 160
 
@@ -98,6 +114,7 @@ class ModelConfig:
             raise ValueError("model.n_heads must be divisible by model.num_kv_heads")
         if self.rope_theta <= 1.0:
             raise ValueError("model.rope_theta must be greater than 1")
+        object.__setattr__(self, "qk_norm_scale", _parse_qk_norm_scale(self.qk_norm_scale))
         if self.full_attention_residuals and not self.transformer_norm_first:
             raise ValueError(
                 "model.full_attention_residuals requires transformer_norm_first=true"
@@ -161,6 +178,7 @@ class ModelConfig:
             residual_mix_a_end=float(values.get("residual_mix_a_end", cls.residual_mix_a_end)),
             dropout=float(values.get("dropout", cls.dropout)),
             rope_theta=float(values.get("rope_theta", cls.rope_theta)),
+            qk_norm_scale=_parse_qk_norm_scale(values.get("qk_norm_scale", cls.qk_norm_scale)),
             history_capacity=int(values.get("history_capacity", cls.history_capacity)),
             scene_capacity=int(values.get("scene_capacity", cls.scene_capacity)),
         )

@@ -22,6 +22,19 @@ def rotate_qk(
     )
 
 
+def normalize_qk(
+    query_heads: torch.Tensor,
+    key_heads: torch.Tensor,
+    *,
+    scale: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """对 RoPE 后的 Q/K 逐 head 做无参数 RMSNorm，再乘同一个固定尺度。"""
+    return (
+        F.rms_norm(query_heads, (query_heads.shape[-1],), eps=None) * scale,
+        F.rms_norm(key_heads, (key_heads.shape[-1],), eps=None) * scale,
+    )
+
+
 def project_qkv(attention, values: torch.Tensor):
     """按 MHA 或 grouped-query attention 的权重投影 Q/K/V。"""
     project = getattr(attention, "project_qkv", None)

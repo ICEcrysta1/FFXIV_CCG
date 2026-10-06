@@ -58,6 +58,7 @@ class CausalPolicyModel(nn.Module):
             d_model=config.d_model,
             nhead=config.n_heads,
             num_kv_heads=config.num_kv_heads,
+            qk_norm_scale=config.qk_norm_scale,
             dim_feedforward=config.ff_dim,
             dropout=config.dropout,
             activation=config.transformer_activation,
@@ -244,6 +245,8 @@ class CausalPolicyModel(nn.Module):
             raise ValueError("checkpoint uses an unsupported fused/scoring architecture; retrain")
         if "history_capacity" not in payload:
             raise ValueError("checkpoint missing model.history_capacity")
+        if "qk_norm_scale" not in payload:
+            raise ValueError("checkpoint missing model.qk_norm_scale; retrain")
         for name in ("residual_mix_r_start", "residual_mix_r_end",
                      "residual_mix_a_start", "residual_mix_a_end"):
             if name not in payload:

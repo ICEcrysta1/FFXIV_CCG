@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from contextlib import nullcontext
 from dataclasses import dataclass
 
@@ -36,9 +37,18 @@ class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):
         dtype=None,
         *,
         num_kv_heads: int | None = None,
+        qk_norm_scale: float = 1.2,
     ):
         if dim_feedforward < 1:
             raise ValueError("dim_feedforward must be positive")
+        if (
+            isinstance(qk_norm_scale, bool)
+            or not isinstance(qk_norm_scale, (int, float))
+            or not math.isfinite(qk_norm_scale)
+            or qk_norm_scale <= 0
+        ):
+            raise ValueError("qk_norm_scale must be a finite positive number")
+        self.qk_norm_scale = float(qk_norm_scale)
         use_swiglu = uses_gate(activation)
         # 三个投影取代两个投影；保持同一 ff_dim 配置下矩阵参数量近似相等。
         hidden_dim = gated_hidden_dim(

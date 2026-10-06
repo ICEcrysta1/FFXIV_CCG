@@ -15,7 +15,7 @@ import torch
 from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, ModelInputContract, Normalizer, SkillVocab
 from common.policy.data.schema import SceneWindowSchema, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
-from common.policy.data.input_contract import INPUT_CONTRACT_VERSION
+from common.policy.data.input_contract import INPUT_CONTRACT_VERSION, TOKEN_ENCODING_CONTRACT
 from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
 from common.policy.model import CausalPolicyModel
 from common.torch_serialization import safe_torch_load
@@ -143,8 +143,8 @@ def test_manifest_schema_strictly_rejects_fused_capacity_metadata(field, value):
         validator.validate(payload)
 
 
-@pytest.mark.parametrize("previous_version", (18, 19, 20))
-def test_manifest_schema_rejects_previous_layernorm_deployment_versions(previous_version):
+@pytest.mark.parametrize("previous_version", (18, 19, 20, 21))
+def test_manifest_schema_rejects_previous_deployment_versions(previous_version):
     jsonschema = pytest.importorskip("jsonschema")
     schema_path = Path(export_module.__file__).parents[1] / "manifest.schema.json"
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
@@ -153,6 +153,28 @@ def test_manifest_schema_rejects_previous_layernorm_deployment_versions(previous
     validator.validate(DEPLOYMENT_CONTRACT_VERSION)
     with pytest.raises(jsonschema.ValidationError):
         validator.validate(previous_version)
+
+
+def test_manifest_schema_and_loader_reject_previous_manifest_version(tmp_path):
+    jsonschema = pytest.importorskip("jsonschema")
+    schema_path = Path(export_module.__file__).parents[1] / "manifest.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    validator = jsonschema.Draft202012Validator(schema["properties"]["manifest_version"])
+    validator.validate(DEPLOYMENT_MANIFEST_VERSION)
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(12)
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps({"manifest_version": 12}), encoding="utf-8", newline="\n")
+    with pytest.raises(ValueError, match="unsupported deployment manifest version"):
+        DeploymentManifest.load(path, verify_files=False)
+
+
+def test_manifest_schema_uses_authoritative_qk_input_descriptor():
+    schema_path = Path(export_module.__file__).parents[1] / "manifest.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    input_schema = schema["$defs"]["contract"]["properties"]["model_input_contract"]
+    assert input_schema["properties"]["version"]["const"] == INPUT_CONTRACT_VERSION
+    assert input_schema["properties"]["token_encoding"]["const"] == TOKEN_ENCODING_CONTRACT
 
 
 def test_failed_export_keeps_previous_valid_directory(tmp_path, monkeypatch):
@@ -479,6 +501,7 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
     data_spec, _input_contract = _write_small_checkpoint(
         checkpoint,
         activation=activation,
+        qk_norm_scale=1.7,
     )
     profile = tmp_path / "deployment-profile.json"
     _write_small_profile(profile)
@@ -522,6 +545,7 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
     assert provenance["scene_capacity_source"] == "checkpoint.model_config.scene_capacity"
     assert manifest["contract"]["model_config"]["d_model"] == 16
     assert manifest["contract"]["model_config"]["transformer_activation"] == activation
+    assert manifest["contract"]["model_config"]["qk_norm_scale"] == 1.7
     residual = manifest["contract"]["residual_composition"]
     assert residual["type"] == "learned_residual_mix"
     assert residual["initialization"] == {
@@ -1060,12 +1084,16 @@ def test_deployment_contract_preserves_actual_residual_path(tmp_path, full_atten
     from scripts.onnx_export.export.checkpoint import load_policy_contracts
     jsonschema = pytest.importorskip("jsonschema")
     checkpoint, profile = tmp_path / "checkpoint.pt", tmp_path / "profile.json"
-    _write_small_checkpoint(checkpoint, full_attention_residuals=full_attention_residuals)
+    _write_small_checkpoint(checkpoint, full_attention_residuals=full_attention_residuals, qk_norm_scale=1.7)
     _write_small_profile(profile)
     contracts = load_policy_contracts(checkpoint_path=checkpoint, deployment_profile_path=profile, precision="float32")
     payload = contracts.deployment_contract.to_dict()
     expected = "full_attention_residual" if full_attention_residuals else "learned_residual_mix"
     assert payload["residual_composition"]["type"] == expected
+    assert payload["model_config"]["qk_norm_scale"] == 1.7
+    assert payload["model_input_contract"]["token_encoding"]["attention_qk_normalization"] == (
+        TOKEN_ENCODING_CONTRACT["attention_qk_normalization"]
+    )
     restored = DeploymentContract.from_dict(payload)
     assert restored.to_dict() == payload
     schema_path = Path(export_module.__file__).parents[1] / "manifest.schema.json"
@@ -1078,6 +1106,92 @@ def test_deployment_contract_preserves_actual_residual_path(tmp_path, full_atten
         validator.validate(wrong)
     with pytest.raises(ValueError, match="authoritative layouts"):
         DeploymentContract.from_dict(wrong)
+
+
+@pytest.mark.parametrize("full_attention_residuals", [False, True])
+def test_load_policy_preserves_saved_qk_scale_without_project_yaml(tmp_path, monkeypatch, full_attention_residuals):
+    import common.config as config_module
+
+    checkpoint = tmp_path / "checkpoint.pt"
+    _write_small_checkpoint(checkpoint, full_attention_residuals=full_attention_residuals, qk_norm_scale=1.7)
+    monkeypatch.setattr(
+        config_module, "load_project_config",
+        lambda **_kwargs: pytest.fail("checkpoint QK scale must not load project YAML"),
+    )
+    policy, _, _, _, payload = export_module.load_policy(checkpoint, precision="float32")
+    assert policy.model.config.qk_norm_scale == 1.7
+    assert all(layer.qk_norm_scale == 1.7 for layer in policy.model.encoder.layers)
+    assert hasattr(policy.model.encoder, "residual_mix") is (not full_attention_residuals)
+    for name, tensor in policy.model.state_dict().items():
+        torch.testing.assert_close(tensor, payload["model_state_dict"][name], atol=0, rtol=0)
+
+
+@pytest.mark.parametrize("value", ["missing", True, False, 0, -1, float("nan"), float("inf"), float("-inf"), "invalid", None])
+def test_checkpoint_and_deployment_reject_missing_or_invalid_qk_scale(tmp_path, value):
+    from scripts.onnx_export.export.checkpoint import load_policy_contracts
+
+    # 缺失元数据独立于默认值；错误数值也不能靠重算部署签名绕过模型校验。
+    checkpoint, profile = tmp_path / "checkpoint.pt", tmp_path / "profile.json"
+    _write_small_checkpoint(checkpoint)
+    _write_small_profile(profile)
+    contracts = load_policy_contracts(checkpoint_path=checkpoint, deployment_profile_path=profile, precision="float32")
+    deployment = contracts.deployment_contract.to_dict()
+    payload = safe_torch_load(checkpoint)
+    for model_config in (payload["model_config"], deployment["model_config"]):
+        if value == "missing":
+            model_config.pop("qk_norm_scale")
+        else:
+            model_config["qk_norm_scale"] = value
+    torch.save(payload, checkpoint)
+    with pytest.raises(ValueError, match="qk_norm_scale"):
+        export_module.load_policy(checkpoint, precision="float32")
+    with pytest.raises(ValueError, match="qk_norm_scale"):
+        DeploymentContract.from_dict(deployment)
+
+
+@pytest.mark.parametrize("value", [None, True, False, "1.2", 0, -1])
+def test_manifest_schema_rejects_missing_or_invalid_qk_scale(value):
+    jsonschema = pytest.importorskip("jsonschema")
+    schema_path = Path(export_module.__file__).parents[1] / "manifest.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    validator = jsonschema.Draft202012Validator(schema["$defs"]["contract"]["properties"]["model_config"])
+    payload = asdict(ModelConfig())
+    validator.validate(payload)
+    if value is None:
+        payload.pop("qk_norm_scale")
+    else:
+        payload["qk_norm_scale"] = value
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(payload)
+
+
+def test_deployment_qk_scale_is_bound_by_saved_model_config_signature(tmp_path):
+    from scripts.onnx_export.export.checkpoint import load_policy_contracts
+
+    checkpoint, profile = tmp_path / "checkpoint.pt", tmp_path / "profile.json"
+    _write_small_checkpoint(checkpoint, qk_norm_scale=1.7)
+    _write_small_profile(profile)
+    contracts = load_policy_contracts(checkpoint_path=checkpoint, deployment_profile_path=profile, precision="float32")
+    deployment = contracts.deployment_contract.to_dict()
+    deployment["model_config"]["qk_norm_scale"] = 1.2
+    with pytest.raises(ValueError, match="authoritative layouts"):
+        DeploymentContract.from_dict(deployment)
+
+
+@pytest.mark.parametrize("legacy", ["version", "missing_descriptor", "wrong_descriptor"])
+def test_load_policy_rejects_unnormalized_qk_checkpoint(tmp_path, legacy):
+    checkpoint = tmp_path / "checkpoint.pt"
+    _write_small_checkpoint(checkpoint)
+    payload = safe_torch_load(checkpoint)
+    if legacy == "version":
+        payload["input_contract"]["version"] = 18
+    elif legacy == "missing_descriptor":
+        payload["input_contract"]["token_encoding"].pop("attention_qk_normalization")
+    else:
+        payload["input_contract"]["token_encoding"]["attention_qk_normalization"]["eps"] = 1e-5
+    torch.save(payload, checkpoint)
+    with pytest.raises(ValueError, match="input contract version|token_encoding"):
+        export_module.load_policy(checkpoint, precision="float32")
 
 
 @pytest.mark.parametrize("field", ["residual_mix_r_start", "residual_mix_r_end", "residual_mix_a_start", "residual_mix_a_end"])
@@ -1173,6 +1287,7 @@ def test_load_policy_preserves_ffn_weights_and_rejects_mislabeled_activation(tmp
 
 def _write_small_checkpoint(
     path: Path, *, activation: str = "gelu", full_attention_residuals: bool = False,
+    qk_norm_scale: float = 1.2,
 ) -> tuple[DataSpec, ModelInputContract]:
     data_spec = DataSpec(
         job_tag="black_mage",
@@ -1196,6 +1311,7 @@ def _write_small_checkpoint(
         scene_capacity=3,
         transformer_activation=activation,
         full_attention_residuals=full_attention_residuals,
+        qk_norm_scale=qk_norm_scale,
     )
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(20260813)

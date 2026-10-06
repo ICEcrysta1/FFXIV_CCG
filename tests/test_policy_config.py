@@ -1,11 +1,12 @@
 """策略配置清单的动作质量和独立优化器子配置加载测试。"""
 
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
 import yaml
 
-from common.policy.config import load_policy_config
+from common.policy.config import ModelConfig, load_model_config, load_policy_config
 
 
 def test_artzip_manifest_loads_action_quality_weights():
@@ -103,3 +104,41 @@ def test_optimizer_reference_rejects_non_mapping_file(tmp_path):
 
     with pytest.raises(ValueError, match="optimizer_config must be a mapping"):
         load_policy_config(manifest)
+
+
+def test_qk_norm_scale_defaults_and_artzip_architecture():
+    assert ModelConfig().qk_norm_scale == 1.2
+    assert ModelConfig.from_mapping({}).qk_norm_scale == 1.2
+    root = Path(__file__).resolve().parents[1]
+    config = load_model_config(root / "config/models/black_mage/artzip/model.yaml")
+    assert config.qk_norm_scale == 1.2
+    assert (config.n_layers, config.d_model, config.n_heads, config.num_kv_heads, config.ff_dim) == (6, 384, 6, 1, 1536)
+
+
+@pytest.mark.parametrize("value", [0.25, 1, 1.2, 2.5, "1.75"])
+def test_qk_norm_scale_mapping_and_yaml_round_trip(value):
+    config = ModelConfig.from_mapping({"qk_norm_scale": value})
+    assert config.qk_norm_scale == float(value)
+    assert isinstance(config.qk_norm_scale, float)
+    restored = ModelConfig.from_mapping(yaml.safe_load(yaml.safe_dump(asdict(config))))
+    assert restored == config
+
+
+def test_qk_norm_scale_direct_constructor_normalizes_numeric_string():
+    config = ModelConfig(qk_norm_scale="1.75")
+    assert config.qk_norm_scale == 1.75
+    assert isinstance(config.qk_norm_scale, float)
+    assert config == ModelConfig.from_mapping({"qk_norm_scale": "1.75"})
+
+
+@pytest.mark.parametrize("value", [True, False, 0, -1, float("nan"), float("inf"), -float("inf"),
+                                  "nan", "inf", "-inf", "0", "-0.5", "invalid", None, [], {}])
+def test_qk_norm_scale_rejects_invalid_mapping_values(value):
+    with pytest.raises(ValueError, match="qk_norm_scale must be finite and positive"):
+        ModelConfig.from_mapping({"qk_norm_scale": value})
+
+
+@pytest.mark.parametrize("value", [True, False, 0, -1, float("nan"), float("inf"), -float("inf")])
+def test_qk_norm_scale_direct_constructor_rejects_invalid_values(value):
+    with pytest.raises(ValueError, match="qk_norm_scale must be finite and positive"):
+        ModelConfig(qk_norm_scale=value)

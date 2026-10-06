@@ -15,6 +15,9 @@ def _make_model(
     norm_first: bool = True,
     full_attention_residuals: bool = False,
     activation: str = "gelu",
+    n_heads: int = 2,
+    num_kv_heads: int = 1,
+    qk_norm_scale: float = 1.2,
 ) -> CausalPolicyModel:
     data_spec = DataSpec(
         job_tag="black_mage",
@@ -32,7 +35,9 @@ def _make_model(
         ModelConfig(
             d_model=16,
             n_layers=2,
-            n_heads=2,
+            n_heads=n_heads,
+            num_kv_heads=num_kv_heads,
+            qk_norm_scale=qk_norm_scale,
             ff_dim=32,
             dropout=0.0,
             transformer_norm_first=norm_first,
@@ -49,16 +54,21 @@ def _make_model_pair(
     norm_first: bool = True,
     full_attention_residuals: bool = False,
     activation: str = "gelu",
+    n_heads: int = 2,
+    num_kv_heads: int = 1,
+    qk_norm_scale: float = 1.2,
 ):
     cached_model = _make_model(
         activation=activation,
         norm_first=norm_first,
         full_attention_residuals=full_attention_residuals,
+        n_heads=n_heads, num_kv_heads=num_kv_heads, qk_norm_scale=qk_norm_scale,
     )
     full_model = _make_model(
         activation=activation,
         norm_first=norm_first,
         full_attention_residuals=full_attention_residuals,
+        n_heads=n_heads, num_kv_heads=num_kv_heads, qk_norm_scale=qk_norm_scale,
     )
     full_model.load_state_dict(cached_model.state_dict())
     return cached_model, full_model
@@ -89,6 +99,66 @@ def _make_batch(history_length: int, *, current_state_offset: float = 0.0, chang
         "scene_types": torch.zeros((1, 2), dtype=torch.long),
         "scene_mask": torch.ones((1, 2), dtype=torch.bool),
     }
+
+
+@pytest.mark.parametrize("num_kv_heads", (4, 2, 1))
+@pytest.mark.parametrize("full_attention_residuals", (False, True))
+def test_qk_normalized_kv_reuses_old_keys_once_and_matches_dense_trace(
+    monkeypatch, num_kv_heads, full_attention_residuals,
+):
+    """缓存保存已归一化 K，仅归一化新增块；非默认尺度下仍与 dense/trace 一致。"""
+    from common.policy.model import causal_encoder
+
+    torch.manual_seed(823)
+    scale = 1.73
+    model, dense = _make_model_pair(
+        n_heads=4, num_kv_heads=num_kv_heads, qk_norm_scale=scale,
+        full_attention_residuals=full_attention_residuals, activation="swiglu",
+    )
+    model.double()
+    dense.double()
+    model.enable_kv_cache(True)
+    calls = []
+    original = causal_encoder.normalize_qk
+
+    def observe_normalization(query, key, *, scale):
+        calls.append((query.shape[2], key.shape[2]))
+        normalized = original(query, key, scale=scale)
+        epsilon = torch.finfo(torch.float64).eps
+        for raw, actual in zip((query, key), normalized):
+            expected = raw * scale / (raw.square().mean(-1, keepdim=True) + epsilon).sqrt()
+            torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
+        return normalized
+
+    monkeypatch.setattr(causal_encoder, "normalize_qk", observe_normalization)
+    previous_keys = None
+    requests = ((0, 0.0, (2, 1)), (1, 0.0, (2, 1)),
+                (1, 7.0, (1,)), (2, 0.0, (2, 1)))
+    with torch.no_grad():
+        for history_length, offset, blocks in requests:
+            batch = _make_batch(history_length, current_state_offset=offset)
+            batch = {key: value.double() if value.is_floating_point() else value
+                     for key, value in batch.items()}
+            calls.clear()
+            cached_logits = model(batch)["logits"]
+            assert calls == [(length, length) for length in blocks
+                             for _ in range(model.config.n_layers)]
+            keys = model._kv_cache.key_cache
+            for key in keys:
+                assert key.shape[1] == num_kv_heads
+                rms = key.square().mean(-1).sqrt()
+                torch.testing.assert_close(rms, torch.full_like(rms, scale),
+                                           rtol=1e-12, atol=1e-12)
+            if previous_keys is not None:
+                for old, current in zip(previous_keys, keys):
+                    # 旧 K 必须逐位复用；结合新增块调用统计，禁止再次归一化前缀。
+                    torch.testing.assert_close(current[:, :, :old.shape[2]], old, rtol=0, atol=0)
+            previous_keys = tuple(key.clone() for key in keys)
+            trace = dense.trace(batch)
+            torch.testing.assert_close(cached_logits, dense(batch)["logits"],
+                                       rtol=1e-11, atol=1e-11)
+            torch.testing.assert_close(cached_logits, dense.score_hidden(trace.encoded, trace.hidden, batch),
+                                       rtol=1e-11, atol=1e-11)
 
 
 @pytest.mark.parametrize("norm_first", (True, False))

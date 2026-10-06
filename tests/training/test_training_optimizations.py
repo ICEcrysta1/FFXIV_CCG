@@ -47,6 +47,11 @@ def _reference_causal_layer(layer, encoded, rope):
         causal.split_heads(key, causal.kv_head_count(layer.self_attn)),
         encoded["position_ids"], encoded["position_ids"],
     )
+    # 独立公式覆盖投影和 RoPE 后的逐 head RMSNorm，不复用正式 helper。
+    query = query / (query.square().mean(-1, keepdim=True) + torch.finfo(query.dtype).eps).sqrt()
+    key = key / (key.square().mean(-1, keepdim=True) + torch.finfo(key.dtype).eps).sqrt()
+    query = query * layer.qk_norm_scale
+    key = key * layer.qk_norm_scale
     value = causal.split_heads(value, causal.kv_head_count(layer.self_attn))
     factor = 4 // causal.kv_head_count(layer.self_attn)
     key = key.repeat_interleave(factor, dim=1)

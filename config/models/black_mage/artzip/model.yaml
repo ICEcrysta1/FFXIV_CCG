@@ -59,6 +59,9 @@ model:
   # RoPE 的基础频率参数。
   rope_theta: 10000.0
 
+  # RoPE 后逐 head 无参数 RMSNorm；Q/K 均乘以该尺度。
+  qk_norm_scale: 1.2
+
   # 模型最多接收的历史动作条数；每条拆成技能、状态两个 token，末尾追加当前状态。
   # 当前总物理容量为 scene_capacity + 2 * history_capacity + 1；601 的新单位留后续阶段。
   history_capacity: 300

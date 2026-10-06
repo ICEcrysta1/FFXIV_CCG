@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ffxiv-ccg.local/schemas/onnx-manifest-v11.json",
+  "$id": "https://ffxiv-ccg.local/schemas/onnx-manifest-v13.json",
   "title": "FFXIV_CCG ONNX Deployment Manifest",
   "type": "object",
   "additionalProperties": false,
@@ -21,7 +21,7 @@
       "const": "manifest.schema.json"
     },
     "manifest_version": {
-      "const": 12
+      "const": 13
     },
     "format": {
       "const": "onnx"
@@ -255,7 +255,7 @@
       ],
       "properties": {
         "contract_version": {
-          "const": 21
+          "const": 22
         },
         "job_tag": {
           "type": "string",
@@ -304,7 +304,7 @@
           ],
           "properties": {
             "version": {
-              "const": 18
+              "const": 19
             },
             "token_encoding": {
               "const": {
@@ -353,6 +353,16 @@
                     "learned_residual_mix": false
                   }
                 },
+                "attention_qk_normalization": {
+                  "type": "RMSNorm",
+                  "position": "after_RoPE_before_attention",
+                  "normalized_shape": "head_dim",
+                  "eps": null,
+                  "elementwise_affine": false,
+                  "scale": "model_config.qk_norm_scale",
+                  "applies_to": ["query", "key"],
+                  "key_cache": "normalize_new_keys_once_before_append"
+                },
                 "role_ids": {
                   "scene": 0,
                   "state": 1,
@@ -379,7 +389,8 @@
             "residual_mix_r_end",
             "residual_mix_a_start",
             "residual_mix_a_end",
-            "full_attention_residuals"
+            "full_attention_residuals",
+            "qk_norm_scale"
           ],
           "properties": {
             "residual_mix_r_start": {
@@ -396,6 +407,10 @@
             },
             "full_attention_residuals": {
               "type": "boolean"
+            },
+            "qk_norm_scale": {
+              "type": "number",
+              "exclusiveMinimum": 0
             }
           }
         },
