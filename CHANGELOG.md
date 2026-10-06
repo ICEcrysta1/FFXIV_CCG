@@ -23,6 +23,9 @@
 
 ### Changed
 
+- 正式动作读出改为独立无 bias 输出头，初始化按保存的 `action_to_vocab_id` 顺序复制输入技能 embedding 的动作行，不消费额外随机数，随后独立训练；输出以 FP32 执行 `s×tanh(logits/s)`，黑魔 Artzip 的 `model.yaml` 新增 `logit_softcap: 15.0`，拒绝布尔值和超出 FP32 正常数范围的尺度。普通残差、Full AttnRes、trace、KV-cache 与 ONNX 共用动作头及 softcap；重复惩罚在 softcap 后执行，合法性过滤仍由宿主负责。独立头沿用 AdamW 与低精度训练的独立 FP32 主权重。
+- checkpoint 输入契约升级为 20、ONNX 部署契约升级为 23、manifest 升级为 14，保存独立头结构、初始化方式、FP32 softcap 算法和实际尺度；恢复已学习的独立头权重与 checkpoint 尺度，不重新复制输入 embedding。旧共享头、缺失或不一致的 softcap 配置明确拒绝，数据差异豁免不能绕过架构校验；旧 checkpoint 需重新训练，compiled cache v21/转换 v23 和 PythonBridge 15 继续复用。
+- 补充动作行顺序、初始随机状态、输入/输出独立梯度、softcap 公式与数值边界、重复惩罚顺序、AdamW 参数分组、BF16 主权重连续恢复和 checkpoint/部署契约回归；相关模型、配置、续训、KV-cache、回放、模型分析与 GRPO 检查通过。GELU/SwiGLU 的 FP32 CPU 和严格 BF16 CUDA 四套小模型完成真实 ONNX 导出及 ORT 校验，导出图包含独立动作头与 Tanh。
 - Q/K 在 RoPE 后逐 head 执行无参数 RMSNorm（`eps=None`），再乘统一固定尺度；黑魔 Artzip 的 `model.yaml` 新增 `qk_norm_scale: 1.2`，尺度随 checkpoint 的模型配置保存。训练、trace、KV-cache、Full AttnRes 与 ONNX 共用该路径；缓存仅对新 K 归一化一次，V 和普通 token attention 的 `1/√head_dim` 缩放保持不变。
 - checkpoint 输入契约升级为 19、ONNX 部署契约升级为 22、manifest 升级为 13，固定保存 Q/K 归一化算法并校验实际尺度；拒绝旧契约、缺失或无效尺度，BC 连续续训拒绝尺度不一致，即使强制忽略数据差异也不能绕过。旧 checkpoint 需重新训练；原始 token、状态机与完整 history bank 未变，compiled cache v21/转换 v23 和 PythonBridge 15 继续复用。
 - 补充 Q/K 归一化公式、梯度、RoPE 后执行顺序、MQA/GQA、KV-cache 增量、activation checkpoint 和非默认尺度恢复回归；GELU/SwiGLU 的 FP32 CPU 与严格 BF16 CUDA ONNX 实际导出及 ORT 一致性校验通过。

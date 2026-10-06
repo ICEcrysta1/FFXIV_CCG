@@ -90,6 +90,22 @@ def _parse_residual_mix_endpoint(value: object, *, field_name: str) -> float:
     return endpoint
 
 
+def _parse_logit_softcap(value: object) -> float:
+    """解析输出分数的正有限 softcap，禁止布尔值隐式变成数值。"""
+    message = "model.logit_softcap must be finite and positive within the FP32 normal range"
+    if isinstance(value, bool):
+        raise ValueError(message)  # noqa: TRY004
+    try:
+        cap = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(message) from exc
+    # softcap 固定以 FP32 执行；排除上溢、下溢及 GPU 可能冲零的非规格化尺度。
+    minimum, maximum = float.fromhex("0x1p-126"), float.fromhex("0x1.fffffep+127")
+    if not math.isfinite(cap) or not minimum <= cap <= maximum:
+        raise ValueError(message)
+    return cap
+
+
 @dataclass(frozen=True)
 class ModelConfig:
     """只保存策略模型架构超参数，数据维度由 DataSpec 提供。"""
@@ -109,6 +125,7 @@ class ModelConfig:
     dropout: float = 0.1
     rope_theta: float = 10_000.0
     qk_norm_scale: float = 1.2
+    logit_softcap: float = 15.0
     history_capacity: int = 128
     scene_capacity: int = 160
 
@@ -130,6 +147,7 @@ class ModelConfig:
         if self.rope_theta <= 1.0:
             raise ValueError("model.rope_theta must be greater than 1")
         object.__setattr__(self, "qk_norm_scale", _parse_qk_norm_scale(self.qk_norm_scale))
+        object.__setattr__(self, "logit_softcap", _parse_logit_softcap(self.logit_softcap))
         if self.full_attention_residuals and not self.transformer_norm_first:
             raise ValueError(
                 "model.full_attention_residuals requires transformer_norm_first=true"
@@ -208,6 +226,7 @@ class ModelConfig:
             dropout=float(values.get("dropout", cls.dropout)),
             rope_theta=float(values.get("rope_theta", cls.rope_theta)),
             qk_norm_scale=_parse_qk_norm_scale(values.get("qk_norm_scale", cls.qk_norm_scale)),
+            logit_softcap=_parse_logit_softcap(values.get("logit_softcap", cls.logit_softcap)),
             history_capacity=int(values.get("history_capacity", cls.history_capacity)),
             scene_capacity=int(values.get("scene_capacity", cls.scene_capacity)),
         )

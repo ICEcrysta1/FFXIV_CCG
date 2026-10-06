@@ -143,7 +143,7 @@ def test_manifest_schema_strictly_rejects_fused_capacity_metadata(field, value):
         validator.validate(payload)
 
 
-@pytest.mark.parametrize("previous_version", (18, 19, 20, 21))
+@pytest.mark.parametrize("previous_version", (18, 19, 20, 21, 22))
 def test_manifest_schema_rejects_previous_deployment_versions(previous_version):
     jsonschema = pytest.importorskip("jsonschema")
     schema_path = Path(export_module.__file__).parents[1] / "manifest.schema.json"
@@ -162,14 +162,14 @@ def test_manifest_schema_and_loader_reject_previous_manifest_version(tmp_path):
     validator = jsonschema.Draft202012Validator(schema["properties"]["manifest_version"])
     validator.validate(DEPLOYMENT_MANIFEST_VERSION)
     with pytest.raises(jsonschema.ValidationError):
-        validator.validate(12)
+        validator.validate(DEPLOYMENT_MANIFEST_VERSION - 1)
     path = tmp_path / "manifest.json"
-    path.write_text(json.dumps({"manifest_version": 12}), encoding="utf-8", newline="\n")
+    path.write_text(json.dumps({"manifest_version": DEPLOYMENT_MANIFEST_VERSION - 1}), encoding="utf-8", newline="\n")
     with pytest.raises(ValueError, match="unsupported deployment manifest version"):
         DeploymentManifest.load(path, verify_files=False)
 
 
-def test_manifest_schema_uses_authoritative_qk_input_descriptor():
+def test_manifest_schema_uses_authoritative_model_input_descriptor():
     schema_path = Path(export_module.__file__).parents[1] / "manifest.schema.json"
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     input_schema = schema["$defs"]["contract"]["properties"]["model_input_contract"]
@@ -502,6 +502,7 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
         checkpoint,
         activation=activation,
         qk_norm_scale=1.7,
+        logit_softcap=7.5,
     )
     profile = tmp_path / "deployment-profile.json"
     _write_small_profile(profile)
@@ -546,6 +547,13 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
     assert manifest["contract"]["model_config"]["d_model"] == 16
     assert manifest["contract"]["model_config"]["transformer_activation"] == activation
     assert manifest["contract"]["model_config"]["qk_norm_scale"] == 1.7
+    assert manifest["contract"]["model_config"]["logit_softcap"] == 7.5
+    assert manifest["contract"]["model_input_contract"]["token_encoding"]["output_projection"] == (
+        TOKEN_ENCODING_CONTRACT["output_projection"]
+    )
+    assert manifest["contract"]["model_input_contract"]["token_encoding"]["logit_softcap"] == (
+        TOKEN_ENCODING_CONTRACT["logit_softcap"]
+    )
     residual = manifest["contract"]["residual_composition"]
     assert residual["type"] == "learned_residual_mix"
     assert residual["initialization"] == {
@@ -557,6 +565,7 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
     assert manifest["model"]["retained_float_initializer_ratio"] >= 0.98
     assert manifest["model"]["onnx_other_float_initializer_max_elements"] <= 1
     exported_model = onnx.load(output / "model.onnx")
+    assert any(node.op_type == "Tanh" for node in exported_model.graph.node)
     assert not any(node.op_type == "LayerNormalization" for node in exported_model.graph.node)
     assert not any(".norm" in tensor.name for tensor in exported_model.graph.initializer)
     assert [
@@ -1025,6 +1034,7 @@ def test_small_bf16_model_exports_and_runs_on_strict_cuda(tmp_path, activation):
     assert manifest["contract"]["contract_version"] == DEPLOYMENT_CONTRACT_VERSION
     assert manifest["contract"]["model_input_contract"] == json.loads(json.dumps(input_contract.to_dict()))
     assert manifest["contract"]["precision"] == "bf16"
+    assert manifest["contract"]["model_config"]["logit_softcap"] == 15.0
     assert manifest["contract"]["residual_composition"]["type"] == "learned_residual_mix"
     assert manifest["model"]["compute_precision"] == "float32"
     assert manifest["exporter"]["onnxscript"] == BF16_TARGET_ONNXSCRIPT_VERSION
@@ -1035,6 +1045,7 @@ def test_small_bf16_model_exports_and_runs_on_strict_cuda(tmp_path, activation):
     assert manifest["model"]["onnx_other_float_initializer_max_elements"] <= 1
     assert manifest["model"]["onnx_float_initializer_dtype_counts"]["bfloat16"] > 0
     exported_model = onnx.load(output / "model.onnx")
+    assert any(node.op_type == "Tanh" for node in exported_model.graph.node)
     assert not any(node.op_type == "LayerNormalization" for node in exported_model.graph.node)
     assert not any(".norm" in tensor.name for tensor in exported_model.graph.initializer)
     model_metadata = {item.key: item.value for item in exported_model.metadata_props}
@@ -1084,15 +1095,25 @@ def test_deployment_contract_preserves_actual_residual_path(tmp_path, full_atten
     from scripts.onnx_export.export.checkpoint import load_policy_contracts
     jsonschema = pytest.importorskip("jsonschema")
     checkpoint, profile = tmp_path / "checkpoint.pt", tmp_path / "profile.json"
-    _write_small_checkpoint(checkpoint, full_attention_residuals=full_attention_residuals, qk_norm_scale=1.7)
+    _write_small_checkpoint(
+        checkpoint, full_attention_residuals=full_attention_residuals,
+        qk_norm_scale=1.7, logit_softcap=7.5,
+    )
     _write_small_profile(profile)
     contracts = load_policy_contracts(checkpoint_path=checkpoint, deployment_profile_path=profile, precision="float32")
     payload = contracts.deployment_contract.to_dict()
     expected = "full_attention_residual" if full_attention_residuals else "learned_residual_mix"
     assert payload["residual_composition"]["type"] == expected
     assert payload["model_config"]["qk_norm_scale"] == 1.7
+    assert payload["model_config"]["logit_softcap"] == 7.5
     assert payload["model_input_contract"]["token_encoding"]["attention_qk_normalization"] == (
         TOKEN_ENCODING_CONTRACT["attention_qk_normalization"]
+    )
+    assert payload["model_input_contract"]["token_encoding"]["output_projection"] == (
+        TOKEN_ENCODING_CONTRACT["output_projection"]
+    )
+    assert payload["model_input_contract"]["token_encoding"]["logit_softcap"] == (
+        TOKEN_ENCODING_CONTRACT["logit_softcap"]
     )
     restored = DeploymentContract.from_dict(payload)
     assert restored.to_dict() == payload
@@ -1109,18 +1130,27 @@ def test_deployment_contract_preserves_actual_residual_path(tmp_path, full_atten
 
 
 @pytest.mark.parametrize("full_attention_residuals", [False, True])
-def test_load_policy_preserves_saved_qk_scale_without_project_yaml(tmp_path, monkeypatch, full_attention_residuals):
+def test_load_policy_preserves_saved_readout_and_qk_scale_without_project_yaml(tmp_path, monkeypatch, full_attention_residuals):
     import common.config as config_module
 
     checkpoint = tmp_path / "checkpoint.pt"
-    _write_small_checkpoint(checkpoint, full_attention_residuals=full_attention_residuals, qk_norm_scale=1.7)
+    _write_small_checkpoint(
+        checkpoint, full_attention_residuals=full_attention_residuals,
+        qk_norm_scale=1.7, logit_softcap=7.5,
+    )
     monkeypatch.setattr(
         config_module, "load_project_config",
-        lambda **_kwargs: pytest.fail("checkpoint QK scale must not load project YAML"),
+        lambda **_kwargs: pytest.fail("checkpoint readout and QK scales must not load project YAML"),
     )
     policy, _, _, _, payload = export_module.load_policy(checkpoint, precision="float32")
     assert policy.model.config.qk_norm_scale == 1.7
     assert all(layer.qk_norm_scale == 1.7 for layer in policy.model.encoder.layers)
+    assert policy.model.config.logit_softcap == 7.5
+    assert policy.model.output_head.bias is None
+    assert policy.model.output_head.weight.shape == (3, 16)
+    saved_head = payload["model_state_dict"]["output_head.weight"]
+    saved_embedding = payload["model_state_dict"]["input_encoder.skill_embed.weight"]
+    assert not torch.equal(saved_head, saved_embedding[list(policy.model.data_spec.action_to_vocab_id)])
     assert hasattr(policy.model.encoder, "residual_mix") is (not full_attention_residuals)
     for name, tensor in policy.model.state_dict().items():
         torch.testing.assert_close(tensor, payload["model_state_dict"][name], atol=0, rtol=0)
@@ -1176,6 +1206,76 @@ def test_deployment_qk_scale_is_bound_by_saved_model_config_signature(tmp_path):
     deployment["model_config"]["qk_norm_scale"] = 1.2
     with pytest.raises(ValueError, match="authoritative layouts"):
         DeploymentContract.from_dict(deployment)
+
+
+@pytest.mark.parametrize("value", ["missing", True, False, 0, -1, 1e-46, 1e39, float("nan"), float("inf"), float("-inf"), "invalid", None])
+def test_checkpoint_and_deployment_reject_missing_or_invalid_logit_softcap(tmp_path, value):
+    from scripts.onnx_export.export.checkpoint import load_policy_contracts
+
+    checkpoint, profile = tmp_path / "checkpoint.pt", tmp_path / "profile.json"
+    _write_small_checkpoint(checkpoint)
+    _write_small_profile(profile)
+    contracts = load_policy_contracts(checkpoint_path=checkpoint, deployment_profile_path=profile, precision="float32")
+    deployment = contracts.deployment_contract.to_dict()
+    payload = safe_torch_load(checkpoint)
+    for model_config in (payload["model_config"], deployment["model_config"]):
+        if value == "missing":
+            model_config.pop("logit_softcap")
+        else:
+            model_config["logit_softcap"] = value
+    torch.save(payload, checkpoint)
+    with pytest.raises(ValueError, match="logit_softcap"):
+        export_module.load_policy(checkpoint, precision="float32")
+    with pytest.raises(ValueError, match="logit_softcap"):
+        DeploymentContract.from_dict(deployment)
+
+
+@pytest.mark.parametrize("value", [None, True, False, "15.0", 0, -1, 1e-46, 1e39])
+def test_manifest_schema_rejects_missing_or_invalid_logit_softcap(value):
+    jsonschema = pytest.importorskip("jsonschema")
+    schema_path = Path(export_module.__file__).parents[1] / "manifest.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    validator = jsonschema.Draft202012Validator(schema["$defs"]["contract"]["properties"]["model_config"])
+    payload = asdict(ModelConfig())
+    validator.validate(payload)
+    if value is None:
+        payload.pop("logit_softcap")
+    else:
+        payload["logit_softcap"] = value
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(payload)
+
+
+def test_deployment_logit_softcap_is_bound_by_saved_model_config_signature(tmp_path):
+    from scripts.onnx_export.export.checkpoint import load_policy_contracts
+
+    checkpoint, profile = tmp_path / "checkpoint.pt", tmp_path / "profile.json"
+    _write_small_checkpoint(checkpoint, logit_softcap=7.5)
+    _write_small_profile(profile)
+    contracts = load_policy_contracts(checkpoint_path=checkpoint, deployment_profile_path=profile, precision="float32")
+    deployment = contracts.deployment_contract.to_dict()
+    deployment["model_config"]["logit_softcap"] = 15.0
+    with pytest.raises(ValueError, match="authoritative layouts"):
+        DeploymentContract.from_dict(deployment)
+
+
+@pytest.mark.parametrize("legacy", ["version", "shared_projection", "missing_softcap", "wrong_softcap_dtype"])
+def test_load_policy_rejects_previous_shared_or_uncapped_output(tmp_path, legacy):
+    checkpoint = tmp_path / "checkpoint.pt"
+    _write_small_checkpoint(checkpoint)
+    payload = safe_torch_load(checkpoint)
+    encoding = payload["input_contract"]["token_encoding"]
+    if legacy == "version":
+        payload["input_contract"]["version"] = 19
+    elif legacy == "shared_projection":
+        encoding["output_projection"] = "hidden @ E[action_to_vocab_id].T"
+    elif legacy == "missing_softcap":
+        encoding.pop("logit_softcap")
+    else:
+        encoding["logit_softcap"]["compute_dtype"] = "bfloat16"
+    torch.save(payload, checkpoint)
+    with pytest.raises(ValueError, match="input contract version|token_encoding"):
+        export_module.load_policy(checkpoint, precision="float32")
 
 
 @pytest.mark.parametrize("legacy", ["version", "missing_descriptor", "wrong_descriptor"])
@@ -1287,7 +1387,7 @@ def test_load_policy_preserves_ffn_weights_and_rejects_mislabeled_activation(tmp
 
 def _write_small_checkpoint(
     path: Path, *, activation: str = "gelu", full_attention_residuals: bool = False,
-    qk_norm_scale: float = 1.2,
+    qk_norm_scale: float = 1.2, logit_softcap: float = 15.0,
 ) -> tuple[DataSpec, ModelInputContract]:
     data_spec = DataSpec(
         job_tag="black_mage",
@@ -1312,12 +1412,15 @@ def _write_small_checkpoint(
         transformer_activation=activation,
         full_attention_residuals=full_attention_residuals,
         qk_norm_scale=qk_norm_scale,
+        logit_softcap=logit_softcap,
     )
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(20260813)
         model = CausalPolicyModel(data_spec, config, vocab_size=8).eval()
         # 模拟训练后的 scalar；真实导出必须使用权重，不能重建初始化 ramp。
         with torch.no_grad():
+            # 保存独立头训练后的值，恢复时不得重新拷贝输入 embedding。
+            model.output_head.weight[0].add_(0.125)
             if not full_attention_residuals:
                 model.encoder.residual_mix.r.copy_(torch.tensor([.93, 1.27]))
                 model.encoder.residual_mix.a.copy_(torch.tensor([-.07, .13]))

@@ -1,4 +1,4 @@
-"""与职业无关、共享技能词向量的因果策略模型。"""
+"""与职业无关、使用独立动作输出头的因果策略模型。"""
 
 from __future__ import annotations
 
@@ -21,8 +21,24 @@ from ..data.spec import DataSpec
 from .trace import ModelTrace, TraceableTransformerEncoderLayer, trace_encoder
 
 
+class _CopiedActionHead(nn.Linear):
+    """复制动作 embedding 行作为独立权重，不消费额外初始化随机数。"""
+
+    def __init__(self, initial_weight: torch.Tensor):
+        super().__init__(
+            initial_weight.shape[1], initial_weight.shape[0], bias=False,
+            device=initial_weight.device, dtype=initial_weight.dtype,
+        )
+        with torch.no_grad():
+            self.weight.copy_(initial_weight)
+
+    def reset_parameters(self) -> None:
+        # 构造器随后完整复制来源权重，省去会被覆盖的随机初始化。
+        pass
+
+
 class CausalPolicyModel(nn.Module):
-    """从最新状态预测固定技能词表，输入与输出使用同一语义参数表。"""
+    """从最新状态预测固定动作词表，输出头与输入技能 embedding 独立训练。"""
 
     def __init__(
         self,
@@ -92,6 +108,9 @@ class CausalPolicyModel(nn.Module):
                 a_end=config.residual_mix_a_end,
             )
         self._init_weights()
+        self.output_head = _CopiedActionHead(
+            self.input_encoder.skill_embed.weight[self.action_to_vocab_id],
+        )
         self._kv_cache_enabled = False
         self._kv_cache: TransformerKVCache | None = None
         self._runtime_debug = None
@@ -221,10 +240,15 @@ class CausalPolicyModel(nn.Module):
         """从最新状态 hidden 计算固定动作词表 logits。"""
         return self._score_current_hidden(hidden[:, encoded["current_state_position"], :], batch)
 
+    def compute_action_logits(self, current_hidden: torch.Tensor) -> torch.Tensor:
+        """训练、回放和 ONNX 共用独立动作头与 FP32 softcap，不含宿主后处理。"""
+        raw_logits = self.output_head(current_hidden)
+        cap = self.config.logit_softcap
+        return cap * torch.tanh(raw_logits.float() / cap)
+
     def _score_current_hidden(self, current_hidden, batch):
-        """直接读取输入 embedding 参数，不维护独立输出权重或其副本。"""
-        semantic_vectors = self.input_encoder.skill_embed.weight[self.action_to_vocab_id]
-        logits = current_hidden @ semantic_vectors.T
+        """先执行输出头与 softcap，再执行一次既有重复惩罚。"""
+        logits = self.compute_action_logits(current_hidden)
         return apply_repetition_penalty(logits, batch, self.repetition)
 
     @staticmethod
@@ -247,6 +271,8 @@ class CausalPolicyModel(nn.Module):
             raise ValueError("checkpoint missing model.history_capacity")
         if "qk_norm_scale" not in payload:
             raise ValueError("checkpoint missing model.qk_norm_scale; retrain")
+        if "logit_softcap" not in payload:
+            raise ValueError("checkpoint missing model.logit_softcap; retrain")
         for name in ("residual_mix_r_start", "residual_mix_r_end",
                      "residual_mix_a_start", "residual_mix_a_end"):
             if name not in payload:

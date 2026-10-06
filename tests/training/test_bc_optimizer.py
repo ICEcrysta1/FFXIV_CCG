@@ -97,6 +97,8 @@ def test_muon_groups_only_transformer_projection_matrices(num_kv_heads):
     assert len(grouped) == len({id(parameter) for parameter in grouped})
     assert {id(parameter) for parameter in grouped} == {id(parameter) for parameter in model.parameters()}
     adamw_names = set(groups["adamw"]["param_names"])
+    assert "output_head.weight" in adamw_names
+    assert "output_head.weight" not in muon_names
     assert "encoder.attention_residual.pseudo_queries" in adamw_names
     assert "encoder.attention_residual.key_norms.0.weight" in adamw_names
     # 主干 RMSNorm 无参数；Full AttnRes 路由自身的尺度仍归 AdamW 管理。
@@ -225,26 +227,35 @@ def test_muon_keeps_weights_shared_with_input_encoder_in_adamw():
     assert owners == ["adamw"]
 
 
-def test_input_and_output_gradients_accumulate_on_one_embedding_parameter():
+def test_input_and_output_gradients_update_independent_adamw_parameters():
     model = _model()
     weight = model.input_encoder.skill_embed.weight
+    head = model.output_head.weight
     input_loss = model.input_encoder.skill_embed(torch.tensor([1, 2])).sum()
     output_loss = model._score_current_hidden(torch.ones(1, model.config.d_model), {}).square().sum()
     input_grad = torch.autograd.grad(input_loss, weight, retain_graph=True)[0]
-    output_grad = torch.autograd.grad(output_loss, weight, retain_graph=True)[0]
+    output_grad = torch.autograd.grad(output_loss, head, retain_graph=True)[0]
+    assert torch.autograd.grad(output_loss, weight, allow_unused=True, retain_graph=True)[0] is None
     (input_loss + output_loss).backward()
-    torch.testing.assert_close(weight.grad, input_grad + output_grad)
+    torch.testing.assert_close(weight.grad, input_grad)
+    torch.testing.assert_close(head.grad, output_grad)
     optimizer = _build_optimizer(model)
-    assert sum(parameter is weight for group in optimizer.param_groups for parameter in group["params"]) == 1
-    assert next(group["optimizer_name"] for group in optimizer.param_groups if any(parameter is weight for parameter in group["params"])) == "adamw"
+    for parameter in (weight, head):
+        assert sum(candidate is parameter for group in optimizer.param_groups for candidate in group["params"]) == 1
+        assert next(group["optimizer_name"] for group in optimizer.param_groups
+                    if any(candidate is parameter for candidate in group["params"])) == "adamw"
 
 
 @pytest.mark.parametrize("name", ["adamw", "muon"])
-def test_shared_skill_embedding_has_exactly_one_fp32_master_across_restore(name):
+def test_input_embedding_and_independent_head_have_separate_fp32_masters_across_restore(name):
     model = _model(dtype=torch.bfloat16)
     optimizer = _build_optimizer(model, _config(name))
     weight = model.input_encoder.skill_embed.weight
+    head = model.output_head.weight
     assert sum(parameter is weight for parameter, _ in optimizer._master_pairs) == 1
+    assert sum(parameter is head for parameter, _ in optimizer._master_pairs) == 1
+    assert next(master for parameter, master in optimizer._master_pairs if parameter is weight) is not next(
+        master for parameter, master in optimizer._master_pairs if parameter is head)
     state = deepcopy(optimizer.state_dict())
     assert len(state["master_weights"]) == len(list(model.parameters()))
     embedding = [parameter for group in state["parameter_contract"] for parameter in group["parameters"]
@@ -254,8 +265,11 @@ def test_shared_skill_embedding_has_exactly_one_fp32_master_across_restore(name)
     restored_optimizer = _build_optimizer(restored, _config(name))
     restored_optimizer.load_state_dict(state)
     restored_weight = restored.input_encoder.skill_embed.weight
+    restored_head = restored.output_head.weight
     assert sum(parameter is restored_weight for parameter, _ in restored_optimizer._master_pairs) == 1
+    assert sum(parameter is restored_head for parameter, _ in restored_optimizer._master_pairs) == 1
     torch.testing.assert_close(weight, restored_weight, atol=0, rtol=0)
+    torch.testing.assert_close(head, restored_head, atol=0, rtol=0)
 
 
 def test_muon_fails_clearly_without_native_support(monkeypatch):
@@ -298,6 +312,7 @@ def test_train_epoch_updates_both_parameter_groups_with_real_gradients(
     matrices = (
         model.encoder.layers[0].linear1.weight,
         model.input_encoder.skill_embed.weight,
+        model.output_head.weight,
     )
     if not full_attention_residuals:
         matrices += (model.encoder.residual_mix.r, model.encoder.residual_mix.a)

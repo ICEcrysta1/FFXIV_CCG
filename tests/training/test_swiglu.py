@@ -277,14 +277,15 @@ def test_checkpoint_rejects_removed_cls_architecture():
 
 
 @pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
-def test_shared_skill_head_matches_explicit_dot_product_and_gradients(activation):
+def test_independent_output_head_matches_fp32_softcap_and_gradients(activation):
     torch.manual_seed(23)
     model = CausalPolicyModel(_activation_spec(), _activation_config(activation), vocab_size=4).double().eval()
     reference = deepcopy(model)
     current_hidden = torch.randn(2, 8, dtype=torch.float64, requires_grad=True)
     reference_hidden = current_hidden.detach().clone().requires_grad_(True)
     actual = model._score_current_hidden(current_hidden, {})
-    expected = reference_hidden @ reference.input_encoder.skill_embed.weight[reference.action_to_vocab_id].T
+    scale = reference.config.logit_softcap
+    expected = scale * torch.tanh(F.linear(reference_hidden, reference.output_head.weight).float() / scale)
     torch.testing.assert_close(actual, expected, atol=1e-12, rtol=1e-12)
     gradient = torch.randn_like(actual)
     actual.backward(gradient)
@@ -292,15 +293,16 @@ def test_shared_skill_head_matches_explicit_dot_product_and_gradients(activation
     torch.testing.assert_close(
         current_hidden.grad, reference_hidden.grad, atol=1e-12, rtol=1e-12,
     )
-    actual_parameter = model.input_encoder.skill_embed.weight
-    reference_parameter = reference.input_encoder.skill_embed.weight
+    actual_parameter = model.output_head.weight
+    reference_parameter = reference.output_head.weight
     assert actual_parameter.grad is not None
     torch.testing.assert_close(actual_parameter.grad, reference_parameter.grad, atol=1e-12, rtol=1e-12)
+    assert model.input_encoder.skill_embed.weight.grad is None
 
 
 @pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
-def test_shared_skill_head_has_one_semantic_parameter_table(activation):
-    """输出直接用同一张 d_model 维技能表，不保留融合或输出适配。"""
+def test_input_semantic_table_and_output_head_are_independent(activation):
+    """输入技能表保留，动作头复制其动作行后独立学习。"""
     model = CausalPolicyModel(_activation_spec(), _activation_config(activation), vocab_size=4)
     names = dict(model.named_parameters())
     assert not hasattr(model, "scorer")
@@ -309,6 +311,11 @@ def test_shared_skill_head_has_one_semantic_parameter_table(activation):
     assert semantic.shape == (4, model.config.d_model)
     assert sum(parameter is semantic for parameter in names.values()) == 1
     assert "input_encoder.skill_embed.weight" in names
+    assert "output_head.weight" in names
+    assert model.output_head.bias is None
+    assert model.output_head.weight.shape == (model.data_spec.num_actions, model.config.d_model)
+    assert model.output_head.weight is not semantic
+    torch.testing.assert_close(model.output_head.weight, semantic[model.action_to_vocab_id], atol=0, rtol=0)
 
 
 @pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ffxiv-ccg.local/schemas/onnx-manifest-v13.json",
+  "$id": "https://ffxiv-ccg.local/schemas/onnx-manifest-v14.json",
   "title": "FFXIV_CCG ONNX Deployment Manifest",
   "type": "object",
   "additionalProperties": false,
@@ -21,7 +21,7 @@
       "const": "manifest.schema.json"
     },
     "manifest_version": {
-      "const": 13
+      "const": 14
     },
     "format": {
       "const": "onnx"
@@ -255,7 +255,7 @@
       ],
       "properties": {
         "contract_version": {
-          "const": 22
+          "const": 23
         },
         "job_tag": {
           "type": "string",
@@ -304,7 +304,7 @@
           ],
           "properties": {
             "version": {
-              "const": 19
+              "const": 20
             },
             "token_encoding": {
               "const": {
@@ -374,7 +374,20 @@
                   "request_state"
                 ],
                 "history_state_frozen_at": "request",
-                "output_projection": "hidden @ E[action_to_vocab_id].T",
+                "output_projection": {
+                  "type": "Linear",
+                  "parameter": "output_head.weight",
+                  "weight_shape": "[data_spec.num_actions, model_config.d_model]",
+                  "bias": false,
+                  "weight_tying": false,
+                  "initialization": "copy_skill_embed_rows_in_action_to_vocab_id_order"
+                },
+                "logit_softcap": {
+                  "formula": "cap * tanh(output_head(hidden).float() / cap)",
+                  "cap": "model_config.logit_softcap",
+                  "compute_dtype": "float32",
+                  "position": "after_output_projection_before_repetition_penalty_and_legal_mask"
+                },
                 "token_order": "scene, (state_i, skill_i)*H, current_state",
                 "history_capacity_unit": "actions",
                 "history_tokens_per_action": 2
@@ -390,7 +403,8 @@
             "residual_mix_a_start",
             "residual_mix_a_end",
             "full_attention_residuals",
-            "qk_norm_scale"
+            "qk_norm_scale",
+            "logit_softcap"
           ],
           "properties": {
             "residual_mix_r_start": {
@@ -411,6 +425,11 @@
             "qk_norm_scale": {
               "type": "number",
               "exclusiveMinimum": 0
+            },
+            "logit_softcap": {
+              "type": "number",
+              "minimum": 1.1754943508222875e-38,
+              "maximum": 3.4028234663852886e+38
             }
           }
         },

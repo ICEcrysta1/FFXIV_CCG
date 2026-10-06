@@ -165,6 +165,37 @@ def test_resume_preserves_matching_nondefault_qk_scale(resume_context):
 
 
 @pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("incompatible", ["version_19", "shared_projection", "missing_cap", "cap_mismatch"])
+def test_resume_cannot_bypass_independent_head_and_softcap_contract(resume_context, force, incompatible):
+    """数据规模豁免不能把旧共享头或不同 softcap 配置当作同一训练恢复。"""
+    if incompatible == "version_19":
+        resume_context.checkpoint["input_contract"]["version"] = 19
+        message = "unsupported input contract version"
+    elif incompatible == "shared_projection":
+        resume_context.checkpoint["input_contract"]["token_encoding"]["output_projection"] = (
+            "hidden @ E[action_to_vocab_id].T"
+        )
+        message = "token_encoding"
+    elif incompatible == "missing_cap":
+        resume_context.checkpoint["model_config"].pop("logit_softcap")
+        message = "missing model.logit_softcap"
+    else:
+        resume_context.checkpoint["model_config"]["logit_softcap"] = 20.0
+        message = "model config mismatch"
+    resume_context.checkpoint["run_config"]["max_files"] = 10
+    with pytest.raises(ValueError, match=message):
+        _validate(resume_context, force=force)
+
+
+def test_resume_preserves_matching_nondefault_logit_softcap(resume_context):
+    """合法续训使用保存的 softcap，不回落到本机 YAML 默认值。"""
+    model_config = replace(resume_context.config.model, logit_softcap=9.0)
+    resume_context.config = replace(resume_context.config, model=model_config)
+    resume_context.checkpoint["model_config"] = asdict(model_config)
+    assert _validate(resume_context) == 1
+
+
+@pytest.mark.parametrize("force", [False, True])
 def test_resume_rejects_inactive_vocab_row_drift_even_when_outputs_match(resume_context, force):
     resume_context.input_contract = replace(
         resume_context.input_contract,

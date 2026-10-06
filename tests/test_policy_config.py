@@ -117,6 +117,7 @@ def test_qk_norm_scale_defaults_and_artzip_architecture():
     root = Path(__file__).resolve().parents[1]
     config = load_model_config(root / "config/models/black_mage/artzip/model.yaml")
     assert config.qk_norm_scale == 1.2
+    assert config.logit_softcap == 15.0
     assert (config.n_layers, config.d_model, config.n_heads, config.num_kv_heads, config.ff_dim) == (6, 384, 6, 1, 1536)
 
 
@@ -180,3 +181,22 @@ def test_residual_mix_endpoints_preserve_finite_numeric_values_and_round_trip(va
     assert all(isinstance(getattr(config, field), float) for field in _RESIDUAL_MIX_ENDPOINTS)
     assert ModelConfig(**values) == config
     assert ModelConfig.from_mapping(yaml.safe_load(yaml.safe_dump(asdict(config)))) == config
+
+
+@pytest.mark.parametrize("value", [1, 15.0, 30.0, "7.5", 1e-30, 1e38])
+def test_logit_softcap_normalizes_and_round_trips(value):
+    config = ModelConfig.from_mapping({"logit_softcap": value})
+    assert config.logit_softcap == float(value)
+    assert isinstance(config.logit_softcap, float)
+    assert ModelConfig(logit_softcap=value) == config
+    assert ModelConfig.from_mapping(yaml.safe_load(yaml.safe_dump(asdict(config)))) == config
+
+
+@pytest.mark.parametrize("value", [True, False, 0, -1, float("nan"), float("inf"),
+                                  -float("inf"), "invalid", None, [], {},
+                                  1e-46, 1e-300, 1e39, 1e300])
+def test_logit_softcap_rejects_invalid_values(value):
+    with pytest.raises(ValueError, match="logit_softcap must be finite and positive"):
+        ModelConfig.from_mapping({"logit_softcap": value})
+    with pytest.raises(ValueError, match="logit_softcap must be finite and positive"):
+        ModelConfig(logit_softcap=value)

@@ -35,7 +35,9 @@ from .spec import DataSpec
 #     Full AttnRes 仍使用独立深度残差路径；旧普通残差权重必须重新训练。
 # 19：RoPE 后对每个 Q/K head 执行无参数 RMSNorm，并使用 checkpoint 保存的共同尺度；
 #     旧的未归一化 Q/K 权重不得静默套用新注意力算法。
-INPUT_CONTRACT_VERSION = 19
+# 20：独立无 bias 动作输出头取代共享技能 embedding 点积，并在 FP32 中执行
+#     checkpoint 保存尺度的 softcap；旧共享输出权重不得静默套用新读出算法。
+INPUT_CONTRACT_VERSION = 20
 
 RESIDUAL_MIX_CONFIG_FIELDS = (
     "residual_mix_r_start", "residual_mix_r_end",
@@ -129,7 +131,20 @@ TOKEN_ENCODING_CONTRACT = {
     "current_state_encoder": "shared_with_history_state",
     "state_snapshots": ["previous_action_after", "request_state"],
     "history_state_frozen_at": "request",
-    "output_projection": "hidden @ E[action_to_vocab_id].T",
+    "output_projection": {
+        "type": "Linear",
+        "parameter": "output_head.weight",
+        "weight_shape": "[data_spec.num_actions, model_config.d_model]",
+        "bias": False,
+        "weight_tying": False,
+        "initialization": "copy_skill_embed_rows_in_action_to_vocab_id_order",
+    },
+    "logit_softcap": {
+        "formula": "cap * tanh(output_head(hidden).float() / cap)",
+        "cap": "model_config.logit_softcap",
+        "compute_dtype": "float32",
+        "position": "after_output_projection_before_repetition_penalty_and_legal_mask",
+    },
     "token_order": "scene, (state_i, skill_i)*H, current_state",
     "history_capacity_unit": "actions",
     "history_tokens_per_action": 2,

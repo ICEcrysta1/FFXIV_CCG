@@ -39,6 +39,7 @@ def _make_model(
     activation: str = "gelu",
     action_to_vocab_id: tuple[int, ...] = (1, 2, 3),
     history_capacity: int = 384,
+    logit_softcap: float = 15.0,
 ):
     data_spec = DataSpec(
         job_tag="black_mage",
@@ -64,6 +65,7 @@ def _make_model(
             scene_capacity=200,
             full_attention_residuals=full_attention_residuals,
             transformer_activation=activation,
+            logit_softcap=logit_softcap,
         ),
         vocab_size=8,
         repetition=repetition,
@@ -182,21 +184,88 @@ def test_scene_projection_selects_each_type_without_data_dependent_branch(scene_
     torch.testing.assert_close(encoded["tokens"][:, : len(scene_types)], expected)
 
 
-def test_raw_head_directly_matches_shared_d_model_skill_vectors():
-    model = _make_model(action_to_vocab_id=(3, 1, 2))
+@pytest.mark.parametrize("full_attention_residuals", (False, True))
+@pytest.mark.parametrize("logit_softcap", (15.0, 2.5))
+def test_raw_head_uses_independent_action_vectors_and_configured_softcap(
+    full_attention_residuals: bool,
+    logit_softcap: float,
+):
+    model = _make_model(
+        action_to_vocab_id=(3, 1, 2),
+        full_attention_residuals=full_attention_residuals,
+        logit_softcap=logit_softcap,
+    )
+    torch.testing.assert_close(
+        model.output_head.weight,
+        model.input_encoder.skill_embed.weight[model.action_to_vocab_id],
+        rtol=0,
+        atol=0,
+    )
+    assert model.output_head.weight.data_ptr() != model.input_encoder.skill_embed.weight.data_ptr()
+    assert model.output_head.bias is None
     policy = OnnxPolicy(model)
     batch = _make_batch()
+    # 使用非动作词表行作为历史输入，让动作 embedding 的修改不影响 hidden。
+    batch["history_skill_ids"].fill_(7)
     trace = policy.trace(*_tensor_args(batch))
     position = len(batch["scene_types"][0]) + 2 * batch["history_skill_ids"].shape[1]
-    expected = trace.hidden[:, position] @ model.input_encoder.skill_embed.weight[model.action_to_vocab_id].T
-    torch.testing.assert_close(trace.logits, expected)
+    current_hidden = trace.hidden[:, position]
+    raw_logits = logit_softcap * torch.tensor([[2.0, -3.0, 0.5]])
+    # 构造会触发明显压缩的输出向量，避免小 logits 掩盖缺失的 softcap。
+    with torch.no_grad():
+        model.output_head.weight.copy_(
+            raw_logits.T * current_hidden / current_hidden.square().sum()
+        )
+        embedding_rows = model.input_encoder.skill_embed.weight[model.action_to_vocab_id]
+        model.input_encoder.skill_embed.weight[model.action_to_vocab_id] = embedding_rows + 100.0
+    expected = logit_softcap * torch.tanh(raw_logits / logit_softcap)
+    updated_trace = policy.trace(*_tensor_args(batch))
+    torch.testing.assert_close(updated_trace.hidden, trace.hidden, rtol=0, atol=0)
+    torch.testing.assert_close(updated_trace.logits, expected, rtol=1e-5, atol=1e-6)
     torch.testing.assert_close(policy(*_tensor_args(batch)), expected, rtol=1e-5, atol=1e-6)
+    assert not torch.allclose(updated_trace.logits, raw_logits)
     assert model.input_encoder.skill_embed.embedding_dim == model.config.d_model
     assert not hasattr(model, "output_adapter")
     assert trace.encoded["history_skill_positions"].tolist() == [[5, 7]]
     assert trace.encoded["history_state_positions"].tolist() == [[4, 6]]
     assert trace.encoded["current_state_position"] == 8
     assert trace.encoded["role_ids"].tolist() == [[0, 0, 0, 0, 1, 2, 1, 2, 1]]
+
+
+@pytest.mark.parametrize("bf16_float_compute", (False, True))
+def test_forward_and_trace_delegate_action_readout_to_public_model_method(
+    monkeypatch,
+    bf16_float_compute: bool,
+):
+    model = _make_model()
+    dtype = torch.bfloat16 if bf16_float_compute else torch.float32
+    model.to(dtype=dtype)
+    sentinel = torch.tensor([[7.0, -3.0, 2.0]], dtype=torch.float32)
+    calls = []
+
+    def compute_action_logits(current_hidden):
+        calls.append(current_hidden)
+        return sentinel.clone()
+
+    monkeypatch.setattr(model, "compute_action_logits", compute_action_logits)
+    policy = OnnxPolicy(model, bf16_float_compute=bf16_float_compute)
+    batch = {
+        key: value.to(dtype=dtype) if value.is_floating_point() else value
+        for key, value in _make_batch().items()
+    }
+    with torch.no_grad():
+        actual = policy(*_tensor_args(batch))
+        traced = policy.trace(*_tensor_args(batch))
+
+    torch.testing.assert_close(actual, sentinel.to(dtype=dtype), rtol=0, atol=0)
+    torch.testing.assert_close(traced.logits, sentinel, rtol=0, atol=0)
+    assert len(calls) == 2
+    assert calls[0].shape == calls[1].shape == (1, model.config.d_model)
+    assert calls[0].dtype == torch.float32
+    assert calls[1].dtype == dtype
+    if bf16_float_compute:
+        assert policy.model.output_head.weight.dtype == torch.bfloat16
+        assert policy.compute_model.output_head.weight.dtype == torch.float32
 
 
 @pytest.mark.parametrize("history_capacity", (300, 384))
@@ -280,6 +349,19 @@ def test_onnx_policy_exports_with_tensor_only_user_inputs(full_attention_residua
     assert user_inputs == list(TENSOR_INPUT_KEYS)
     assert "history_action_keys" not in exported.graph_module.code
     assert "action_keys" not in exported.graph_module.code
+    assert any(node.target == torch.ops.aten.tanh.default for node in exported.graph.nodes)
+    parameter_targets = {
+        spec.target
+        for spec in exported.graph_signature.input_specs
+        if spec.kind.name == "PARAMETER"
+    }
+    assert "model.output_head.weight" in parameter_targets
+    torch.testing.assert_close(
+        exported.state_dict["model.output_head.weight"],
+        policy.model.output_head.weight,
+        rtol=0,
+        atol=0,
+    )
 
 
 def test_masked_softmax_returns_zero_for_fully_blocked_rows():
@@ -378,9 +460,12 @@ def test_padding_matrix_validates_hidden_attention_logits_and_argmax():
 class _PathSeparatedModel(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        self.input_encoder = SimpleNamespace(skill_embed=torch.nn.Embedding(3, 1))
-        self.input_encoder.skill_embed.weight.data.copy_(torch.tensor([[2.0], [1.0], [0.0]]))
-        self.action_to_vocab_id = torch.arange(3)
+        self.output_head = torch.nn.Linear(1, 3, bias=False)
+        with torch.no_grad():
+            self.output_head.weight.copy_(torch.tensor([[2.0], [1.0], [0.0]]))
+
+    def compute_action_logits(self, current_hidden):
+        return self.output_head(current_hidden)
 
     def trace(self, _batch):
         return _path_separated_trace()

@@ -91,7 +91,7 @@ def test_model_input_contract_rejects_checkpoint_without_contract():
 def test_model_input_contract_describes_post_role_parameterless_rms():
     """保存精确编码位置与参数，避免将归一化放在 role 相加之前。"""
     payload = _build_contract().to_dict()
-    assert payload["version"] == 19
+    assert payload["version"] == 20
     encoding = payload["token_encoding"]
     assert encoding["skill"] == "E[id] + Linear(skill_features)"
     assert encoding["state"] == "Linear(state_values) + Linear(null_mask, bias=False)"
@@ -135,6 +135,62 @@ def test_model_input_contract_describes_post_rope_per_head_qk_rms():
     }
 
 
+def test_model_input_contract_describes_independent_output_head_and_fp32_softcap():
+    """动作头仅初始化时拷贝技能行，之后独立训练，softcap 先于宿主策略。"""
+    encoding = _build_contract().to_dict()["token_encoding"]
+    assert encoding["output_projection"] == {
+        "type": "Linear",
+        "parameter": "output_head.weight",
+        "weight_shape": "[data_spec.num_actions, model_config.d_model]",
+        "bias": False,
+        "weight_tying": False,
+        "initialization": "copy_skill_embed_rows_in_action_to_vocab_id_order",
+    }
+    assert encoding["logit_softcap"] == {
+        "formula": "cap * tanh(output_head(hidden).float() / cap)",
+        "cap": "model_config.logit_softcap",
+        "compute_dtype": "float32",
+        "position": "after_output_projection_before_repetition_penalty_and_legal_mask",
+    }
+
+
+def test_model_input_contract_rejects_previous_shared_output_version():
+    payload = _build_contract().to_dict()
+    payload["version"] = 19
+    payload["token_encoding"]["output_projection"] = "hidden @ E[action_to_vocab_id].T"
+    payload["token_encoding"].pop("logit_softcap")
+    with pytest.raises(ValueError, match="unsupported input contract version"):
+        ModelInputContract.from_checkpoint({"input_contract": payload})
+
+
+@pytest.mark.parametrize("field,value", [
+    ("type", "shared_embedding"),
+    ("parameter", "input_encoder.skill_embed.weight"),
+    ("weight_shape", "[vocab_size, model_config.d_model]"),
+    ("bias", True),
+    ("weight_tying", True),
+    ("initialization", "normal_std_0.001"),
+])
+def test_model_input_contract_rejects_forged_output_head(field, value):
+    payload = _build_contract().to_dict()
+    payload["token_encoding"]["output_projection"][field] = value
+    with pytest.raises(ValueError, match="token_encoding"):
+        ModelInputContract.from_checkpoint({"input_contract": payload})
+
+
+@pytest.mark.parametrize("field,value", [
+    ("formula", "clamp(logits, -cap, cap)"),
+    ("cap", 15.0),
+    ("compute_dtype", "bfloat16"),
+    ("position", "after_repetition_penalty_and_legal_mask"),
+])
+def test_model_input_contract_rejects_forged_logit_softcap(field, value):
+    payload = _build_contract().to_dict()
+    payload["token_encoding"]["logit_softcap"][field] = value
+    with pytest.raises(ValueError, match="token_encoding"):
+        ModelInputContract.from_checkpoint({"input_contract": payload})
+
+
 def test_model_input_contract_rejects_previous_unnormalized_qk_version():
     payload = _build_contract().to_dict()
     payload["version"] = 18
@@ -170,7 +226,7 @@ def test_model_input_contract_rejects_previous_backbone_layernorm_version():
 
 @pytest.mark.parametrize("legacy_backbone", ["missing", "layernorm", "gamma_rms"])
 def test_model_input_contract_rejects_forged_parameterless_backbone_descriptor(legacy_backbone):
-    """仅把旧模型的版本号改成 17，不能掩盖主干归一化算法或参数差异。"""
+    """仅把旧模型的版本号改成当前版本，不能掩盖主干归一化算法或参数差异。"""
     payload = _build_contract().to_dict()
     backbone = payload["token_encoding"]["backbone_normalization"]
     if legacy_backbone == "missing":
@@ -213,7 +269,7 @@ def test_model_input_contract_rejects_previous_skill_first_contract():
         ModelInputContract.from_dict(payload)
 
 
-@pytest.mark.parametrize("change", ["missing", "role", "token_order", "output_projection", "state_encoder", "state_snapshots", "history_state_frozen_at", "token_normalization", "backbone_normalization", "backbone_residual", "attention_qk_normalization"])
+@pytest.mark.parametrize("change", ["missing", "role", "token_order", "output_projection", "logit_softcap", "state_encoder", "state_snapshots", "history_state_frozen_at", "token_normalization", "backbone_normalization", "backbone_residual", "attention_qk_normalization"])
 def test_model_input_contract_requires_exact_independent_token_descriptor(change):
     payload = _build_contract().to_dict()
     assert payload["version"] == INPUT_CONTRACT_VERSION

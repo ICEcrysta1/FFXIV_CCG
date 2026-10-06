@@ -39,8 +39,9 @@ from ..runtime.tensor_runtime import GOLDEN_FORMAT, golden_encoding
 # 20：主干两处子层归一化及最终归一化统一为无参数 RMSNorm，拒绝旧 LayerNorm 图。
 # 21：普通残差路径改为每层可学习 r/a 与初始输入混合，旧普通残差图不兼容。
 # 22：RoPE 后逐 head 归一化 Q/K，尺度由 checkpoint 保存的 model_config 提供。
-DEPLOYMENT_CONTRACT_VERSION = 22
-DEPLOYMENT_MANIFEST_VERSION = 13
+# 23：独立无 bias 动作输出头与 FP32 softcap，尺度由 checkpoint 保存的配置提供。
+DEPLOYMENT_CONTRACT_VERSION = 23
+DEPLOYMENT_MANIFEST_VERSION = 14
 MANIFEST_SCHEMA_FILENAME = "manifest.schema.json"
 
 
@@ -225,6 +226,8 @@ class DeploymentContract:
         residual_composition_contract(self.model_config)
         if "qk_norm_scale" not in self.model_config:
             raise ValueError("deployment model_config missing qk_norm_scale; re-export the package")
+        if "logit_softcap" not in self.model_config:
+            raise ValueError("deployment model_config missing logit_softcap; re-export the package")
         # 复用模型配置的数值校验，但禁止给旧部署元数据补默认尺度。
         ModelConfig.from_mapping(self.model_config)
         if self.precision not in SUPPORTED_PRECISIONS:
@@ -348,7 +351,7 @@ class DeploymentContract:
                 OUTPUT_NAMES[0],
                 float_dtype,
                 (self.capacity.batch_size, self.data_spec.num_actions),
-                "raw logits in fixed action order before host masking/policy",
+                "softcapped logits in fixed action order before host repetition/masking/policy",
             ),
         )
 
