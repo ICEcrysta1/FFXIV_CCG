@@ -8,6 +8,11 @@ import yaml
 
 from common.policy.config import ModelConfig, load_model_config, load_policy_config
 
+_RESIDUAL_MIX_ENDPOINTS = (
+    "residual_mix_r_start", "residual_mix_r_end",
+    "residual_mix_a_start", "residual_mix_a_end",
+)
+
 
 def test_artzip_manifest_loads_action_quality_weights():
     root = Path(__file__).resolve().parents[1]
@@ -142,3 +147,36 @@ def test_qk_norm_scale_rejects_invalid_mapping_values(value):
 def test_qk_norm_scale_direct_constructor_rejects_invalid_values(value):
     with pytest.raises(ValueError, match="qk_norm_scale must be finite and positive"):
         ModelConfig(qk_norm_scale=value)
+
+
+@pytest.mark.parametrize("field", _RESIDUAL_MIX_ENDPOINTS)
+@pytest.mark.parametrize("value", [True, False])
+def test_residual_mix_endpoints_reject_boolean_mapping_values(field, value):
+    with pytest.raises(ValueError, match=f"model.{field}.*boolean"):
+        ModelConfig.from_mapping({field: value})
+
+
+@pytest.mark.parametrize("field", _RESIDUAL_MIX_ENDPOINTS)
+@pytest.mark.parametrize("value", [True, False])
+@pytest.mark.parametrize("full_attention_residuals", [False, True])
+def test_residual_mix_endpoints_reject_boolean_yaml_values(
+    tmp_path, field, value, full_attention_residuals,
+):
+    config_path = tmp_path / "model.yaml"
+    config_path.write_text(
+        yaml.safe_dump({"model": {
+            field: value, "full_attention_residuals": full_attention_residuals,
+        }}), encoding="utf-8", newline="\n",
+    )
+    with pytest.raises(ValueError, match=f"model.{field}.*boolean"):
+        load_model_config(config_path)
+
+
+@pytest.mark.parametrize("value", [0, -0.1, 1.15, "0", "-0.1"])
+def test_residual_mix_endpoints_preserve_finite_numeric_values_and_round_trip(value):
+    values = dict.fromkeys(_RESIDUAL_MIX_ENDPOINTS, value)
+    config = ModelConfig.from_mapping(values)
+    assert all(getattr(config, field) == float(value) for field in _RESIDUAL_MIX_ENDPOINTS)
+    assert all(isinstance(getattr(config, field), float) for field in _RESIDUAL_MIX_ENDPOINTS)
+    assert ModelConfig(**values) == config
+    assert ModelConfig.from_mapping(yaml.safe_load(yaml.safe_dump(asdict(config)))) == config

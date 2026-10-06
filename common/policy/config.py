@@ -75,6 +75,21 @@ def _parse_qk_norm_scale(value: object) -> float:
     return scale
 
 
+def _parse_residual_mix_endpoint(value: object, *, field_name: str) -> float:
+    """解析残差初始化端点，保留有限负值与零并拒绝布尔值。"""
+    message = f"{field_name} must be finite"
+    if isinstance(value, bool):
+        # 必须在 float() 前检查，避免 true/false 被静默转换为 1/0。
+        raise ValueError(f"{message}; boolean values are not allowed")  # noqa: TRY004
+    try:
+        endpoint = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(message) from exc
+    if not math.isfinite(endpoint):
+        raise ValueError(message)
+    return endpoint
+
+
 @dataclass(frozen=True)
 class ModelConfig:
     """只保存策略模型架构超参数，数据维度由 DataSpec 提供。"""
@@ -121,8 +136,10 @@ class ModelConfig:
             )
         for name in ("residual_mix_r_start", "residual_mix_r_end",
                      "residual_mix_a_start", "residual_mix_a_end"):
-            if not math.isfinite(getattr(self, name)):
-                raise ValueError(f"model.{name} must be finite")
+            object.__setattr__(
+                self, name,
+                _parse_residual_mix_endpoint(getattr(self, name), field_name=f"model.{name}"),
+            )
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, object] | None = None) -> "ModelConfig":
@@ -172,10 +189,22 @@ class ModelConfig:
                 values.get("full_attention_residuals", cls.full_attention_residuals),
                 field_name="model.full_attention_residuals",
             ),
-            residual_mix_r_start=float(values.get("residual_mix_r_start", cls.residual_mix_r_start)),
-            residual_mix_r_end=float(values.get("residual_mix_r_end", cls.residual_mix_r_end)),
-            residual_mix_a_start=float(values.get("residual_mix_a_start", cls.residual_mix_a_start)),
-            residual_mix_a_end=float(values.get("residual_mix_a_end", cls.residual_mix_a_end)),
+            residual_mix_r_start=_parse_residual_mix_endpoint(
+                values.get("residual_mix_r_start", cls.residual_mix_r_start),
+                field_name="model.residual_mix_r_start",
+            ),
+            residual_mix_r_end=_parse_residual_mix_endpoint(
+                values.get("residual_mix_r_end", cls.residual_mix_r_end),
+                field_name="model.residual_mix_r_end",
+            ),
+            residual_mix_a_start=_parse_residual_mix_endpoint(
+                values.get("residual_mix_a_start", cls.residual_mix_a_start),
+                field_name="model.residual_mix_a_start",
+            ),
+            residual_mix_a_end=_parse_residual_mix_endpoint(
+                values.get("residual_mix_a_end", cls.residual_mix_a_end),
+                field_name="model.residual_mix_a_end",
+            ),
             dropout=float(values.get("dropout", cls.dropout)),
             rope_theta=float(values.get("rope_theta", cls.rope_theta)),
             qk_norm_scale=_parse_qk_norm_scale(values.get("qk_norm_scale", cls.qk_norm_scale)),

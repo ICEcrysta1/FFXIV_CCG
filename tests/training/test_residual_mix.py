@@ -7,10 +7,11 @@ import torch
 from torch import nn
 
 from common.policy.config import ModelConfig
+from common.policy.data.input_contract import RESIDUAL_MIX_CONFIG_FIELDS
 from common.policy.model import CausalPolicyModel
 from common.policy.model.causal_encoder import run_causal_encoder, run_causal_layer
 from common.policy.model.residual_mix import LearnedResidualMix
-from tests.training._causal_fixtures import make_batch, make_data_spec
+from tests.training._causal_fixtures import make_batch, make_checkpoint, make_data_spec
 
 
 def _config(**overrides):
@@ -52,6 +53,25 @@ def test_endpoint_config_roundtrip_and_custom_initialization():
 def test_endpoint_config_rejects_nonfinite_values(key, value):
     with pytest.raises(ValueError, match=f"model.{key} must be finite"):
         ModelConfig.from_mapping({key: value})
+
+
+@pytest.mark.parametrize("key", RESIDUAL_MIX_CONFIG_FIELDS)
+@pytest.mark.parametrize("value", (True, False))
+def test_endpoint_direct_config_rejects_boolean_values(key, value):
+    """直接构造也不能把布尔端点当作 1/0，不能只保护 YAML 解析入口。"""
+    with pytest.raises(ValueError, match=rf"model\.{key}"):
+        ModelConfig(**{key: value})
+
+
+@pytest.mark.parametrize("key", RESIDUAL_MIX_CONFIG_FIELDS)
+@pytest.mark.parametrize("value", (True, False))
+@pytest.mark.parametrize("full_attention_residuals", (False, True))
+def test_checkpoint_endpoint_config_rejects_boolean_values(key, value, full_attention_residuals):
+    """恢复 checkpoint 原始架构元数据时拒绝布尔端点，Full 路径也不补默认值。"""
+    checkpoint = make_checkpoint(config=_config(full_attention_residuals=full_attention_residuals))
+    checkpoint["model_config"][key] = value
+    with pytest.raises(ValueError, match=rf"model\.{key}"):
+        CausalPolicyModel.checkpoint_model_config(checkpoint)
 
 
 @pytest.mark.parametrize("norm_first", (True, False))
