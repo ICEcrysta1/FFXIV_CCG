@@ -231,6 +231,24 @@
       "allOf": [
         {
           "if": {
+            "properties": {"precision": {"const": "float16"}},
+            "required": ["precision"]
+          },
+          "then": {
+            "properties": {
+              "model_config": {
+                "properties": {
+                  "logit_softcap": {
+                    "minimum": 0.00006103515625,
+                    "maximum": 65504
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
             "properties": {
               "model_config": {
                 "properties": {"full_attention_residuals": {"const": true}}

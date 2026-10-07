@@ -21,7 +21,7 @@ from ..contracts.deployment_contract import DeploymentContract
 from ..contracts.deployment_profile import DeploymentProfile
 from ..io.artifact_io import file_sha256
 from ..policy.policy import OnnxPolicy
-from ..runtime.precision import PRECISION_BF16, precision_torch_dtype
+from ..runtime.precision import PRECISION_BF16, precision_torch_dtype, validate_deployment_logit_softcap
 from .context import ExportContracts
 
 
@@ -35,6 +35,8 @@ def load_policy(
     if not isinstance(checkpoint, Mapping):
         raise ValueError("checkpoint must be a mapping")  # noqa: TRY004
     model_config = CausalPolicyModel.checkpoint_model_config(dict(checkpoint))
+    dtype = _precision_dtype(precision)
+    validate_deployment_logit_softcap(model_config.logit_softcap, precision=precision)
     data_spec_payload = checkpoint.get("data_spec")
     state_dict = checkpoint.get("model_state_dict")
     if not isinstance(data_spec_payload, Mapping) or not isinstance(state_dict, Mapping):
@@ -57,7 +59,6 @@ def load_policy(
         vocab_size=vocab_size,
     )
     model.load_state_dict(state_dict, strict=True)
-    dtype = _precision_dtype(precision)
     model.to(device="cpu", dtype=dtype)
     model.eval()
     return OnnxPolicy(model, bf16_float_compute=precision == PRECISION_BF16), data_spec, vocab_size, dtype, checkpoint

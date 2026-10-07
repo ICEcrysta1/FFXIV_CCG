@@ -320,6 +320,51 @@ def test_float16_policy_and_trace_cast_after_fp32_softcap(
     torch.testing.assert_close(actual, expected_forward.half(), rtol=rtol, atol=atol)
 
 
+@pytest.mark.parametrize("device", ("cpu", "cuda"))
+@pytest.mark.parametrize("logit_softcap", (
+    torch.finfo(torch.float16).tiny,
+    torch.finfo(torch.float16).max,
+))
+def test_float16_softcap_boundaries_keep_saturated_outputs_finite(
+    monkeypatch,
+    device: str,
+    logit_softcap: float,
+):
+    """FP16 正常范围端点经正式 FP32 softcap 与部署 cast 后保持有限饱和值。"""
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    model = _make_model(logit_softcap=logit_softcap).to(device=device, dtype=torch.float16)
+    raw_logits = torch.tensor([[-float("inf"), 0.0, float("inf")]],
+                              device=device, dtype=torch.float16)
+
+    def saturated_output_head(current_hidden):
+        assert current_hidden.dtype == torch.float16
+        assert current_hidden.device == raw_logits.device
+        return raw_logits.expand(current_hidden.shape[0], -1)
+
+    # 仅模拟输出投影溢出；softcap 保留正式 compute_action_logits 实现。
+    monkeypatch.setattr(model.output_head, "forward", saturated_output_head)
+    policy = OnnxPolicy(model)
+    batch = {
+        key: value.to(device=device, dtype=torch.float16 if value.is_floating_point() else value.dtype)
+        for key, value in _make_batch().items()
+    }
+    with torch.no_grad():
+        actual = policy(*_tensor_args(batch))
+        traced = policy.trace(*_tensor_args(batch))
+        current_hidden = traced.hidden[:, traced.encoded["current_state_position"]]
+        fp32_logits = model.compute_action_logits(current_hidden)
+
+    assert fp32_logits.dtype == torch.float32
+    expected = torch.tensor([[-logit_softcap, 0.0, logit_softcap]],
+                            device=device, dtype=torch.float16)
+    for logits in (actual, traced.logits):
+        assert logits.dtype == torch.float16
+        assert torch.isfinite(logits).all()
+        assert logits[0, 0] < 0 and logits[0, 2] > 0
+        torch.testing.assert_close(logits, expected, rtol=0, atol=0)
+
+
 @pytest.mark.parametrize("history_capacity", (300, 384))
 def test_maximum_action_window_uses_two_independent_tokens_per_action(history_capacity):
     model = _make_model(history_capacity=history_capacity)

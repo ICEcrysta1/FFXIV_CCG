@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1036,7 +1036,8 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 @pytest.mark.parametrize("activation", ("gelu", "swiglu"))
-def test_small_float16_model_exports_and_runs_on_strict_cuda(tmp_path, activation):
+@pytest.mark.parametrize("logit_softcap", (torch.finfo(torch.float16).tiny, 7.5, torch.finfo(torch.float16).max))
+def test_small_float16_model_exports_and_runs_on_strict_cuda(tmp_path, activation, logit_softcap):
     """FP32 softcap 后返回 FP16，真实图、manifest 与严格 CUDA ORT 必须一致。"""
     onnx = pytest.importorskip("onnx")
     ort = pytest.importorskip("onnxruntime")
@@ -1046,7 +1047,7 @@ def test_small_float16_model_exports_and_runs_on_strict_cuda(tmp_path, activatio
 
     checkpoint = tmp_path / "checkpoint.pt"
     data_spec, input_contract = _write_small_checkpoint(
-        checkpoint, activation=activation, logit_softcap=7.5,
+        checkpoint, activation=activation, logit_softcap=logit_softcap,
     )
     profile = tmp_path / "deployment-profile.json"
     _write_small_profile(profile)
@@ -1065,7 +1066,7 @@ def test_small_float16_model_exports_and_runs_on_strict_cuda(tmp_path, activatio
     manifest = loaded.payload
     assert manifest["contract"]["precision"] == "float16"
     assert manifest["contract"]["model_input_contract"] == json.loads(json.dumps(input_contract.to_dict()))
-    assert manifest["contract"]["model_config"]["logit_softcap"] == 7.5
+    assert manifest["contract"]["model_config"]["logit_softcap"] == logit_softcap
     assert manifest["contract"]["tensor_outputs"][0]["dtype"] == "tensor(float16)"
     assert manifest["model"]["compute_precision"] == "float16"
 
@@ -1359,6 +1360,69 @@ def test_manifest_schema_rejects_missing_or_invalid_logit_softcap(value):
         payload["logit_softcap"] = value
     with pytest.raises(jsonschema.ValidationError):
         validator.validate(payload)
+
+
+@pytest.mark.parametrize("cap", [torch.finfo(torch.float32).tiny, 1e-8, 2**-24, 2**-15, 65505.0, 65520.0, 1e10, 1e38])
+def test_float16_export_rejects_softcap_outside_normal_output_range(tmp_path, cap):
+    """模型允许的 FP32 尺度不能绕过导出加载、部署对象或 manifest 的 FP16 限制。"""
+    from scripts.onnx_export.export.checkpoint import load_policy_contracts
+    jsonschema = pytest.importorskip("jsonschema")
+
+    checkpoint, profile = tmp_path / "checkpoint.pt", tmp_path / "profile.json"
+    _write_small_checkpoint(checkpoint, logit_softcap=cap)
+    _write_small_profile(profile)
+    contracts = load_policy_contracts(checkpoint_path=checkpoint, deployment_profile_path=profile, precision="float32")
+    saved = contracts.deployment_contract
+    with pytest.raises(ValueError, match="float16.*logit_softcap.*FP16 normal range"):
+        export_module.load_policy(checkpoint, precision="float16")
+    with pytest.raises(ValueError, match="float16.*logit_softcap.*FP16 normal range"):
+        DeploymentContract.create(
+            precision="float16", capacity=saved.capacity, data_spec=saved.data_spec,
+            input_contract=saved.input_contract, model_config=saved.model_config,
+            repetition_config=saved.repetition_config, vocab_entries=saved.vocab_entries,
+            capacity_report=contracts.capacity_report, embedding_vocab_size=contracts.vocab_size,
+        )
+    # 重新生成相符的签名和张量 dtype，仍必须由数值契约拒绝。
+    payload = replace(saved, precision="float16").to_dict()
+    with pytest.raises(ValueError, match="float16.*logit_softcap.*FP16 normal range"):
+        DeploymentContract.from_dict(payload)
+    schema = json.loads((Path(export_module.__file__).parents[1] / "manifest.schema.json").read_text(encoding="utf-8"))
+    validator = jsonschema.Draft202012Validator({"$defs": schema["$defs"], "$ref": "#/$defs/contract"})
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(payload)
+
+
+@pytest.mark.parametrize("cap", [torch.finfo(torch.float16).tiny, 0.001, 15.0, torch.finfo(torch.float16).max])
+def test_float16_softcap_normal_range_includes_both_endpoints(tmp_path, cap):
+    from scripts.onnx_export.export.checkpoint import load_policy_contracts
+    jsonschema = pytest.importorskip("jsonschema")
+
+    checkpoint, profile = tmp_path / "checkpoint.pt", tmp_path / "profile.json"
+    _write_small_checkpoint(checkpoint, logit_softcap=cap)
+    _write_small_profile(profile)
+    contracts = load_policy_contracts(checkpoint_path=checkpoint, deployment_profile_path=profile, precision="float16")
+    assert contracts.dtype == torch.float16
+    assert contracts.policy.model.config.logit_softcap == cap
+    payload = contracts.deployment_contract.to_dict()
+    assert DeploymentContract.from_dict(payload).model_config["logit_softcap"] == cap
+    schema = json.loads((Path(export_module.__file__).parents[1] / "manifest.schema.json").read_text(encoding="utf-8"))
+    jsonschema.Draft202012Validator({"$defs": schema["$defs"], "$ref": "#/$defs/contract"}).validate(payload)
+
+
+@pytest.mark.parametrize("precision", ["float32", "bf16"])
+@pytest.mark.parametrize("cap", [torch.finfo(torch.float32).tiny, 1e-8, 65520.0, 1e38])
+def test_other_deployment_precisions_keep_existing_softcap_range(tmp_path, precision, cap):
+    from scripts.onnx_export.export.checkpoint import load_policy_contracts
+    jsonschema = pytest.importorskip("jsonschema")
+
+    checkpoint, profile = tmp_path / "checkpoint.pt", tmp_path / "profile.json"
+    _write_small_checkpoint(checkpoint, logit_softcap=cap)
+    _write_small_profile(profile)
+    contracts = load_policy_contracts(checkpoint_path=checkpoint, deployment_profile_path=profile, precision=precision)
+    payload = contracts.deployment_contract.to_dict()
+    assert DeploymentContract.from_dict(payload).model_config["logit_softcap"] == cap
+    schema = json.loads((Path(export_module.__file__).parents[1] / "manifest.schema.json").read_text(encoding="utf-8"))
+    jsonschema.Draft202012Validator({"$defs": schema["$defs"], "$ref": "#/$defs/contract"}).validate(payload)
 
 
 def test_deployment_logit_softcap_is_bound_by_saved_model_config_signature(tmp_path):

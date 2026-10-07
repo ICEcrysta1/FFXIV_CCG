@@ -22,6 +22,7 @@ from ..runtime.precision import (
     SUPPORTED_PRECISIONS,
     onnx_torch_dtype,
     precision_onnx_dtype,
+    validate_deployment_logit_softcap,
 )
 from ..runtime.tensor_runtime import GOLDEN_FORMAT, golden_encoding
 
@@ -231,11 +232,12 @@ class DeploymentContract:
         if "logit_softcap" not in self.model_config:
             raise ValueError("deployment model_config missing logit_softcap; re-export the package")
         # 复用模型配置的数值校验，但禁止给旧部署元数据补默认尺度。
-        ModelConfig.from_mapping(self.model_config)
+        parsed_model_config = ModelConfig.from_mapping(self.model_config)
         if self.precision not in SUPPORTED_PRECISIONS:
             raise ValueError(
                 "deployment precision must be bf16, float32 or float16"
             )
+        validate_deployment_logit_softcap(parsed_model_config.logit_softcap, precision=self.precision)
         normalized_repetition = _json_value(
             asdict(parse_repetition_config(self.repetition_config))
         )
