@@ -279,7 +279,7 @@ batch=20、历史=300、状态=86 时，单份 FP32 状态窗口约 2 MiB；这�
 
 ## 11. 实施与验收记录
 
-新实现使用唯一的模型外 `ContextEncoder`，神经模型不再支持 raw/compact 自动转换。缓存 v22／转换 v24 保存完整 raw 双 bank，拒绝旧平铺和归一化格式；checkpoint 输入 21、canonical 14、桥接 16、部署 24／manifest 15、GRPO rollout 5 已同步。新增 reset 投影为零初始化，不消耗随机数；4×256 普通残差和 Full AttnRes 的公共初始化均保持一致。
+新实现使用唯一的模型外 `ContextEncoder`，神经模型不再支持 raw/compact 自动转换。缓存 v22／转换 v24 保存完整 raw 双 bank，拒绝旧平铺和归一化格式；checkpoint 输入 21、canonical 14、桥接 16、部署 24／manifest 15、GRPO rollout 6 已同步，格式 1～5 的旧轨迹须重新生成。新增 reset 投影为零初始化，不消耗随机数；4×256 普通残差和 Full AttnRes 的公共初始化均保持一致。
 
 主要回归结果：训练测试整组 972 通过，相关回放／GRPO／ONNX／分析整组 407 通过、3 跳过，C# 292 通过；此后补充的资源／计时器／Buff、场景排序、三方输入与 CPU/CUDA 编码回归均通过。独立审计发现的合法零目标场景误拒绝与 compact 分析技能身份缺失均已修复并补测试。最终 PythonBridge Debug 构建成功，实际程序集内嵌契约为 16。
 
