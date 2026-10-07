@@ -75,6 +75,8 @@ public sealed class OutputContextBuilder
             ["job_tag"] = _systemMachine.RegisteredJobTag ??
                           throw new InvalidOperationException("job state is not registered"),
             ["schema_version"] = OutputContextSchema.CanonicalContextSchemaVersion,
+            // 与真实效果、已完成 policy 等待一一对应的累计行数；不受历史裁剪影响。
+            ["history_cursor"] = state.LastHistorySequence,
             ["scene_context"] = SceneContextSchema.BuildEmptySceneContext(),
             ["skill_history_context"] = _skillHistoryContextBuilder.Build(state),
             ["state_history_context"] = _stateHistoryContextBuilder.Build(state),

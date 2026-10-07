@@ -116,8 +116,8 @@ class CausalPolicyModel(nn.Module):
         self._runtime_debug = None
 
     def _init_weights(self) -> None:
-        for parameter in self.parameters():
-            if parameter.dim() > 1:
+        for name, parameter in self.named_parameters():
+            if parameter.dim() > 1 and name != "input_encoder.state_reset_proj.weight":
                 nn.init.xavier_uniform_(parameter)
         attention_residual = getattr(self.encoder, "attention_residual", None)
         if attention_residual is not None:
@@ -258,17 +258,11 @@ class CausalPolicyModel(nn.Module):
         payload = checkpoint.get("model_config")
         if not isinstance(payload, Mapping):
             raise ValueError("checkpoint missing model_config")
-        state_dict = checkpoint.get("model_state_dict")
-        if isinstance(state_dict, Mapping) and any(
-            str(key).startswith((
-                "scorer.", "output_adapter.", "input_encoder.pair_fusion",
-                "input_encoder.token_embedding.", "input_encoder.segment_embed.",
-            )) or str(key) == "input_encoder.cls_token"
-            for key in state_dict
-        ):
-            raise ValueError("checkpoint uses an unsupported fused/scoring architecture; retrain")
         if "history_capacity" not in payload:
             raise ValueError("checkpoint missing model.history_capacity")
+        for key in ("history_reset_keep", "time_delta_scale"):
+            if key not in payload:
+                raise ValueError(f"checkpoint missing model.{key}; retrain")
         if "qk_norm_scale" not in payload:
             raise ValueError("checkpoint missing model.qk_norm_scale; retrain")
         if "logit_softcap" not in payload:

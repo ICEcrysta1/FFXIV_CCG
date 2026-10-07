@@ -13,8 +13,7 @@ from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION
 from scripts.convert_fflogs.source.source_reader import TrainingSourceReader
 from scripts.convert_fflogs.training.history_bank import build_history_bank
 from scripts.convert_fflogs.training.sample_builder import TrainingSampleBuilder
-from tests.helpers import build_test_scene_context
-from training.data.collator import TrainingCollator
+from tests.helpers import build_test_scene_context, targetable_window_token
 
 
 def _source(*, history_length=0):
@@ -33,6 +32,7 @@ def _source(*, history_length=0):
             "step": step + 1,
             "context": {
                 "job_tag": "black_mage", "schema_version": CANONICAL_CONTEXT_SCHEMA_VERSION,
+                "history_cursor": len(history),
                 "scene_context": build_test_scene_context(), "skill_history_context": history,
                 "state_history_context": {**keys, "tokens": [deepcopy(token) for _ in history],
                                           "execution_metrics": [{"cumulative_dot_potency": 0.0} for _ in history]},
@@ -46,9 +46,16 @@ def _source(*, history_length=0):
 
 
 def _builder(reader, **kwargs):
-    return TrainingSampleBuilder(torch=torch, normalizer=None, skill_vocab=SkillVocab.build_from_job_tag(reader.job_tag),
-                                 skill_feature_names=reader.skill_feature_names, int_dtype=torch.int32,
-                                 float_dtype=torch.float32, num_actions=reader.num_actions, **kwargs)
+    kwargs.setdefault("float_dtype", torch.float32)
+    if "history_bank" not in kwargs:
+        kwargs["history_bank"] = build_history_bank(
+            reader, torch=torch, normalizer=None,
+            skill_vocab=SkillVocab.build_from_job_tag(reader.job_tag),
+            skill_feature_names=reader.skill_feature_names,
+            int_dtype=torch.int32, float_dtype=kwargs["float_dtype"],
+        )
+    return TrainingSampleBuilder(torch=torch, int_dtype=torch.int32,
+                                 num_actions=reader.num_actions, **kwargs)
 
 
 def test_empty_history_and_wait_only_history_share_stable_skill_schema():
@@ -61,25 +68,40 @@ def test_empty_history_and_wait_only_history_share_stable_skill_schema():
     assert "time_seconds" not in empty.schema.skill_history_fields
     empty_sample = _builder(empty).build(empty, 0)
     wait_sample = _builder(wait).build(wait, 1)
-    assert empty_sample["history_skill_features"].shape == (0, 18)
-    assert wait_sample["history_skill_features"].shape == (1, 18)
-    assert wait_sample["history_skill_ids"].item() > 0
-    batch = TrainingCollator()([empty_sample, wait_sample])
-    assert batch["current_state_vectors"].shape == (2, empty.schema.state_vector_dim())
-    assert batch["current_state_null_mask"].shape == batch["current_state_vectors"].shape
-    assert batch["action_values"].shape == (2, empty.num_actions)
-    assert batch["label_index"].tolist() == [empty.action_keys.index("ogcd_wait")] * 2
+    assert empty_sample["history_length"] == 0
+    assert wait_sample["history_length"] == 1
+    assert empty_sample["current_state_abs_values"].shape == (empty.schema.state_vector_dim(),)
+    assert wait_sample["current_state_delta_values"].tolist() == [0.0] * empty.schema.state_vector_dim()
+    assert empty_sample["label_index"] == wait_sample["label_index"] == empty.action_keys.index("ogcd_wait")
     assert all("candidate" not in key for key in empty_sample)
-    assert all("candidate" not in key for key in batch)
+    assert not any(key.startswith("history_skill") for key in empty_sample)
 
 
 def test_current_state_preserves_explicit_missing_values_without_action_dimension():
     payload = _source()
     payload["samples"][0]["context"]["current_state_context"]["tokens"][0]["player_state"] = [None, None]
     reader = TrainingSourceReader(payload)
+    raw = reader.current_state_matrix(0, dtype=torch.float32)
+    assert raw.values.tolist() == [[0.0, 0.0, 0.0, 0.0]]
+    assert raw.null_mask.tolist() == [[True, True, False, False]]
     sample = _builder(reader).build(reader, 0)
     assert sample["current_state_null_mask"].tolist() == [True, True, False, False]
-    assert sample["current_state_vectors"].tolist() == [-1.0, -1.0, 0.0, 0.0]
+    assert sample["current_state_abs_values"].tolist() == [0.0, 0.0, 0.0, 0.0]
+    assert sample["current_state_delta_values"].tolist() == [0.0, 0.0, 0.0, 0.0]
+    assert sample["current_state_delta_reset_mask"].tolist() == [False, False, True, True]
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float64])
+def test_raw_reader_rejects_precision_changes_before_state_difference(dtype):
+    """所有 raw 状态入口只输出 FP32，防止时间先降精度再差分。"""
+    payload = _source(history_length=1)
+    reader = TrainingSourceReader(payload)
+    with pytest.raises(ValueError, match="require FP32"):
+        reader.current_state_matrix(1, dtype=dtype)
+    with pytest.raises(ValueError, match="require FP32"):
+        reader.history_state_matrix(1, dtype=dtype)
+    with pytest.raises(ValueError, match="require FP32"):
+        reader.state_matrix_from_tokens(payload["samples"][1]["context"]["state_history_context"]["tokens"], dtype=dtype)
 
 
 @pytest.mark.parametrize("change,error", [
@@ -121,7 +143,7 @@ def test_compile_builds_full_history_bank_without_read_window():
     sample = _builder(reader, history_bank=bank).build(reader, 5)
     assert sample["history_length"] == 5
     assert sample["history_end"] == 6
-    assert sample["current_state_vectors"].ndim == 1
+    assert sample["current_state_abs_values"].ndim == 1
 
 
 def test_request_time_values_are_supervision_and_do_not_create_skill_inputs():
@@ -133,16 +155,8 @@ def test_request_time_values_are_supervision_and_do_not_create_skill_inputs():
     reader = TrainingSourceReader(payload)
     changed = _builder(reader).build(reader, 0)
     assert changed["action_values"][0].item() == 3.0
-    assert torch.equal(changed["current_state_vectors"], baseline["current_state_vectors"])
-    assert changed["history_skill_features"].shape == (0, 18)
-
-
-def test_collator_rejects_cross_sample_action_order_drift():
-    reader = TrainingSourceReader(_source())
-    sample = _builder(reader).build(reader, 0)
-    changed = {**sample, "action_keys": list(reversed(sample["action_keys"]))}
-    with pytest.raises(ValueError, match="same fixed action output space"):
-        TrainingCollator()([sample, changed])
+    assert torch.equal(changed["current_state_abs_values"], baseline["current_state_abs_values"])
+    assert changed["history_length"] == 0
 
 
 @pytest.mark.parametrize("contract", ["sample", "canonical"])
@@ -160,7 +174,7 @@ def test_current_state_accepts_different_previous_and_request_snapshots():
     payload = _source()
     payload["samples"][0]["context"]["current_state_context"]["tokens"][0]["player_state"] = [8000.0, 9000.0]
     reader = TrainingSourceReader(payload)
-    assert _builder(reader).build(reader, 0)["current_state_vectors"][:2].tolist() == [8000.0, 9000.0]
+    assert _builder(reader).build(reader, 0)["current_state_abs_values"][:2].tolist() == [8000.0, 9000.0]
 
 
 def test_execution_metrics_are_independent_of_model_state_and_not_model_features():
@@ -170,13 +184,13 @@ def test_execution_metrics_are_independent_of_model_state_and_not_model_features
     context["state_history_context"]["tokens"][0]["target_buff_state"] = [1.0, 2.0]
     reader = TrainingSourceReader(payload)
     sample = _builder(reader).build(reader, 1)
-    assert sample["history_cumulative_dot_potencies"].tolist() == [123.0]
-    assert sample["history_state_vectors"][0, -2:].tolist() == [1.0, 2.0]
     bank = build_history_bank(reader, torch=torch, normalizer=None,
                               skill_vocab=SkillVocab.build_from_job_tag(reader.job_tag),
                               skill_feature_names=reader.skill_feature_names,
                               int_dtype=torch.int32, float_dtype=torch.float32)
     assert bank["cumulative_dot_potencies"].tolist() == [0.0, 123.0]
+    assert bank["state_abs_values"][1, -2:].tolist() == [1.0, 2.0]
+    assert sample["history_end"] == 2
 
 
 def _bank_for_payload(payload):
@@ -223,5 +237,81 @@ def test_history_bank_accepts_unchanged_history_between_multiple_settlements():
     del payload["samples"][3]
     bank = _bank_for_payload(payload)
     assert bank["action_keys"] == ("", "ogcd_wait", "ogcd_wait", "ogcd_wait")
-    assert bank["state_vectors"].shape[0] == 4
+    assert bank["state_abs_values"].shape[0] == 4
     assert bank["cumulative_dot_potencies"].tolist() == [0.0, 0.0, 0.0, 0.0]
+
+
+def test_raw_state_bank_preserves_signed_mp_bool_and_damage_deltas_without_normalizing():
+    from common.policy.data.normalizer import Normalizer
+
+    payload = _source(history_length=3)
+    keys = payload["samples"][0]["context"]["current_state_context"]["player_state_feature_keys"]
+    keys[:] = ["previous_action_after.is_moving", "request_state.mp"]
+    states = [(1.0, 10000.0, 50000.0), (0.0, 9200.0, 50700.0), (1.0, 10000.0, 51350.0)]
+    for sample in payload["samples"]:
+        context = sample["context"]
+        context["state_history_context"]["player_state_feature_keys"] = list(keys)
+        for token, (moving, mp, damage) in zip(context["state_history_context"]["tokens"], states):
+            token["player_state"] = [moving, mp]
+            token["target_buff_state"] = [damage, damage + 20.0]
+    reader = TrainingSourceReader(payload)
+    normalizer = Normalizer()
+    normalizer.ensure_job_resources(reader.job_tag)
+    normalizer.register_schema(reader.schema)
+    bank = build_history_bank(
+        reader, torch=torch, normalizer=normalizer,
+        skill_vocab=SkillVocab.build_from_job_tag(reader.job_tag),
+        skill_feature_names=reader.skill_feature_names,
+        int_dtype=torch.int32, float_dtype=torch.bfloat16,
+    )
+    assert bank["state_abs_values"].dtype == bank["state_delta_values"].dtype == torch.float32
+    assert bank["state_abs_values"][1].tolist() == [1.0, 10000.0, 50000.0, 50020.0]
+    assert bank["state_delta_values"][2].tolist() == [-1.0, -800.0, 700.0, 700.0]
+    assert bank["state_delta_values"][3].tolist() == [1.0, 800.0, 650.0, 650.0]
+    assert bank["state_delta_reset_mask"][1].all()
+    assert not bank["state_delta_reset_mask"][2:].any()
+    torch.testing.assert_close(bank["state_abs_values"][1:].diff(dim=0), bank["state_delta_values"][2:])
+
+
+def test_raw_history_and_current_state_reset_fields_when_null_becomes_known():
+    payload = _source(history_length=2)
+    for sample in payload["samples"][1:]:
+        rows = sample["context"]["state_history_context"]["tokens"]
+        rows[0]["player_state"] = [None, 10000.0]
+        if len(rows) > 1:
+            rows[1]["player_state"] = [7600.0, None]
+    current = payload["samples"][2]["context"]["current_state_context"]["tokens"][0]
+    current["player_state"] = [8000.0, 8200.0]
+    reader = TrainingSourceReader(payload)
+    builder = _builder(reader)
+    bank = builder._history_bank
+    assert bank["state_abs_values"][1, 0].item() == bank["state_delta_values"][1, 0].item() == 0.0
+    assert bank["state_delta_values"][2, :2].tolist() == [7600.0, 0.0]
+    assert bank["state_delta_reset_mask"][2, :2].tolist() == [True, False]
+    sample = builder.build(reader, 2)
+    assert sample["current_state_delta_values"][:2].tolist() == [400.0, 8200.0]
+    assert sample["current_state_delta_reset_mask"][:2].tolist() == [False, True]
+
+
+def test_raw_current_state_deltas_use_last_actual_history_not_previous_sample_request():
+    payload = _source(history_length=1)
+    payload["samples"][0]["context"]["current_state_context"]["tokens"][0]["player_state"] = [111.0, 222.0]
+    context = payload["samples"][1]["context"]
+    context["state_history_context"]["tokens"][0]["player_state"] = [7600.0, 7800.0]
+    context["current_state_context"]["tokens"][0]["player_state"] = [8000.0, 8200.0]
+    reader = TrainingSourceReader(payload)
+    sample = _builder(reader).build(reader, 1)
+    assert sample["current_state_abs_values"][:2].tolist() == [8000.0, 8200.0]
+    assert sample["current_state_delta_values"][:2].tolist() == [400.0, 400.0]
+    assert not sample["current_state_delta_reset_mask"].any()
+
+
+def test_raw_scene_cache_keeps_windows_beyond_old_normalization_time_limit():
+    payload = _source()
+    payload["fight_scene_context"] = build_test_scene_context(
+        targetable_tokens=[targetable_window_token(1800.0, 2400.0, targetable=True, segment_kind="combat")],
+    )
+    reader = TrainingSourceReader(payload)
+    sample = _builder(reader, float_dtype=torch.bfloat16).build(reader, 0)
+    assert sample["scene_vectors"].dtype == torch.float32
+    assert sample["scene_vectors"][0, :3].tolist() == [1800.0, 2400.0, 600.0]

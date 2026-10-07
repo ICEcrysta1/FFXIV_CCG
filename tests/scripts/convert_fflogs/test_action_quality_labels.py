@@ -295,7 +295,7 @@ def test_compiled_pt_and_batch_keep_label_outside_model_inputs(
     assert batch["source_quality"].tolist() == pytest.approx([normalized_quality])
     assert "source_percentile" not in batch
     assert "source_percentile_bucket_lower" not in batch
-    assert isinstance(batch["current_state_vectors"], torch.Tensor)
+    assert isinstance(batch["current_state_abs_values"], torch.Tensor)
     quality_config = load_run_config("config/models/black_mage/artzip/config.yaml").action_quality_loss
     if percentile is None:
         if with_labels:

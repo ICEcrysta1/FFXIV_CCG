@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from bisect import bisect_right
 from pathlib import Path
 
@@ -22,6 +21,7 @@ from common.policy.data.compiled_cache import (
     load_compiled_cache_for_source,
 )
 from common.policy.data.normalizer import Normalizer
+from common.policy.data.history_window import history_window_length
 from common.policy.data.skill_vocab import SkillVocab
 
 
@@ -37,6 +37,7 @@ class TrainingDataset(Dataset):
         job_tag: str | None = None,
         skill_vocab: SkillVocab | None = None,
         max_history: int | None = 128,
+        history_reset_keep: int = 8,
         int_dtype,
         float_dtype,
         cache_dir: Path | None = None,
@@ -58,6 +59,7 @@ class TrainingDataset(Dataset):
         if max_history is not None and max_history < 0:
             raise ValueError(f"max_history must be >= 0, got {max_history}")
         self._max_history = max_history
+        self._history_reset_keep = history_reset_keep
         if compiled_cache_shard_size < 1:
             raise ValueError("compiled_cache_shard_size must be >= 1")
         if compiled_cache_max_shards < 1:
@@ -272,7 +274,10 @@ class TrainingDataset(Dataset):
         if self._max_history is None:
             return sample
         history_length = int(sample["history_length"])
-        limited_length = min(history_length, self._max_history)
+        limited_length = (
+            history_window_length(history_length, self._max_history, self._history_reset_keep)
+            if self._max_history else 0
+        )
         if limited_length == history_length:
             return sample
         limited = dict(sample)
@@ -292,8 +297,10 @@ class TrainingDataset(Dataset):
         for key in (
             "skill_ids",
             "skill_features",
-            "state_vectors",
+            "state_abs_values",
+            "state_delta_values",
             "state_null_mask",
+            "state_delta_reset_mask",
             "skill_potencies",
             "cumulative_dot_potencies",
         ):

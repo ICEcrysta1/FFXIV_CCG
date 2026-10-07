@@ -5,15 +5,11 @@ from __future__ import annotations
 import pytest
 
 from common.config import load_precision_config
-from scripts.convert_fflogs.source.source_reader import TrainingSourceReader
-from scripts.convert_fflogs.training.sample_builder import TrainingSampleBuilder
 from scripts.convert_fflogs.utils import build_skill_book, load_job_project_config
-from common.policy.config import ModelConfig
-from common.policy.data import ActionSpace, CompiledCacheReader, DataSpec, Normalizer
+from common.policy.data import ActionSpace, CompiledCacheReader, Normalizer
 from common.policy.data.prepared_sources import select_prepared_validation_sources
 from training import ShardBatchSampler, TrainingCollator, WeightedShardBatchSampler
 from training.config import RunConfig
-from common.policy.model.input_encoder import CausalInputEncoder
 from tests.training._causal_fixtures import make_input_contract
 from training.loop import build_dataloaders
 from tests.training._common_fixtures import (
@@ -79,9 +75,9 @@ def test_training_dataset_returns_grouped_sample_and_uses_config_vocab(tmp_path)
     kind_index = dataset.skill_feature_names.index("kind")
     assert sample["history_bank_skill_features"][history_start, kind_index].item() == pytest.approx(1.0)
     assert sample["history_bank_skill_potencies"].shape == sample["history_bank_cumulative_dot_potencies"].shape
-    assert sample["history_bank_state_vectors"].shape == sample["history_bank_state_null_mask"].shape
+    assert sample["history_bank_state_abs_values"].shape == sample["history_bank_state_null_mask"].shape
     assert sample["action_values"].shape == (len(sample["action_keys"]),)
-    assert sample["current_state_vectors"].shape == sample["current_state_null_mask"].shape == (dataset.state_dim,)
+    assert sample["current_state_abs_values"].shape == sample["current_state_null_mask"].shape == (dataset.state_dim,)
     assert sample["scene_vectors"].shape[0] == sample["scene_types"].shape[0]
     assert sample["label_action_key"] == "fire_iv"
 
@@ -105,13 +101,13 @@ def test_training_dataset_compiles_and_reuses_disk_cache(tmp_path):
     assert second_sample["history_end"] == first_sample["history_end"]
     assert second_sample["history_length"] == first_sample["history_length"]
     assert second_sample["history_bank_skill_ids"].equal(first_sample["history_bank_skill_ids"])
-    assert second_sample["current_state_vectors"].equal(first_sample["current_state_vectors"])
+    assert second_sample["current_state_abs_values"].equal(first_sample["current_state_abs_values"])
     assert len(first._shard_cache) == 1
 
     restored = object.__new__(type(first))
     restored.__setstate__(first.__getstate__())
     assert isinstance(restored._readers[0], CompiledCacheReader)
-    assert restored[1]["current_state_vectors"].equal(first_sample["current_state_vectors"])
+    assert restored[1]["current_state_abs_values"].equal(first_sample["current_state_abs_values"])
 
 
 def test_compiled_history_and_current_state_use_compact_state_contract(tmp_path):
@@ -151,8 +147,8 @@ def test_compiled_history_and_current_state_use_compact_state_contract(tmp_path)
     )
     assert sample["history_bank_skill_features"].shape[-1] == 18
     for prefix in ("history_bank", "current"):
-        assert sample[f"{prefix}_state_vectors"].shape[-1] == 86
-        assert sample[f"{prefix}_state_null_mask"].shape == sample[f"{prefix}_state_vectors"].shape
+        assert sample[f"{prefix}_state_abs_values"].shape[-1] == 86
+        assert sample[f"{prefix}_state_null_mask"].shape == sample[f"{prefix}_state_abs_values"].shape
 
 
 @pytest.mark.parametrize("old_contract", ["cache_format", "conversion_version", "unstable_history_order", "skill_time"])
@@ -238,6 +234,7 @@ def test_compiled_cache_manifest_uses_mmap_for_history_bank(tmp_path, monkeypatc
 @pytest.mark.parametrize(
     "corruption",
     [
+        "none",
         "non_tensor_field",
         "tensor_action_keys",
         "shape_mismatch",
@@ -249,12 +246,20 @@ def test_compiled_cache_manifest_uses_mmap_for_history_bank(tmp_path, monkeypatc
         "previous_sample_schema",
         "previous_context_schema",
         "removed_skill_field",
+        "raw_state_dtype",
+        "raw_state_nonfinite",
+        "raw_state_width",
+        "missing_delta",
+        "reset_mask_dtype",
+        "nonzero_sentinel",
+        "missing_request_time",
+        "null_bank_request_time",
     ],
 )
 def test_corrupt_history_bank_manifest_falls_back_to_recompile(
     tmp_path, monkeypatch, corruption
 ):
-    """损坏的 history bank manifest 必须返回 None，交给上层重编译。"""
+    """有效 raw manifest 可读；只破坏指定字段后必须交给上层重编译。"""
     torch = pytest.importorskip("torch")
     import importlib
 
@@ -263,11 +268,15 @@ def test_corrupt_history_bank_manifest_falls_back_to_recompile(
     cache_path.write_bytes(b"corrupt manifest")
     payload_num_samples = 2
     space = ActionSpace.from_job_tag("black_mage")
+    schema = make_input_contract().schema
+    state_dim = schema.state_vector_dim()
     history_bank = {
         "skill_ids": torch.zeros((2,), dtype=torch.int32),
         "skill_features": torch.zeros((2, 1)),
-        "state_vectors": torch.zeros((2, 1)),
-        "state_null_mask": torch.zeros((2, 1), dtype=torch.bool),
+        "state_abs_values": torch.zeros((2, state_dim)),
+        "state_delta_values": torch.zeros((2, state_dim)),
+        "state_delta_reset_mask": torch.tensor([[False] * state_dim, [True] * state_dim]),
+        "state_null_mask": torch.zeros((2, state_dim), dtype=torch.bool),
         "action_keys": ("", "fire_iii"),
         "skill_potencies": torch.zeros((2,)),
         "cumulative_dot_potencies": torch.zeros((2,)),
@@ -282,10 +291,26 @@ def test_corrupt_history_bank_manifest_falls_back_to_recompile(
         payload_num_samples = 1
     elif corruption == "skill_width_mismatch":
         history_bank["skill_features"] = torch.zeros((2, 2))
+    elif corruption == "raw_state_dtype":
+        history_bank["state_abs_values"] = history_bank["state_abs_values"].to(torch.bfloat16)
+    elif corruption == "raw_state_nonfinite":
+        history_bank["state_delta_values"][1, 1] = float("nan")
+    elif corruption == "raw_state_width":
+        history_bank["state_abs_values"] = torch.zeros((2, state_dim + 1))
+    elif corruption == "missing_delta":
+        history_bank.pop("state_delta_values")
+    elif corruption == "reset_mask_dtype":
+        history_bank["state_delta_reset_mask"] = history_bank["state_delta_reset_mask"].float()
+    elif corruption == "nonzero_sentinel":
+        history_bank["state_abs_values"][0, 0] = 1.0
+    elif corruption == "missing_request_time":
+        object.__setattr__(schema, "state_group_feature_keys", {"player_state": tuple(f"field_{i}" for i in range(state_dim))})
+    elif corruption == "null_bank_request_time":
+        history_bank["state_null_mask"][1, 0] = True
     payload = {
         "cache_format": CACHE_FORMAT,
         "cache_signature": {},
-        "schema": make_input_contract().schema,
+        "schema": schema,
         "job_tag": "black_mage",
         "num_samples": payload_num_samples,
         "num_actions": len(space.action_keys),
@@ -314,13 +339,14 @@ def test_corrupt_history_bank_manifest_falls_back_to_recompile(
         lambda *args, **kwargs: payload,
     )
 
-    assert load_compiled_cache(
+    reader = load_compiled_cache(
         cache_path,
         tmp_path / "source.json",
         signature={},
         expected_action_space=ActionSpace.from_job_tag("black_mage"),
         shard_cache=CompiledShardCache(),
-    ) is None
+    )
+    assert (reader is not None) is (corruption == "none")
 
 
 def test_empty_compiled_cache_accepts_sentinel_history_bank(tmp_path, monkeypatch):
@@ -332,10 +358,12 @@ def test_empty_compiled_cache_accepts_sentinel_history_bank(tmp_path, monkeypatc
     cache_path = tmp_path / "empty.compiled.pt"
     cache_path.write_bytes(b"empty manifest")
     space = ActionSpace.from_job_tag("black_mage")
+    schema = make_input_contract().schema
+    state_dim = schema.state_vector_dim()
     payload = {
         "cache_format": CACHE_FORMAT,
         "cache_signature": {},
-        "schema": make_input_contract().schema,
+        "schema": schema,
         "job_tag": "black_mage",
         "num_samples": 0,
         "num_actions": len(space.action_keys),
@@ -348,8 +376,10 @@ def test_empty_compiled_cache_accepts_sentinel_history_bank(tmp_path, monkeypatc
         "history_bank": {
             "skill_ids": torch.zeros((1,), dtype=torch.int32),
             "skill_features": torch.zeros((1, 0)),
-            "state_vectors": torch.zeros((1, 1)),
-            "state_null_mask": torch.zeros((1, 1), dtype=torch.bool),
+            "state_abs_values": torch.zeros((1, state_dim)),
+            "state_delta_values": torch.zeros((1, state_dim)),
+            "state_delta_reset_mask": torch.zeros((1, state_dim), dtype=torch.bool),
+            "state_null_mask": torch.zeros((1, state_dim), dtype=torch.bool),
             "action_keys": ("",),
             "skill_potencies": torch.zeros((1,)),
             "cumulative_dot_potencies": torch.zeros((1,)),
@@ -372,6 +402,29 @@ def test_empty_compiled_cache_accepts_sentinel_history_bank(tmp_path, monkeypatc
     assert reader is not None
     assert reader.num_samples == 0
     assert reader.history_bank["action_keys"] == ("",)
+
+
+@pytest.mark.parametrize("null_anchor", [False, True])
+def test_compiled_shard_requires_known_current_request_time(tmp_path, null_anchor):
+    """真实分片的当前请求时间必须已知，否则读取阶段就拒绝重锚。"""
+    torch = pytest.importorskip("torch")
+    source = make_demo_pt(tmp_path, ["fire_iii"], fight_id="current_anchor")
+    reader = make_dataset([source])._readers[0]
+    shard_path = reader._shard_paths[0]
+    shard = torch.load(shard_path, weights_only=True)
+    sample = shard["samples"][0]
+    keys = tuple(key for group in reader.schema.state_group_feature_keys.values() for key in group)
+    request_time_index = keys.index("request_state.time_seconds")
+    assert not sample["current_state_null_mask"][request_time_index]
+    if null_anchor:
+        sample["current_state_null_mask"][request_time_index] = True
+        torch.save(shard, shard_path)
+    reader._shard_cache.clear()
+    if null_anchor:
+        with pytest.raises(ValueError, match="request_state.time_seconds must be known"):
+            reader.sample(0)
+    else:
+        assert not reader.sample(0)["current_state_null_mask"][request_time_index]
 
 
 def test_compiled_cache_reader_does_not_swallow_memory_error(tmp_path, monkeypatch):
@@ -422,7 +475,7 @@ def test_compact_collator_deduplicates_copied_bank_by_explicit_id(tmp_path):
     for key in (
         "history_bank_skill_ids",
         "history_bank_skill_features",
-        "history_bank_state_vectors",
+        "history_bank_state_abs_values",
         "history_bank_state_null_mask",
     ):
         copied[key] = copied[key].clone()
@@ -569,7 +622,7 @@ def test_training_dataset_keeps_current_request_state_for_illegal_output_action(
     sample = dataset[0]
     fire_iii_index = sample["action_keys"].index("fire_iii")
     null_mask = sample["current_state_null_mask"]
-    values = sample["current_state_vectors"]
+    values = sample["current_state_abs_values"]
 
     assert bool(sample["action_legal_mask"][fire_iii_index].item()) is False
     assert bool(null_mask.any().item()) is False
@@ -597,7 +650,7 @@ def test_training_collator_pads_history_and_scene_lengths(tmp_path):
     assert batch["history_mask"][1].sum().item() == 2
     assert batch["scene_vectors"].ndim == 3
     assert batch["scene_mask"].shape[:2] == batch["scene_vectors"].shape[:2]
-    assert batch["current_state_vectors"].shape == batch["current_state_null_mask"].shape == (2, short_dataset.state_dim)
+    assert batch["current_state_abs_values"].shape == batch["current_state_null_mask"].shape == (2, short_dataset.state_dim)
 
 
 @pytest.mark.parametrize("levels, status, percentile, error", [
@@ -693,50 +746,3 @@ def test_training_collator_allows_unknown_percentile_for_untagged_samples(tmp_pa
     assert batch["quality_label_levels"].shape == (2, 0)
     assert batch["source_quality"][0].item() == -1.0
     assert torch.isnan(batch["source_quality"][1])
-
-
-def test_compact_history_materialization_matches_legacy_dense_builder(tmp_path):
-    torch = pytest.importorskip("torch")
-    pt_path = make_demo_pt(
-        tmp_path,
-        ["fire_iii", "fire_iv", "fire_iv", "fire_iii"],
-        fight_id="compact_history_equivalence",
-    )
-    dataset = make_dataset([pt_path])
-    from tests.training._common_fixtures import _TEST_TRAINING_PAYLOADS
-
-    reader = TrainingSourceReader(_TEST_TRAINING_PAYLOADS[pt_path.resolve()])
-    normalizer = Normalizer()
-    normalizer.configure_job_resources(reader.job_tag)
-    normalizer.register_schema(reader.schema)
-    precision = load_precision_config()
-    dense_builder = TrainingSampleBuilder(
-        torch=torch,
-        normalizer=normalizer,
-        skill_vocab=dataset.skill_vocab,
-        skill_feature_names=reader.skill_feature_names,
-        int_dtype=precision.resolve_int_dtype(),
-        float_dtype=precision.resolve_float_dtype(),
-        num_actions=reader.num_actions,
-    )
-    indices = [0, 1, 3]
-    dense_batch = TrainingCollator()(
-        [dense_builder.build(reader, index) for index in indices]
-    )
-    compact_batch = TrainingCollator()([dataset[index] for index in indices])
-
-    encoder = CausalInputEncoder(
-        DataSpec.from_dataset(dataset),
-        ModelConfig(d_model=16, n_layers=1, n_heads=2, ff_dim=32),
-        vocab_size=dataset.skill_vocab.size(),
-    )
-    encoder._materialize_compact_history(compact_batch)
-    for key in (
-        "history_mask",
-        "history_skill_ids",
-        "history_skill_features",
-        "history_state_vectors",
-        "history_state_null_mask",
-    ):
-        assert torch.equal(compact_batch[key], dense_batch[key]), key
-    assert compact_batch["history_action_keys"] == dense_batch["history_action_keys"]

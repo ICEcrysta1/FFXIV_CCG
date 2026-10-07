@@ -30,9 +30,11 @@ def make_batch(data_spec=None, *, batch_size=1, history_length=2, scene_length=1
         "history_skill_features": torch.zeros((batch_size, history_length, spec.skill_feature_dim), dtype=dtype),
         "history_state_vectors": torch.zeros((batch_size, history_length, spec.state_dim), dtype=dtype),
         "history_state_null_mask": torch.zeros((batch_size, history_length, spec.state_dim), dtype=torch.bool),
+        "history_state_reset_mask": (torch.arange(history_length).reshape(1, -1, 1) == 0).expand(batch_size, -1, spec.state_dim),
         "history_mask": torch.ones((batch_size, history_length), dtype=torch.bool),
         "current_state_vectors": torch.zeros((batch_size, spec.state_dim), dtype=dtype),
         "current_state_null_mask": torch.zeros((batch_size, spec.state_dim), dtype=torch.bool),
+        "current_state_reset_mask": torch.full((batch_size, spec.state_dim), history_length == 0, dtype=torch.bool),
         "scene_vectors": torch.zeros((batch_size, scene_length, spec.scene_dim), dtype=dtype),
         "scene_types": torch.zeros((batch_size, scene_length), dtype=torch.long),
         "scene_mask": torch.ones((batch_size, scene_length), dtype=torch.bool),
@@ -57,7 +59,10 @@ def make_input_contract(data_spec=None, *, vocab_size=None) -> ModelInputContrac
     schema = TrainingSchema(serialization_format="test", sample_schema_version=TRAINING_SAMPLE_SCHEMA_VERSION,
                             context_schema_version=CANONICAL_CONTEXT_SCHEMA_VERSION, scene_context_mode="absolute",
                             scene_windows=windows,
-                            state_group_feature_keys={"player_state": tuple(f"field_{index}" for index in range(spec.state_dim))},
+                            state_group_feature_keys={"player_state": (
+                                "request_state.time_seconds",
+                                *(f"field_{index}" for index in range(1, spec.state_dim)),
+                            )},
                             skill_history_fields=("kind", "potency"))
     normalizer = Normalizer.from_contract({
         "version": NORMALIZER_CONTRACT_VERSION, "job_tag": spec.job_tag,

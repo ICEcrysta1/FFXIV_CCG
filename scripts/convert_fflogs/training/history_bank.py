@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from common.policy.data.context_encoding import raw_state_delta
+
 from ..source.source_helpers import (
     SKILL_ID_FIELD,
     build_skill_feature_matrix,
@@ -113,16 +115,25 @@ def build_history_bank(
 
     state_matrix = reader.state_matrix_from_tokens(
         state_tokens,
-        dtype=float_dtype,
-        normalizer=normalizer,
+        dtype=torch.float32,
     )
-    state_vectors = torch.cat(
+    # 原始状态先保留完整物理值；缺失只由 mask 表达，不参与相邻差分。
+    state_abs = state_matrix.values
+    previous_abs = torch.cat((torch.zeros_like(state_abs[:1]), state_abs[:-1]), dim=0)
+    previous_null = torch.cat(
+        (torch.ones_like(state_matrix.null_mask[:1]), state_matrix.null_mask[:-1]), dim=0,
+    )
+    state_delta, state_reset = raw_state_delta(
+        state_abs, state_matrix.null_mask, previous_abs, previous_null,
+    )
+    state_abs_values = torch.cat(
         (
-            torch.zeros((1, state_matrix.values.shape[-1]), dtype=float_dtype),
-            state_matrix.values,
+            torch.zeros((1, state_abs.shape[-1]), dtype=torch.float32),
+            state_abs,
         ),
         dim=0,
     )
+    state_delta_values = torch.cat((torch.zeros_like(state_abs_values[:1]), state_delta), dim=0)
     state_null_mask = torch.cat(
         (
             torch.zeros((1, state_matrix.null_mask.shape[-1]), dtype=torch.bool),
@@ -130,12 +141,15 @@ def build_history_bank(
         ),
         dim=0,
     )
+    state_delta_reset_mask = torch.cat((torch.zeros_like(state_null_mask[:1]), state_reset), dim=0)
 
     return {
         "skill_ids": skill_ids,
         "skill_features": skill_features,
-        "state_vectors": state_vectors,
+        "state_abs_values": state_abs_values,
+        "state_delta_values": state_delta_values,
         "state_null_mask": state_null_mask,
+        "state_delta_reset_mask": state_delta_reset_mask,
         "action_keys": tuple(action_keys),
         # PPG 使用原始历史威力；kind 已经在 skill_features 中以数值维度保存。
         "skill_potencies": torch.tensor(skill_potencies, dtype=float_dtype),

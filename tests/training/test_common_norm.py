@@ -7,7 +7,7 @@ import math
 import pytest
 
 from common.policy.data import Normalizer
-from common.policy.data.schema import SceneWindowSchema, TrainingSchema
+from common.policy.data.schema import SceneWindowSchema
 from common.policy.data.normalization import NormalizerConfig
 from common.policy.data.normalizer import NORMALIZER_CONTRACT_VERSION
 
@@ -159,49 +159,6 @@ def test_normalizer_honors_cumulative_potency_mode():
         "previous_action_after.target.cumulative_potency",
         900.0,
     ) == pytest.approx(0.5)
-
-
-def test_normalizer_scales_scene_time_to_1800_seconds_and_preserves_other_fields():
-    torch = pytest.importorskip("torch")
-    targetable_schema = SceneWindowSchema.from_feature_keys(
-        context_key="targetable_window_context",
-        feature_keys=("start_offset_seconds", "end_offset_seconds", "duration_seconds", "targetable"),
-        scene_type_id=0,
-    )
-    target_count_schema = SceneWindowSchema.from_feature_keys(
-        context_key="target_count_window_context",
-        feature_keys=("start_offset_seconds", "end_offset_seconds", "duration_seconds", "target_count"),
-        scene_type_id=3,
-    )
-    schema = TrainingSchema(
-        serialization_format="test",
-        sample_schema_version=1,
-        context_schema_version=1,
-        scene_context_mode="test",
-        scene_windows=(targetable_schema, target_count_schema),
-        state_group_feature_keys={},
-        skill_history_fields=(),
-    )
-    values = torch.tensor(
-        [
-            [0.0, 120.0, 120.0, 1.0],
-            [1700.0, 1900.0, 200.0, 0.0],
-            [2000.0, 2200.0, 200.0, 8.0],
-        ]
-    )
-    scene_types = torch.tensor([0, 0, 3])
-
-    normalized = Normalizer().normalize_scene_tokens(values, scene_types, schema)
-
-    assert normalized[:, 0].tolist() == pytest.approx([0.0, 1700.0 / 1800.0, 1.0])
-    assert normalized[:, 1].tolist() == pytest.approx([120.0 / 1800.0, 1.0, 1.0])
-    assert normalized[:, 2].tolist() == pytest.approx([120.0 / 1800.0, 100.0 / 1800.0, 0.0])
-    assert normalized[:, 3].tolist() == pytest.approx([1.0, 0.0, 1.0])
-    assert values.tolist() == [
-        [0.0, 120.0, 120.0, 1.0],
-        [1700.0, 1900.0, 200.0, 0.0],
-        [2000.0, 2200.0, 200.0, 8.0],
-    ]
 
 
 def test_scene_window_schema_resolves_indices_once_and_reports_missing_fields():

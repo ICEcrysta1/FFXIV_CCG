@@ -206,13 +206,42 @@ class Normalizer:
         for group_key, feature_keys in schema.state_group_feature_keys.items():
             self.register_feature_keys(group_key, list(feature_keys))
 
+    def state_encoding_metadata(self, schema) -> StateEncodingMetadata:
+        """从已注册规则生成向量化 ABS/有符号 DELTA 元数据，不重复推断字段。"""
+        self.register_schema(schema)
+        keys, divisors, lower_bounds, upper_bounds, logarithmic = [], [], [], [], []
+        for group_key in schema.state_group_feature_keys:
+            for rule in self._rules[group_key]:
+                divisor, lower, upper = 1.0, -math.inf, math.inf
+                kind = rule.rule_type
+                if kind in {"divide_mp_max", "divide_max_mp"}:
+                    divisor = self._config.mp_max
+                elif kind == "clip_divide_seconds_max":
+                    divisor, lower, upper = self._config.remaining_seconds_max, 0.0, self._config.remaining_seconds_max
+                elif kind == "clip_divide_fight_time_max":
+                    divisor, lower, upper = self._config.fight_time_max, 0.0, self._config.fight_time_max
+                elif kind in {"clip_divide_resource_max", "clip_divide_status_max"}:
+                    if rule.max_value is None or rule.max_value <= 0:
+                        raise ValueError(f"state field {rule.feature_name!r} requires a positive max_value")
+                    divisor, lower, upper = rule.max_value, 0.0, rule.max_value
+                elif kind == "divide_current_potency_max":
+                    divisor, lower, upper = self._config.current_potency_max, 0.0, self._config.current_potency_max
+                elif kind == "divide_potency_by_fight_time_max":
+                    divisor, lower = self._config.fight_time_max, 0.0
+                elif kind == "log1p_potency":
+                    lower = 0.0
+                keys.append(rule.feature_name)
+                divisors.append(float(divisor))
+                lower_bounds.append(float(lower))
+                upper_bounds.append(float(upper))
+                logarithmic.append(kind == "log1p_potency")
+        return StateEncodingMetadata(
+            tuple(keys), tuple(divisors), tuple(lower_bounds), tuple(upper_bounds), tuple(logarithmic),
+        )
+
     @property
     def registered_groups(self) -> list[str]:
         return list(self._rules.keys())
-
-    @property
-    def fight_time_max(self) -> float:
-        return float(self._config.fight_time_max)
 
     @property
     def remaining_seconds_max(self) -> float:
@@ -222,28 +251,6 @@ class Normalizer:
     @property
     def target_count_max(self) -> float:
         return float(self._config.target_count_max)
-
-    def normalize_scene_time(self, time_seconds: float) -> float:
-        """把绝对 scene 时间按统一战斗时长归一化到 [0, 1]。"""
-        fight_time_max = self.fight_time_max
-        if fight_time_max <= 0.0:
-            raise ValueError("fight_time_max must be positive")
-        return max(0.0, min(float(time_seconds), fight_time_max)) / fight_time_max
-
-    def normalize_scene_target_count(self, target_count: float) -> float:
-        """按 scene token 的统一目标数量上限归一化目标数量。"""
-        target_count_max = self.target_count_max
-        if target_count_max <= 0.0:
-            raise ValueError("target_count_max must be positive")
-        return max(0.0, min(float(target_count), target_count_max)) / target_count_max
-
-    def denormalize_scene_target_count(self, normalized_target_count: float) -> int:
-        """把归一化后的 scene 目标数量恢复为状态机使用的整数。"""
-        target_count_max = self.target_count_max
-        if target_count_max <= 0.0:
-            raise ValueError("target_count_max must be positive")
-        normalized = max(0.0, min(float(normalized_target_count), 1.0))
-        return max(0, int(round(normalized * target_count_max)))
 
     def feature_dim(self, group_key: str) -> int:
         return self._feature_dims.get(group_key, 0)
@@ -304,61 +311,6 @@ class Normalizer:
                 resource_limits=self._resource_limits,
             )
         result[result.isnan()] = 0.0
-        return result
-
-    def normalize_scene_tokens(self, tensor, scene_types, schema):
-        """按窗口类型归一化 scene 的绝对战斗时间字段。"""
-        torch = import_torch()
-        if tensor.ndim != 2:
-            raise ValueError(f"scene tensor must be 2D, got shape {tuple(tensor.shape)}")
-        if scene_types.ndim != 1 or scene_types.shape[0] != tensor.shape[0]:
-            raise ValueError(
-                "scene type shape must be [N] and match scene tensor rows: "
-                f"{tuple(scene_types.shape)} != {tensor.shape[0]}"
-            )
-        scene_width = schema.scene_feature_dim()
-        if tensor.shape[-1] < scene_width:
-            raise ValueError(
-                "scene tensor width is smaller than schema scene width: "
-                f"{tensor.shape[-1]} < {scene_width}"
-            )
-        if self._config.fight_time_max <= 0.0:
-            raise ValueError("fight_time_max must be positive")
-        if self._config.target_count_max <= 0.0:
-            raise ValueError("target_count_max must be positive")
-
-        result = tensor.clone()
-        known_mask = torch.zeros(scene_types.shape, dtype=torch.bool, device=scene_types.device)
-        fight_time_max = float(self._config.fight_time_max)
-        for window_schema in schema.scene_windows:
-            type_mask = scene_types == window_schema.scene_type_id
-            known_mask |= type_mask
-            if not bool(type_mask.any().item()):
-                continue
-
-            rows = result[type_mask].clone()
-            start = rows[:, window_schema.start_offset_index].clamp(
-                min=0.0,
-                max=fight_time_max,
-            ) / fight_time_max
-            end = rows[:, window_schema.end_offset_index].clamp(
-                min=0.0,
-                max=fight_time_max,
-            ) / fight_time_max
-            rows[:, window_schema.start_offset_index] = start
-            rows[:, window_schema.end_offset_index] = end
-            rows[:, window_schema.duration_index] = (end - start).clamp_min(0.0)
-            if "target_count" in window_schema.feature_keys:
-                target_count_index = window_schema.feature_keys.index("target_count")
-                rows[:, target_count_index] = rows[:, target_count_index].clamp(
-                    min=0.0,
-                    max=float(self._config.target_count_max),
-                ) / float(self._config.target_count_max)
-            result[type_mask] = rows
-
-        if bool((~known_mask).any().item()):
-            unknown_types = torch.unique(scene_types[~known_mask]).tolist()
-            raise ValueError(f"unknown scene type ids: {unknown_types}")
         return result
 
     def normalize_value(self, group_key: str, feature_name: str, value: float) -> float:
@@ -609,6 +561,17 @@ def _inverse_rule(
     if rule_type == "divide_current_potency_max":
         return normalized * config.current_potency_max
     return normalized
+
+
+@dataclass(frozen=True)
+class StateEncodingMetadata:
+    """按完整状态向量字段排列的固定归一化常量。"""
+
+    feature_keys: tuple[str, ...]
+    divisors: tuple[float, ...]
+    absolute_lower_bounds: tuple[float, ...]
+    absolute_upper_bounds: tuple[float, ...]
+    logarithmic: tuple[bool, ...]
 
 
 @dataclass(frozen=True)

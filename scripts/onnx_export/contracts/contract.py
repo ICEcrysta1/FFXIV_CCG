@@ -20,6 +20,8 @@ TENSOR_INPUT_NAMES = (
     "history_mask",
     "current_state_vectors",
     "current_state_null_mask",
+    "history_state_reset_mask",
+    "current_state_reset_mask",
 )
 OUTPUT_NAMES = ("raw_logits",)
 TOKEN_ORDER = TOKEN_ENCODING_CONTRACT["token_order"]
@@ -174,10 +176,22 @@ def make_inputs(
         generator=generator,
     ) < 0.1
     history_mask = _length_mask(history_valid, contract.history_capacity)
+    history_state_null_mask[:, history_valid:] = True
     current_state_vectors = floats(batch_size, data_spec.state_dim)
     current_state_null_mask = torch.rand(
         batch_size, data_spec.state_dim, generator=generator,
     ) < 0.1
+    history_state_reset_mask = (
+        torch.rand(history_state_null_mask.shape, generator=generator) < 0.1
+    ) & ~history_state_null_mask
+    history_state_reset_mask[:, history_valid:] = False
+    if history_valid:
+        history_state_reset_mask[:, 0] = ~history_state_null_mask[:, 0]
+    current_state_reset_mask = (
+        torch.rand(current_state_null_mask.shape, generator=generator) < 0.1
+    ) & ~current_state_null_mask
+    if not history_valid:
+        current_state_reset_mask = ~current_state_null_mask
     result = (
         scene_vectors,
         scene_types,
@@ -189,6 +203,8 @@ def make_inputs(
         history_mask,
         current_state_vectors,
         current_state_null_mask,
+        history_state_reset_mask,
+        current_state_reset_mask,
     )
     if padding_fill == "zero":
         return fill_padding_values(
@@ -210,7 +226,7 @@ def slice_dynamic_inputs(
     values = list(inputs)
     for index in (0, 1, 2):
         values[index] = values[index][:, :scene_valid]
-    for index in (3, 4, 5, 6, 7):
+    for index in (3, 4, 5, 6, 7, 10):
         values[index] = values[index][:, :history_valid]
     return tuple(values)
 
@@ -229,7 +245,8 @@ def fill_padding_values(
     values[3][:, history_valid:] = 0
     for index in (4, 5):
         values[index][:, history_valid:] = value
-    values[6][:, history_valid:] = False
+    values[6][:, history_valid:] = True
+    values[10][:, history_valid:] = False
     return tuple(values)
 
 

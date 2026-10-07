@@ -103,6 +103,11 @@ def _decision(*, history_length: int, scene_length: int, action_index: int) -> G
         "history_mask": torch.ones((1, history_length), dtype=torch.bool),
         "current_state_vectors": torch.zeros((1, 3), dtype=torch.float32),
         "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
+        "history_state_reset_mask": torch.zeros((1, history_length, 3), dtype=torch.bool),
+        "current_state_reset_mask": torch.zeros((1, 3), dtype=torch.bool),
+        "history_cursor": torch.tensor([history_length], dtype=torch.long),
+        "history_window_start": torch.tensor([0], dtype=torch.long),
+        "history_window_length": torch.tensor([history_length], dtype=torch.long),
         "action_legal_mask": torch.ones((1, 3), dtype=torch.bool),
         "history_action_keys": [["fire_iii"] * history_length],
         "action_keys": [action_keys],
@@ -303,7 +308,7 @@ def test_grpo_checkpoint_preserves_complete_input_vocab(tmp_path):
     input_contract = replace(make_input_contract(spec, vocab_size=5),
                              skill_vocab_entries=((152, 1), (3577, 2), (900001, 3), (0, 4)))
     model_config = ModelConfig(d_model=8, n_layers=1, n_heads=2, num_kv_heads=1,
-                               ff_dim=16, scene_capacity=1, history_capacity=4, dropout=0.0)
+                               ff_dim=16, scene_capacity=1, history_capacity=4, history_reset_keep=4, dropout=0.0)
     config = GrpoRunConfig(raw_data_dir=tmp_path / "raw", output_dir=tmp_path,
                            job_tag="black_mage", model_variant="artzip", model=model_config)
     model = CausalPolicyModel(spec, model_config, vocab_size=5)
@@ -990,3 +995,35 @@ def test_grpo_update_logs_optimizer_metrics_to_tensorboard(monkeypatch):
     )
 
     assert any(tag == "grpo/update/loss" and step == 6 for tag, _value, step in writer.values)
+
+
+@pytest.mark.parametrize("field", ["history_state_reset_mask", "current_state_reset_mask", "history_cursor"])
+def test_grpo_store_rejects_incomplete_anchored_input_before_write(tmp_path, field):
+    decision = _decision(history_length=1, scene_length=1, action_index=0)
+    decision.batch.pop(field)
+    store = GrpoRolloutStore(tmp_path / "grpo", iteration=1, run_id="missing")
+    with pytest.raises(ValueError, match="anchored context"):
+        store.write_trajectory(scene_json_path=tmp_path / "scene.json", decisions=(decision,),
+                               ppg=1.0, greedy_ppg=0.0, reward=1.0)
+    assert not store.entries
+
+
+def test_grpo_store_rejects_raw_states_and_old_rollout_format(tmp_path):
+    from common.torch_serialization import safe_torch_load
+
+    decision = _decision(history_length=1, scene_length=1, action_index=0)
+    decision.batch["current_state_abs_values"] = torch.zeros((1, 3))
+    store = GrpoRolloutStore(tmp_path / "grpo", iteration=1, run_id="raw")
+    with pytest.raises(ValueError, match="not raw context"):
+        store.write_trajectory(scene_json_path=tmp_path / "scene.json", decisions=(decision,),
+                               ppg=1.0, greedy_ppg=0.0, reward=1.0)
+    decision.batch.pop("current_state_abs_values")
+    entry = store.write_trajectory(scene_json_path=tmp_path / "scene.json", decisions=(decision,),
+                                   ppg=1.0, greedy_ppg=0.0, reward=1.0)
+    store.set_advantages((1.0,))
+    payload = safe_torch_load(entry.path)
+    assert payload["format"] == 5
+    payload["format"] = 4
+    torch.save(payload, entry.path)
+    with pytest.raises(ValueError, match="unsupported GRPO trajectory format"):
+        list(store.iter_minibatches(1))

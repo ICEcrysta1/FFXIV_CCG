@@ -27,6 +27,7 @@ def policy_config(tmp_path):
     vocab = SkillVocab.build_from_job_tag(spec.job_tag)
 
     class Policy:
+        model_config = SimpleNamespace(history_capacity=4, history_reset_keep=2, time_delta_scale=120.0)
         supports_batch_inference = True
         data_spec = spec
         input_device = torch.device("cpu")

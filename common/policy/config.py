@@ -106,6 +106,27 @@ def _parse_logit_softcap(value: object) -> float:
     return cap
 
 
+def _parse_history_integer(value: object, *, field_name: str) -> int:
+    """窗口参数仅接受整数，禁止布尔值与浮点截断。"""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{field_name} must be a non-negative integer")
+    return value
+
+
+def _parse_time_delta_scale(value: object) -> float:
+    """单步时间尺度以 FP32 计算，必须是可表示的正常正数。"""
+    message = "model.time_delta_scale must be finite and positive within the FP32 normal range"
+    if isinstance(value, bool):
+        raise ValueError(message)  # noqa: TRY004
+    try:
+        scale = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(message) from exc
+    if not math.isfinite(scale) or not float.fromhex("0x1p-126") <= scale <= float.fromhex("0x1.fffffep+127"):
+        raise ValueError(message)
+    return scale
+
+
 @dataclass(frozen=True)
 class ModelConfig:
     """只保存策略模型架构超参数，数据维度由 DataSpec 提供。"""
@@ -127,6 +148,8 @@ class ModelConfig:
     qk_norm_scale: float = 1.2
     logit_softcap: float = 15.0
     history_capacity: int = 128
+    history_reset_keep: int = 8
+    time_delta_scale: float = 120.0
     scene_capacity: int = 160
 
     def __post_init__(self) -> None:
@@ -134,8 +157,14 @@ class ModelConfig:
             raise ValueError("model.ff_dim must be positive")
         if self.transformer_activation not in TRANSFORMER_ACTIVATIONS:
             raise ValueError("model.transformer_activation must be gelu, relu or swiglu")
-        if self.history_capacity < 0:
-            raise ValueError("model.history_capacity must be >= 0")
+        _parse_history_integer(self.history_capacity, field_name="model.history_capacity")
+        _parse_history_integer(self.history_reset_keep, field_name="model.history_reset_keep")
+        if self.history_capacity == 0:
+            if self.history_reset_keep != 0:
+                raise ValueError("model.history_reset_keep must be zero when history_capacity is zero")
+        elif not 1 <= self.history_reset_keep <= self.history_capacity:
+            raise ValueError("model.history_reset_keep must be between one and history_capacity")
+        object.__setattr__(self, "time_delta_scale", _parse_time_delta_scale(self.time_delta_scale))
         if self.scene_capacity < 1:
             raise ValueError("model.scene_capacity must be >= 1")
         if self.n_heads <= 0:
@@ -227,7 +256,17 @@ class ModelConfig:
             rope_theta=float(values.get("rope_theta", cls.rope_theta)),
             qk_norm_scale=_parse_qk_norm_scale(values.get("qk_norm_scale", cls.qk_norm_scale)),
             logit_softcap=_parse_logit_softcap(values.get("logit_softcap", cls.logit_softcap)),
-            history_capacity=int(values.get("history_capacity", cls.history_capacity)),
+            history_capacity=_parse_history_integer(
+                values.get("history_capacity", cls.history_capacity),
+                field_name="model.history_capacity",
+            ),
+            history_reset_keep=_parse_history_integer(
+                values.get("history_reset_keep", cls.history_reset_keep),
+                field_name="model.history_reset_keep",
+            ),
+            time_delta_scale=_parse_time_delta_scale(
+                values.get("time_delta_scale", cls.time_delta_scale),
+            ),
             scene_capacity=int(values.get("scene_capacity", cls.scene_capacity)),
         )
 

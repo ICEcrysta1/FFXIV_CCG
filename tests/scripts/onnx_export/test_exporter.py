@@ -292,7 +292,8 @@ def test_zero_padding_fill_clears_all_padding_dtypes():
     assert torch.count_nonzero(values[3][:, 2:]) == 0
     assert torch.count_nonzero(values[4][:, 2:]) == 0
     assert torch.count_nonzero(values[5][:, 2:]) == 0
-    assert torch.count_nonzero(values[6][:, 2:]) == 0
+    assert values[6][:, 2:].all()
+    assert not values[10][:, 2:].any()
     assert torch.count_nonzero(values[0][:, :1]) > 0
     assert torch.count_nonzero(values[3][:, :2]) > 0
 
@@ -1397,7 +1398,7 @@ def test_load_policy_rejects_experiment_guard_even_with_current_contract(tmp_pat
     payload = safe_torch_load(checkpoint)
     payload["model_state_dict"]["_learned_residual_mix_experiment_guard"] = torch.tensor(1)
     torch.save(payload, checkpoint)
-    with pytest.raises(ValueError, match="isolated experiment guard"):
+    with pytest.raises(RuntimeError, match="Unexpected key.*_learned_residual_mix_experiment_guard"):
         export_module.load_policy(checkpoint, precision="float32")
 
 
@@ -1494,6 +1495,7 @@ def _write_small_checkpoint(
         ff_dim=32,
         dropout=0.0,
         history_capacity=4,
+        history_reset_keep=4,
         scene_capacity=3,
         transformer_activation=activation,
         full_attention_residuals=full_attention_residuals,
@@ -1536,8 +1538,8 @@ def _write_small_checkpoint(
             state_group_feature_keys={
                 "player_state": (
                     "previous_action_after.time_seconds",
-                    "previous_action_after.current_gcd_seconds",
-                    "previous_action_after.mp",
+                    "request_state.time_seconds",
+                    "request_state.mp",
                 )
             },
             skill_history_fields=("skill_key",),

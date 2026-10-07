@@ -66,14 +66,14 @@ def test_cache_uses_caller_action_contract_when_current_configuration_changes(tm
     path = tmp_path / "manifest.pt"
     path.write_bytes(b"placeholder")
     # 先提供有效 manifest；随后只改变当前配置，保留模型保存的 DataSpec。
-    spec = DataSpec("black_mage", len(space.action_keys), 0, 0, 0, 0,
+    spec = DataSpec("black_mage", len(space.action_keys), 1, 0, 0, 0,
                     space.action_keys, (), space.action_to_vocab_id, space.action_is_gcd)
     schema = TrainingSchema(
         serialization_format=TRAINING_SOURCE_FORMAT,
         sample_schema_version=TRAINING_SAMPLE_SCHEMA_VERSION,
         context_schema_version=CANONICAL_CONTEXT_SCHEMA_VERSION,
         scene_context_mode="absolute", scene_windows=(),
-        state_group_feature_keys={}, skill_history_fields=(),
+        state_group_feature_keys={"player_state": ("request_state.time_seconds",)}, skill_history_fields=(),
     )
     payload = {
         "cache_format": CACHE_FORMAT, "cache_signature": {}, "schema": schema,
@@ -82,7 +82,8 @@ def test_cache_uses_caller_action_contract_when_current_configuration_changes(tm
         "action_to_vocab_id": space.action_to_vocab_id, "action_is_gcd": space.action_is_gcd, "vocab_signature": ((0, 1),),
         "shard_size": 1, "shard_files": [],
         "history_bank": {"skill_ids": torch.zeros(1, dtype=torch.long), "skill_features": torch.zeros(1, 0),
-                         "state_vectors": torch.zeros(1, 0), "state_null_mask": torch.zeros(1, 0, dtype=torch.bool),
+                         "state_abs_values": torch.zeros(1, 1), "state_delta_values": torch.zeros(1, 1),
+                         "state_null_mask": torch.zeros(1, 1, dtype=torch.bool), "state_delta_reset_mask": torch.zeros(1, 1, dtype=torch.bool),
                          "action_keys": ("",), "skill_potencies": torch.zeros(1), "cumulative_dot_potencies": torch.zeros(1)},
     }
     monkeypatch.setattr(cache_module, "safe_torch_load", lambda *_args, **_kwargs: payload)

@@ -130,7 +130,7 @@ def test_model_analysis_decodes_mp_as_linear_0_to_10000_value():
             }
 
     batch = {
-        "current_state_vectors": torch.tensor([[2.0, 0.0, 0.5]]),
+        "current_state_abs_values": torch.tensor([[2.0, 0.0, 5000.0]]),
         "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
         "action_legal_mask": torch.tensor([[True]]),
     }
@@ -351,6 +351,7 @@ def _analysis_context(tmp_path):
         device=torch.device("cpu"),
         precision="float32",
         autocast=nullcontext,
+        encode_batch=lambda batch: batch,
         layer_vectors=layer_vectors,
         layer_roles=layer_roles,
         layer_current_state_masks=[current_mask, current_mask],
@@ -393,7 +394,7 @@ def test_model_analysis_metadata_and_black_mage_fallbacks():
         "history_skill_ids": torch.tensor([[9, 0]], dtype=torch.int32),
         "history_mask": torch.tensor([[True, False]]),
         "action_legal_mask": torch.tensor([[True, False]]),
-        "current_state_vectors": torch.tensor([[0.0, 1.0, 0.5]]),
+        "current_state_abs_values": torch.tensor([[0.0, 1.0, 5000.0]]),
         "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
         "label_index": torch.tensor([0]),
     }
@@ -672,6 +673,7 @@ def test_model_analysis_retries_after_compiling_missing_cache(monkeypatch, tmp_p
         source_path=source_path,
         cache_dir=cache_dir,
         max_history=240,
+        history_reset_keep=8,
         cache_shard_size=768,
         cache_max_shards=24,
         job_tag="black_mage",
@@ -790,6 +792,69 @@ def test_model_analysis_layer_pca_reuses_projection_cache(monkeypatch, tmp_path)
     ]
 
 
+def test_compact_causal_analysis_preserves_gathered_skill_ids_and_absolute_state_labels(monkeypatch, tmp_path):
+    """正式 compact collator 分析必须同时读取已 gather 的历史身份和未归一化的当前状态。"""
+    from common.policy.config import ModelConfig
+    from common.policy.data.context_encoding import ContextEncoder
+    from common.policy.model import CausalPolicyModel
+    from tests.training._common_fixtures import make_dataset, make_demo_pt
+    from training import TrainingCollator
+
+    source = make_demo_pt(tmp_path, ["fire_iii", "fire_iv", "blizzard_iii"], fight_id="compact_analysis")
+    dataset = make_dataset([source], max_history=4, history_reset_keep=2)
+    samples = [dataset[index] for index in range(len(dataset))]
+    raw_batch = TrainingCollator()(samples)
+    assert "history_bank_skill_ids" in raw_batch
+    assert "history_skill_ids" not in raw_batch
+    data_spec = DataSpec.from_dataset(dataset)
+    model = CausalPolicyModel(
+        data_spec,
+        ModelConfig(d_model=16, n_layers=1, n_heads=2, num_kv_heads=1, ff_dim=32,
+                    dropout=0.0, history_capacity=4, history_reset_keep=2),
+        vocab_size=SkillVocab.build_from_job_tag(data_spec.job_tag).size(),
+    ).eval()
+    encoder = ContextEncoder(dataset.normalizer, dataset.schema, model.config)
+    runtime = SimpleNamespace(
+        model=model, dataset=dataset, data_spec=data_spec, device=torch.device("cpu"),
+        checkpoint_path=tmp_path / "checkpoint.pt", source_path=source,
+        output_dir=tmp_path, vocab=SimpleNamespace(), precision="float32", autocast=nullcontext,
+        context_encoder=encoder,
+    )
+    captured = []
+
+    def capture_metadata(samples, **kwargs):
+        result = build_token_metadata(samples, **kwargs)
+        captured.append((kwargs["batch"], kwargs["encoded"], result))
+        return result
+
+    monkeypatch.setattr(analysis_common, "_load_model_analysis_context", lambda **_kwargs: runtime)
+    monkeypatch.setattr(analysis_common, "build_token_metadata", capture_metadata)
+    context = analysis_common.load_analysis_context(
+        checkpoint_path=runtime.checkpoint_path, source_path=source,
+        raw_root=tmp_path, cache_dir=tmp_path / ".cache", max_history=4,
+        cache_shard_size=1, cache_max_shards=1, output_dir=tmp_path,
+        max_samples=len(dataset), max_tokens=512, batch_size=len(dataset),
+        device_name="cpu", precision="float32",
+    )
+    assert len(captured) == 1
+    metadata_batch, encoded, metadata = captured[0]
+    prepared = encoder.encode(raw_batch)
+    torch.testing.assert_close(metadata_batch["history_skill_ids"], prepared["history_skill_ids"])
+    torch.testing.assert_close(metadata_batch["current_state_abs_values"], raw_batch["current_state_abs_values"])
+    request_mp_index = dataset.schema.state_group_feature_keys["player_state"].index("request_state.mp")
+    player_slice = dataset.schema.state_group_slices()["player_state"]
+    for index, position in enumerate(encoded["current_state_positions"].tolist()):
+        expected_mp = raw_batch["current_state_abs_values"][index, player_slice][request_mp_index].item()
+        assert metadata["mp_bucket"][index, position] == pytest.approx(expected_mp)
+        history_positions = encoded["history_skill_positions"][index]
+        valid = prepared["history_mask"][index]
+        np.testing.assert_array_equal(
+            metadata["skill_id"][index, history_positions[valid].numpy()],
+            prepared["history_skill_ids"][index, valid].numpy(),
+        )
+    assert np.nanmax(context.layer_metadata[0]["mp_bucket"]) > 1.0
+
+
 def test_real_causal_trace_loads_metadata_and_keeps_current_query_under_token_cap(monkeypatch, tmp_path):
     """完整分析入口必须兼容真实 trace 和附加历史身份元数据。"""
     from tests.training.test_kv_cache import _make_model, _make_batch
@@ -797,12 +862,14 @@ def test_real_causal_trace_loads_metadata_and_keeps_current_query_under_token_ca
     model = _make_model()
     sample = {"metadata": {"fight_id": "real-trace", "step": 0}}
     batch = _make_batch(1)
+    batch["current_state_abs_values"] = batch["current_state_vectors"]
     batch["label_index"] = torch.tensor([0])
     runtime = SimpleNamespace(
         model=model, dataset=SimpleNamespace(schema=_analysis_schema()),
         data_spec=model.data_spec, device=torch.device("cpu"),
         checkpoint_path=tmp_path / "checkpoint.pt", source_path=tmp_path / "source.json",
         output_dir=tmp_path, vocab=SimpleNamespace(), precision="float32", autocast=nullcontext,
+        context_encoder=SimpleNamespace(encode=lambda batch: batch),
     )
     class Dataset:
         schema = _analysis_schema()
@@ -1012,6 +1079,7 @@ def test_loss_landscape_exports_every_layer_and_restores_parameters(monkeypatch,
         output_dir=tmp_path,
         precision="float32",
         autocast=nullcontext,
+        encode_batch=lambda batch: batch,
     )
 
     def collate(samples):
@@ -1101,6 +1169,7 @@ def test_opener_attention_uses_latest_state_query_and_excludes_padding(monkeypat
         model=Model(), data_spec=SimpleNamespace(action_keys=("a", "b")),
         dataset=[{"label_action_key": "a", "label_index": 0}] * 2,
         device=torch.device("cpu"), output_dir=tmp_path, autocast=nullcontext,
+        encode_batch=lambda batch: batch,
     )
     captured = {}
     monkeypatch.setattr(attention_output, "TrainingCollator", lambda: (lambda _samples: {}))
@@ -1354,7 +1423,8 @@ def test_loss_landscape_cached_grid_matches_full_forward(full_attention_residual
         batch["label_index"] = torch.full((count,), index)
         batch["action_keys"] = [("fire_iii", "fire_iv", "blizzard_iii")] * count
         batch["history_action_keys"] = [("fire_iv",)] * count
-    context = SimpleNamespace(model=model, device=torch.device("cpu"), autocast=nullcontext)
+    context = SimpleNamespace(model=model, device=torch.device("cpu"), autocast=nullcontext,
+                              encode_batch=lambda batch: batch)
     baseline = loss_output._mean_cross_entropy(context, batches)
     coordinates = np.linspace(-0.1, 0.1, 3)
     original = {name: value.clone() for name, value in model.state_dict().items()}
@@ -1383,7 +1453,8 @@ def test_loss_landscape_restores_parameters_on_forward_failure(monkeypatch):
     model = _make_model()
     batch = _make_batch(2)
     batch["label_index"] = torch.tensor([0])
-    context = SimpleNamespace(model=model, device=torch.device("cpu"), autocast=nullcontext)
+    context = SimpleNamespace(model=model, device=torch.device("cpu"), autocast=nullcontext,
+                              encode_batch=lambda batch: batch)
     directions = loss_output._build_layer_directions(model.encoder.layers[1], seed=7)
 
     def fail(_self):

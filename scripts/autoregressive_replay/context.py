@@ -10,6 +10,8 @@ import torch
 
 from common.contracts import SLIDECAST_WINDOW_SECONDS
 from common.numeric import flatten_numeric_mapping
+from common.policy.data.context_encoding import ContextEncoder, raw_state_delta
+from common.policy.data.history_window import history_window_length
 from common.policy.data.schema import (
     SCENE_TYPE_MOVEMENT,
     SCENE_TYPE_RAID_BUFF,
@@ -35,7 +37,7 @@ class SceneTargetableState:
 
 
 class SceneTemplateProvider:
-    """从 compiled cache 固定读取已经归一化的 scene token。"""
+    """保存完整 FP32 绝对场景事实；模型窗口变换由共享编码器处理。"""
 
     def __init__(
         self,
@@ -113,8 +115,10 @@ class SceneTemplateProvider:
             self._scene_types = torch.zeros((0,), dtype=torch.int32)
         if self._enabled and self._scene_vectors.shape[0] == 0:
             raise ValueError("scene cache has no usable scene tokens")
-        if self._enabled:
-            self._validate_normalized_scene_times(reader.schema)
+        if self._scene_vectors.dtype != torch.float32:
+            raise ValueError("raw scene cache must use float32")
+        if not torch.isfinite(self._scene_vectors).all():
+            raise ValueError("raw scene cache contains non-finite values")
         self._targetable_windows = self._build_targetable_windows()
         self._targetable_events = self._build_targetable_events()
         self._movement_windows = self._build_plain_windows(SCENE_TYPE_MOVEMENT)
@@ -133,18 +137,18 @@ class SceneTemplateProvider:
         """从 cache scene 模板读取当前时间的目标数量。"""
         if self._target_count_index is None:
             return 1
-        target = self._normalizer.normalize_scene_time(time_seconds)
+        target = float(time_seconds)
         scene_vectors, scene_types = self.at_time(time_seconds)
         for vector, scene_type in zip(scene_vectors, scene_types):
             if int(scene_type.item()) != SCENE_TYPE_TARGET_COUNT:
                 continue
             start = float(vector[self._scene_start_index].item())
             end = float(vector[self._scene_end_index].item())
-            count = self._normalizer.denormalize_scene_target_count(
-                float(vector[self._target_count_index].item())
-            )
+            count = float(vector[self._target_count_index].item())
+            if count < 0 or not count.is_integer():
+                raise ValueError("raw scene target_count must be a non-negative integer")
             if start - SCENE_TIME_EPSILON <= target < end - SCENE_TIME_EPSILON:
-                return count
+                return int(count)
         return 1
 
     def sync_state(self, state) -> object:
@@ -300,12 +304,11 @@ class SceneTemplateProvider:
         ):
             return ()
         windows = []
-        fight_time_max = float(self._normalizer.fight_time_max)
         for vector, scene_type in zip(self._scene_vectors, self._scene_types):
             if int(scene_type.item()) != SCENE_TYPE_TARGETABLE:
                 continue
-            start = float(vector[self._targetable_start_index].item()) * fight_time_max
-            end = float(vector[self._targetable_end_index].item()) * fight_time_max
+            start = float(vector[self._targetable_start_index].item())
+            end = float(vector[self._targetable_end_index].item())
             if end <= start + SCENE_TIME_EPSILON:
                 continue
             windows.append(
@@ -347,13 +350,12 @@ class SceneTemplateProvider:
         )
         if window_schema is None:
             return ()
-        fight_time_max = float(self._normalizer.fight_time_max)
         windows = []
         for vector, scene_type in zip(self._scene_vectors, self._scene_types):
             if int(scene_type.item()) != scene_type_id:
                 continue
-            start = float(vector[window_schema.start_offset_index].item()) * fight_time_max
-            end = float(vector[window_schema.end_offset_index].item()) * fight_time_max
+            start = float(vector[window_schema.start_offset_index].item())
+            end = float(vector[window_schema.end_offset_index].item())
             if end > start + SCENE_TIME_EPSILON:
                 windows.append((start, end))
         return tuple(sorted(windows))
@@ -366,12 +368,11 @@ class SceneTemplateProvider:
         for start, end in self._raid_buff_windows:
             boundaries.update((start, end))
         if self._scene_start_index is not None and self._scene_end_index is not None:
-            fight_time_max = float(self._normalizer.fight_time_max)
             for vector, scene_type in zip(self._scene_vectors, self._scene_types):
                 if int(scene_type.item()) != SCENE_TYPE_TARGET_COUNT:
                     continue
-                boundaries.add(float(vector[self._scene_start_index].item()) * fight_time_max)
-                boundaries.add(float(vector[self._scene_end_index].item()) * fight_time_max)
+                boundaries.add(float(vector[self._scene_start_index].item()))
+                boundaries.add(float(vector[self._scene_end_index].item()))
         return tuple(
             sorted(
                 boundary
@@ -395,36 +396,6 @@ class SceneTemplateProvider:
             ),
             None,
         )
-
-    def _validate_normalized_scene_times(self, schema) -> None:
-        """拒绝把原始秒值 scene token 误当作 cache token 使用。"""
-        epsilon = SCENE_TIME_EPSILON
-        for window in schema.scene_windows:
-            start_index = getattr(
-                window,
-                "start_offset_index",
-                window.feature_keys.index("start_offset_seconds"),
-            )
-            end_index = getattr(
-                window,
-                "end_offset_index",
-                window.feature_keys.index("end_offset_seconds"),
-            )
-            start_values = self._scene_vectors[:, start_index]
-            end_values = self._scene_vectors[:, end_index]
-            if bool(
-                (
-                    (start_values < -epsilon)
-                    | (start_values > 1.0 + epsilon)
-                    | (end_values < -epsilon)
-                    | (end_values > 1.0 + epsilon)
-                ).any().item()
-            ):
-                raise ValueError(
-                    "scene cache time fields must be normalized by "
-                    "Normalizer.normalize_scene_tokens"
-                )
-
 
 @dataclass(frozen=True)
 class _CachedHistoryFeatureRow:
@@ -458,6 +429,7 @@ class LiveBatchBuilder:
         scene_provider,
         device,
         max_history: int,
+        model_config,
         action_keys=None,
         action_is_gcd=None,
     ):
@@ -469,6 +441,8 @@ class LiveBatchBuilder:
         self._scene_provider = scene_provider
         self._device = device
         self._max_history = max_history
+        self._model_config = model_config
+        self._context_encoder = ContextEncoder(normalizer, schema, model_config).to(device=device)
         self._action_keys = (
             None
             if action_keys is None
@@ -553,9 +527,18 @@ class LiveBatchBuilder:
         current_tokens = canonical["current_state_context"]["tokens"]
         if len(current_tokens) != 1:
             raise ValueError("live context must contain exactly one current state")
-        skill_history = _tail_history(canonical["skill_history_context"], max_history)
+        cursor = canonical.get("history_cursor")
+        if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0:
+            raise ValueError("live canonical context requires a nonnegative history_cursor")
+        keep = 0 if max_history == 0 else self._model_config.history_reset_keep
+        visible_length = history_window_length(cursor, max_history, keep)
+        if len(canonical["skill_history_context"]) < visible_length:
+            raise ValueError("retained canonical history cannot supply the planned context window")
+        if cursor < len(canonical["skill_history_context"]):
+            raise ValueError("history_cursor cannot be smaller than retained canonical history")
+        skill_history = _tail_history(canonical["skill_history_context"], visible_length)
         state_history = canonical["state_history_context"]
-        state_history_tokens = _tail_history(state_history["tokens"], max_history)
+        state_history_tokens = _tail_history(state_history["tokens"], visible_length)
         (
             history_skill_ids,
             history_skill_features,
@@ -569,6 +552,19 @@ class LiveBatchBuilder:
         )
         scene_vectors, scene_types, scene_mask = self._scene_batch_tensors()
         current_state_vectors, current_state_null_mask = self._build_state_tensors(current_tokens)
+        current_state_vectors = current_state_vectors.to(self._device)
+        current_state_null_mask = current_state_null_mask.to(self._device)
+        previous_values = torch.cat((torch.zeros_like(history_state_vectors[:1]), history_state_vectors[:-1]), dim=0)
+        previous_nulls = torch.cat((torch.ones_like(history_state_null_mask[:1]), history_state_null_mask[:-1]), dim=0)
+        state_deltas, state_resets = raw_state_delta(
+            history_state_vectors, history_state_null_mask, previous_values, previous_nulls,
+        )
+        current_deltas, current_resets = raw_state_delta(
+            current_state_vectors,
+            current_state_null_mask,
+            history_state_vectors[-1:] if visible_length else None,
+            history_state_null_mask[-1:] if visible_length else None,
+        )
         action_legal_mask = torch.tensor(canonical["action_legal_mask"], dtype=torch.bool)
         if action_legal_mask.shape != (len(action_keys),):
             raise ValueError("live action legality width differs from action vocabulary")
@@ -585,24 +581,31 @@ class LiveBatchBuilder:
             "scene_mask": scene_mask,
             "history_skill_ids": history_skill_ids.unsqueeze(0),
             "history_skill_features": history_skill_features.unsqueeze(0),
-            "history_state_vectors": history_state_vectors.unsqueeze(0),
+            "history_state_abs_values": history_state_vectors.unsqueeze(0),
+            "history_state_delta_values": state_deltas.unsqueeze(0),
             "history_state_null_mask": history_state_null_mask.unsqueeze(0),
+            "history_state_delta_reset_mask": state_resets.unsqueeze(0),
             "history_mask": torch.ones(
                 (1, history_length),
                 dtype=torch.bool,
                 device=self._device,
             ),
-            "current_state_vectors": current_state_vectors,
+            "current_state_abs_values": current_state_vectors,
+            "current_state_delta_values": current_deltas,
             "current_state_null_mask": current_state_null_mask,
+            "current_state_delta_reset_mask": current_resets,
+            "history_cursor": torch.tensor([cursor], dtype=torch.int64, device=self._device),
+            "history_window_start": torch.tensor([cursor - history_length], dtype=torch.int64, device=self._device),
+            "history_window_length": torch.tensor([history_length], dtype=torch.int64, device=self._device),
             "action_legal_mask": action_legal_mask.unsqueeze(0),
             "history_action_keys": [history_action_keys],
             "action_keys": [list(action_keys)],
         }
         return (
-            {
+            self._context_encoder.encode({
                 key: value.to(self._device) if isinstance(value, torch.Tensor) else value
                 for key, value in batch.items()
-            },
+            }),
             list(action_keys),
         )
 
@@ -860,6 +863,14 @@ class LiveBatchBuilder:
         return self._normalizer.normalize_skill_features(values, self._skill_feature_names)
 
     def _build_state_tensors(self, tokens):
+        # 在 CPU 原料边界检查锚点时间，避免 CUDA 编码时引入同步检查。
+        for token in tokens:
+            player_values = token.get("player_state")
+            if not isinstance(player_values, (list, tuple)) or len(player_values) <= self._history_request_time_index:
+                raise ValueError("live state vector width lacks request_state.time_seconds")
+            request_time = player_values[self._history_request_time_index]
+            if isinstance(request_time, bool) or not isinstance(request_time, (int, float)) or not math.isfinite(request_time):
+                raise ValueError("live request_state.time_seconds must be finite numeric")
         if not self._state_groups:
             return (
                 torch.zeros((0, self._state_dim), dtype=torch.float32),
@@ -868,11 +879,9 @@ class LiveBatchBuilder:
 
         value_rows = [[] for _ in tokens]
         null_mask_rows = [[] for _ in tokens]
-        group_slices = []
         offset = 0
         for group_key in self._state_groups:
             width = len(self._schema.state_group_feature_keys[group_key])
-            group_slices.append((group_key, offset, offset + width))
             offset += width
             for row_index, token in enumerate(tokens):
                 group_values, group_null_masks = _extract_nullable_values(
@@ -888,16 +897,12 @@ class LiveBatchBuilder:
         if value_rows:
             values = torch.tensor(value_rows, dtype=torch.float32)
             null_masks = torch.tensor(null_mask_rows, dtype=torch.bool)
+            if not bool(torch.isfinite(values).all()):
+                raise ValueError("live raw state values must be finite FP32")
         else:
             values = torch.empty((0, offset), dtype=torch.float32)
             null_masks = torch.empty((0, offset), dtype=torch.bool)
 
-        for group_key, start, end in group_slices:
-            values[:, start:end] = self._normalizer.normalize(
-                values[:, start:end],
-                group_key,
-                null_mask=null_masks[:, start:end],
-            )
         return values, null_masks
 
 

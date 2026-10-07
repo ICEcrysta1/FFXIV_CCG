@@ -25,6 +25,7 @@ from scripts.common.scene_source import find_prepared_scene_source
 from common.torch_runtime import autocast_context, model_dtype, move_batch
 from common.torch_serialization import safe_torch_load
 from common.policy.data import ModelInputContract, Normalizer, SkillVocab
+from common.policy.data.context_encoding import ContextEncoder
 from training import TrainingCollator, TrainingDataset
 from common.policy.data.policy_actions import load_policy_actions
 from common.policy.data import ActionSpace, DataSpec
@@ -96,6 +97,11 @@ class ModelAnalysisContext:
     vocab: SkillVocab
     device: torch.device
     precision: str
+    context_encoder: ContextEncoder
+
+    def encode_batch(self, batch):
+        """在模型外以 FP32 统一编码 raw 输入，再进入激活精度前向。"""
+        return self.context_encoder.encode(move_batch(batch, self.device))
 
     def autocast(self):
         """统一模型前向精度；所有输出都以模型 YAML 的 precision 为权威。"""
@@ -162,7 +168,8 @@ def load_analysis_context(
         for start in range(0, len(samples), batch_size):
             sample_batch = samples[start : start + batch_size]
             batch = collator(sample_batch)
-            batch_device = move_batch(batch, device)
+            batch_raw_device = move_batch(batch, device)
+            batch_device = runtime.context_encoder.encode(batch_raw_device)
             with runtime.autocast():
                 trace = model.trace(batch_device)
             encoded = trace.encoded
@@ -179,7 +186,11 @@ def load_analysis_context(
                 logits = model.score_hidden(encoded, trace.hidden, batch_device)
             token_metadata = build_token_metadata(
                 sample_batch,
-                batch=batch_device,
+                # compact bank 的技能身份从编码后的 gather 结果读取，职业标签仍用原始绝对状态。
+                batch={
+                    **batch_device,
+                    "current_state_abs_values": batch_raw_device["current_state_abs_values"],
+                },
                 encoded=encoded,
                 schema=dataset.schema,
                 job_tag=data_spec.job_tag,
@@ -218,6 +229,7 @@ def load_analysis_context(
             # 前向计算时旧 trace 仍占用显存，形成接近双倍的瞬时峰值。
             del (
                 batch_device,
+                batch_raw_device,
                 trace,
                 encoded,
                 valid,
@@ -258,6 +270,7 @@ def load_analysis_context(
         vocab=runtime.vocab,
         device=device,
         precision=runtime.precision,
+        context_encoder=runtime.context_encoder,
         layer_vectors=layer_vectors,
         layer_roles=layer_roles,
         layer_current_state_masks=[
@@ -363,6 +376,7 @@ def _load_model_analysis_context(
         source_path=source_path,
         cache_dir=cache_dir,
         max_history=max_history,
+        history_reset_keep=0 if max_history == 0 else model_config.history_reset_keep,
         cache_shard_size=cache_shard_size,
         cache_max_shards=cache_max_shards,
         job_tag=job_tag,
@@ -386,6 +400,7 @@ def _load_model_analysis_context(
         vocab=vocab,
         device=device,
         precision=precision,
+        context_encoder=ContextEncoder(normalizer, input_contract.schema, model_config).to(device=device),
     )
 
 
@@ -539,6 +554,7 @@ def _load_analysis_dataset(
     source_path: Path,
     cache_dir: Path,
     max_history: int,
+    history_reset_keep: int,
     cache_shard_size: int,
     cache_max_shards: int,
     job_tag: str,
@@ -554,6 +570,7 @@ def _load_analysis_dataset(
         "skill_vocab": skill_vocab,
         "expected_action_space": expected_action_space,
         "max_history": max_history,
+        "history_reset_keep": history_reset_keep,
         "int_dtype": precision.resolve_int_dtype(),
         "float_dtype": precision.resolve_float_dtype(),
         "cache_dir": cache_dir,

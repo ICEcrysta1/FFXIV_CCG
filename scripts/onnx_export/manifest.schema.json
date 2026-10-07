@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ffxiv-ccg.local/schemas/onnx-manifest-v14.json",
+  "$id": "https://ffxiv-ccg.local/schemas/onnx-manifest-v15.json",
   "title": "FFXIV_CCG ONNX Deployment Manifest",
   "type": "object",
   "additionalProperties": false,
@@ -21,7 +21,7 @@
       "const": "manifest.schema.json"
     },
     "manifest_version": {
-      "const": 14
+      "const": 15
     },
     "format": {
       "const": "onnx"
@@ -255,7 +255,7 @@
       ],
       "properties": {
         "contract_version": {
-          "const": 23
+          "const": 24
         },
         "job_tag": {
           "type": "string",
@@ -304,12 +304,12 @@
           ],
           "properties": {
             "version": {
-              "const": 20
+              "const": 21
             },
             "token_encoding": {
               "const": {
                 "skill": "E[id] + Linear(skill_features)",
-                "state": "Linear(state_values) + Linear(null_mask, bias=False)",
+                "state": "Linear(state_values) + Linear(null_mask, bias=False) + Linear(state_reset_mask, bias=False)",
                 "scene": "Linear_by_scene_type(scene_values)",
                 "token_normalization": {
                   "type": "RMSNorm",
@@ -374,6 +374,23 @@
                   "request_state"
                 ],
                 "history_state_frozen_at": "request",
+                "context_encoding": {
+                  "compute_dtype": "float32_before_activation_cast",
+                  "state": "first_visible_ABS_then_raw_numeric_DELTA",
+                  "state_abs_time_origin": "first_visible_request_state.time_seconds",
+                  "boolean_delta": "minus_one_zero_plus_one",
+                  "delta_linear": "raw_delta / saved_field_divisor_without_clipping",
+                  "delta_logarithmic": "sign(raw_delta) * log1p(abs(raw_delta))",
+                  "unknown_recovery": "per_field_ABS_reset_mask",
+                  "reset_projection": "zero_initialized_input_encoder.state_reset_proj",
+                  "scene": "clip_at_state_anchor_then_stable_start_end_type_order",
+                  "scene_time": "first_anchor_offset_then_separate_start_end_DELTA",
+                  "scene_duration": "own_clipped_duration",
+                  "time_scale": "model_config.time_delta_scale",
+                  "history_window": "block_reset_from_full_history_cursor",
+                  "overflow_keep": "model_config.history_reset_keep",
+                  "time_clipping": false
+                },
                 "output_projection": {
                   "type": "Linear",
                   "parameter": "output_head.weight",
@@ -404,7 +421,9 @@
             "residual_mix_a_end",
             "full_attention_residuals",
             "qk_norm_scale",
-            "logit_softcap"
+            "logit_softcap",
+            "history_reset_keep",
+            "time_delta_scale"
           ],
           "properties": {
             "residual_mix_r_start": {
@@ -430,6 +449,14 @@
               "type": "number",
               "minimum": 1.1754943508222875e-38,
               "maximum": 3.4028234663852886e+38
+            },
+            "history_reset_keep": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "time_delta_scale": {
+              "type": "number",
+              "exclusiveMinimum": 0
             }
           }
         },
@@ -630,8 +657,8 @@
         },
         "tensor_inputs": {
           "type": "array",
-          "minItems": 10,
-          "maxItems": 10,
+          "minItems": 12,
+          "maxItems": 12,
           "items": {
             "$ref": "#/$defs/tensorSpec"
           }

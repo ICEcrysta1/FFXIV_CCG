@@ -37,7 +37,9 @@ from .spec import DataSpec
 #     旧的未归一化 Q/K 权重不得静默套用新注意力算法。
 # 20：独立无 bias 动作输出头取代共享技能 embedding 点积，并在 FP32 中执行
 #     checkpoint 保存尺度的 softcap；旧共享输出权重不得静默套用新读出算法。
-INPUT_CONTRACT_VERSION = 20
+# 21：状态使用窗口 ABS 锚点与原始全字段 DELTA，场景时间裁剪后差分，显式保存
+#     字段 ABS 重置标识；旧归一化输入和旧 checkpoint 必须重新构建。
+INPUT_CONTRACT_VERSION = 21
 
 RESIDUAL_MIX_CONFIG_FIELDS = (
     "residual_mix_r_start", "residual_mix_r_end",
@@ -97,7 +99,7 @@ def residual_composition_contract(model_config: Mapping[str, object]) -> dict[st
 # 数据 bank 的字段与时间语义由 schema 与转换版本负责，不把读取窗口加入 cache 身份。
 TOKEN_ENCODING_CONTRACT = {
     "skill": "E[id] + Linear(skill_features)",
-    "state": "Linear(state_values) + Linear(null_mask, bias=False)",
+    "state": "Linear(state_values) + Linear(null_mask, bias=False) + Linear(state_reset_mask, bias=False)",
     "scene": "Linear_by_scene_type(scene_values)",
     "token_normalization": {
         "type": "RMSNorm",
@@ -131,6 +133,23 @@ TOKEN_ENCODING_CONTRACT = {
     "current_state_encoder": "shared_with_history_state",
     "state_snapshots": ["previous_action_after", "request_state"],
     "history_state_frozen_at": "request",
+    "context_encoding": {
+        "compute_dtype": "float32_before_activation_cast",
+        "state": "first_visible_ABS_then_raw_numeric_DELTA",
+        "state_abs_time_origin": "first_visible_request_state.time_seconds",
+        "boolean_delta": "minus_one_zero_plus_one",
+        "unknown_recovery": "per_field_ABS_reset_mask",
+        "delta_linear": "raw_delta / saved_field_divisor_without_clipping",
+        "delta_logarithmic": "sign(raw_delta) * log1p(abs(raw_delta))",
+        "reset_projection": "zero_initialized_input_encoder.state_reset_proj",
+        "scene": "clip_at_state_anchor_then_stable_start_end_type_order",
+        "scene_time": "first_anchor_offset_then_separate_start_end_DELTA",
+        "scene_duration": "own_clipped_duration",
+        "time_scale": "model_config.time_delta_scale",
+        "history_window": "block_reset_from_full_history_cursor",
+        "overflow_keep": "model_config.history_reset_keep",
+        "time_clipping": False,
+    },
     "output_projection": {
         "type": "Linear",
         "parameter": "output_head.weight",
@@ -191,9 +210,6 @@ class ModelInputContract:
         payload = checkpoint.get("input_contract")
         if not isinstance(payload, Mapping):
             raise ValueError("checkpoint missing input_contract")
-        state_dict = checkpoint.get("model_state_dict")
-        if isinstance(state_dict, Mapping) and any(str(key).endswith("_experiment_guard") for key in state_dict):
-            raise ValueError("checkpoint contains an isolated experiment guard; retrain with the production model")
         return cls.from_dict(payload)
 
     @classmethod

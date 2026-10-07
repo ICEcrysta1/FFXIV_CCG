@@ -8,7 +8,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from common.torch_runtime import move_batch
 from training import TrainingCollator
 
 from ..common import (
@@ -38,7 +37,7 @@ def plot_history_embeddings(
     skill_id_rows: list[np.ndarray] = []
     with torch.no_grad():
         for start in range(0, len(samples), batch_size):
-            batch = move_batch(collator(samples[start : start + batch_size]), context.device)
+            batch = context.encode_batch(collator(samples[start : start + batch_size]))
             with context.autocast():
                 encoded = context.model.input_encoder(batch)
             tokens = encoded["tokens"]

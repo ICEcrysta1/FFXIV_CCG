@@ -52,6 +52,8 @@ class OnnxPolicy(nn.Module):
         history_mask: torch.Tensor,
         current_state_vectors: torch.Tensor,
         current_state_null_mask: torch.Tensor,
+        history_state_reset_mask: torch.Tensor,
+        current_state_reset_mask: torch.Tensor,
     ) -> torch.Tensor:
         """执行无字符串、无策略后处理、无内部 KV cache 的动作打分。"""
         batch = _build_batch(
@@ -65,6 +67,8 @@ class OnnxPolicy(nn.Module):
             history_mask,
             current_state_vectors,
             current_state_null_mask,
+            history_state_reset_mask,
+            current_state_reset_mask,
         )
         compute_model = self.compute_model or self.model
         if self.compute_model is not None:
@@ -122,6 +126,8 @@ def _build_batch(*inputs: torch.Tensor) -> dict[str, torch.Tensor]:
         history_mask,
         current_state_vectors,
         current_state_null_mask,
+        history_state_reset_mask,
+        current_state_reset_mask,
     ) = inputs
     return {
         "scene_vectors": scene_vectors,
@@ -134,6 +140,8 @@ def _build_batch(*inputs: torch.Tensor) -> dict[str, torch.Tensor]:
         "history_mask": history_mask,
         "current_state_vectors": current_state_vectors,
         "current_state_null_mask": current_state_null_mask,
+        "history_state_reset_mask": history_state_reset_mask,
+        "current_state_reset_mask": current_state_reset_mask,
     }
 
 

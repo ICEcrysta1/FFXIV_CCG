@@ -84,6 +84,8 @@ def _make_batch(history_length: int, *, current_state_offset: float = 0.0, chang
     if changed_history and history_length:
         history_features[:, 0, 0] += 100.0
     current_state = torch.tensor([[0.1 + current_state_offset, 0.2, 0.3]])
+    history_resets = torch.zeros_like(history_states, dtype=torch.bool)
+    history_resets[:, :1] = True
     return {
         "history_skill_ids": torch.ones((1, history_length), dtype=torch.long),
         "history_skill_features": history_features,
@@ -91,14 +93,98 @@ def _make_batch(history_length: int, *, current_state_offset: float = 0.0, chang
         "history_state_null_mask": torch.zeros(
             (1, history_length, 3), dtype=torch.bool
         ),
+        "history_state_reset_mask": history_resets,
         "history_mask": torch.ones((1, history_length), dtype=torch.bool),
         "current_state_vectors": current_state,
         "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
+        "current_state_reset_mask": torch.full_like(current_state, history_length == 0, dtype=torch.bool),
         "action_legal_mask": torch.ones((1, 3), dtype=torch.bool),
         "scene_vectors": torch.tensor([[[0.25, 0.5], [0.75, 1.0]]]),
         "scene_types": torch.zeros((1, 2), dtype=torch.long),
         "scene_mask": torch.ones((1, 2), dtype=torch.bool),
     }
+
+
+@pytest.mark.parametrize("full_attention_residuals", (False, True))
+def test_shared_context_reanchor_and_scene_clip_rebuild_kv(full_attention_residuals):
+    """分块重置重新选择 ABS 锚点和 scene view，完整前向与 KV 前向保持一致。"""
+    from common.policy.data.context_encoding import ContextEncoder, raw_state_delta
+    from common.policy.data.history_window import history_window_length
+    from common.policy.data.normalization import NormalizerConfig
+    from common.policy.data.normalizer import Normalizer
+    from common.policy.data.schema import SceneWindowSchema, TrainingSchema
+
+    schema = TrainingSchema(
+        serialization_format="test", sample_schema_version=11, context_schema_version=14,
+        scene_context_mode="absolute", skill_history_fields=("kind",),
+        state_group_feature_keys={"player_state": (
+            "previous_action_after.time_seconds", "request_state.time_seconds", "request_state.mp",
+        )},
+        scene_windows=(SceneWindowSchema.from_feature_keys(
+            context_key="targetable", scene_type_id=0,
+            feature_keys=("start_offset_seconds", "end_offset_seconds", "duration_seconds"),
+        ),),
+    )
+    spec = DataSpec(
+        job_tag="black_mage", num_actions=3, state_dim=3, scene_dim=3,
+        skill_feature_dim=2, num_scene_types=1,
+        action_keys=("fire_iii", "fire_iv", "blizzard_iii"), action_to_vocab_id=(1, 2, 3),
+        action_is_gcd=(True, True, True), skill_feature_names=("potency", "cast_time.seconds"),
+    )
+    config = ModelConfig(
+        d_model=16, n_layers=2, n_heads=2, num_kv_heads=1, ff_dim=32,
+        dropout=0.0, history_capacity=4, history_reset_keep=2, scene_capacity=3,
+        full_attention_residuals=full_attention_residuals,
+    )
+    with torch.random.fork_rng(devices=[]):
+        torch.random.default_generator.manual_seed(738)
+        cached = CausalPolicyModel(spec, config, vocab_size=8).eval()
+        full = CausalPolicyModel(spec, config, vocab_size=8).eval()
+        # 模拟已经学会使用 ABS 标识，避免零初始化投影掩盖标识变化。
+        with torch.no_grad():
+            cached.input_encoder.state_reset_proj.weight.fill_(0.031)
+        full.load_state_dict(cached.state_dict())
+    cached.enable_kv_cache(True)
+    context = ContextEncoder(Normalizer(NormalizerConfig()), schema, config)
+    states = torch.tensor([[1199 + 3 * i, 1200 + 3 * i, 10000 - 400 * i]
+                           for i in range(9)], dtype=torch.float32)
+    nulls = torch.zeros_like(states, dtype=torch.bool)
+    deltas, resets = raw_state_delta(
+        states, nulls,
+        torch.cat((torch.zeros_like(states[:1]), states[:-1])),
+        torch.cat((torch.ones_like(nulls[:1]), nulls[:-1])),
+    )
+    previous_cache = None
+    with torch.no_grad():
+        for cursor in range(9):
+            length = history_window_length(cursor, 4, 2)
+            start = cursor - length
+            raw = {
+                "history_skill_ids": torch.ones((1, length), dtype=torch.long),
+                "history_skill_features": torch.zeros((1, length, 2)),
+                "history_state_abs_values": states[start:cursor][None],
+                "history_state_delta_values": deltas[start:cursor][None],
+                "history_state_null_mask": nulls[start:cursor][None],
+                "history_state_delta_reset_mask": resets[start:cursor][None],
+                "history_mask": torch.ones((1, length), dtype=torch.bool),
+                "current_state_abs_values": states[cursor:cursor + 1],
+                "current_state_delta_values": deltas[cursor:cursor + 1],
+                "current_state_null_mask": nulls[cursor:cursor + 1],
+                "current_state_delta_reset_mask": resets[cursor:cursor + 1],
+                "scene_vectors": torch.tensor([[[1195, 1204, 9], [1207, 1230, 23], [1213, 1220, 7]]], dtype=torch.float32),
+                "scene_types": torch.zeros((1, 3), dtype=torch.int32),
+                "scene_mask": torch.ones((1, 3), dtype=torch.bool),
+            }
+            batch = context.encode(raw)
+            torch.testing.assert_close(cached(batch)["logits"], full(batch)["logits"], rtol=2e-5, atol=2e-5)
+            if cursor in (5, 8):
+                assert length == 2
+                assert cached._kv_cache is not previous_cache
+                assert cached._kv_cache.history_length == 2
+                torch.testing.assert_close(batch["history_state_vectors"][0, 0, 1], torch.tensor(0.0))
+                assert batch["history_state_reset_mask"][0, 0].all()
+                assert not batch["scene_mask"][0, 2]
+            previous_cache = cached._kv_cache
 
 
 @pytest.mark.parametrize("num_kv_heads", (4, 2, 1))

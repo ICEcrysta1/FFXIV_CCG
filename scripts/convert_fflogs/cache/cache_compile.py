@@ -452,9 +452,6 @@ def _compile_raw_source_worker(task, *, engine: InProcessEngine) -> tuple[str, i
     )
     sample_builder = TrainingSampleBuilder(
         torch=torch,
-        normalizer=worker_normalizer,
-        skill_vocab=skill_vocab,
-        skill_feature_names=reader.skill_feature_names,
         int_dtype=int_dtype,
         float_dtype=float_dtype,
         num_actions=reader.num_actions,

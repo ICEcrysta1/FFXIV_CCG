@@ -91,10 +91,10 @@ def test_model_input_contract_rejects_checkpoint_without_contract():
 def test_model_input_contract_describes_post_role_parameterless_rms():
     """保存精确编码位置与参数，避免将归一化放在 role 相加之前。"""
     payload = _build_contract().to_dict()
-    assert payload["version"] == 20
+    assert payload["version"] == 21
     encoding = payload["token_encoding"]
     assert encoding["skill"] == "E[id] + Linear(skill_features)"
-    assert encoding["state"] == "Linear(state_values) + Linear(null_mask, bias=False)"
+    assert encoding["state"] == "Linear(state_values) + Linear(null_mask, bias=False) + Linear(state_reset_mask, bias=False)"
     assert encoding["scene"] == "Linear_by_scene_type(scene_values)"
     assert encoding["token_normalization"] == {
         "type": "RMSNorm",
@@ -321,14 +321,6 @@ def test_model_input_contract_rejects_forged_residual_mix(field):
     payload["token_encoding"]["backbone_residual"]["ordinary"][field] = "legacy"
     with pytest.raises(ValueError, match="token_encoding"):
         ModelInputContract.from_dict(payload)
-
-
-def test_model_input_contract_rejects_isolated_experiment_guard():
-    with pytest.raises(ValueError, match="isolated experiment guard"):
-        ModelInputContract.from_checkpoint({
-            "input_contract": _build_contract().to_dict(),
-            "model_state_dict": {"_learned_residual_mix_experiment_guard": 1},
-        })
 
 
 def _residual_model_config():

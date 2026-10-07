@@ -40,8 +40,9 @@ from ..runtime.tensor_runtime import GOLDEN_FORMAT, golden_encoding
 # 21：普通残差路径改为每层可学习 r/a 与初始输入混合，旧普通残差图不兼容。
 # 22：RoPE 后逐 head 归一化 Q/K，尺度由 checkpoint 保存的 model_config 提供。
 # 23：独立无 bias 动作输出头与 FP32 softcap，尺度由 checkpoint 保存的配置提供。
-DEPLOYMENT_CONTRACT_VERSION = 23
-DEPLOYMENT_MANIFEST_VERSION = 14
+# 24：宿主 FP32 重锚 ABS/DELTA 与场景裁剪差分，增加逐字段 reset mask。
+DEPLOYMENT_CONTRACT_VERSION = 24
+DEPLOYMENT_MANIFEST_VERSION = 15
 MANIFEST_SCHEMA_FILENAME = "manifest.schema.json"
 
 
@@ -325,12 +326,12 @@ class DeploymentContract:
         xd = self.data_spec.scene_dim
         float_dtype = precision_onnx_dtype(self.precision)
         specs = (
-            TensorSpec("scene_vectors", float_dtype, (b, s, xd), "right-padded scene vectors"),
+            TensorSpec("scene_vectors", float_dtype, (b, s, xd), "host FP32 anchor-clipped then time-differenced scene vectors; cast after encoding"),
             TensorSpec("scene_types", "tensor(int64)", (b, s), "scene type ids"),
             TensorSpec("scene_mask", "tensor(bool)", (b, s), "true for valid scene tokens"),
             TensorSpec("history_skill_ids", "tensor(int64)", (b, h), "right-padded vocab ids"),
             TensorSpec("history_skill_features", float_dtype, (b, h, fd), "ordered skill features"),
-            TensorSpec("history_state_vectors", float_dtype, (b, h, sd), "ordered state vectors"),
+            TensorSpec("history_state_vectors", float_dtype, (b, h, sd), "host FP32 first-visible ABS anchor then raw numeric DELTA; normalized before cast"),
             TensorSpec(
                 "history_state_null_mask",
                 "tensor(bool)",
@@ -338,8 +339,10 @@ class DeploymentContract:
                 "history state null flags; right-padded positions are true",
             ),
             TensorSpec("history_mask", "tensor(bool)", (b, h), "true for valid actions; shared by independent skill and state tokens"),
-            TensorSpec("current_state_vectors", float_dtype, (b, sd), "current request state in ordered state layout"),
+            TensorSpec("current_state_vectors", float_dtype, (b, sd), "host FP32 current DELTA from last visible history, or ABS without history"),
             TensorSpec("current_state_null_mask", "tensor(bool)", (b, sd), "current request state null flags"),
+            TensorSpec("history_state_reset_mask", "tensor(bool)", (b, h, sd), "per-field ABS reset markers; first visible state is absolute"),
+            TensorSpec("current_state_reset_mask", "tensor(bool)", (b, sd), "current per-field ABS reset markers"),
         )
         assert tuple(spec.name for spec in specs) == TENSOR_INPUT_NAMES
         return specs

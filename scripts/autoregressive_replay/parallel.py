@@ -34,7 +34,7 @@ def collate_live_batches(samples):
         if isinstance(values[0], torch.Tensor):
             if any(value.shape[0] != 1 for value in values):
                 raise ValueError("each replay request must contain exactly one row")
-            if key.startswith(("scene_", "history_")):
+            if key.startswith(("scene_", "history_")) and key not in {"history_cursor", "history_window_start", "history_window_length"}:
                 result[key] = torch.nn.utils.rnn.pad_sequence(
                     [value[0] for value in values], batch_first=True,
                     padding_value=key == "history_state_null_mask",
@@ -56,6 +56,7 @@ class TrainingPolicyBackend:
         self.data_spec = data_spec
         self.input_device = device
         self.precision = precision
+        self.model_config = model.config
 
     def configure_cache(self, enabled):
         configure = getattr(self.model, "enable_kv_cache", None)

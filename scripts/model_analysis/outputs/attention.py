@@ -10,7 +10,6 @@ import numpy as np
 import torch
 from matplotlib.colors import Normalize
 
-from common.torch_runtime import move_batch
 from training import TrainingCollator
 
 from ..common import (
@@ -48,7 +47,7 @@ def plot_opener_attention(
     with torch.no_grad():
         for start in range(0, sample_count, batch_size):
             sample_batch = samples[start : start + batch_size]
-            batch = move_batch(collator(sample_batch), context.device)
+            batch = context.encode_batch(collator(sample_batch))
             with context.autocast():
                 trace = context.model.trace(batch)
                 encoded = trace.encoded
@@ -106,7 +105,7 @@ def plot_standard_attention_outputs(
     # 选择上下文最长的样本，避免短样本把 history 的结构性区域截掉。
     representative = max(samples, key=_sample_token_count)
     collator = TrainingCollator()
-    batch = move_batch(collator([representative]), context.device)
+    batch = context.encode_batch(collator([representative]))
     with torch.no_grad():
         with context.autocast():
             trace = context.model.trace(batch)

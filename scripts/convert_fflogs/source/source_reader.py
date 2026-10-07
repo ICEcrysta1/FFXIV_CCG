@@ -280,7 +280,6 @@ class TrainingSourceReader:
         *,
         max_history: int | None = None,
         dtype,
-        normalizer=None,
     ):
         context = self._sample_context(sample_idx)
         state_context = context["state_history_context"]
@@ -289,11 +288,11 @@ class TrainingSourceReader:
             if max_history < 0:
                 raise ValueError(f"max_history must be >= 0, got {max_history}")
             tokens = [] if max_history == 0 else tokens[-max_history:]
-        return self._build_state_matrix(tokens, dtype=dtype, normalizer=normalizer)
+        return self._build_state_matrix(tokens, dtype=dtype)
 
-    def state_matrix_from_tokens(self, tokens, *, dtype, normalizer=None):
+    def state_matrix_from_tokens(self, tokens, *, dtype):
         """把已经选好的状态 token 批量转为向量；供增量历史 bank 一次性构建。"""
-        return self._build_state_matrix(tokens, dtype=dtype, normalizer=normalizer)
+        return self._build_state_matrix(tokens, dtype=dtype)
 
     def action_legal_mask(self, sample_idx: int):
         return self._torch.tensor(
@@ -304,9 +303,9 @@ class TrainingSourceReader:
     def action_values(self, sample_idx: int, *, dtype):
         return self._torch.tensor(self._sample_context(sample_idx)["action_values"], dtype=dtype)
 
-    def current_state_matrix(self, sample_idx: int, *, dtype, normalizer=None):
+    def current_state_matrix(self, sample_idx: int, *, dtype):
         tokens = self._sample_context(sample_idx)["current_state_context"]["tokens"]
-        return self._build_state_matrix(tokens, dtype=dtype, normalizer=normalizer)
+        return self._build_state_matrix(tokens, dtype=dtype)
 
     def scene_tokens(self, sample_idx: int, *, float_dtype, int_dtype):
         feature_dim = self.schema.scene_feature_dim()
@@ -349,7 +348,9 @@ class TrainingSourceReader:
             )
         return self._torch.cat(vectors, dim=0), self._torch.tensor(scene_types, dtype=int_dtype)
 
-    def _build_state_matrix(self, tokens, *, dtype, normalizer=None):
+    def _build_state_matrix(self, tokens, *, dtype):
+        if dtype != self._torch.float32:
+            raise ValueError("raw state matrices require FP32 before delta encoding")
         values: list[list[float]] = []
         nulls: list[list[bool]] = []
         for token in tokens:
@@ -378,19 +379,6 @@ class TrainingSourceReader:
 
         tensor = self._torch.tensor(values, dtype=dtype)
         null_mask = self._torch.tensor(nulls, dtype=self._torch.bool)
-        if normalizer is not None:
-            cursor = 0
-            for group_key, feature_keys in self.schema.state_group_feature_keys.items():
-                group_width = len(feature_keys)
-                group_values = normalizer.normalize(
-                    tensor[:, cursor : cursor + group_width],
-                    group_key,
-                    null_mask=null_mask[:, cursor : cursor + group_width],
-                )
-                tensor[:, cursor : cursor + group_width] = group_values
-                cursor += group_width
-        else:
-            tensor.masked_fill_(null_mask, -1.0)
         return _nullable_tensor(tensor, null_mask)
 
     def _pad_scene_tokens(

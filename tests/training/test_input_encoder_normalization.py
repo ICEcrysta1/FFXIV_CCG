@@ -51,33 +51,9 @@ def _dense_batch(*, scene_length=2, history_length=2, dtype=torch.float64):
     return batch
 
 
-def _compact_batch(dense):
-    compact = {
-        key: value.clone() if isinstance(value, torch.Tensor) else copy.deepcopy(value)
-        for key, value in dense.items() if not key.startswith('history_')}
-    mask = dense['history_mask']
-    lengths = mask.sum(dim=1)
-    compact['history_lengths'] = lengths
-    compact['history_ends'] = lengths.cumsum(dim=0) + 1
-    compact['history_mask'] = mask.clone()
-    for dense_key, bank_key in (
-            ('history_skill_ids', 'history_bank_skill_ids'),
-            ('history_skill_features', 'history_bank_skill_features'),
-            ('history_state_vectors', 'history_bank_state_vectors'),
-            ('history_state_null_mask', 'history_bank_state_null_mask')):
-        selected = dense[dense_key][mask]
-        sentinel = torch.zeros((1, *selected.shape[1:]), dtype=selected.dtype)
-        if dense_key == 'history_state_null_mask':
-            sentinel.fill_(True)
-        compact[bank_key] = torch.cat((sentinel, selected), dim=0)
-    return compact
-
-
-@pytest.mark.parametrize('layout', ('dense', 'compact'))
-def test_input_rms_is_applied_once_after_content_and_role(layout):
+def test_input_rms_is_applied_once_after_content_and_role():
     encoder = _encoder()
-    dense = _dense_batch()
-    batch = dense if layout == 'dense' else _compact_batch(dense)
+    batch = _dense_batch()
     encoded = encoder(batch)
     # 独立按类型取投影，避免将 scene 先归一化或误选类型也算作正确。
     scene = torch.stack([
@@ -98,27 +74,18 @@ def test_input_rms_is_applied_once_after_content_and_role(layout):
     assert not any('norm' in name for name, _ in encoder.named_parameters())
 
 
-def test_dense_and_compact_preserve_identical_tokens_masks_and_positions():
+def test_zero_initialized_reset_projection_receives_gradients():
     encoder = _encoder()
-    dense = _dense_batch()
-    encoded_dense = encoder(dense)
-    encoded_compact = encoder(_compact_batch(dense))
-    assert encoded_dense.keys() == encoded_compact.keys()
-    for key, actual in encoded_dense.items():
-        if isinstance(actual, torch.Tensor):
-            torch.testing.assert_close(actual, encoded_compact[key], atol=0, rtol=0)
-        else:
-            assert actual == encoded_compact[key]
-    assert encoded_dense['position_ids'].tolist() == [
-        [0, 0, 1, 2, 3, 4, 5], [0, 0, 1, 2, 0, 0, 3]]
+    assert torch.count_nonzero(encoder.state_reset_proj.weight) == 0
+    encoded = encoder(_dense_batch())
+    (encoded['tokens'] * torch.arange(8, dtype=torch.float64)).sum().backward()
+    assert torch.count_nonzero(encoder.state_reset_proj.weight.grad) > 0
 
 
 @pytest.mark.parametrize('scene_length,history_length', ((0, 0), (0, 2), (2, 0)))
-@pytest.mark.parametrize('layout', ('dense', 'compact'))
-def test_input_rms_handles_empty_scene_and_history(scene_length, history_length, layout):
+def test_input_rms_handles_empty_scene_and_history(scene_length, history_length):
     encoder = _encoder()
-    dense = _dense_batch(scene_length=scene_length, history_length=history_length)
-    batch = dense if layout == 'dense' else _compact_batch(dense)
+    batch = _dense_batch(scene_length=scene_length, history_length=history_length)
     encoded = encoder(batch)
     assert encoded['tokens'].shape == (2, scene_length + 2 * history_length + 1, 8)
     assert torch.isfinite(encoded['tokens']).all()

@@ -23,7 +23,9 @@
 
 ## 🖥️ 训练配置最低要求
 
-当前架构已完成[完全因果策略模型迁移](./docs/causal-policy-model-refactor-plan.md)的阶段 1～4：技能与状态独立编码，历史与最新状态统一表达“上一步技能后状态＋当前请求时状态”，请求时冻结历史输入，缺少前序快照时两段相同，`ogcd_wait` 使用同一语义。最新状态 hidden 直接与输入技能 embedding 的同一参数表匹配固定动作词表。阶段 4 已移除技能的绝对时间 `time_seconds`，其余技能字段及两段状态时间保留，黑魔技能数值特征为 18 维、状态为 86 维。当前仍为技能在前、状态在后的过渡布局，容量按 384 条历史动作计量，最多 `200 + 2×384 + 1 = 969` 个物理 token；旧 19 维技能输入的 cache、checkpoint、GRPO 轨迹与部署包需重建。状态在前的最终布局与 601 个非场景 token 留在阶段 5，100 份数据训练由用户本人执行。
+当前上下文顺序为 `scene, (state_i, skill_i)*H, current_state`。历史与最新状态统一表达“上一步技能后状态＋当前请求时状态”，请求时冻结历史输入，缺少前序快照时两段相同，`ogcd_wait` 使用同一语义。黑魔技能数值特征为 18 维、状态为 86 维，技能不含绝对时间。完整 cache 保存 FP32 原始状态和场景；模型前由共享 `ContextEncoder` 把窗口首状态重锚为 ABS，后续状态按原始数值求 DELTA，并输出逐字段 ABS/reset 标识；场景按锚点裁剪、排序后编码时间差分。累计 `history_cursor` 控制分段窗口，主线容量 300、溢出保留 8 条，最多 `200 + 2×300 + 1 = 801` 个物理 token。窗口参数变化复用完整 cache，不改变状态机推进或真实 PPG 统计。
+
+输入 content 与 role 相加后统一执行无参数 RMSNorm，主干及最终读出也使用无参数 RMSNorm。固定动作由独立输出头读出并执行 FP32 softcap；ONNX 图接收宿主完成 FP32 编码后才转换目标精度的 12 个输入，包含历史与当前状态 reset mask。当前契约为 canonical 14、桥接 16、checkpoint 输入 21、训练样本 10、compiled cache v22/转换 v24、部署契约 24/manifest 15、GRPO rollout 5。旧 cache、checkpoint、部署包和 rollout 需按新契约重建，历史设计见[因果策略迁移计划](./docs/causal-policy-model-refactor-plan.md)与[重锚差分计划](./docs/anchored-delta-context-plan.md)。
 
 以下是项目训练的最低硬件要求
 

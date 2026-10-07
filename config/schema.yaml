@@ -22,7 +22,8 @@ contracts:
   # 13：模型状态为上一动作后快照与请求快照，统一冻结真实和 policy 请求状态。
   # 14：真实效果与 policy 等待共用历史写入序号，不以舍入的 token 时间合并历史。
   # 15：技能 token 完全移除绝对时间字段，状态两段仍保留各自的时间锚点。
-  sidecar_contract_version: 15
+  # 16：canonical 输出公开累计真实历史行游标，读取窗口不再使用保留列表长度。
+  sidecar_contract_version: 16
   scene_context_absolute_mode: "absolute_from_fight_scene_context"
   scene_context_keys:
     targetable: "targetable_window_context"
@@ -51,7 +52,7 @@ scene_context:
       - "target_count"
 
 canonical_output:
-  schema_version: 13
+  schema_version: 14
   token_key: "tokens"
   top_level_keys:
     - "job_tag"
@@ -63,6 +64,7 @@ canonical_output:
     - "action_keys"
     - "action_legal_mask"
     - "action_values"
+    - "history_cursor"
   state_vector_groups:
     player_state:
       feature_keys_field: "player_state_feature_keys"

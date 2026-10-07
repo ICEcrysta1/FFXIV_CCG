@@ -67,8 +67,14 @@ model:
   logit_softcap: 15.0
 
   # 模型最多接收的历史动作条数；每条拆成技能、状态两个 token，末尾追加当前状态。
-  # 当前总物理容量为 scene_capacity + 2 * history_capacity + 1；601 的新单位留后续阶段。
+  # 总物理容量为 scene_capacity + 2 * history_capacity + 1，300 条动作对应 601 个非场景 token。
   history_capacity: 300
+
+  # 历史超出容量时保留最近这些动作，再重新累积；仅影响读取，不改变完整 raw bank。
+  history_reset_keep: 8
+
+  # 状态单步时间增量和场景时间使用同一秒数尺度；保留符号，不截断到 [0, 1]。
+  time_delta_scale: 120.0
 
   # 部署侧 scene 容量上限；必须不小于语料实测 scene 长度最大值。
   scene_capacity: 200

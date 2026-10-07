@@ -14,8 +14,8 @@ import torch
 from common.torch_serialization import safe_torch_load
 
 
-# 技能时间列移除，旧轨迹的技能 tensor 不能静默复用。
-GRPO_ROLLOUT_FORMAT = 4
+# 轨迹保存新的 ABS/DELTA 标识和完整历史游标，拒绝旧输入语义。
+GRPO_ROLLOUT_FORMAT = 5
 
 
 @dataclass(frozen=True)
@@ -43,6 +43,7 @@ class StoredGrpoTrajectory:
 
 def _decision_to_payload(decision: GrpoDecision) -> dict[str, object]:
     """将决策转换成仅含 tensor/基础类型的安全序列化结构。"""
+    _validate_encoded_context(decision.batch)
     return {
         "batch": decision.batch,
         "action_keys": list(decision.action_keys),
@@ -59,12 +60,46 @@ def _decision_from_payload(payload: object) -> GrpoDecision:
     action_keys = payload.get("action_keys")
     if not isinstance(batch, Mapping) or not isinstance(action_keys, (list, tuple)):
         raise ValueError("GRPO decision payload is missing batch or action_keys")
+    _validate_encoded_context(batch)
     return GrpoDecision(
         batch=dict(batch),
         action_keys=tuple(str(key) for key in action_keys),
         action_index=int(payload["action_index"]),
         old_logprob=float(payload["old_logprob"]),
     )
+
+
+def _validate_encoded_context(batch: Mapping[str, object]) -> None:
+    """轨迹只保存实际推理的 prepared 输入，禁止 raw 或旧归一化记录混用。"""
+    if any("state_abs_values" in key or "state_delta_values" in key for key in batch):
+        raise ValueError("GRPO decision must contain encoded states, not raw context")
+    for prefix in ("history", "current"):
+        values = batch.get(f"{prefix}_state_vectors")
+        reset = batch.get(f"{prefix}_state_reset_mask")
+        if not isinstance(values, torch.Tensor) or not isinstance(reset, torch.Tensor):
+            raise ValueError(f"GRPO decision is missing anchored context field: {prefix}_state_reset_mask")
+        if reset.dtype != torch.bool or reset.shape != values.shape:
+            raise ValueError(f"GRPO {prefix} state reset mask must be boolean and match state values")
+        if values.dtype != torch.float32:
+            raise ValueError(f"GRPO encoded {prefix} state must remain FP32 before model casting")
+        nulls = batch.get(f"{prefix}_state_null_mask")
+        if not isinstance(nulls, torch.Tensor) or nulls.dtype != torch.bool or nulls.shape != values.shape:
+            raise ValueError(f"GRPO {prefix} state null mask must be boolean and match state values")
+        if bool((reset & nulls).any()):
+            raise ValueError("GRPO unknown state fields cannot be marked as ABS resets")
+    for name in ("history_cursor", "history_window_start", "history_window_length"):
+        value = batch.get(name)
+        if not isinstance(value, torch.Tensor):
+            raise ValueError(f"GRPO decision is missing anchored context field: {name}")
+        if value.dtype != torch.int64 or value.shape != (1,) or bool((value < 0).any()):
+            raise ValueError(f"GRPO {name} must be one nonnegative int64 cursor value")
+    if not torch.equal(batch["history_window_start"] + batch["history_window_length"], batch["history_cursor"]):
+        raise ValueError("GRPO window cursor metadata is inconsistent")
+    history_mask = batch.get("history_mask")
+    if not isinstance(history_mask, torch.Tensor) or history_mask.dtype != torch.bool:
+        raise ValueError("GRPO history_mask must be boolean")
+    if int(history_mask.sum().item()) != int(batch["history_window_length"].item()):
+        raise ValueError("GRPO window length differs from encoded history")
 
 
 class GrpoRolloutStore:

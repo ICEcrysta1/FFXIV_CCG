@@ -2,40 +2,28 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from common.policy.data.context_encoding import raw_state_delta
 
-from ..source.source_helpers import SKILL_ID_FIELD, build_skill_feature_matrix, to_optional_int
 from .history_bank import history_reference
-
-if TYPE_CHECKING:
-    from common.policy.data.normalizer import Normalizer
-    from common.policy.data.skill_vocab import SkillVocab
-
 
 QUALITY_SEVERITY_LEVELS = {"minor": 1, "medium": 2, "major": 3}
 
 
 class TrainingSampleBuilder:
-    """集中处理词表编码、归一化和compiled cache 样本契约拼装。"""
+    """装配完整历史引用、原始状态和固定动作监督的 compiled 样本。"""
 
     def __init__(
         self,
         *,
         torch,
-        normalizer: Normalizer | None,
-        skill_vocab: SkillVocab,
-        skill_feature_names: tuple[str, ...],
         int_dtype,
         float_dtype,
         num_actions: int,
-        history_bank: dict[str, object] | None = None,
+        history_bank: dict[str, object],
         ranking: dict[str, object] | None = None,
         annotation_status: str = "unannotated",
     ):
         self._torch = torch
-        self._normalizer = normalizer
-        self._skill_vocab = skill_vocab
-        self._skill_feature_names = skill_feature_names
         self._int_dtype = int_dtype
         self._float_dtype = float_dtype
         self._num_actions = num_actions
@@ -44,57 +32,22 @@ class TrainingSampleBuilder:
         self._annotation_status = annotation_status
 
     def build(self, reader, sample_idx: int) -> dict[str, object]:
-        compact_history = self._history_bank is not None
-        if compact_history:
-            history_end, history_length = history_reference(reader, sample_idx)
-        else:
-            history_rows = reader.history_skill_rows(sample_idx)
-            history_raw_skill_ids = [
-                to_optional_int(row.get(SKILL_ID_FIELD))
-                for row in history_rows
-            ]
-            history_skill_ids = self._encode_skill_ids(
-                history_raw_skill_ids,
-                context=f"history sample={sample_idx} fight={reader.fight_id}",
-            )
-            history_skill_features = build_skill_feature_matrix(
-                history_rows,
-                feature_names=reader.skill_feature_names,
-                torch=self._torch,
-                dtype=self._float_dtype,
-            )
-            if self._normalizer is not None:
-                history_skill_features = self._normalizer.normalize_skill_features(
-                    history_skill_features,
-                    self._skill_feature_names,
-                )
-            history_skill_potencies, history_cumulative_dot_potencies = (
-                reader.history_skill_metrics(
-                    sample_idx,
-                )
-            )
-            history_state = reader.history_state_matrix(
-                sample_idx,
-                dtype=self._float_dtype,
-                normalizer=self._normalizer,
-            )
-
+        history_end, history_length = history_reference(reader, sample_idx)
         current_state = reader.current_state_matrix(
             sample_idx,
-            dtype=self._float_dtype,
-            normalizer=self._normalizer,
+            dtype=self._torch.float32,
+        )
+        current_abs = current_state.values[0]
+        previous_abs = self._history_bank["state_abs_values"][history_end - 1] if history_length else None
+        previous_null = self._history_bank["state_null_mask"][history_end - 1] if history_length else None
+        current_delta, current_reset = raw_state_delta(
+            current_abs, current_state.null_mask[0], previous_abs, previous_null,
         )
         scene_vectors, scene_types = reader.scene_tokens(
             sample_idx,
-            float_dtype=self._float_dtype,
+            float_dtype=self._torch.float32,
             int_dtype=self._int_dtype,
         )
-        if self._normalizer is not None:
-            scene_vectors = self._normalizer.normalize_scene_tokens(
-                scene_vectors,
-                scene_types,
-                reader.schema,
-            )
         label = reader.label(sample_idx)
         label_index = int(label.get("action_index", -1))
         if not 0 <= label_index < self._num_actions:
@@ -137,8 +90,10 @@ class TrainingSampleBuilder:
             },
             "action_keys": list(reader.action_keys),
             "action_values": reader.action_values(sample_idx, dtype=self._float_dtype),
-            "current_state_vectors": current_state.values[0],
+            "current_state_abs_values": current_abs,
+            "current_state_delta_values": current_delta,
             "current_state_null_mask": current_state.null_mask[0],
+            "current_state_delta_reset_mask": current_reset,
             "action_legal_mask": reader.action_legal_mask(sample_idx),
             "scene_vectors": scene_vectors,
             "scene_types": scene_types,
@@ -150,40 +105,5 @@ class TrainingSampleBuilder:
             "quality_labels": quality_labels,
             "quality_label_levels": self._torch.tensor(severity_levels, dtype=self._int_dtype),
         }
-        if compact_history:
-            sample.update(
-                {
-                    "history_end": history_end,
-                    "history_length": history_length,
-                }
-            )
-        else:
-            sample.update(
-                {
-                    "history_action_keys": reader.history_action_keys(
-                        sample_idx,
-                    ),
-                    "history_skill_ids": history_skill_ids,
-                    "history_skill_features": history_skill_features,
-                    "history_skill_potencies": self._torch.tensor(
-                        history_skill_potencies,
-                        dtype=self._float_dtype,
-                    ),
-                    "history_cumulative_dot_potencies": self._torch.tensor(
-                        history_cumulative_dot_potencies,
-                        dtype=self._float_dtype,
-                    ),
-                    "history_state_vectors": history_state.values,
-                    "history_state_null_mask": history_state.null_mask,
-                }
-            )
+        sample.update({"history_end": history_end, "history_length": history_length})
         return sample
-
-    def _encode_skill_ids(self, raw_skill_ids: list[int | None], *, context: str):
-        return self._torch.tensor(
-            [
-                self._skill_vocab.require_lookup(raw_skill_id, context=f"{context} index={index}")
-                for index, raw_skill_id in enumerate(raw_skill_ids)
-            ],
-            dtype=self._int_dtype,
-        )

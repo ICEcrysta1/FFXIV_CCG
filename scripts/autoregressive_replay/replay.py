@@ -521,6 +521,7 @@ class AutoregressiveReplay:
             scene_provider=scene_provider,
             device=self.device,
             max_history=config.max_history,
+            model_config=self._session.backend.model_config,
             action_keys=self.data_spec.action_keys,
             action_is_gcd=self.data_spec.action_is_gcd,
         )

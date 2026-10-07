@@ -6,6 +6,7 @@
 
 ### Added
 
+- 新增状态与场景差分上下文的实施计划和验收记录，保存字段语义、缓存复用边界、部署宿主责任、性能测量及同种子四轮对照结果，见 `docs/anchored-delta-context-plan.md`。
 - 新增请求时冻结的 `ModelStateSnapshot`，以动作实例身份关联上一动作后与本次请求快照；历史裁剪、fork 和 restore 保留已知前序状态，真实执行前后快照仍独立保存。
 - 新增独立历史技能与状态 embedding 的 PCA 视图，分别拟合有效 token、排除 padding，并支持空历史与单条历史；原始技能词表 embedding 图继续保留。
 - 新增固定动作词表 `ActionSpace`，将启用的真实技能与 policy 动作按稳定 Ordinal 顺序合并；`action_keys`、`action_to_vocab_id` 和 `action_is_gcd` 随缓存与 checkpoint 输入契约保存，离线恢复不依赖本机当前 YAML 重建输出顺序或动作类型。
@@ -23,6 +24,12 @@
 
 ### Changed
 
+- 状态输入改为窗口首个状态使用 ABS、后续状态使用原始全数值 DELTA；上一动作后与请求快照分别对前一个状态 token 的同名字段求差，包括资源、计时器和布尔标志的 `−1/0/+1`。首个状态保留真实绝对资源，两个快照的时间都减去首个请求时间；当前状态有历史时对最后一个历史状态求差，无历史时自己作为锚点。
+- compiled cache 升级为 v22／转换 v24，固定保存完整 raw FP32 ABS／DELTA history bank、null／字段 reset mask 和原始绝对场景。模型外唯一的 `ContextEncoder` 负责窗口 gather、重锚及归一化，先在 FP32 中求差，再按保存的字段尺度或有符号 `log1p` 编码，最后转为激活精度；未知字段由独立 null mask 表达，恢复已知时按字段使用 ABS 并标记 reset。模型通过零初始化的 `state_reset_proj` 读取 reset 标识，公共参数初始化及随机状态保持一致。
+- 黑魔 Artzip 新增 YAML 权威参数 `history_reset_keep: 8`、`time_delta_scale: 120.0`；超过 300 条历史后保留最近 8 组状态／技能，再重新累积到容量。`time_seconds` 与场景时间按 120 秒尺度编码，保留符号且不截断，其他字段继续使用保存的归一化规则。容量、保留数、时间尺度和随机裁剪只影响读取，不进入 cache signature 或完整 bank 构建。
+- 场景上下文以首个可见状态的请求时间为原点，删除此前已结束的窗口，跨过原点的窗口仅保留后半段并重算自身时长；按开始、结束、类型和原始顺序稳定排列，开始与结束时间分别对上一场景求差。窗口重置只改变模型输入，不重置状态机绝对时钟、累计伤害、回放时长或 PPG 统计。
+- 训练、真实自回归回放、GRPO、模型分析及 ONNX 宿主共用 prepared 输入语义；神经模型不再自动接受 raw／compact 双路径。canonical 升级为 14、PythonBridge 为 16、checkpoint 输入为 21、部署契约为 24／manifest 15、GRPO rollout 为 5；ONNX 新增历史和当前状态 reset mask，共 12 个输入，宿主在精度转换前完成 FP32 编码，图内不重复差分。旧缓存须重编译，旧 checkpoint 和部署包须重新训练、导出，后续窗口参数调整复用同一份新缓存。
+- 完成缓存、字段恢复、CPU/CUDA 编码、训练初始化、两种残差路径、KV-cache、真实 C# 回放、GRPO 与 ONNX 宿主一致性回归；PythonBridge 已按契约 16 重建。4×256×4×1024、100 份训练数据、30 份 VAL、seed 42 的完整四轮对照保持原八轮学习率预算，未显示整体质量收益，隐藏层 std 随深度增长的趋势也未反转；详细指标和性能代价记录在实施计划的验收部分。
 - 正式动作读出改为独立无 bias 输出头，初始化按保存的 `action_to_vocab_id` 顺序复制输入技能 embedding 的动作行，不消费额外随机数，随后独立训练；输出以 FP32 执行 `s×tanh(logits/s)`，黑魔 Artzip 的 `model.yaml` 新增 `logit_softcap: 15.0`，拒绝布尔值和超出 FP32 正常数范围的尺度。普通残差、Full AttnRes、trace、KV-cache 与 ONNX 共用动作头及 softcap；重复惩罚在 softcap 后执行，合法性过滤仍由宿主负责。独立头沿用 AdamW 与低精度训练的独立 FP32 主权重。
 - checkpoint 输入契约升级为 20、ONNX 部署契约升级为 23、manifest 升级为 14，保存独立头结构、初始化方式、FP32 softcap 算法和实际尺度；恢复已学习的独立头权重与 checkpoint 尺度，不重新复制输入 embedding。旧共享头、缺失或不一致的 softcap 配置明确拒绝，数据差异豁免不能绕过架构校验；旧 checkpoint 需重新训练，compiled cache v21/转换 v23 和 PythonBridge 15 继续复用。
 - 补充动作行顺序、初始随机状态、输入/输出独立梯度、softcap 公式与数值边界、重复惩罚顺序、AdamW 参数分组、BF16 主权重连续恢复和 checkpoint/部署契约回归；相关模型、配置、续训、KV-cache、回放、模型分析与 GRPO 检查通过。GELU/SwiGLU 的 FP32 CPU 和严格 BF16 CUDA 四套小模型完成真实 ONNX 导出及 ORT 校验，导出图包含独立动作头与 Tanh。

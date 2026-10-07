@@ -17,7 +17,6 @@ from torch.nn import functional as F
 from common.policy.model import CausalPolicyModel
 from common.policy.model.repetition import build_repetition_penalty_mask
 from common.policy.model.causal_encoder import run_causal_layer
-from common.torch_runtime import move_batch
 from training import TrainingCollator
 
 from ..common import (
@@ -375,7 +374,7 @@ def _evaluate_layer_grid(
     started = last_report = perf_counter()
     try:
         for batch_index, batch_cpu in enumerate(batches):
-            batch = move_batch(batch_cpu, context.device)
+            batch = context.encode_batch(batch_cpu)
             # 上一 batch 的最后一个点仍有扰动，先还原再构建前层缓存。
             _restore_parameters(directions)
             forward = _LayerForward(context, batch, layer_index)
@@ -442,7 +441,7 @@ def _mean_cross_entropy(
     loss_sum = torch.zeros((), dtype=torch.float64, device=context.device)
     sample_count = 0
     for batch_cpu in batches:
-        batch = move_batch(batch_cpu, context.device)
+        batch = context.encode_batch(batch_cpu)
         with context.autocast():
             output = context.model(batch)
         logits = output["logits"]

@@ -271,6 +271,9 @@ def test_common_model_uses_pt_dimensions_and_job_route(tmp_path):
         vocab_size=SkillVocab.build_from_job_tag(data_spec.job_tag).size(),
     ).eval()
     batch = TrainingCollator()([dataset[0], dataset[1]])
+    from common.policy.data.context_encoding import ContextEncoder
+
+    batch = ContextEncoder(dataset.normalizer, dataset.schema, model.config).encode(batch)
 
     output = model(batch)
     assert data_spec.job_tag == "black_mage"
@@ -306,6 +309,9 @@ def test_swiglu_training_updates_all_ffn_projections_with_checkpointing(tmp_path
     model.enable_activation_checkpoint_attention()
     model.enable_activation_checkpoint_ffn()
     batch = move_batch(TrainingCollator()([dataset[0], dataset[1]]), device)
+    from common.policy.data.context_encoding import ContextEncoder
+
+    batch = ContextEncoder(dataset.normalizer, dataset.schema, model.config).to(device=device).encode(batch)
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.01)
     weights_before = {
         (index, name): getattr(layer, name).weight.detach().clone()
@@ -425,6 +431,10 @@ def test_rope_logits_are_invariant_to_other_samples_right_padding():
         "scene_vectors": torch.tensor([[[0.1, 0.2], [0.3, 0.4]]]),
         "scene_types": torch.zeros((1, 2), dtype=torch.long),
         "scene_mask": torch.ones((1, 2), dtype=torch.bool),
+        "history_state_reset_mask": torch.zeros_like(torch.tensor([[[0.1, 0.2, 0.3]]]), dtype=torch.bool),
+        "current_state_reset_mask": torch.zeros_like((torch.tensor(
+            [[[0.2, 0.3, 0.4], [0.5, 0.6, 0.7]]]
+        ))[:, 0, :], dtype=torch.bool),
     }
     padded_batch = {
         key: torch.cat((value, value), dim=0)
@@ -459,6 +469,9 @@ def test_rope_logits_are_invariant_to_other_samples_right_padding():
     )
     padded_batch["history_mask"] = torch.tensor(
         [[True, False], [True, True]]
+    )
+    padded_batch["history_state_reset_mask"] = torch.zeros_like(
+        padded_batch["history_state_vectors"], dtype=torch.bool,
     )
 
     with torch.no_grad():
@@ -513,6 +526,8 @@ def test_causal_model_appends_one_current_state_token():
         "scene_vectors": torch.zeros((1, 1, 2)),
         "scene_types": torch.zeros((1, 1), dtype=torch.int64),
         "scene_mask": torch.ones((1, 1), dtype=torch.bool),
+        "history_state_reset_mask": torch.zeros_like(torch.zeros((1, 2, 3)), dtype=torch.bool),
+        "current_state_reset_mask": torch.zeros_like((torch.zeros((1, 2, 3)))[:, 0, :], dtype=torch.bool),
     }
 
     output = model(batch)
@@ -551,6 +566,7 @@ def test_input_encoder_derives_context_capacity_from_context_blocks():
             dropout=0.0,
             scene_capacity=4,
             history_capacity=2,
+            history_reset_keep=2,
         ),
         vocab_size=4,
     ).eval()
@@ -568,6 +584,8 @@ def test_input_encoder_derives_context_capacity_from_context_blocks():
         "scene_vectors": torch.zeros((1, 4, 2)),
         "scene_types": torch.zeros((1, 4), dtype=torch.int64),
         "scene_mask": torch.ones((1, 4), dtype=torch.bool),
+        "history_state_reset_mask": torch.zeros_like(torch.zeros((1, 2, 3)), dtype=torch.bool),
+        "current_state_reset_mask": torch.zeros_like((torch.zeros((1, 2, 3)))[:, 0, :], dtype=torch.bool),
     }
 
     with torch.no_grad():
@@ -618,6 +636,8 @@ def test_model_encode_with_attention_returns_per_head_weights():
         "scene_vectors": torch.zeros((1, 1, 2)),
         "scene_types": torch.zeros((1, 1), dtype=torch.int64),
         "scene_mask": torch.ones((1, 1), dtype=torch.bool),
+        "history_state_reset_mask": torch.zeros_like(torch.zeros((1, 1, 3)), dtype=torch.bool),
+        "current_state_reset_mask": torch.zeros_like((torch.zeros((1, 2, 3)))[:, 0, :], dtype=torch.bool),
     }
 
     encoded, hidden, attentions = model.encode_with_attention(batch)
@@ -664,6 +684,8 @@ def test_history_uses_independent_tokens_and_current_state_has_no_skill():
         "scene_vectors": torch.zeros((1, 1, 2)),
         "scene_types": torch.zeros((1, 1), dtype=torch.int64),
         "scene_mask": torch.ones((1, 1), dtype=torch.bool),
+        "history_state_reset_mask": torch.zeros_like(torch.zeros((1, 2, 3)), dtype=torch.bool),
+        "current_state_reset_mask": torch.zeros_like((torch.zeros((1, 2, 3)))[:, 0, :], dtype=torch.bool),
     }
 
     encoded = model.input_encoder(batch)
@@ -710,6 +732,8 @@ def test_input_encoder_routes_all_sources_through_one_post_role_rms(monkeypatch)
         "scene_vectors": torch.zeros((1, 1, 2)),
         "scene_types": torch.zeros((1, 1), dtype=torch.int64),
         "scene_mask": torch.ones((1, 1), dtype=torch.bool),
+        "history_state_reset_mask": torch.zeros_like(torch.zeros((1, 2, 3)), dtype=torch.bool),
+        "current_state_reset_mask": torch.zeros_like((torch.zeros((1, 2, 3)))[:, 0, :], dtype=torch.bool),
     }
     captured = []
     original_rms = torch.nn.functional.rms_norm
@@ -971,7 +995,7 @@ def test_training_collator_truncates_only_early_history_and_preserves_scene(tmp_
     torch = pytest.importorskip("torch")
     pt_path = _make_demo_pt(tmp_path, ["fire_iii", "fire_iv"], fight_id="history_demo")
     sample = dict(_make_dataset([pt_path])[1])
-    state_width = sample["history_bank_state_vectors"].shape[-1]
+    state_width = sample["history_bank_state_abs_values"].shape[-1]
     feature_width = sample["history_bank_skill_features"].shape[-1]
     sample["history_action_keys"] = ["old", "middle", "latest"]
     sample["history_end"] = 4
@@ -979,14 +1003,16 @@ def test_training_collator_truncates_only_early_history_and_preserves_scene(tmp_
     sample["history_bank_action_keys"] = ("", "old", "middle", "latest")
     sample["history_bank_skill_ids"] = torch.tensor([0, 1, 2, 3], dtype=torch.int32)
     sample["history_bank_skill_features"] = torch.zeros((4, feature_width))
-    sample["history_bank_state_vectors"] = torch.zeros((4, state_width))
-    sample["history_bank_state_vectors"][:, 0] = torch.tensor([0.0, 10.0, 20.0, 30.0])
+    sample["history_bank_state_abs_values"] = torch.zeros((4, state_width))
+    sample["history_bank_state_abs_values"][:, 0] = torch.tensor([0.0, 10.0, 20.0, 30.0])
     sample["history_bank_state_null_mask"] = torch.zeros((4, state_width), dtype=torch.bool)
+    sample["history_bank_state_delta_values"] = torch.zeros((4, state_width))
+    sample["history_bank_state_delta_reset_mask"] = torch.zeros((4, state_width), dtype=torch.bool)
     scene_before = sample["scene_vectors"].clone()
     decision_before = {
         key: sample[key].clone()
         for key in (
-            "current_state_vectors",
+            "current_state_abs_values",
             "current_state_null_mask",
             "action_values",
             "action_legal_mask",
@@ -1003,7 +1029,7 @@ def test_training_collator_truncates_only_early_history_and_preserves_scene(tmp_
     history_length = int(batch["history_lengths"][0].item())
     assert 1 <= history_length < 3
     assert batch["history_action_keys"][0][-1] == "latest"
-    assert batch["history_bank_state_vectors"][batch["history_ends"][0] - 1, 0].item() == 30.0
+    assert batch["history_bank_state_abs_values"][batch["history_ends"][0] - 1, 0].item() == 30.0
     assert torch.equal(batch["scene_vectors"][0, : scene_before.shape[0]], scene_before)
     for key, expected in decision_before.items():
         assert torch.equal(batch[key][0], expected)
@@ -1019,7 +1045,7 @@ def test_training_collator_preserves_fixed_output_order_and_label_mapping(tmp_pa
         assert tuple(batch["action_keys"][index]) == dataset.action_keys
         label_index = batch["label_index"][index].item()
         assert batch["action_keys"][index][label_index] == sample["label_action_key"]
-        for name in ("action_values", "action_legal_mask", "current_state_vectors", "current_state_null_mask"):
+        for name in ("action_values", "action_legal_mask", "current_state_abs_values", "current_state_null_mask"):
             torch.testing.assert_close(batch[name][index], sample[name])
 
 

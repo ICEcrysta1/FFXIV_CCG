@@ -29,6 +29,8 @@ TENSOR_INPUT_KEYS = (
     "history_mask",
     "current_state_vectors",
     "current_state_null_mask",
+    "history_state_reset_mask",
+    "current_state_reset_mask",
 )
 
 
@@ -62,6 +64,7 @@ def _make_model(
             ff_dim=32,
             dropout=0.0,
             history_capacity=history_capacity,
+            history_reset_keep=min(8, history_capacity),
             scene_capacity=200,
             full_attention_residuals=full_attention_residuals,
             transformer_activation=activation,
@@ -101,6 +104,8 @@ def _make_batch(
         "history_mask": torch.ones((1, history_length), dtype=torch.bool),
         "current_state_vectors": torch.tensor([[0.1, 0.2, 0.3]]),
         "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
+        "history_state_reset_mask": torch.zeros((1, history_length, 3), dtype=torch.bool),
+        "current_state_reset_mask": torch.zeros((1, 3), dtype=torch.bool),
         "action_legal_mask": torch.ones((1, 3), dtype=torch.bool),
     }
 
@@ -156,6 +161,9 @@ def _right_pad_context(
         batch["history_state_null_mask"],
         (0, 0, 0, history_padding),
         value=True,
+    )
+    padded["history_state_reset_mask"] = torch.nn.functional.pad(
+        batch["history_state_reset_mask"], (0, 0, 0, history_padding), value=False,
     )
     padded["history_mask"] = torch.nn.functional.pad(
         batch["history_mask"],

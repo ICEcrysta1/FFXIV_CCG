@@ -54,9 +54,11 @@ def _activation_batch() -> dict[str, torch.Tensor]:
         "history_skill_features": torch.zeros((1, 1, 1)),
         "history_state_vectors": torch.zeros((1, 1, 3)),
         "history_state_null_mask": torch.zeros((1, 1, 3), dtype=torch.bool),
+        "history_state_reset_mask": torch.ones((1, 1, 3), dtype=torch.bool),
         "history_mask": torch.ones((1, 1), dtype=torch.bool),
         "current_state_vectors": torch.zeros((1, 3)),
         "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
+        "current_state_reset_mask": torch.zeros((1, 3), dtype=torch.bool),
         "action_legal_mask": torch.ones((1, 2), dtype=torch.bool),
         "scene_vectors": torch.zeros((1, 1, 2)),
         "scene_types": torch.zeros((1, 1), dtype=torch.long),
@@ -271,9 +273,10 @@ def test_checkpoint_rejects_unknown_activation():
 
 
 def test_checkpoint_rejects_removed_cls_architecture():
-    checkpoint = make_checkpoint(model_state_dict={"input_encoder.cls_token": torch.zeros(1, 1, 4)})
-    with pytest.raises(ValueError, match="unsupported fused/scoring architecture"):
-        CausalPolicyModel.checkpoint_model_config(checkpoint)
+    model = CausalPolicyModel(_activation_spec(), _activation_config("swiglu"), vocab_size=4)
+    weights = {**model.state_dict(), "input_encoder.cls_token": torch.zeros(1, 1, 4)}
+    with pytest.raises(RuntimeError, match="Unexpected key"):
+        model.load_state_dict(weights, strict=True)
 
 
 @pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
@@ -389,7 +392,6 @@ def test_activation_hidden_merges_gate_and_pointwise_paths():
 
 @pytest.mark.parametrize("key", ["scorer.network.0.weight", "scorer.up_proj.weight"])
 def test_checkpoint_rejects_removed_candidate_scorer_layout(key):
-    with pytest.raises(ValueError, match="unsupported fused/scoring architecture"):
-        CausalPolicyModel.checkpoint_model_config(
-            make_checkpoint(model_state_dict={key: torch.zeros(1)})
-        )
+    model = CausalPolicyModel(_activation_spec(), _activation_config("swiglu"), vocab_size=4)
+    with pytest.raises(RuntimeError, match="Unexpected key"):
+        model.load_state_dict({**model.state_dict(), key: torch.zeros(1)}, strict=True)

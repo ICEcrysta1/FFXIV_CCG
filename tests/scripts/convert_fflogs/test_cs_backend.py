@@ -172,3 +172,30 @@ def test_current_state_packet_uses_one_real_snapshot_and_fixed_action_space(cs_b
     assert metadata["current_state_context_key"] == "current_state_context"
     assert metadata["current_state_feature_keys"] == metadata["state_history_feature_keys"]
     assert cs_backend.observe_at(0.0, format="seconds").context["time_seconds"] == 0.0
+
+
+@pytest.mark.parametrize("max_history", [None, 1])
+def test_bridge_history_cursor_counts_real_and_wait_without_observation_mutation(max_history):
+    """桥接输出保留累计游标；留存裁剪、重复观测及重置不混淆历史行数。"""
+    _require_inprocess_backend()
+    with InProcessEngine("black_mage") as engine, engine.create_backend(max_history=max_history) as backend:
+        def observe(timestamp):
+            return backend.observe_at(timestamp, format="vector", next_observation_timestamp=timestamp).context
+
+        assert observe(0.0)["history_cursor"] == 0
+        assert backend.submit_action(0.0, "fire_iii", actual_cast_seconds=0.0).accepted
+        assert observe(0.0)["history_cursor"] == 1
+        assert observe(0.1)["history_cursor"] == 1
+        backend.record_policy_action(0.1, "ogcd_wait", 0.2)
+        waiting = observe(0.1)
+        assert waiting["history_cursor"] == 2
+        assert observe(0.1) == waiting
+        assert backend.submit_action(0.1, "lucid_dreaming").accepted
+        canonical = observe(0.1)
+        assert type(canonical["history_cursor"]) is int
+        assert canonical["history_cursor"] == 3
+        assert len(canonical["skill_history_context"]) == (3 if max_history is None else 1)
+        assert len(canonical["state_history_context"]["tokens"]) == len(canonical["skill_history_context"])
+        assert observe(0.1) == canonical
+        backend.init(initial_timestamp=0.0)
+        assert observe(0.0)["history_cursor"] == 0

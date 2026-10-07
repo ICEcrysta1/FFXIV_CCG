@@ -50,6 +50,7 @@ def test_fp16_parity_rounds_real_fp32_softcap_before_host_policy(monkeypatch):
     reference._start_measurement = lambda: 0.0
     reference._finish_measurement = lambda _started: None
     reference.data_spec = spec
+    reference.model_config = model.config
     reference.input_contract = SimpleNamespace(to_dict=lambda: {"version": 1})
     reference.vocab_entries = ((100, 1), (200, 2))
     reference.repetition = RepetitionConfig(mode="blacklist", skills=("second",), penalty=.003)
@@ -239,6 +240,8 @@ def test_parity_fixed_capacity_batch_stays_on_reference_device(tmp_path):
             TensorSpec("history_mask", "tensor(bool)", (b, h), ""),
             TensorSpec("current_state_vectors", "tensor(float)", (b, sd), ""),
             TensorSpec("current_state_null_mask", "tensor(bool)", (b, sd), ""),
+            TensorSpec("history_state_reset_mask", "tensor(bool)", (b, h, sd), ""),
+            TensorSpec("current_state_reset_mask", "tensor(bool)", (b, sd), ""),
         )
 
     fake_contract = SimpleNamespace(
@@ -286,6 +289,7 @@ def test_parity_failure_writes_auditable_partial_report(
             self.name = name
             self.logits = logits
             self.source_path = tmp_path / f"{name}.model"
+            self.model_config = SimpleNamespace(history_capacity=128, history_reset_keep=8, time_delta_scale=120.0)
             self.input_device = torch.device("cpu")
             self.data_spec = DataSpec(
                 "black_mage", 3, 1, 1, 1, 1, ("fire_iii", "fire_iv", "blizzard_iii"),
