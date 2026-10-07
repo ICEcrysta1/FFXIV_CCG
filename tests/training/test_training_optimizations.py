@@ -222,7 +222,8 @@ def _sample(history_length, scene_length):
     sample.pop("current_state_reset_mask")
     sample["current_state_delta_values"] = torch.zeros(spec.state_dim)
     sample["current_state_delta_reset_mask"] = torch.zeros(spec.state_dim, dtype=torch.bool)
-    sample["scene_vectors"] = torch.tensor([0.0, 200.0, 200.0]).expand(scene_length, -1).clone()
+    sample.pop("scene_vectors")
+    sample["scene_abs_values"] = torch.tensor([0.0, 200.0, 200.0]).expand(scene_length, -1).clone()
     return sample
 
 

@@ -131,9 +131,9 @@ def test_same_canonical_compact_training_live_and_onnx_host_encode_identically(t
         assert tuple(keys) == spec.action_keys
         for name in TENSOR_INPUT_NAMES:
             torch.testing.assert_close(training[name], live[name], rtol=0, atol=0, msg=name)
-        assert live["history_cursor"].item() == canonical["history_cursor"]
-        assert live["history_window_length"].item() == int(training["history_mask"].sum())
-        assert live["history_window_start"].item() == canonical["history_cursor"] - int(training["history_mask"].sum())
+        assert builder.context_metadata == {"history_cursor": canonical["history_cursor"]}
+        assert int(live["history_mask"].sum()) == int(training["history_mask"].sum())
+        assert not {"history_cursor", "history_window_start", "history_window_length"} & live.keys()
 
         # 宿主仅补 padding 和转目标精度；图适配器直接接收 prepared tensor，不再次差分。
         fixed = build_fixed_ort_inputs(live, contract)
@@ -239,6 +239,11 @@ def test_grpo_sampling_is_independent_of_worker_count(dataset, tmp_path):
                 temperature=1, record_decisions=True, session=session, sampling_seed=120 + index,
             )
             assert decisions
+            for decision in decisions:
+                cursor = decision.context_metadata["history_cursor"]
+                assert type(cursor) is int
+                assert cursor >= int(decision.batch["history_mask"].sum())
+                assert not {"history_cursor", "history_window_start", "history_window_length"} & decision.batch.keys()
             return tuple(row.action_key for row in result.rows), result.ppg, tuple(d.old_logprob for d in decisions)
 
     with ParallelRollouts(policy, job_tag=spec.job_tag, workers=1) as pool:

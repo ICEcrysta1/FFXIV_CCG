@@ -171,7 +171,7 @@ def test_shared_context_reanchor_and_scene_clip_rebuild_kv(full_attention_residu
                 "current_state_delta_values": deltas[cursor:cursor + 1],
                 "current_state_null_mask": nulls[cursor:cursor + 1],
                 "current_state_delta_reset_mask": resets[cursor:cursor + 1],
-                "scene_vectors": torch.tensor([[[1195, 1204, 9], [1207, 1230, 23], [1213, 1220, 7]]], dtype=torch.float32),
+                "scene_abs_values": torch.tensor([[[1195, 1204, 9], [1207, 1230, 23], [1213, 1220, 7]]], dtype=torch.float32),
                 "scene_types": torch.zeros((1, 3), dtype=torch.int32),
                 "scene_mask": torch.ones((1, 3), dtype=torch.bool),
             }

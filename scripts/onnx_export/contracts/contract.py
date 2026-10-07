@@ -7,22 +7,10 @@ from dataclasses import asdict, dataclass
 import torch
 
 from common.policy.data.input_contract import TOKEN_ENCODING_CONTRACT
+from common.policy.data.context_fields import MODEL_INPUT_FIELDS, MODEL_INPUT_NAMES
 
 
-TENSOR_INPUT_NAMES = (
-    "scene_vectors",
-    "scene_types",
-    "scene_mask",
-    "history_skill_ids",
-    "history_skill_features",
-    "history_state_vectors",
-    "history_state_null_mask",
-    "history_mask",
-    "current_state_vectors",
-    "current_state_null_mask",
-    "history_state_reset_mask",
-    "current_state_reset_mask",
-)
+TENSOR_INPUT_NAMES = MODEL_INPUT_NAMES
 OUTPUT_NAMES = ("raw_logits",)
 TOKEN_ORDER = TOKEN_ENCODING_CONTRACT["token_order"]
 POSITION_ID_SEMANTICS = (
@@ -192,20 +180,21 @@ def make_inputs(
     ) & ~current_state_null_mask
     if not history_valid:
         current_state_reset_mask = ~current_state_null_mask
-    result = (
-        scene_vectors,
-        scene_types,
-        scene_mask,
-        history_skill_ids,
-        history_skill_features,
-        history_state_vectors,
-        history_state_null_mask,
-        history_mask,
-        current_state_vectors,
-        current_state_null_mask,
-        history_state_reset_mask,
-        current_state_reset_mask,
-    )
+    named_inputs = {
+        "scene_vectors": scene_vectors,
+        "scene_types": scene_types,
+        "scene_mask": scene_mask,
+        "history_skill_ids": history_skill_ids,
+        "history_skill_features": history_skill_features,
+        "history_state_vectors": history_state_vectors,
+        "history_state_null_mask": history_state_null_mask,
+        "history_mask": history_mask,
+        "current_state_vectors": current_state_vectors,
+        "current_state_null_mask": current_state_null_mask,
+        "history_state_reset_mask": history_state_reset_mask,
+        "current_state_reset_mask": current_state_reset_mask,
+    }
+    result = tuple(named_inputs[name] for name in TENSOR_INPUT_NAMES)
     if padding_fill == "zero":
         return fill_padding_values(
             result,
@@ -223,11 +212,14 @@ def slice_dynamic_inputs(
     history_valid: int,
 ) -> tuple[torch.Tensor, ...]:
     """从右侧补位输入恢复动态长度 PyTorch 基线。"""
-    values = list(inputs)
-    for index in (0, 1, 2):
-        values[index] = values[index][:, :scene_valid]
-    for index in (3, 4, 5, 6, 7, 10):
-        values[index] = values[index][:, :history_valid]
+    lengths = {"scene": scene_valid, "history": history_valid}
+    values = []
+    for field, tensor in zip(MODEL_INPUT_FIELDS, inputs, strict=True):
+        if field.sequence_axis is not None:
+            indices = [slice(None)] * tensor.ndim
+            indices[field.sequence_axis] = slice(None, lengths[field.sequence_group])
+            tensor = tensor[tuple(indices)]
+        values.append(tensor)
     return tuple(values)
 
 
@@ -239,14 +231,15 @@ def fill_padding_values(
     value: float,
 ) -> tuple[torch.Tensor, ...]:
     """只改无效 token 的载荷值，用于验证 mask 是唯一 padding 权威。"""
-    values = [tensor.clone() for tensor in inputs]
-    values[0][:, scene_valid:] = value
-    values[1][:, scene_valid:] = 0
-    values[3][:, history_valid:] = 0
-    for index in (4, 5):
-        values[index][:, history_valid:] = value
-    values[6][:, history_valid:] = True
-    values[10][:, history_valid:] = False
+    lengths = {"scene": scene_valid, "history": history_valid}
+    values = []
+    for field, source in zip(MODEL_INPUT_FIELDS, inputs, strict=True):
+        tensor = source.clone()
+        if field.sequence_axis is not None and field.name != field.sequence_group + "_mask":
+            indices = [slice(None)] * tensor.ndim
+            indices[field.sequence_axis] = slice(lengths[field.sequence_group], None)
+            tensor[tuple(indices)] = value if field.dtype in {"float", "float32"} else field.padding_value
+        values.append(tensor)
     return tuple(values)
 
 

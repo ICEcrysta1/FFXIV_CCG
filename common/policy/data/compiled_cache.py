@@ -15,6 +15,7 @@ from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
 from .schema import SceneWindowSchema, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
 from .action_space import ActionSpace
 from .skill_vocab import SkillVocab
+from .context_fields import CURRENT_STATE_RAW_FIELDS, HISTORY_BANK_FIELDS, HISTORY_BANK_METADATA_NAMES, STATE_BANK_FIELDS
 
 # v15：样本只保存配置无关的动作质量等级代码 1/2/3；旧权重缓存必须重编译。
 # v14：样本新增排名区间、标注状态和配置映射后的数值等级权重；旧缓存必须重编译。
@@ -158,17 +159,7 @@ class CompiledCacheReader:
         history_bank = payload["history_bank"]
         if not isinstance(history_bank, dict):
             raise ValueError("compiled cache history_bank must be a mapping")
-        required_bank_keys = (
-            "skill_ids",
-            "skill_features",
-            "state_abs_values",
-            "state_delta_values",
-            "state_null_mask",
-            "state_delta_reset_mask",
-            "action_keys",
-            "skill_potencies",
-            "cumulative_dot_potencies",
-        )
+        required_bank_keys = tuple(field.name for field in HISTORY_BANK_FIELDS) + HISTORY_BANK_METADATA_NAMES
         if any(key not in history_bank for key in required_bank_keys):
             raise ValueError("compiled cache history_bank is missing required fields")
         action_keys = history_bank["action_keys"]
@@ -185,21 +176,22 @@ class CompiledCacheReader:
                 f"num_samples={self._num_samples}"
             )
         torch = import_torch()
-        tensor_bank_keys = tuple(key for key in required_bank_keys if key != "action_keys")
-        for key in tensor_bank_keys:
+        for spec in HISTORY_BANK_FIELDS:
+            key = spec.name
             field = history_bank[key]
             if not isinstance(field, torch.Tensor) or field.ndim < 1:
                 raise ValueError(
                     f"compiled cache history_bank field must be a tensor: {key}"
                 )
-            if field.shape[0] != bank_size:
+            if field.shape[spec.sequence_axis] != bank_size:
                 raise ValueError(f"compiled cache history_bank field length mismatch: {key}")
         if history_bank["skill_features"].shape != (bank_size, len(self._skill_feature_names)):
             raise ValueError("compiled cache history_bank skill feature width mismatch")
         state_shape = (bank_size, self.schema.state_vector_dim())
-        for key in ("state_abs_values", "state_delta_values", "state_null_mask", "state_delta_reset_mask"):
+        for spec in STATE_BANK_FIELDS:
+            key = spec.name
             value = history_bank[key]
-            dtype = torch.bool if key.endswith("mask") else torch.float32
+            dtype = spec.torch_dtype(torch)
             if value.shape != state_shape or value.dtype != dtype:
                 raise ValueError(f"compiled cache history_bank {key} must have shape {state_shape} and dtype {dtype}")
             if dtype == torch.float32 and not bool(torch.isfinite(value).all()):
@@ -348,11 +340,12 @@ class CompiledCacheReader:
         for sample in samples:
             if not isinstance(sample, dict) or tuple(sample.get("action_keys", ())) != self.action_keys:
                 raise ValueError("compiled sample output action order mismatch")
-            for key in ("current_state_abs_values", "current_state_delta_values", "current_state_null_mask", "current_state_delta_reset_mask"):
+            for spec in CURRENT_STATE_RAW_FIELDS:
+                key = spec.name
                 value = sample.get(key)
                 if not isinstance(value, torch.Tensor) or value.shape != (self.schema.state_vector_dim(),):
                     raise ValueError(f"compiled sample {key} shape mismatch")
-                dtype = torch.bool if key.endswith("mask") else torch.float32
+                dtype = spec.torch_dtype(torch)
                 if value.dtype != dtype or (dtype == torch.float32 and not bool(torch.isfinite(value).all())):
                     raise ValueError(f"compiled sample {key} must have dtype {dtype} and finite values")
             if bool(sample["current_state_null_mask"][self._request_time_index]):

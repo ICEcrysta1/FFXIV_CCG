@@ -78,7 +78,8 @@ def test_training_dataset_returns_grouped_sample_and_uses_config_vocab(tmp_path)
     assert sample["history_bank_state_abs_values"].shape == sample["history_bank_state_null_mask"].shape
     assert sample["action_values"].shape == (len(sample["action_keys"]),)
     assert sample["current_state_abs_values"].shape == sample["current_state_null_mask"].shape == (dataset.state_dim,)
-    assert sample["scene_vectors"].shape[0] == sample["scene_types"].shape[0]
+    assert sample["scene_abs_values"].shape[0] == sample["scene_types"].shape[0]
+    assert "scene_vectors" not in sample
     assert sample["label_action_key"] == "fire_iv"
 
 
@@ -648,8 +649,8 @@ def test_training_collator_pads_history_and_scene_lengths(tmp_path):
     assert batch["history_mask"].shape == (2, 2)
     assert batch["history_mask"][0].sum().item() == 0
     assert batch["history_mask"][1].sum().item() == 2
-    assert batch["scene_vectors"].ndim == 3
-    assert batch["scene_mask"].shape[:2] == batch["scene_vectors"].shape[:2]
+    assert batch["scene_abs_values"].ndim == 3
+    assert batch["scene_mask"].shape[:2] == batch["scene_abs_values"].shape[:2]
     assert batch["current_state_abs_values"].shape == batch["current_state_null_mask"].shape == (2, short_dataset.state_dim)
 
 

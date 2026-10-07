@@ -27,6 +27,8 @@ from scripts.autoregressive_replay.backends import (
 from scripts.onnx_export import TENSOR_INPUT_NAMES, CapacityContract, DeploymentManifest
 from scripts.onnx_export import export as export_module
 from scripts.onnx_export.contracts.contract import make_inputs, slice_dynamic_inputs
+from scripts.onnx_export.contracts import contract as tensor_contract_module
+from common.policy.data.context_fields import MODEL_INPUT_FIELDS
 from scripts.onnx_export.contracts.deployment_profile import DeploymentProfile
 from scripts.onnx_export.contracts.deployment_contract import (
     DEPLOYMENT_CONTRACT_VERSION,
@@ -296,6 +298,32 @@ def test_zero_padding_fill_clears_all_padding_dtypes():
     assert not values[10][:, 2:].any()
     assert torch.count_nonzero(values[0][:, :1]) > 0
     assert torch.count_nonzero(values[3][:, :2]) > 0
+
+
+def test_dynamic_slice_and_padding_follow_fields_when_input_order_changes(monkeypatch):
+    """输入次序变化时，历史 reset 等序列字段仍按各自轴裁剪和补位。"""
+    spec = SimpleNamespace(scene_dim=2, num_scene_types=4, skill_feature_dim=3, state_dim=5, num_actions=2)
+    inputs = make_inputs(spec, CapacityContract(3, 4), vocab_size=8,
+                         scene_valid=1, history_valid=2, dtype=torch.float32, seed=17)
+    fields = tuple(reversed(MODEL_INPUT_FIELDS))
+    monkeypatch.setattr(tensor_contract_module, "MODEL_INPUT_FIELDS", fields)
+    inputs = tuple(reversed(inputs))
+    sliced = dict(zip((field.name for field in fields), slice_dynamic_inputs(
+        inputs, scene_valid=1, history_valid=2,
+    ), strict=True))
+    assert sliced["scene_vectors"].shape == (1, 1, 2)
+    assert sliced["history_state_vectors"].shape == (1, 2, 5)
+    assert sliced["history_state_reset_mask"].shape == (1, 2, 5)
+    assert sliced["current_state_vectors"].shape == (1, 5)
+    padded = dict(zip((field.name for field in fields), tensor_contract_module.fill_padding_values(
+        inputs, scene_valid=1, history_valid=2, value=7.0,
+    ), strict=True))
+    assert (padded["scene_vectors"][:, 1:] == 7).all()
+    assert (padded["history_state_vectors"][:, 2:] == 7).all()
+    assert padded["history_state_null_mask"][:, 2:].all()
+    assert not padded["history_state_reset_mask"][:, 2:].any()
+    assert not padded["history_mask"][:, 2:].any()
+    assert not padded["scene_mask"][:, 1:].any()
 
 
 def test_default_deployment_profile_rejects_unsafe_job_tag():

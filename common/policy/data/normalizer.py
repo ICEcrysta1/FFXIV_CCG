@@ -7,8 +7,6 @@ from dataclasses import asdict, dataclass, replace
 import math
 from pathlib import Path
 
-from common.torch_dependencies import import_torch
-
 from .normalization import NormalizerConfig, load_normalizer_config
 
 
@@ -29,7 +27,6 @@ class Normalizer:
             config = load_normalizer_config(config_path)
         self._config = config
         self._rules: dict[str, list[_FieldRule]] = {}
-        self._feature_dims: dict[str, int] = {}
         self._resource_limits: dict[str, float] = {}
         self._status_limits: dict[str, float] = {}
         self._configured_job_tag: str | None = None
@@ -177,7 +174,7 @@ class Normalizer:
     def register_feature_keys(self, group_key: str, feature_keys: list[str] | tuple[str, ...]) -> None:
         """注册一个状态分组的 feature key 列表。"""
         rules: list[_FieldRule] = []
-        for index, feature_name in enumerate(feature_keys):
+        for feature_name in feature_keys:
             raw_name = _strip_prefix(feature_name)
             rule_type = _infer_rule_type(
                 raw_name,
@@ -187,9 +184,7 @@ class Normalizer:
             )
             rules.append(
                 _FieldRule(
-                    index=index,
                     feature_name=feature_name,
-                    raw_name=raw_name,
                     rule_type=rule_type,
                     max_value=_max_value_for_feature(
                         raw_name,
@@ -199,7 +194,6 @@ class Normalizer:
                 )
             )
         self._rules[group_key] = rules
-        self._feature_dims[group_key] = len(rules)
 
     def register_schema(self, schema) -> None:
         """从训练 schema 注册全部状态分组。"""
@@ -240,10 +234,6 @@ class Normalizer:
         )
 
     @property
-    def registered_groups(self) -> list[str]:
-        return list(self._rules.keys())
-
-    @property
     def remaining_seconds_max(self) -> float:
         """返回 skill/状态剩余秒数特征使用的归一化上限。"""
         return float(self._config.remaining_seconds_max)
@@ -251,52 +241,6 @@ class Normalizer:
     @property
     def target_count_max(self) -> float:
         return float(self._config.target_count_max)
-
-    def feature_dim(self, group_key: str) -> int:
-        return self._feature_dims.get(group_key, 0)
-
-    def normalize(self, tensor, group_key: str, *, null_mask=None):
-        """归一化一个状态分组的向量。null 位置会被安全置零。"""
-        torch = import_torch()
-        rules = self._rules.get(group_key)
-        if rules is None:
-            raise KeyError(f"group_key {group_key!r} not registered")
-
-        if tensor.shape[-1] != len(rules):
-            raise ValueError(
-                f"tensor last dim {tensor.shape[-1]} != registered feature count {len(rules)} "
-                f"for group {group_key!r}"
-            )
-
-        result = tensor.clone()
-        if null_mask is None:
-            null_mask = torch.zeros_like(result, dtype=torch.bool)
-        else:
-            null_mask = null_mask.to(dtype=torch.bool)
-            if null_mask.shape != result.shape:
-                raise ValueError(
-                    f"null_mask shape {tuple(null_mask.shape)} != tensor shape {tuple(result.shape)}"
-                )
-
-        for rule in rules:
-            if rule.rule_type in ("keep", "skip"):
-                result[..., rule.index].masked_fill_(null_mask[..., rule.index], -1.0)
-                continue
-
-            values = result[..., rule.index : rule.index + 1]
-            mask = null_mask[..., rule.index : rule.index + 1]
-            values.masked_fill_(mask, 0.0)
-            _apply_normalize_inplace(
-                values,
-                rule.rule_type,
-                self._config,
-                max_value=rule.max_value,
-            )
-            values.masked_fill_(mask, -1.0)
-
-        result[torch.isnan(result)] = 0.0
-        result.masked_fill_(null_mask, -1.0)
-        return result
 
     def normalize_skill_features(self, tensor, feature_names):
         """按 skill 字段名归一化技能数值特征。"""
@@ -312,69 +256,6 @@ class Normalizer:
             )
         result[result.isnan()] = 0.0
         return result
-
-    def normalize_value(self, group_key: str, feature_name: str, value: float) -> float:
-        """对单个标量应用归一化。"""
-        rules = self._rules.get(group_key)
-        if rules is None:
-            raise KeyError(f"group_key {group_key!r} not registered")
-        for rule in rules:
-            if rule.feature_name == feature_name:
-                return _apply_rule_to_scalar(
-                    value,
-                    rule.rule_type,
-                    self._config,
-                    max_value=rule.max_value,
-                )
-        raise ValueError(f"feature {feature_name!r} not found in group {group_key!r}")
-
-    def inverse(self, group_key: str, feature_name: str, normalized_value: float) -> float:
-        """归一化逆变换，仅用于调试。"""
-        rules = self._rules.get(group_key)
-        if rules is None:
-            raise KeyError(f"group_key {group_key!r} not registered")
-        for rule in rules:
-            if rule.feature_name == feature_name:
-                return _inverse_rule(
-                    normalized_value,
-                    rule.rule_type,
-                    self._config,
-                    max_value=rule.max_value,
-                )
-        raise ValueError(f"feature {feature_name!r} not found in group {group_key!r}")
-
-
-def _apply_normalize_inplace(
-    values,
-    rule_type: str,
-    config: NormalizerConfig,
-    *,
-    max_value: float | None = None,
-) -> None:
-    if rule_type == "divide_mp_max":
-        values.div_(config.mp_max)
-    elif rule_type == "divide_max_mp":
-        values.div_(config.mp_max)
-    elif rule_type == "clip_divide_seconds_max":
-        values.clamp_(min=0.0, max=config.remaining_seconds_max).div_(config.remaining_seconds_max)
-    elif rule_type == "clip_divide_fight_time_max":
-        values.clamp_(min=0.0, max=config.fight_time_max).div_(config.fight_time_max)
-    elif rule_type == "divide_potency_by_fight_time_max":
-        values.clamp_(min=0.0).div_(config.fight_time_max)
-    elif rule_type == "clip_divide_resource_max":
-        if max_value is None or max_value <= 0.0:
-            raise ValueError("resource normalization requires a positive max_value")
-        values.clamp_(min=0.0, max=max_value).div_(max_value)
-    elif rule_type == "clip_divide_status_max":
-        if max_value is None or max_value <= 0.0:
-            raise ValueError("status normalization requires a positive max_value")
-        values.clamp_(min=0.0, max=max_value).div_(max_value)
-    elif rule_type == "log1p_potency":
-        values.clamp_(min=0.0)
-        values.log1p_()
-    elif rule_type == "divide_current_potency_max":
-        values.clamp_(min=0.0, max=config.current_potency_max).div_(config.current_potency_max)
-
 
 def _apply_skill_normalize_inplace(
     values,
@@ -395,12 +276,7 @@ def _apply_skill_normalize_inplace(
         return
     resource_max = resource_limits.get(leaf_name)
     if resource_max is not None:
-        _apply_normalize_inplace(
-            values,
-            "clip_divide_resource_max",
-            config,
-            max_value=resource_max,
-        )
+        values.clamp_(min=0.0, max=resource_max).div_(resource_max)
         return
     if feature_name.endswith(".seconds") or leaf_name.endswith("_seconds"):
         values.clamp_(min=0.0, max=config.remaining_seconds_max).div_(config.remaining_seconds_max)
@@ -495,74 +371,6 @@ def _max_value_for_feature(
     return resource_limits.get(_leaf_name(raw_name))
 
 
-def _apply_rule_to_scalar(
-    value: float,
-    rule_type: str,
-    config: NormalizerConfig,
-    *,
-    max_value: float | None = None,
-) -> float:
-    if rule_type == "divide_mp_max":
-        return value / config.mp_max
-    if rule_type == "divide_max_mp":
-        return value / config.mp_max
-    if rule_type in ("keep", "skip"):
-        return value
-    if rule_type == "clip_divide_seconds_max":
-        return max(0.0, min(value, config.remaining_seconds_max)) / config.remaining_seconds_max
-    if rule_type == "clip_divide_fight_time_max":
-        return max(0.0, min(value, config.fight_time_max)) / config.fight_time_max
-    if rule_type == "divide_potency_by_fight_time_max":
-        return max(0.0, value) / config.fight_time_max
-    if rule_type == "clip_divide_resource_max":
-        if max_value is None or max_value <= 0.0:
-            raise ValueError("resource normalization requires a positive max_value")
-        return max(0.0, min(value, max_value)) / max_value
-    if rule_type == "clip_divide_status_max":
-        if max_value is None or max_value <= 0.0:
-            raise ValueError("status normalization requires a positive max_value")
-        return max(0.0, min(value, max_value)) / max_value
-    if rule_type == "log1p_potency":
-        return math.log1p(max(0.0, value))
-    if rule_type == "divide_current_potency_max":
-        return max(0.0, min(value, config.current_potency_max)) / config.current_potency_max
-    return value
-
-
-def _inverse_rule(
-    normalized: float,
-    rule_type: str,
-    config: NormalizerConfig,
-    *,
-    max_value: float | None = None,
-) -> float:
-    if rule_type == "divide_mp_max":
-        return normalized * config.mp_max
-    if rule_type == "divide_max_mp":
-        return normalized * config.mp_max
-    if rule_type in ("keep", "skip"):
-        return normalized
-    if rule_type == "clip_divide_seconds_max":
-        return normalized * config.remaining_seconds_max
-    if rule_type == "clip_divide_fight_time_max":
-        return normalized * config.fight_time_max
-    if rule_type == "divide_potency_by_fight_time_max":
-        return normalized * config.fight_time_max
-    if rule_type == "clip_divide_resource_max":
-        if max_value is None or max_value <= 0.0:
-            raise ValueError("resource normalization requires a positive max_value")
-        return normalized * max_value
-    if rule_type == "clip_divide_status_max":
-        if max_value is None or max_value <= 0.0:
-            raise ValueError("status normalization requires a positive max_value")
-        return normalized * max_value
-    if rule_type == "log1p_potency":
-        return math.expm1(normalized)
-    if rule_type == "divide_current_potency_max":
-        return normalized * config.current_potency_max
-    return normalized
-
-
 @dataclass(frozen=True)
 class StateEncodingMetadata:
     """按完整状态向量字段排列的固定归一化常量。"""
@@ -576,9 +384,7 @@ class StateEncodingMetadata:
 
 @dataclass(frozen=True)
 class _FieldRule:
-    index: int
     feature_name: str
-    raw_name: str
     rule_type: str
     max_value: float | None = None
 

@@ -12,10 +12,11 @@ import uuid
 import torch
 
 from common.torch_serialization import safe_torch_load
+from common.policy.data.context_fields import RAW_ONLY_FIELD_NAMES
 
 
-# 轨迹保存新的 ABS/DELTA 标识和完整历史游标，拒绝旧输入语义。
-GRPO_ROLLOUT_FORMAT = 5
+# 轨迹的完整历史游标独立于模型 batch 保存，拒绝旧传输结构。
+GRPO_ROLLOUT_FORMAT = 6
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,7 @@ class GrpoDecision:
     """一条采样轨迹中的决策 token 及其行为策略概率。"""
 
     batch: dict[str, object]
+    context_metadata: dict[str, int]
     action_keys: tuple[str, ...]
     action_index: int
     old_logprob: float
@@ -43,9 +45,10 @@ class StoredGrpoTrajectory:
 
 def _decision_to_payload(decision: GrpoDecision) -> dict[str, object]:
     """将决策转换成仅含 tensor/基础类型的安全序列化结构。"""
-    _validate_encoded_context(decision.batch)
+    _validate_encoded_context(decision.batch, decision.context_metadata)
     return {
         "batch": decision.batch,
+        "context_metadata": dict(decision.context_metadata),
         "action_keys": list(decision.action_keys),
         "action_index": int(decision.action_index),
         "old_logprob": float(decision.old_logprob),
@@ -57,22 +60,24 @@ def _decision_from_payload(payload: object) -> GrpoDecision:
     if not isinstance(payload, Mapping):
         raise ValueError("GRPO decision payload must be a mapping")
     batch = payload.get("batch")
+    metadata = payload.get("context_metadata")
     action_keys = payload.get("action_keys")
     if not isinstance(batch, Mapping) or not isinstance(action_keys, (list, tuple)):
         raise ValueError("GRPO decision payload is missing batch or action_keys")
-    _validate_encoded_context(batch)
+    _validate_encoded_context(batch, metadata)
     return GrpoDecision(
         batch=dict(batch),
+        context_metadata=dict(metadata),
         action_keys=tuple(str(key) for key in action_keys),
         action_index=int(payload["action_index"]),
         old_logprob=float(payload["old_logprob"]),
     )
 
 
-def _validate_encoded_context(batch: Mapping[str, object]) -> None:
+def _validate_encoded_context(batch: Mapping[str, object], metadata: object) -> None:
     """轨迹只保存实际推理的 prepared 输入，禁止 raw 或旧归一化记录混用。"""
-    if any("state_abs_values" in key or "state_delta_values" in key for key in batch):
-        raise ValueError("GRPO decision must contain encoded states, not raw context")
+    if RAW_ONLY_FIELD_NAMES.intersection(batch) or any(key.startswith("history_bank_") for key in batch):
+        raise ValueError("GRPO decision must contain encoded states and scenes, not raw context")
     for prefix in ("history", "current"):
         values = batch.get(f"{prefix}_state_vectors")
         reset = batch.get(f"{prefix}_state_reset_mask")
@@ -87,19 +92,18 @@ def _validate_encoded_context(batch: Mapping[str, object]) -> None:
             raise ValueError(f"GRPO {prefix} state null mask must be boolean and match state values")
         if bool((reset & nulls).any()):
             raise ValueError("GRPO unknown state fields cannot be marked as ABS resets")
-    for name in ("history_cursor", "history_window_start", "history_window_length"):
-        value = batch.get(name)
-        if not isinstance(value, torch.Tensor):
-            raise ValueError(f"GRPO decision is missing anchored context field: {name}")
-        if value.dtype != torch.int64 or value.shape != (1,) or bool((value < 0).any()):
-            raise ValueError(f"GRPO {name} must be one nonnegative int64 cursor value")
-    if not torch.equal(batch["history_window_start"] + batch["history_window_length"], batch["history_cursor"]):
-        raise ValueError("GRPO window cursor metadata is inconsistent")
+    if any(name in batch for name in ("history_cursor", "history_window_start", "history_window_length")):
+        raise ValueError("GRPO window audit metadata must remain outside the model batch")
+    if not isinstance(metadata, Mapping) or metadata.keys() != {"history_cursor"}:
+        raise ValueError("GRPO decision is missing anchored context metadata: history_cursor")
+    cursor = metadata["history_cursor"]
+    if type(cursor) is not int or cursor < 0:
+        raise ValueError("GRPO history_cursor metadata must be a nonnegative integer")
     history_mask = batch.get("history_mask")
-    if not isinstance(history_mask, torch.Tensor) or history_mask.dtype != torch.bool:
-        raise ValueError("GRPO history_mask must be boolean")
-    if int(history_mask.sum().item()) != int(batch["history_window_length"].item()):
-        raise ValueError("GRPO window length differs from encoded history")
+    if not isinstance(history_mask, torch.Tensor) or history_mask.dtype != torch.bool or history_mask.ndim != 2 or history_mask.shape[0] != 1:
+        raise ValueError("GRPO history_mask must be boolean with one decision row")
+    if int(history_mask.sum().item()) > cursor:
+        raise ValueError("GRPO history_cursor cannot be smaller than encoded history")
 
 
 class GrpoRolloutStore:

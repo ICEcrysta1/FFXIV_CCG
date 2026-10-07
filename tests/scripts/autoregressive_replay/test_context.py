@@ -670,9 +670,9 @@ def test_live_window_uses_accumulated_cursor_after_canonical_retention():
         actual, _ = builder.build_from_canonical(canonical, gcd_phase=True, max_history=300)
         expected_length = expected_lengths[index]
         assert actual["history_skill_ids"].shape[1] == expected_length
-        assert actual["history_cursor"].item() == index
-        assert actual["history_window_start"].item() == index - expected_length
-        assert actual["history_window_length"].item() == expected_length
+        assert builder.context_metadata == {"history_cursor": index}
+        assert int(actual["history_mask"].sum()) == expected_length
+        assert not {"history_cursor", "history_window_start", "history_window_length"} & actual.keys()
         assert actual["history_skill_ids"][0, 0].item() == index - expected_length + 1
         assert actual["history_state_reset_mask"][0, 0].all()
         repeated, _ = builder.build_from_canonical(canonical, gcd_phase=True, max_history=300)
@@ -688,12 +688,47 @@ def test_live_rejects_missing_or_invalid_accumulated_cursor(cursor):
         builder.build_from_canonical(canonical, gcd_phase=True, max_history=2)
 
 
-def test_live_rejects_capacity_override_smaller_than_saved_reset_keep():
+def test_live_history_limit_can_be_smaller_than_saved_reset_keep():
     builder, canonical = _live_builder_fixture(max_history=8)
-    with pytest.raises(ValueError, match="reset_keep"):
-        builder.build_from_canonical(canonical, gcd_phase=True, max_history=4)
+    for index in range(1, 10):
+        _append_live_history(canonical, index)
+    limited, _ = builder.build_from_canonical(canonical, gcd_phase=True, max_history=4)
+    assert limited["history_skill_ids"].tolist() == [[6, 7, 8, 9]]
     no_history, _ = builder.build_from_canonical(canonical, gcd_phase=True, max_history=0)
     assert no_history["current_state_reset_mask"].all()
+    assert builder.context_metadata == {"history_cursor": 9}
+
+
+@pytest.mark.parametrize("capacity,total,limit,expected", [
+    (300, 33, 32, 32), (300, 33, 0, 0), (300, 301, 32, 8),
+    (300, 593, 32, 32), (300, 594, 32, 8), (32, 33, 32, 8),
+])
+def test_live_history_limit_does_not_change_model_reset_cycle(capacity, total, limit, expected):
+    """真实 builder 同时覆盖读取消融与正式容量重置，不改变完整游标。"""
+    from dataclasses import replace
+
+    builder, canonical = _live_builder_fixture(max_history=capacity)
+    builder._model_config = replace(builder._model_config, history_reset_keep=8)
+    for index in range(1, total + 1):
+        _append_live_history(canonical, index)
+    limited, _ = builder.build_from_canonical(canonical, gcd_phase=True, max_history=limit)
+    assert limited["history_skill_ids"].shape[1] == expected
+    assert limited["history_skill_ids"].tolist() == [list(range(total - expected + 1, total + 1))]
+    assert builder.context_metadata == {"history_cursor": total}
+    if expected:
+        assert limited["history_state_reset_mask"][0, 0].all()
+    else:
+        assert limited["current_state_reset_mask"].all()
+    metadata = builder.context_metadata
+    metadata["history_cursor"] = -1
+    assert builder.context_metadata == {"history_cursor": total}
+
+
+@pytest.mark.parametrize("limit", [True, -1, 1.0, None])
+def test_live_rejects_invalid_history_limit(limit):
+    builder, canonical = _live_builder_fixture()
+    with pytest.raises(ValueError, match="max_history"):
+        builder.build_from_canonical(canonical, gcd_phase=True, max_history=limit)
 
 
 def test_live_unknown_recovery_marks_absolute_fields_and_checks_current_time():

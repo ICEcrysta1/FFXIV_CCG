@@ -76,11 +76,9 @@ def test_model_input_contract_round_trips_without_project_yaml(monkeypatch):
     assert restored.create_skill_vocab().require_lookup(0, context="wait") == 3
 
     normalizer = restored.create_normalizer()
-    assert normalizer.normalize_value(
-        "player_state",
-        "previous_action_after.time_seconds",
-        900.0,
-    ) == pytest.approx(0.5)
+    metadata = normalizer.state_encoding_metadata(restored.schema)
+    assert metadata.feature_keys == ("previous_action_after.time_seconds",)
+    assert normalizer.normalization_contract == restored.normalizer_contract
 
 
 def test_model_input_contract_rejects_checkpoint_without_contract():

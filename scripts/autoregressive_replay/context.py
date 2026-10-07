@@ -105,19 +105,19 @@ class SceneTemplateProvider:
             else target_count_window.feature_keys.index("end_offset_seconds")
         )
         if self._enabled:
-            self._scene_vectors, self._scene_types = reader.scene_tokens(
+            self._scene_abs_values, self._scene_types = reader.scene_tokens(
                 initial_sample_index,
                 float_dtype=torch.float32,
                 int_dtype=torch.int32,
             )
         else:
-            self._scene_vectors = torch.zeros((0, self._scene_dim), dtype=torch.float32)
+            self._scene_abs_values = torch.zeros((0, self._scene_dim), dtype=torch.float32)
             self._scene_types = torch.zeros((0,), dtype=torch.int32)
-        if self._enabled and self._scene_vectors.shape[0] == 0:
+        if self._enabled and self._scene_abs_values.shape[0] == 0:
             raise ValueError("scene cache has no usable scene tokens")
-        if self._scene_vectors.dtype != torch.float32:
+        if self._scene_abs_values.dtype != torch.float32:
             raise ValueError("raw scene cache must use float32")
-        if not torch.isfinite(self._scene_vectors).all():
+        if not torch.isfinite(self._scene_abs_values).all():
             raise ValueError("raw scene cache contains non-finite values")
         self._targetable_windows = self._build_targetable_windows()
         self._targetable_events = self._build_targetable_events()
@@ -131,15 +131,15 @@ class SceneTemplateProvider:
 
     def at_time(self, time_seconds: float):
         del time_seconds
-        return self._scene_vectors, self._scene_types
+        return self._scene_abs_values, self._scene_types
 
     def target_count_at(self, time_seconds: float) -> int:
         """从 cache scene 模板读取当前时间的目标数量。"""
         if self._target_count_index is None:
             return 1
         target = float(time_seconds)
-        scene_vectors, scene_types = self.at_time(time_seconds)
-        for vector, scene_type in zip(scene_vectors, scene_types):
+        scene_abs_values, scene_types = self.at_time(time_seconds)
+        for vector, scene_type in zip(scene_abs_values, scene_types):
             if int(scene_type.item()) != SCENE_TYPE_TARGET_COUNT:
                 continue
             start = float(vector[self._scene_start_index].item())
@@ -304,7 +304,7 @@ class SceneTemplateProvider:
         ):
             return ()
         windows = []
-        for vector, scene_type in zip(self._scene_vectors, self._scene_types):
+        for vector, scene_type in zip(self._scene_abs_values, self._scene_types):
             if int(scene_type.item()) != SCENE_TYPE_TARGETABLE:
                 continue
             start = float(vector[self._targetable_start_index].item())
@@ -351,7 +351,7 @@ class SceneTemplateProvider:
         if window_schema is None:
             return ()
         windows = []
-        for vector, scene_type in zip(self._scene_vectors, self._scene_types):
+        for vector, scene_type in zip(self._scene_abs_values, self._scene_types):
             if int(scene_type.item()) != scene_type_id:
                 continue
             start = float(vector[window_schema.start_offset_index].item())
@@ -368,7 +368,7 @@ class SceneTemplateProvider:
         for start, end in self._raid_buff_windows:
             boundaries.update((start, end))
         if self._scene_start_index is not None and self._scene_end_index is not None:
-            for vector, scene_type in zip(self._scene_vectors, self._scene_types):
+            for vector, scene_type in zip(self._scene_abs_values, self._scene_types):
                 if int(scene_type.item()) != SCENE_TYPE_TARGET_COUNT:
                     continue
                 boundaries.add(float(vector[self._scene_start_index].item()))
@@ -468,6 +468,14 @@ class LiveBatchBuilder:
         self._cached_history_device_tensors: tuple[
             torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
         ] | None = None
+        self._history_cursor: int | None = None
+
+    @property
+    def context_metadata(self) -> dict[str, int]:
+        """完整历史游标属于宿主审计信息，不进入模型 tensor batch。"""
+        if self._history_cursor is None:
+            raise RuntimeError("live context metadata requires a successfully built context")
+        return {"history_cursor": self._history_cursor}
 
     def build(
         self,
@@ -530,8 +538,12 @@ class LiveBatchBuilder:
         cursor = canonical.get("history_cursor")
         if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0:
             raise ValueError("live canonical context requires a nonnegative history_cursor")
-        keep = 0 if max_history == 0 else self._model_config.history_reset_keep
-        visible_length = history_window_length(cursor, max_history, keep)
+        if isinstance(max_history, bool) or not isinstance(max_history, int) or max_history < 0:
+            raise ValueError("max_history must be a non-negative integer")
+        # 正式重置周期只由模型配置决定；消融仅裁短已经选出的窗口。
+        visible_length = min(history_window_length(
+            cursor, self._model_config.history_capacity, self._model_config.history_reset_keep,
+        ), max_history)
         if len(canonical["skill_history_context"]) < visible_length:
             raise ValueError("retained canonical history cannot supply the planned context window")
         if cursor < len(canonical["skill_history_context"]):
@@ -550,7 +562,7 @@ class LiveBatchBuilder:
             state_history_tokens,
             max_history=max_history,
         )
-        scene_vectors, scene_types, scene_mask = self._scene_batch_tensors()
+        scene_abs_values, scene_types, scene_mask = self._scene_batch_tensors()
         current_state_vectors, current_state_null_mask = self._build_state_tensors(current_tokens)
         current_state_vectors = current_state_vectors.to(self._device)
         current_state_null_mask = current_state_null_mask.to(self._device)
@@ -576,7 +588,7 @@ class LiveBatchBuilder:
 
         history_length = len(history_action_keys)
         batch = {
-            "scene_vectors": scene_vectors,
+            "scene_abs_values": scene_abs_values,
             "scene_types": scene_types,
             "scene_mask": scene_mask,
             "history_skill_ids": history_skill_ids.unsqueeze(0),
@@ -594,20 +606,16 @@ class LiveBatchBuilder:
             "current_state_delta_values": current_deltas,
             "current_state_null_mask": current_state_null_mask,
             "current_state_delta_reset_mask": current_resets,
-            "history_cursor": torch.tensor([cursor], dtype=torch.int64, device=self._device),
-            "history_window_start": torch.tensor([cursor - history_length], dtype=torch.int64, device=self._device),
-            "history_window_length": torch.tensor([history_length], dtype=torch.int64, device=self._device),
             "action_legal_mask": action_legal_mask.unsqueeze(0),
             "history_action_keys": [history_action_keys],
             "action_keys": [list(action_keys)],
         }
-        return (
-            self._context_encoder.encode({
-                key: value.to(self._device) if isinstance(value, torch.Tensor) else value
-                for key, value in batch.items()
-            }),
-            list(action_keys),
-        )
+        prepared = self._context_encoder.encode({
+            key: value.to(self._device) if isinstance(value, torch.Tensor) else value
+            for key, value in batch.items()
+        })
+        self._history_cursor = cursor
+        return prepared, list(action_keys)
 
     def _build_history_batch(
         self,
@@ -659,15 +667,15 @@ class LiveBatchBuilder:
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """每个验证副本只把固定 scene 张量搬到目标设备一次。"""
         if self._cached_scene_batch is None:
-            scene_vectors, scene_types = self._scene_provider.at_time(0.0)
-            scene_vectors = scene_vectors.unsqueeze(0).to(self._device)
+            scene_abs_values, scene_types = self._scene_provider.at_time(0.0)
+            scene_abs_values = scene_abs_values.unsqueeze(0).to(self._device)
             scene_types = scene_types.unsqueeze(0).to(self._device)
             scene_mask = torch.ones(
-                (1, scene_vectors.shape[1]),
+                (1, scene_abs_values.shape[1]),
                 dtype=torch.bool,
                 device=self._device,
             )
-            self._cached_scene_batch = (scene_vectors, scene_types, scene_mask)
+            self._cached_scene_batch = (scene_abs_values, scene_types, scene_mask)
         return self._cached_scene_batch
 
     def _history_tensors_for_rows(

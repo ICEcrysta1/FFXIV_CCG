@@ -14,6 +14,7 @@ import torch
 
 from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, ModelInputContract, SkillVocab
+from common.policy.data.context_fields import MODEL_INPUT_FIELDS_BY_NAME
 from common.policy.model import (
     CausalPolicyModel,
     RepetitionConfig,
@@ -544,16 +545,16 @@ def build_fixed_ort_inputs(
     values: list[torch.Tensor] = []
     for spec in contract.tensor_inputs():
         source = _require_tensor(batch, spec.name).detach().to(device)
-        if spec.name in {"scene_vectors", "history_state_vectors", "current_state_vectors"} and source.dtype != torch.float32:
+        field = MODEL_INPUT_FIELDS_BY_NAME[spec.name]
+        if field.dtype == "float32" and source.dtype != torch.float32:
             raise ValueError(f"host encoded {spec.name} must remain float32 until deployment casting")
-        target = torch.zeros(spec.shape, dtype=onnx_torch_dtype(spec.dtype), device=device)
-        if spec.name == "history_state_null_mask":
-            target.fill_(True)
+        target = torch.full(spec.shape, field.padding_value, dtype=onnx_torch_dtype(spec.dtype), device=device)
         source = source.to(dtype=target.dtype)
-        if spec.name.startswith("scene_"):
-            target[:, :scene_length] = source
-        elif spec.name.startswith("history_"):
-            target[:, :history_length] = source
+        if field.sequence_axis is not None:
+            lengths = {"scene": scene_length, "history": history_length}
+            indices = [slice(None)] * target.ndim
+            indices[field.sequence_axis] = slice(None, lengths[field.sequence_group])
+            target[tuple(indices)] = source
         else:
             if tuple(source.shape) != spec.shape:
                 raise ValueError(

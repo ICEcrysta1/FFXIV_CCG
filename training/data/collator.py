@@ -7,6 +7,7 @@ from collections.abc import Mapping
 
 from common.config import load_precision_config
 from common.torch_dependencies import import_torch
+from common.policy.data.context_fields import CURRENT_STATE_RAW_FIELDS, ENCODING_BANK_FIELDS, RAW_SCENE_FIELDS
 
 
 class TrainingCollator:
@@ -55,7 +56,7 @@ class TrainingCollator:
                 raise ValueError("label must match the fixed output action index")
 
         history_lengths = [int(sample["history_length"]) for sample in samples]
-        scene_lengths = [sample["scene_vectors"].shape[0] for sample in samples]
+        scene_lengths = [sample["scene_abs_values"].shape[0] for sample in samples]
         history_action_batches = [_compact_history_action_keys(sample) for sample in samples]
 
         quality_levels = [
@@ -100,8 +101,8 @@ class TrainingCollator:
             ),
             "action_values": torch.stack([sample["action_values"] for sample in samples]),
         }
-        for field in ("abs_values", "delta_values", "null_mask", "delta_reset_mask"):
-            key = f"current_state_{field}"
+        for field in CURRENT_STATE_RAW_FIELDS:
+            key = field.name
             batch[key] = torch.stack([sample[key] for sample in samples])
         _validate_quality_supervision(
             batch, torch=torch, require_percentile=self._require_quality_percentile,
@@ -115,8 +116,11 @@ class TrainingCollator:
         batch["scene_mask"] = _build_length_mask(scene_lengths, torch=torch)
 
         pad_sequence = torch.nn.utils.rnn.pad_sequence
-        for key in ("scene_vectors", "scene_types"):
-            batch[key] = pad_sequence([sample[key] for sample in samples], batch_first=True)
+        for field in RAW_SCENE_FIELDS:
+            batch[field.name] = pad_sequence(
+                [sample[field.name] for sample in samples], batch_first=True,
+                padding_value=field.padding_value,
+            )
         return batch
 
     def _truncate_early_history(self, sample: dict[str, object]) -> dict[str, object]:
@@ -171,10 +175,7 @@ def _merge_history_banks(samples: list[dict[str, object]], *, torch):
     ordered: list[dict[str, object]] = []
     sample_offsets: list[int] = []
     total_rows = 0
-    bank_keys = (
-        "skill_ids", "skill_features", "state_abs_values", "state_delta_values",
-        "state_null_mask", "state_delta_reset_mask",
-    )
+    bank_keys = tuple(field.name for field in ENCODING_BANK_FIELDS)
     for sample in samples:
         bank = {key: sample[f"history_bank_{key}"] for key in bank_keys}
         bank_id = sample.get("history_bank_id")
@@ -194,8 +195,8 @@ def _merge_history_banks(samples: list[dict[str, object]], *, torch):
         merged = ordered[0]
     else:
         merged = {
-            key: torch.cat([bank[key] for bank in ordered], dim=0)
-            for key in bank_keys
+            field.name: torch.cat([bank[field.name] for bank in ordered], dim=field.sequence_axis)
+            for field in ENCODING_BANK_FIELDS
         }
     history_ends = [
         int(sample["history_end"]) + offset

@@ -12,6 +12,7 @@ import torch
 from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, ModelInputContract, SkillVocab
 from common.policy.data.input_contract import residual_composition_contract
+from common.policy.data.context_fields import MODEL_INPUT_FIELDS
 from common.policy.model.repetition import parse_repetition_config
 
 from ..io.artifact_io import file_sha256
@@ -325,27 +326,23 @@ class DeploymentContract:
         fd = self.data_spec.skill_feature_dim
         xd = self.data_spec.scene_dim
         float_dtype = precision_onnx_dtype(self.precision)
-        specs = (
-            TensorSpec("scene_vectors", float_dtype, (b, s, xd), "host FP32 anchor-clipped then time-differenced scene vectors; cast after encoding"),
-            TensorSpec("scene_types", "tensor(int64)", (b, s), "scene type ids"),
-            TensorSpec("scene_mask", "tensor(bool)", (b, s), "true for valid scene tokens"),
-            TensorSpec("history_skill_ids", "tensor(int64)", (b, h), "right-padded vocab ids"),
-            TensorSpec("history_skill_features", float_dtype, (b, h, fd), "ordered skill features"),
-            TensorSpec("history_state_vectors", float_dtype, (b, h, sd), "host FP32 first-visible ABS anchor then raw numeric DELTA; normalized before cast"),
-            TensorSpec(
-                "history_state_null_mask",
-                "tensor(bool)",
-                (b, h, sd),
-                "history state null flags; right-padded positions are true",
-            ),
-            TensorSpec("history_mask", "tensor(bool)", (b, h), "true for valid actions; shared by independent skill and state tokens"),
-            TensorSpec("current_state_vectors", float_dtype, (b, sd), "host FP32 current DELTA from last visible history, or ABS without history"),
-            TensorSpec("current_state_null_mask", "tensor(bool)", (b, sd), "current request state null flags"),
-            TensorSpec("history_state_reset_mask", "tensor(bool)", (b, h, sd), "per-field ABS reset markers; first visible state is absolute"),
-            TensorSpec("current_state_reset_mask", "tensor(bool)", (b, sd), "current per-field ABS reset markers"),
-        )
-        assert tuple(spec.name for spec in specs) == TENSOR_INPUT_NAMES
-        return specs
+        layouts = {
+            "scene_vectors": ((b, s, xd), "host FP32 anchor-clipped then time-differenced scene vectors; cast after encoding"),
+            "scene_types": ((b, s), "scene type ids"),
+            "scene_mask": ((b, s), "true for valid scene tokens"),
+            "history_skill_ids": ((b, h), "right-padded vocab ids"),
+            "history_skill_features": ((b, h, fd), "ordered skill features"),
+            "history_state_vectors": ((b, h, sd), "host FP32 first-visible ABS anchor then raw numeric DELTA; normalized before cast"),
+            "history_state_null_mask": ((b, h, sd), "history state null flags; right-padded positions are true"),
+            "history_mask": ((b, h), "true for valid actions; shared by independent skill and state tokens"),
+            "current_state_vectors": ((b, sd), "host FP32 current DELTA from last visible history, or ABS without history"),
+            "current_state_null_mask": ((b, sd), "current request state null flags"),
+            "history_state_reset_mask": ((b, h, sd), "per-field ABS reset markers; first visible state is absolute"),
+            "current_state_reset_mask": ((b, sd), "current per-field ABS reset markers"),
+        }
+        # 宿主 FP32 和技能浮点载荷在图入口统一转换到部署精度。
+        dtypes = {"float32": float_dtype, "float": float_dtype, "index": "tensor(int64)", "bool": "tensor(bool)"}
+        return tuple(TensorSpec(field.name, dtypes[field.dtype], *layouts[field.name]) for field in MODEL_INPUT_FIELDS)
 
     def tensor_outputs(self) -> tuple[TensorSpec, ...]:
         float_dtype = precision_onnx_dtype(self.precision)
@@ -370,15 +367,16 @@ class DeploymentContract:
                 raise ValueError(
                     f"{spec.name} dtype mismatch: {tensor.dtype} != {spec.dtype}"
                 )
-        scene_types = inputs[1]
+        named_inputs = dict(zip(TENSOR_INPUT_NAMES, inputs, strict=True))
+        scene_types = named_inputs["scene_types"]
         if bool(((scene_types < 0) | (scene_types >= self.data_spec.num_scene_types)).any()):
             raise ValueError("scene_types contains an id outside the deployment contract")
-        history_ids = inputs[3]
+        history_ids = named_inputs["history_skill_ids"]
         vocab_size = len(self.vocab_entries) + 1
         if bool(((history_ids < 0) | (history_ids >= vocab_size)).any()):
             raise ValueError("history_skill_ids contains an id outside the deployment vocab")
-        _validate_right_padding(inputs[2], "scene_mask")
-        _validate_right_padding(inputs[7], "history_mask")
+        _validate_right_padding(named_inputs["scene_mask"], "scene_mask")
+        _validate_right_padding(named_inputs["history_mask"], "history_mask")
 
     def validate_host_action_order(
         self,

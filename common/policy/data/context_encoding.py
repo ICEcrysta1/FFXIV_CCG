@@ -10,6 +10,7 @@ from torch import nn
 from ..config import ModelConfig
 from .normalizer import Normalizer
 from .schema import TrainingSchema
+from .context_fields import ENCODING_BANK_FIELDS, RAW_ONLY_FIELD_NAMES
 
 
 def raw_state_delta(
@@ -88,8 +89,8 @@ class ContextEncoder(nn.Module):
 
     def encode(self, batch: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """只接受 raw 输入；编码完成后移除 raw 字段，防止重复编码或双路径消费。"""
-        if "history_state_vectors" in batch or "current_state_vectors" in batch:
-            raise ValueError("ContextEncoder requires raw states; an encoded batch cannot be encoded twice")
+        if "history_state_vectors" in batch or "current_state_vectors" in batch or "scene_vectors" in batch:
+            raise ValueError("ContextEncoder requires raw states and scenes; an encoded batch cannot be encoded twice")
         current_abs = batch["current_state_abs_values"]
         current_null = batch["current_state_null_mask"]
         _validate_raw_state(current_abs, current_null)
@@ -132,7 +133,7 @@ class ContextEncoder(nn.Module):
         prepared = {
             key: value for key, value in batch.items()
             if not key.startswith("history_bank_")
-            and key not in _RAW_STATE_KEYS
+            and key not in RAW_ONLY_FIELD_NAMES
             and key not in {"history_lengths", "history_ends"}
         }
         prepared.update(
@@ -149,8 +150,7 @@ class ContextEncoder(nn.Module):
         return prepared
 
     def _gather_history(self, batch: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-        names = ("skill_ids", "skill_features", "state_abs_values", "state_delta_values",
-                 "state_null_mask", "state_delta_reset_mask")
+        names = tuple(field.name for field in ENCODING_BANK_FIELDS)
         if "history_bank_state_abs_values" not in batch:
             return {"history_" + name: batch["history_" + name] for name in names}
         lengths, ends = batch["history_lengths"], batch["history_ends"]
@@ -176,7 +176,7 @@ class ContextEncoder(nn.Module):
         return values.masked_fill(nulls, -1.0), reset
 
     def _encode_scene(self, batch, anchor):
-        values, types, mask = batch["scene_vectors"], batch["scene_types"], batch["scene_mask"]
+        values, types, mask = batch["scene_abs_values"], batch["scene_types"], batch["scene_mask"]
         if values.dtype != torch.float32 or values.ndim != 3 or values.shape[-1] != self.scene_dim:
             raise ValueError("raw scenes must be FP32 with shape [batch, scene, scene_dim]")
         if types.dtype not in (torch.int32, torch.int64) or mask.dtype != torch.bool or types.shape != values.shape[:2] or mask.shape != types.shape:
@@ -210,9 +210,3 @@ class ContextEncoder(nn.Module):
         values = values.masked_fill(~self.scene_feature_mask[types] | ~mask[..., None], 0.0)
         types = types.masked_fill(~mask, 0)
         return {"scene_vectors": values, "scene_types": types, "scene_mask": mask}
-
-
-_RAW_STATE_KEYS = frozenset({
-    "history_state_abs_values", "history_state_delta_values", "history_state_delta_reset_mask",
-    "current_state_abs_values", "current_state_delta_values", "current_state_delta_reset_mask",
-})

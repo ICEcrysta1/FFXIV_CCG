@@ -138,14 +138,14 @@ def plot_standard_attention_outputs(
 
 
 def _sample_token_count(sample: object) -> int:
-    """按 compiled cache 字段估算样本 token 数，供代表样本选择使用。"""
+    """按 dataset 的 raw 字段估算样本 token 数，供代表样本选择使用。"""
     if not isinstance(sample, Mapping):
         raise TypeError(
             "expected mapping sample for representative selection, "
             f"got {type(sample).__name__}"
         )
     total = 1  # 显式最新状态 token。
-    for key in ("scene_vectors",):
+    for key in ("scene_abs_values",):
         values = sample.get(key)
         if values is None:
             continue

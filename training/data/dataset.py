@@ -23,6 +23,7 @@ from common.policy.data.compiled_cache import (
 from common.policy.data.normalizer import Normalizer
 from common.policy.data.history_window import history_window_length
 from common.policy.data.skill_vocab import SkillVocab
+from common.policy.data.context_fields import HISTORY_BANK_FIELDS, HISTORY_BANK_METADATA_NAMES, RAW_SCENE_FIELDS
 
 
 class TrainingDataset(Dataset):
@@ -293,19 +294,16 @@ class TrainingDataset(Dataset):
         if "history_end" not in sample:
             raise ValueError("compiled sample is missing compact history_end")
         attached = dict(sample)
+        # cache 磁盘字段与 raw batch 的阶段命名在读取入口明确映射。
+        for field in RAW_SCENE_FIELDS:
+            if field.cache_name is not None:
+                attached[field.name] = attached.pop(field.cache_name)
         bank = reader.history_bank
-        for key in (
-            "skill_ids",
-            "skill_features",
-            "state_abs_values",
-            "state_delta_values",
-            "state_null_mask",
-            "state_delta_reset_mask",
-            "skill_potencies",
-            "cumulative_dot_potencies",
-        ):
+        for field in HISTORY_BANK_FIELDS:
+            key = field.name
             attached[f"history_bank_{key}"] = bank[key]
-        attached["history_bank_action_keys"] = bank["action_keys"]
+        for key in HISTORY_BANK_METADATA_NAMES:
+            attached[f"history_bank_{key}"] = bank[key]
         attached["history_bank_id"] = reader.history_bank_id
         return attached
 

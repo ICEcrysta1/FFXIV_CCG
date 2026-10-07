@@ -263,18 +263,19 @@ def test_skill_labels_use_chinese_names_from_project_config():
 
 
 def test_sample_token_count_requires_mapping_and_sums_distinct_token_groups():
-    sample = {"scene_vectors": [[0.0]], "history_skill_ids": [1, 2]}
+    sample = {"scene_abs_values": [[0.0]], "history_skill_ids": [1, 2]}
     assert attention_output._sample_token_count(sample) == 6
     with pytest.raises(TypeError, match="expected mapping sample"):
         attention_output._sample_token_count(object())
-    with pytest.raises(TypeError, match="scene_vectors"):
-        attention_output._sample_token_count({"scene_vectors": 1})
+    with pytest.raises(TypeError, match="scene_abs_values"):
+        attention_output._sample_token_count({"scene_abs_values": 1})
 
 
 def test_sample_token_count_supports_compact_history_bank_samples():
-    samples = [{"scene_vectors": [[0.0]], "history_length": value} for value in (0, 2, 5)]
+    samples = [{"scene_abs_values": [[0.0]], "history_length": value} for value in (0, 2, 5)]
     assert [attention_output._sample_token_count(sample) for sample in samples] == [2, 6, 12]
     assert max(samples, key=attention_output._sample_token_count)["history_length"] == 5
+    assert attention_output._sample_token_count({"scene_abs_values": [[0.0]] * 3, "history_length": 2}) == 8
 
 
 def _analysis_schema():
@@ -639,7 +640,10 @@ def test_analysis_restores_saved_input_contract_without_current_yaml(monkeypatch
     assert context.vocab.to_dict() == saved.create_skill_vocab().to_dict()
     normalizer = seen["dataset"]["normalizer"]
     assert normalizer.normalization_contract == saved.normalizer_contract
-    assert normalizer.normalize_value("player_state", "previous_action_after.time_seconds", 900) == pytest.approx(0.5)
+    time_index = tuple(
+        key for keys in saved.schema.state_group_feature_keys.values() for key in keys
+    ).index("previous_action_after.time_seconds")
+    assert context.context_encoder.state_divisors[time_index] == pytest.approx(120.0)
     assert seen["source"]["normalizer"] is normalizer
     assert seen["source"]["expected_skill_vocab"] is seen["dataset"]["skill_vocab"]
     assert context.model.input_encoder.skill_embed.weight.shape[0] == 8
@@ -1246,7 +1250,7 @@ def test_model_analysis_attention_output_and_main(monkeypatch, tmp_path):
     standard_context.output_dir.mkdir(parents=True)
     standard_context.dataset = [
         {
-            "scene_vectors": [[0.0]],
+            "scene_abs_values": [[0.0]],
             "history_skill_ids": [1, 2],
         }
     ]

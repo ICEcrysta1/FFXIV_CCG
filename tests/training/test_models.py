@@ -1008,7 +1008,7 @@ def test_training_collator_truncates_only_early_history_and_preserves_scene(tmp_
     sample["history_bank_state_null_mask"] = torch.zeros((4, state_width), dtype=torch.bool)
     sample["history_bank_state_delta_values"] = torch.zeros((4, state_width))
     sample["history_bank_state_delta_reset_mask"] = torch.zeros((4, state_width), dtype=torch.bool)
-    scene_before = sample["scene_vectors"].clone()
+    scene_before = sample["scene_abs_values"].clone()
     decision_before = {
         key: sample[key].clone()
         for key in (
@@ -1030,7 +1030,7 @@ def test_training_collator_truncates_only_early_history_and_preserves_scene(tmp_
     assert 1 <= history_length < 3
     assert batch["history_action_keys"][0][-1] == "latest"
     assert batch["history_bank_state_abs_values"][batch["history_ends"][0] - 1, 0].item() == 30.0
-    assert torch.equal(batch["scene_vectors"][0, : scene_before.shape[0]], scene_before)
+    assert torch.equal(batch["scene_abs_values"][0, : scene_before.shape[0]], scene_before)
     for key, expected in decision_before.items():
         assert torch.equal(batch[key][0], expected)
 

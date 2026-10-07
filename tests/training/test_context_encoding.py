@@ -62,11 +62,10 @@ def _raw_batch():
         "current_state_delta_values": current_delta,
         "current_state_null_mask": current_null,
         "current_state_delta_reset_mask": current_reset,
-        "scene_vectors": torch.tensor([[[1100, 1300, 200, 1], [3, 10, 1250, 1240],
+        "scene_abs_values": torch.tensor([[[1100, 1300, 200, 1], [3, 10, 1250, 1240],
                                          [1150, 1199, 49, 0], [1220, 1600, 380, 1]]], dtype=torch.float32),
         "scene_types": torch.tensor([[0, 1, 0, 0]]),
         "scene_mask": torch.tensor([[True, True, True, True]]),
-        "history_cursor": torch.tensor([302]),
     }
 
 
@@ -96,10 +95,22 @@ def test_first_anchor_and_current_delta_are_distinct():
     assert not output["current_state_reset_mask"].any()
     assert all(value.dtype == torch.float32 for key, value in output.items() if key.endswith("vectors"))
     assert not any("abs_values" in key or "delta_values" in key for key in output)
-    assert output["history_cursor"].tolist() == [302]
     assert not list(encoder.parameters())
     with pytest.raises(ValueError, match="encoded twice"):
         encoder.encode(output)
+
+
+def test_scene_encoding_separates_raw_and_model_fields_without_mutating_raw():
+    encoder = _encoder()
+    batch = _raw_batch()
+    absolute = batch["scene_abs_values"].clone()
+    output = encoder.encode(batch)
+    assert "scene_abs_values" not in output
+    assert "scene_vectors" in output
+    torch.testing.assert_close(batch["scene_abs_values"], absolute, rtol=0, atol=0)
+    ambiguous = {**batch, "scene_vectors": absolute}
+    with pytest.raises(ValueError, match="raw states and scenes"):
+        encoder.encode(ambiguous)
 
 
 def test_resources_timers_and_buff_refresh_reconstruct_raw_and_keep_signed_scales():
@@ -155,7 +166,7 @@ def test_resources_timers_and_buff_refresh_reconstruct_raw_and_keep_signed_scale
         "current_state_delta_values": delta[3:],
         "current_state_null_mask": nulls[3:],
         "current_state_delta_reset_mask": reset[3:],
-        "scene_vectors": torch.zeros((1, 0, 3)),
+        "scene_abs_values": torch.zeros((1, 0, 3)),
         "scene_types": torch.zeros((1, 0), dtype=torch.long),
         "scene_mask": torch.zeros((1, 0), dtype=torch.bool),
     })
@@ -187,7 +198,7 @@ def test_future_first_scene_keeps_offset_and_equal_windows_use_stable_full_order
     """未来首窗口不归零；相同起止按类型，再按原始行号稳定排序。"""
     batch = _raw_batch()
     # 第一类第4列是原始内容标签，第二类时间列换序；标签用于观察同类同起止稳定性。
-    batch["scene_vectors"] = torch.tensor([[
+    batch["scene_abs_values"] = torch.tensor([[
         [2, 40, 1260, 1220],
         [1220, 1260, 40, .25],
         [1220, 1250, 30, .5],
@@ -227,7 +238,7 @@ def test_empty_history_anchors_current_state_and_keeps_padded_scene_width():
     for key in tuple(batch):
         if key.startswith("history_") and key != "history_cursor":
             batch[key] = batch[key][:, :0]
-    batch["scene_vectors"][:, :, 1] = 0  # 所有 combat 窗口均已结束。
+    batch["scene_abs_values"][:, :, 1] = 0  # 所有 combat 窗口均已结束。
     batch["scene_mask"].fill_(False)
     output = _encoder().encode(batch)
     assert output["history_state_vectors"].shape == (1, 0, 6)
