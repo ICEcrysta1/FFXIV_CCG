@@ -333,33 +333,6 @@ def load_policy_config(
     return merged
 
 
-def load_action_quality_severity_weights(job_tag: str) -> dict[str, float]:
-    """从所选职业模型配置读取动作质量等级权重；未配置时保留原始等级。"""
-    if not os.environ.get(PROJECT_MODEL_VARIANT_ENV, "").strip():
-        return {}
-    variant = resolve_project_model_variant(project_root=PROJECT_ROOT)
-    manifest = POLICY_MODEL_ROOT / job_tag / variant / "config.yaml"
-    if not manifest.is_file():
-        return {}
-    quality = load_policy_config(manifest).get("action_quality", {})
-    if not isinstance(quality, Mapping):
-        raise TypeError(f"{manifest}: action_quality must be a mapping")
-    weights = quality.get("severity_weights", {})
-    if not isinstance(weights, Mapping):
-        raise TypeError(f"{manifest}: severity_weights must be a mapping")
-    if not weights:
-        return {}
-    result = {}
-    for level in ("minor", "medium", "major"):
-        value = weights.get(level)
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise TypeError(f"invalid action quality severity weight: {level}")
-        if not math.isfinite(value) or not 0 <= value <= 1:
-            raise ValueError(f"invalid action quality severity weight: {level}")
-        result[level] = float(value)
-    return result
-
-
 def resolve_policy_model_config_path(explicit_path: Path | None = None) -> Path:
     """按 ``.env`` 的职业标签和模型变体解析策略模型 YAML。"""
     if explicit_path is not None:

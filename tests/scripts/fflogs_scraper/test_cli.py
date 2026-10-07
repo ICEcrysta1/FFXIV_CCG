@@ -17,16 +17,18 @@ def test_module_help_runs_without_credentials():
     process_env.pop("FFLOGS_V2_CLIENT_ID", None)
     process_env.pop("FFLOGS_V2_CLIENT_SECRET", None)
     result = subprocess.run(
-        [sys.executable, "-B", "-m", "scripts.fflogs_scraper", "--help"],
+        [sys.executable, "-X", "utf8", "-B", "-m", "scripts.fflogs_scraper", "--help"],
         cwd=Path(__file__).resolve().parents[3],
         env=process_env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=15,
         check=False,
     )
     assert result.returncode == 0, result.stderr
     assert "{single,batch,encounters}" in result.stdout
+    assert "FFLogs 战斗数据拉取" in result.stdout
 
 
 def test_dotenv_resolves_project_root_after_move_and_preserves_environment(monkeypatch, tmp_path):

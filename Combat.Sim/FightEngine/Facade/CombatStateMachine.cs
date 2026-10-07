@@ -247,10 +247,6 @@ public sealed class CombatStateMachine
     internal Dictionary<string, object> BuildJobResourceSnapshot(CombatState state) =>
         SystemMachine.BuildJobResourceSnapshot(state);
 
-    /// <summary>估算实际耗蓝（对照 _estimate_actual_mp_cost）。</summary>
-    internal int EstimateActualMpCost(CombatState state, SkillDefinition skill) =>
-        JobMachine.ActualMpCost(state, skill);
-
     /// <summary>应用动作占用、冷却和职业时序资源消耗（对照 _apply_action_timing）。</summary>
     internal void ApplyActionTiming(
         CombatState state,

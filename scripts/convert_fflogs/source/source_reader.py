@@ -12,10 +12,7 @@ from common.policy.data.action_space import ActionSpace
 from .source_helpers import (
     SKILL_ID_FIELD,
     SKILL_HISTORY_FIELDS,
-    build_skill_feature_matrix,
     derive_skill_feature_names,
-    extract_execution_metric,
-    require_numeric_skill_kind,
     to_optional_int,
 )
 from common.policy.data.schema import (
@@ -142,29 +139,6 @@ class TrainingSourceReader:
     def history_length(self, sample_idx: int) -> int:
         return len(self._history_rows(sample_idx))
 
-    def history_tail(self, sample_idx: int) -> tuple[dict[str, object], dict[str, object]]:
-        """返回一个样本历史末尾的技能行与状态 token。
-
-        编译增量历史缓存只需要每个新动作对应的一行，因此这里避免把完整历史
-        前缀重新装配成 tensor。历史技能和历史状态必须保持一一对应；不一致时
-        直接失败，避免生成无法和旧 dense cache 对齐的缓存。
-        """
-        rows = self._history_rows(sample_idx)
-        context = self._sample_context(sample_idx)
-        state_context = context.get("state_history_context", {})
-        tokens = state_context.get("tokens", []) if isinstance(state_context, dict) else []
-        if len(rows) != len(tokens):
-            raise ValueError(
-                "skill/state history length mismatch: "
-                f"sample={sample_idx} skills={len(rows)} states={len(tokens)}"
-            )
-        if not rows:
-            raise ValueError(f"history tail is empty for sample={sample_idx}")
-        state_token = tokens[-1]
-        if not isinstance(state_token, dict):
-            raise ValueError(f"history state tail must be a mapping: sample={sample_idx}")
-        return dict(rows[-1]), dict(state_token)
-
     def history_delta(
         self,
         sample_idx: int,
@@ -222,46 +196,6 @@ class TrainingSourceReader:
             rows = [] if max_history == 0 else rows[-max_history:]
         return [dict(row) for row in rows]
 
-    def history_skill_feature_matrix(self, sample_idx: int, *, max_history: int | None, dtype):
-        return build_skill_feature_matrix(
-            self.history_skill_rows(sample_idx, max_history=max_history),
-            feature_names=self.skill_feature_names,
-            torch=self._torch,
-            dtype=dtype,
-        )
-
-    def history_skill_metrics(
-        self,
-        sample_idx: int,
-        *,
-        max_history: int | None = None,
-    ) -> tuple[list[float], list[float]]:
-        """返回历史技能原始威力与累计 DoT，供验证 PPG 使用。"""
-        rows = self.history_skill_rows(sample_idx, max_history=max_history)
-        metrics = self.history_execution_metrics(sample_idx, max_history=max_history)
-        if len(rows) != len(metrics):
-            raise ValueError(
-                "skill/execution metrics length mismatch: "
-                f"sample={sample_idx} skills={len(rows)} metrics={len(metrics)}"
-            )
-
-        potencies: list[float] = []
-        cumulative_dot_potencies: list[float] = []
-        for index, (row, metric) in enumerate(zip(rows, metrics)):
-            context_label = f"history sample={sample_idx} index={index} fight={self.fight_id}"
-            require_numeric_skill_kind(row, context=context_label)
-            potencies.append(float(row.get("potency", 0.0)))
-            if not isinstance(metric, dict):
-                raise ValueError(f"{context_label} execution metrics row must be a mapping")
-            cumulative_dot_potencies.append(
-                extract_execution_metric(
-                    metric,
-                    feature_name="cumulative_dot_potency",
-                    context=context_label,
-                )
-            )
-        return potencies, cumulative_dot_potencies
-
     def history_execution_metrics(self, sample_idx: int, *, max_history: int | None = None):
         """真实执行统计与模型状态分离，顺序与技能历史一一对应。"""
         state_context = self._sample_context(sample_idx)["state_history_context"]
@@ -273,22 +207,6 @@ class TrainingSourceReader:
                 raise ValueError(f"max_history must be >= 0, got {max_history}")
             metrics = [] if max_history == 0 else metrics[-max_history:]
         return metrics
-
-    def history_state_matrix(
-        self,
-        sample_idx: int,
-        *,
-        max_history: int | None = None,
-        dtype,
-    ):
-        context = self._sample_context(sample_idx)
-        state_context = context["state_history_context"]
-        tokens = state_context.get("tokens", []) if isinstance(state_context, dict) else []
-        if max_history is not None:
-            if max_history < 0:
-                raise ValueError(f"max_history must be >= 0, got {max_history}")
-            tokens = [] if max_history == 0 else tokens[-max_history:]
-        return self._build_state_matrix(tokens, dtype=dtype)
 
     def state_matrix_from_tokens(self, tokens, *, dtype):
         """把已经选好的状态 token 批量转为向量；供增量历史 bank 一次性构建。"""

@@ -45,14 +45,6 @@ STATE_VECTOR_GROUP_SCHEMAS = tuple(
 )
 
 
-def format_canonical_output_context(output_context: dict[str, object]) -> dict[str, object]:
-    """按统一 schema 裁剪 canonical 输出。"""
-    return {
-        key: output_context[key]
-        for key in CANONICAL_CONTEXT_TOP_LEVEL_KEYS
-    }
-
-
 def extract_state_feature_keys(state_context: dict[str, object]) -> dict[str, list[str]]:
     """提取状态上下文里每个向量分组的 feature key。"""
     return {

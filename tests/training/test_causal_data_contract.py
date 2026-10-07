@@ -99,8 +99,6 @@ def test_raw_reader_rejects_precision_changes_before_state_difference(dtype):
     with pytest.raises(ValueError, match="require FP32"):
         reader.current_state_matrix(1, dtype=dtype)
     with pytest.raises(ValueError, match="require FP32"):
-        reader.history_state_matrix(1, dtype=dtype)
-    with pytest.raises(ValueError, match="require FP32"):
         reader.state_matrix_from_tokens(payload["samples"][1]["context"]["state_history_context"]["tokens"], dtype=dtype)
 
 

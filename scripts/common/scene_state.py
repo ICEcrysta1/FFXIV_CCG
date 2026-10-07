@@ -131,13 +131,6 @@ class SceneFactScheduler:
             self._cursor += 1
         return due
 
-    def next_fact_time_after(self, timestamp: float) -> float | None:
-        """下一个尚未提交的事实时刻；没有时返回 None。"""
-        if self._cursor >= len(self._facts):
-            return None
-        return self._facts[self._cursor].timestamp
-
-
 def resolve_target_count_at(
     scene_context: dict[str, object] | None,
     timestamp: float,

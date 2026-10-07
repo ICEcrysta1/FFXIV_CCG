@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
-
-from .config.constants import _round_time
 
 # 确保项目根目录在 sys.path 中，以解析 common 配置/模型导入
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -50,9 +47,3 @@ def merge_timestamps_to_windows(
             current_end = timestamp
     windows.append((current_start, current_end))
     return windows
-
-
-def _sanitize_path_fragment(value: str) -> str:
-    """清理字符串以安全用于文件/目录名。"""
-    cleaned = re.sub(r"[^\w一-鿿-]+", "_", value, flags=re.UNICODE).strip("_")
-    return cleaned or "unnamed"

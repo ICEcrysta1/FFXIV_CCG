@@ -8,10 +8,10 @@ import pytest
 import torch
 
 from scripts.onnx_export import CapacityContract, OnnxPolicy
-from scripts.onnx_export.policy.policy import stable_masked_softmax
 from scripts.onnx_export.runtime.validation import _assert_padding_keys_blocked, validate_pytorch_matrix
 from common.policy.config import ModelConfig
 from common.policy.data import DataSpec
+from common.policy.model.attention_variants import run_head_attention
 from common.policy.model import (
     CausalPolicyModel,
     RepetitionConfig,
@@ -470,15 +470,31 @@ def test_onnx_policy_exports_with_tensor_only_user_inputs(
     )
 
 
-def test_masked_softmax_returns_zero_for_fully_blocked_rows():
-    scores = torch.tensor([[[[1.0, 2.0], [3.0, 4.0]]]])
-    blocked = torch.tensor([[[[True, True], [False, True]]]])
+@pytest.mark.parametrize("collect_attention", [False, True])
+def test_policy_attention_returns_zero_for_fully_blocked_rows(collect_attention):
+    # 直接覆盖正式编码器的 SDPA/trace 路径，与 ONNX 共用显式 mask。
+    layer = _make_model().eval().encoder.layers[0]
+    attention = layer.self_attn
+    query = torch.ones((2, attention.num_heads, 1, attention.head_dim))
+    key = torch.ones((2, attention.num_kv_heads, 2, attention.head_dim))
+    value = torch.ones_like(key)
+    output, weights = run_head_attention(
+        layer, query, key, value,
+        key_valid=torch.tensor([[False, False], [True, False]]),
+        causal=False,
+        collect_attention=collect_attention,
+        force_explicit_mask=True,
+    )
 
-    weights = stable_masked_softmax(scores, blocked)
-
-    assert torch.isfinite(weights).all()
-    torch.testing.assert_close(weights[0, 0, 0], torch.zeros(2))
-    torch.testing.assert_close(weights[0, 0, 1], torch.tensor([1.0, 0.0]))
+    assert torch.isfinite(output).all()
+    torch.testing.assert_close(output[0], torch.zeros_like(output[0]))
+    if collect_attention:
+        assert torch.isfinite(weights).all()
+        torch.testing.assert_close(weights[0], torch.zeros_like(weights[0]))
+        torch.testing.assert_close(weights[1, :, 0, 0], torch.ones(attention.num_heads))
+        torch.testing.assert_close(weights[1, :, 0, 1], torch.zeros(attention.num_heads))
+    else:
+        assert weights is None
 
 
 @pytest.mark.parametrize(

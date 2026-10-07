@@ -123,6 +123,7 @@
 
 ### Fixed
 
+- 修正 Windows 中文 CLI 回归测试依赖默认代码页的问题，子 Python 与输出解码显式使用 UTF-8；全量 Python 测试 1936 项通过、4 项条件跳过，C# 测试 292 项通过，黑魔 smoke 与机工动作查询各 16 队列验证通过。
 - 修复 checkpoint 未保存完整输入技能词表，导致本机 YAML 增删或重排禁用技能后 embedding 行身份漂移的问题：输入契约保存全部 `raw_skill_id` ↔ `vocab_id` 映射（含禁用技能和 `ogcd_wait`），PyTorch 回放、模型分析与 ONNX 导出统一从 checkpoint 恢复；BC 复用数据集词表，续训核对完整映射及 embedding 行数。
 - 缓存读取、场景选择与 GRPO 回放按调用方提供的完整词表校验；重编译在写入前核对当前动作空间与完整词表，worker 复用父进程映射，兼容的完整 history bank 继续复用。ONNX profile 仅提供容量证据，部署词表必须与 checkpoint 一致。
 - 模型分析恢复 checkpoint 的 schema 和归一化规则；在线历史与最新状态逐项校验字段名称和顺序，缺失或未知技能 ID 明确报错，避免同宽错列或静默使用 padding。词表兼容性直接比较保存的映射，不用 YAML 哈希代替语义校验。
@@ -143,6 +144,9 @@
 
 ### Removed
 
+- 清理无调用的旧 Python 战斗运行时数据类、`common/gcd_utils.py`、历史矩阵读取与列式转换 helper，以及配置、技能表和训练模块的闲置方法；保留完整 history bank 读取和主线可选配置，同步更新项目结构说明。
+- 删除 FFLogs 旧高分选择与非分档批量下载方法、闲置场景查询和 ONNX softmax helper；相关测试改为覆盖正式分档下载、质量权重加载及模型 attention 路径。
+- 移除 C# 未使用的 MP 估算方法和单段状态 token builder；正式状态输出继续按双快照构建，PythonBridge 已在同一工作树重建。
 - 从真实技能和 `ogcd_wait` 的 canonical token、技能字段模板、数值特征、归一化装配及完整 history bank 中移除绝对时间 `time_seconds`，不保留默认填零的时间列；场景查询继续使用两段状态自身的时间，内部请求、生效、读条结束及历史排序时序保留。
 - 移除历史技能/状态 pair fusion、`pair_embedding_dim` 配置、公共二次 token 投影、重复 segment embedding、输出维度适配和旧 pair embedding 分析模块，旧布局仅保留明确拒绝检查。
 - 彻底移除 C# 候选预演、候选上下文 builder 与非法候选状态生成，以及 Python 候选字段、候选顺序模块/YAML、shuffle、split attention 双向块、候选 scorer 和相关测试 helper；正式链路只保留固定输出动作词表，不保留候选 token、伪候选或候选空数组入口。

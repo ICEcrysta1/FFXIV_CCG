@@ -149,13 +149,3 @@ def _raw_logits(model, encoded, hidden):
     """复用正式动作读出并恢复模型精度，不包含宿主合法性或重复惩罚。"""
     current_hidden = hidden[:, encoded["current_state_position"], :]
     return model.compute_action_logits(current_hidden).to(model.output_head.weight.dtype)
-
-
-def stable_masked_softmax(
-    scores: torch.Tensor,
-    blocked: torch.Tensor,
-) -> torch.Tensor:
-    """让全屏蔽注意力行稳定地产生零权重，而不是 ``NaN``。"""
-    masked_scores = scores.masked_fill(blocked, torch.finfo(scores.dtype).min)
-    weights = torch.softmax(masked_scores, dim=-1)
-    return weights.masked_fill(blocked, 0.0)

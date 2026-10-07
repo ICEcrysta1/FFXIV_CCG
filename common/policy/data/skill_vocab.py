@@ -149,11 +149,6 @@ class SkillVocab:
         """词表总大小（含 NON_SKILL）。"""
         return len(self._vocab) + 1
 
-    @property
-    def num_skills(self) -> int:
-        """真实技能数（不含 NON_SKILL）。"""
-        return len(self._vocab)
-
     def __len__(self) -> int:
         return self.size()
 

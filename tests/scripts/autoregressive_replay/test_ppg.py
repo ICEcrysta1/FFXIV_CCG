@@ -270,10 +270,6 @@ def test_validation_rollout_stops_at_fight_end_and_uses_executed_history():
         def next_state_event_after(_time_seconds):
             return None
 
-        @staticmethod
-        def targetable_windows():
-            return []
-
     result = _run_rollout_until_time(
         _FakeModel(),
         FakeBackend(),
@@ -308,10 +304,6 @@ def test_validation_rollout_skips_fight_when_all_actions_are_illegal(caplog):
         @staticmethod
         def next_state_event_after(_time_seconds):
             return None
-
-        @staticmethod
-        def targetable_windows():
-            return []
 
     class FakeBackend(_FakeBackend):
         def __init__(self):

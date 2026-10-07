@@ -10,9 +10,6 @@ from common.policy.model import CausalPolicyModel
 from common.project_config import resolve_registered_job_tags
 
 
-def registered_job_tags() -> tuple[str, ...]:
-    """读取配置驱动的已注册职业 tag。"""
-    return resolve_registered_job_tags(PROJECT_ROOT)
 from ..config import RunConfig
 from .checkpoint import (
     _best_metric_key,

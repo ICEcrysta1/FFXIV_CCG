@@ -30,13 +30,6 @@ public sealed class PlayerVectorTokenBuilder
 
     public IReadOnlyList<string> HistoryFeatureKeys => _historyFeatureKeys;
 
-    public Dictionary<string, object?> BuildCurrentToken(PlayerContext player) =>
-        new()
-        {
-            ["feature_keys"] = _featureKeys.ToList(),
-            ["vector"] = BuildVector(player).ToArray(),
-        };
-
     public IReadOnlyList<double> BuildHistoryToken(PlayerContext before, PlayerContext after) =>
         BuildVector(before).Concat(BuildVector(after)).ToList();
 

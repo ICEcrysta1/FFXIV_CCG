@@ -14,7 +14,6 @@ from ..config.validation import (
     _validate_report_code,
 )
 from ..contracts.models import FightInfo, ReportMeta
-from ..contracts.rankings import _is_anonymous_name, _is_anonymous_report
 from ..contracts.report import _adapt_report_metadata
 
 logger = logging.getLogger(__name__)
@@ -161,29 +160,6 @@ class FFLogsV2Client:
         if player_fight_id is not None:
             meta.players = _extract_report_players(report.get("playerDetails"))
         return meta
-
-    def get_report_players(self, report_code: str, fight_id: int) -> list[dict]:
-        """获取报告中某场战斗的玩家列表。"""
-        gql = f"""
-        query {{
-          reportData {{
-            report(code: "{report_code}") {{
-              playerDetails(fightIDs: [{fight_id}])
-            }}
-          }}
-        }}
-        """
-        data = self.query(gql)
-        report = data.get("reportData", {}).get("report", {})
-        return _extract_report_players(report.get("playerDetails") if report else None)
-
-    def resolve_source_id(self, report_code: str, player_name: str, fight_id: int) -> Optional[int]:
-        """根据玩家名查找 source ID。"""
-        players = self.get_report_players(report_code, fight_id)
-        for p in players:
-            if p.get("name") == player_name:
-                return p.get("id")
-        return None
 
     def get_report_events(
         self,
@@ -434,65 +410,3 @@ class FFLogsV2Client:
         if history.get("error"):
             raise RuntimeError(f"FFLogs character history: {history['error']}")
         return {**character, "encounterRankings": history}
-
-    def get_high_score_reports(
-        self,
-        encounter_id: int,
-        spec_name: str = None,
-        bracket: int = 0,
-        max_pages: int = 10,
-        metric: str = "rdps",
-    ) -> list[tuple]:
-        """获取高分报告列表。
-
-        bracket: 0=全部补丁分组，其他值为 FFLogs 补丁分组 ID
-        metric: dps / rdps / ndps / adps
-
-        Returns
-        -------
-        [(report_code, fight_id, player_name, amount), ...]
-        """
-        reports: list[tuple] = []
-        seen: set = set()
-
-        for page in range(1, max_pages + 1):
-            logger.info("查询排行: encounter=%d bracket=%d page=%d metric=%s",
-                         encounter_id, bracket, page, metric)
-            try:
-                rankings = self.get_encounter_rankings(
-                    encounter_id, spec_name=spec_name,
-                    bracket=bracket, page=page, metric=metric,
-                )
-            except Exception as e:
-                logger.warning("查询失败: %s", e)
-                break
-
-            entries = rankings.get("rankings", [])
-            if not entries:
-                break
-
-            for r in entries:
-                if r.get("hidden") or r.get("anonymous") or _is_anonymous_name(r.get("name")):
-                    continue
-                rep = r.get("report", {})
-                rid = rep.get("code", "")
-                if _is_anonymous_report(rid):
-                    continue
-                fid = rep.get("fightID", 0)
-                name = r.get("name", "")
-                dps = r.get("amount", 0)
-
-                if not rid or not fid:
-                    continue
-
-                key = f"{rid}_{fid}_{name}"
-                if key not in seen:
-                    seen.add(key)
-                    reports.append((rid, fid, name, dps))
-
-            if len(entries) < 100:
-                break
-
-        logger.info("共找到 %d 份报告 (encounter=%d, bracket=%d)",
-                     len(reports), encounter_id, bracket)
-        return reports

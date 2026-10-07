@@ -44,13 +44,6 @@ public sealed class BuffVectorTokenBuilder
 
     public IReadOnlyList<string> HistoryFeatureKeys => _historyFeatureKeys;
 
-    public Dictionary<string, object?> BuildCurrentToken(StateContext stateContext) =>
-        new()
-        {
-            ["feature_keys"] = _featureKeys.ToList(),
-            ["vector"] = BuildVector(stateContext).ToArray(),
-        };
-
     public IReadOnlyList<double> BuildHistoryToken(StateContext before, StateContext after) =>
         BuildVector(before).Concat(BuildVector(after)).ToList();
 

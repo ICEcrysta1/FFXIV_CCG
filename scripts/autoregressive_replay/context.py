@@ -217,17 +217,6 @@ class SceneTemplateProvider:
             for start, end in self._movement_windows
         )
 
-    def targetable_windows(self) -> list[dict[str, object]]:
-        """返回状态机时间推进所需的绝对时间可选中窗口。"""
-        return [
-            {
-                "start": float(start),
-                "end": float(end),
-                "targetable": bool(targetable),
-            }
-            for start, end, targetable in self._targetable_windows
-        ]
-
     def last_targetable_end(self) -> float:
         """返回缓存 scene 中最后一个 Boss 可选中窗口的结束时间。"""
         targetable_ends = [
@@ -941,8 +930,3 @@ def _extract_nullable_values(node):
         else:
             raise ValueError(f"unsupported live state vector value: {item!r}")
     return values, null_mask
-
-
-def _extract_nullable_vector(node):
-    values, null_mask = _extract_nullable_values(node)
-    return torch.tensor(values, dtype=torch.float32), torch.tensor(null_mask, dtype=torch.bool)

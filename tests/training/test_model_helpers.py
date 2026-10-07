@@ -1479,7 +1479,7 @@ def test_run_training_rejects_device_and_data_contract_errors(tmp_path, monkeypa
         "build_dataloaders",
         lambda *_args, **_kwargs: ([0], [0], unknown_dataset, unknown_dataset),
     )
-    monkeypatch.setattr(training_module, "registered_job_tags", lambda: ("black_mage",))
+    monkeypatch.setattr(training_module, "resolve_registered_job_tags", lambda _root: ("black_mage",))
     with pytest.raises(ValueError, match="has no registered combat state-machine route"):
         training_module.run_training(
             replace(config, job_tag=None),
@@ -1631,7 +1631,7 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
 
     monkeypatch.setattr(training_module, "build_dataloaders", fake_build_dataloaders)
     monkeypatch.setattr(training_module, "resolve_policy_cache_dir", lambda job: tmp_path / "cache")
-    monkeypatch.setattr(training_module, "registered_job_tags", lambda: ("black_mage",))
+    monkeypatch.setattr(training_module, "resolve_registered_job_tags", lambda _root: ("black_mage",))
     monkeypatch.setattr(training_module, "CausalPolicyModel", FakeModel)
     monkeypatch.setattr(training_module, "train_epoch", fake_train_epoch)
     monkeypatch.setattr(training_module, "validate", fake_validate)

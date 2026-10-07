@@ -60,14 +60,6 @@ class JobConfig:
     statuses: dict[str, StatusDefinition]
     skills: tuple[SkillDefinition, ...]
 
-    @property
-    def default_fight_remaining(self) -> float:
-        return self.timing["default_fight_remaining"]
-
-    def timing_value(self, key: str) -> float:
-        return self.timing[key]
-
-
 @dataclass(frozen=True)
 class SystemConfig:
     base_gcd: float

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import math
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -314,13 +315,8 @@ def test_compiled_pt_and_batch_keep_label_outside_model_inputs(
         assert mixed_batch["quality_label_levels"].tolist() == [[1, 2, 3], [0, 0, 0]]
         assert mixed_batch["quality_label_mask"].tolist() == [[True, True, True], [False, False, False]]
     if with_labels and percentile == 7.5:
-        from common.policy import config as policy_config
-
         monkeypatch.setenv("FFXIV_MODEL_VARIANT", "different_quality_weights")
-        monkeypatch.setattr(
-            policy_config, "load_action_quality_severity_weights",
-            lambda _job: {"minor": 0.1, "medium": 0.2, "major": 0.3},
-        )
+        changed_quality_config = replace(quality_config, severity_weights=(0.1, 0.2, 0.3))
         monkeypatch.setattr(
             cache_compile, "convert_raw_file",
             lambda *_args, **_kwargs: pytest.fail("changing model weights must reuse compiled PT"),
@@ -331,6 +327,12 @@ def test_compiled_pt_and_batch_keep_label_outside_model_inputs(
             cache_dir=cache_root, shard_size=1, max_workers=1,
         ) == [source]
         assert reader.sample(0)["quality_label_levels"].tolist() == [1, 2, 3]
+        # 权重由正式损失读取；改变权重只影响学习强度，完整缓存继续复用。
+        changed_weight = action_quality_sample_weights(batch, changed_quality_config).item()
+        assert changed_weight == pytest.approx(
+            1.0 - 0.3 * math.exp(-((percentile / 100.0 / 0.6) ** 4))
+        )
+        assert changed_weight > weight
 
 
 def test_source_ranking_checks_directory_and_preserves_unknown_percentile(tmp_path):

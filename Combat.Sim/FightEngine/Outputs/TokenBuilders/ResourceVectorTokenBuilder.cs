@@ -31,13 +31,6 @@ public sealed class ResourceVectorTokenBuilder
 
     public IReadOnlyList<string> HistoryFeatureKeys => _historyFeatureKeys;
 
-    public Dictionary<string, object?> BuildCurrentToken(IReadOnlyDictionary<string, object> resources) =>
-        new()
-        {
-            ["feature_keys"] = _featureKeys.ToList(),
-            ["vector"] = BuildVector(resources).ToArray(),
-        };
-
     public IReadOnlyList<double> BuildHistoryToken(
         IReadOnlyDictionary<string, object> before,
         IReadOnlyDictionary<string, object> after) =>

@@ -283,23 +283,3 @@ def _stratified_batch_download(
     if any(counts[bucket] < quota for bucket, quota in quotas.items()):
         logger.warning("分档配额未完成；公开历史记录不足、分页上限、下载失败或中断均可能导致缺额")
     return {"counts": counts, **statistics}
-
-
-def _batch_download(
-    client: FFLogsV2Client, reports: list[tuple], output_dir: str = "data", mode: str = "default",
-):
-    """兼容已有调用方的指定报告列表下载，不做历史分档。"""
-    os.makedirs(output_dir, exist_ok=True)
-    counts = {"success": 0, "existing": 0, "failed": 0, "anonymous": 0}
-    for index, (code, fid, name, amount) in enumerate(reports, 1):
-        if client._cancelled:
-            break
-        logger.info("[%d/%d] %s f=%d name=%s dps=%.0f", index, len(reports), code, fid, name, amount)
-        try:
-            counts[_download_report(client, code, fid, name, amount, output_dir, mode)] += 1
-        except Exception as error:  # noqa: BLE001 -- 兼容原批量下载逐份隔离失败的行为
-            logger.error("  -> 失败: %s", error)
-            counts["failed"] += 1
-    print(f"\n批量下载完成: 成功={counts['success']} 跳过={counts['existing'] + counts['anonymous']} "
-          f"失败={counts['failed']} / 总计={len(reports)}")
-    return counts
