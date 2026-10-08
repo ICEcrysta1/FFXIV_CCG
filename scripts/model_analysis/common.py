@@ -192,7 +192,7 @@ def load_analysis_context(
                     "current_state_abs_values": batch_raw_device["current_state_abs_values"],
                 },
                 encoded=encoded,
-                schema=dataset.schema,
+                layout=runtime.context_encoder.layout,
                 job_tag=data_spec.job_tag,
                 logits=logits.detach().float().cpu().numpy(),
             )
@@ -400,7 +400,8 @@ def _load_model_analysis_context(
         vocab=vocab,
         device=device,
         precision=precision,
-        context_encoder=ContextEncoder(normalizer, input_contract.schema, model_config).to(device=device),
+        context_encoder=ContextEncoder(normalizer, input_contract.schema, model_config,
+                                       layout=input_contract.schema.state_layout(data_spec.action_keys)).to(device=device),
     )
 
 

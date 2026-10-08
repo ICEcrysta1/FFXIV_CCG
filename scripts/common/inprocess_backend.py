@@ -295,21 +295,31 @@ class InProcessBackend:
         target_count: int | None = None,
         remaining_seconds: float | None = None,
     ) -> ExternalEventResult:
+        return self.apply_external_events([{
+            "timestamp": timestamp, "event_kind": event_kind, "value": value,
+            "target_count": target_count, "remaining_seconds": remaining_seconds,
+        }])
+
+    def apply_external_events(self, events) -> ExternalEventResult:
+        """同刻事实一次交给 session；C# 完成整批校验、入队和统一推进。"""
         _, external_event, _ = self._types()
-        response = self._require_session().ApplyExternalEvent(
-            external_event(
-                float(timestamp),
-                event_kind,
-                value,
-                target_count,
-                remaining_seconds,
-            )
-        )
+        from System.Collections.Generic import List
+
+        batch = List[external_event]()
+        kinds = []
+        for event in events:
+            kind = str(event["event_kind"])
+            kinds.append(kind)
+            batch.Add(external_event(
+                float(event["timestamp"]), kind, event.get("value"),
+                event.get("target_count"), event.get("remaining_seconds"),
+            ))
+        response = self._require_session().ApplyExternalEvents(batch)
         result = response.Value
         return ExternalEventResult(
             accepted=bool(result.Accepted),
             reason=str(result.Reason),
-            event_kind=event_kind,
+            event_kind=kinds[0] if len(kinds) == 1 else "scene_batch",
             timestamp=float(result.Timestamp),
             next_scheduled_event_time=self._optional(response.NextScheduledEventTime),
         )

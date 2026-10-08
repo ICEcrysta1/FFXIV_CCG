@@ -10,6 +10,24 @@ public sealed class SimulationEngineTests
 {
     private static string Root => RepoRootLocator.Find();
 
+    [Fact]
+    public void 同刻批次通过正式会话入口结算且单事实委托结果一致()
+    {
+        using var engine = new SimulationEngine(Root, "black_mage", 2);
+        using var batch = engine.CreateSession(8);
+        using var single = engine.CreateSession(8);
+        var fact = new ExternalCombatEvent(1, ExternalCombatEventKinds.MovementChanged, true);
+        Assert.Equal(single.ApplyExternalEvent(fact), batch.ApplyExternalEvents(new[] { fact }));
+        Assert.Equal(JsonSerializer.Serialize(single.ObserveAt(1).Value), JsonSerializer.Serialize(batch.ObserveAt(1).Value));
+        var before = JsonSerializer.Serialize(batch.ObserveAt(1, "vector", 1).Value);
+        Assert.Throws<ArgumentException>(() => batch.ApplyExternalEvents(new[]
+        {
+            new ExternalCombatEvent(2, ExternalCombatEventKinds.MovementChanged, false),
+            new ExternalCombatEvent(2, ExternalCombatEventKinds.TargetCountChanged, TargetCount: -1),
+        }));
+        Assert.Equal(before, JsonSerializer.Serialize(batch.ObserveAt(1, "vector", 1).Value));
+    }
+
     [Theory]
     [InlineData("black_mage", "blizzard_iii")]
     [InlineData("machinist", "heated_split_shot")]

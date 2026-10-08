@@ -543,21 +543,6 @@ class AutoregressiveReplay:
         self._session.reset(self.config, initial_timestamp=initial_timestamp)
         return self._observe_state(initial_timestamp)
 
-    def _next_scene_event_after(self, time_seconds: float) -> float | None:
-        resolver = getattr(
-            self.scene_provider,
-            "next_state_event_after",
-            None,
-        )
-        if callable(resolver):
-            return resolver(time_seconds)
-        resolver = getattr(
-            self.scene_provider,
-            "next_targetable_event_after",
-            None,
-        )
-        return None if not callable(resolver) else resolver(time_seconds)
-
     def _advance_event_time(
         self,
         state,

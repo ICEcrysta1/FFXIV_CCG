@@ -20,9 +20,8 @@ public sealed class PlayerVectorTokenBuilder
     public PlayerVectorTokenBuilder()
     {
         _featureKeys = SchemaConfigLoader.RequireStateVectorFields("player_state").ToArray();
-        _historyFeatureKeys = _featureKeys
-            .Select(key => $"previous_action_after.{key}")
-            .Concat(_featureKeys.Select(key => $"request_state.{key}"))
+        _historyFeatureKeys = SchemaConfigLoader.Instance.StateSnapshots
+            .SelectMany(snapshot => _featureKeys.Select(key => $"{snapshot}.{key}"))
             .ToArray();
     }
 

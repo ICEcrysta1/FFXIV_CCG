@@ -5,7 +5,8 @@ from __future__ import annotations
 import math
 
 from common.contracts import SCENE_CONTEXT_ABSOLUTE_MODE
-from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION, build_output_context_schema_metadata
+from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION, STATE_SNAPSHOTS, STATE_VECTOR_GROUP_SCHEMAS, build_output_context_schema_metadata
+from common.policy.data.state_features import read_state_tokens, validate_state_feature_keys
 from common.torch_dependencies import import_torch
 from common.policy.data.action_space import ActionSpace
 
@@ -21,6 +22,7 @@ from common.policy.data.schema import (
     TRAINING_SOURCE_FORMAT,
     TRAINING_SAMPLE_SCHEMA_VERSION,
     TrainingSchema,
+    StateFeatureGroup,
 )
 
 
@@ -42,6 +44,7 @@ class TrainingSourceReader:
         self._num_samples = len(samples)
         action_space = ActionSpace.from_job_tag(self._job_tag)
         self._action_keys = action_space.action_keys
+        self._state_layout = self.schema.state_layout(self._action_keys)
         self._action_to_vocab_id = action_space.action_to_vocab_id
         self._action_is_gcd = action_space.action_is_gcd
         for sample_index in range(self._num_samples):
@@ -67,15 +70,9 @@ class TrainingSourceReader:
             current_metadata = build_output_context_schema_metadata(context)
             if current_metadata["current_state_feature_keys"] != current_metadata["state_history_feature_keys"]:
                 raise ValueError("current request and history state feature keys must match")
-            if any(tuple(keys) != self.schema.state_group_feature_keys[group] for group, keys in current_metadata["current_state_feature_keys"].items()):
-                raise ValueError("state feature layout must stay stable across a training payload")
-            token = current["tokens"][0]
-            if not isinstance(token, dict):
-                raise ValueError("current request state token must be a mapping")
-            for group, keys in self.schema.state_group_feature_keys.items():
-                group_values = token.get(group)
-                if not isinstance(group_values, (list, tuple)) or len(group_values) != len(keys):
-                    raise ValueError(f"current request state group width mismatch: {group}")
+            read_state_tokens(current, self._state_layout)
+            # 完整历史行只在 bank 构建时解析一次，这里只校验每步的字段元数据。
+            validate_state_feature_keys(context["state_history_context"], self._state_layout)
         self._skill_feature_names = derive_skill_feature_names(self)
 
     @property
@@ -210,7 +207,10 @@ class TrainingSourceReader:
 
     def state_matrix_from_tokens(self, tokens, *, dtype):
         """把已经选好的状态 token 批量转为向量；供增量历史 bank 一次性构建。"""
-        return self._build_state_matrix(tokens, dtype=dtype)
+        if dtype != self._torch.float32:
+            raise ValueError("raw state matrices require FP32 before delta encoding")
+        context = {group.feature_keys_field: group.feature_keys for group in self._state_layout.groups}
+        return read_state_tokens({**context, "tokens": tokens}, self._state_layout)
 
     def action_legal_mask(self, sample_idx: int):
         return self._torch.tensor(
@@ -222,8 +222,9 @@ class TrainingSourceReader:
         return self._torch.tensor(self._sample_context(sample_idx)["action_values"], dtype=dtype)
 
     def current_state_matrix(self, sample_idx: int, *, dtype):
-        tokens = self._sample_context(sample_idx)["current_state_context"]["tokens"]
-        return self._build_state_matrix(tokens, dtype=dtype)
+        if dtype != self._torch.float32:
+            raise ValueError("raw state matrices require FP32 before delta encoding")
+        return read_state_tokens(self._sample_context(sample_idx)["current_state_context"], self._state_layout)
 
     def scene_tokens(self, sample_idx: int, *, float_dtype, int_dtype):
         feature_dim = self.schema.scene_feature_dim()
@@ -266,39 +267,6 @@ class TrainingSourceReader:
             )
         return self._torch.cat(vectors, dim=0), self._torch.tensor(scene_types, dtype=int_dtype)
 
-    def _build_state_matrix(self, tokens, *, dtype):
-        if dtype != self._torch.float32:
-            raise ValueError("raw state matrices require FP32 before delta encoding")
-        values: list[list[float]] = []
-        nulls: list[list[bool]] = []
-        for token in tokens:
-            row_values: list[float] = []
-            row_nulls: list[bool] = []
-            for group_key, feature_keys in self.schema.state_group_feature_keys.items():
-                group_values = token.get(group_key, []) if isinstance(token, dict) else []
-                if len(group_values) != len(feature_keys):
-                    raise ValueError(
-                        f"state group width mismatch for {group_key!r}: "
-                        f"{len(group_values)} != {len(feature_keys)}"
-                    )
-                for value in group_values:
-                    is_null = value is None
-                    row_values.append(0.0 if is_null else float(value))
-                    row_nulls.append(is_null)
-            values.append(row_values)
-            nulls.append(row_nulls)
-
-        width = self.schema.state_vector_dim()
-        if not values:
-            return _nullable_tensor(
-                self._torch.zeros((0, width), dtype=dtype),
-                self._torch.zeros((0, width), dtype=self._torch.bool),
-            )
-
-        tensor = self._torch.tensor(values, dtype=dtype)
-        null_mask = self._torch.tensor(nulls, dtype=self._torch.bool)
-        return _nullable_tensor(tensor, null_mask)
-
     def _pad_scene_tokens(
         self,
         tokens,
@@ -332,16 +300,6 @@ class TrainingSourceReader:
         if not isinstance(rows, list):
             raise ValueError("skill_history_context must be a list")
         return [dict(row) for row in rows]
-
-
-class _NullableTensor:
-    def __init__(self, values, null_mask):
-        self.values = values
-        self.null_mask = null_mask
-
-
-def _nullable_tensor(values, null_mask):
-    return _NullableTensor(values, null_mask)
 
 
 def _build_training_source_schema(payload: dict[str, object]) -> TrainingSchema:
@@ -385,9 +343,9 @@ def _build_training_source_schema(payload: dict[str, object]) -> TrainingSchema:
         context_schema_version=int(context_schema["schema_version"]),
         scene_context_mode=SCENE_CONTEXT_ABSOLUTE_MODE,
         scene_windows=tuple(scene_windows),
-        state_group_feature_keys={
-            str(group_key): tuple(feature_keys)
-            for group_key, feature_keys in history_state_keys.items()
-        },
+        state_groups=tuple(StateFeatureGroup(group.group_key, group.feature_keys_field,
+                                            tuple(history_state_keys[group.group_key]), group.encoding)
+                           for group in STATE_VECTOR_GROUP_SCHEMAS),
+        state_snapshots=STATE_SNAPSHOTS,
         skill_history_fields=SKILL_HISTORY_FIELDS,
     )

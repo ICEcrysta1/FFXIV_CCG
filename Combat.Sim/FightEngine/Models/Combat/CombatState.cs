@@ -83,7 +83,7 @@ public sealed class CombatState
     public List<ActionHistoryEntry> History { get; set; } = new();
     // 与历史保留窗口独立；只跟踪最近一次已接受的真实或 policy 请求。
     internal Guid? LastDecisionId { get; set; }
-    internal StateContext? LastDecisionAfter { get; set; }
+    internal ModelStateFrame? LastDecisionAfter { get; set; }
     // 真实技能生效与 policy 记录共用递增序号，独立于历史裁剪和输出时间舍入。
     internal long LastHistorySequence { get; set; }
     internal long ReserveHistorySequence() => LastHistorySequence = checked(LastHistorySequence + 1);

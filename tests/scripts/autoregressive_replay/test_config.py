@@ -28,7 +28,7 @@ def test_replay_scene_defaults_to_prepared_cache(monkeypatch, tmp_path):
 
     monkeypatch.setattr(replay_config_module, "find_prepared_scene_source", select)
     normalizer, vocab = object(), object()
-    spec = DataSpec("black_mage", 2, 1, 1, 1, 1, ("a", "b"), ("kind",), (1, 2), (True, False))
+    spec = DataSpec("black_mage", 2, 5, 1, 1, 1, 1, ("a", "b"), ("kind",), (1, 2), (True, False))
     monkeypatch.setattr(
         replay_config_module.ModelInputContract, "from_dict",
         lambda _payload: SimpleNamespace(data_spec=asdict(spec), create_normalizer=lambda: normalizer,

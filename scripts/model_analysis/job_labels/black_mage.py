@@ -5,17 +5,18 @@ from __future__ import annotations
 import numpy as np
 
 
-def decision_state_labels(batch_index: int, *, batch, schema) -> tuple[str, float]:
+def decision_state_labels(batch_index: int, *, batch, layout) -> tuple[str, float]:
     """从黑魔状态 token 的当前请求段提取 AF/UI 和实际 MP。"""
     values = batch["current_state_abs_values"][batch_index]
     null_mask = batch["current_state_null_mask"][batch_index]
-    resource_slice = schema.state_group_slices().get("resource_state")
-    player_slice = schema.state_group_slices().get("player_state")
+    resource_slice = layout.group_slices.get("resource_state")
+    player_slice = layout.group_slices.get("player_state")
     if resource_slice is None or player_slice is None:
         return "unknown", float("nan")
 
-    resource_keys = schema.state_group_feature_keys["resource_state"]
-    player_keys = schema.state_group_feature_keys["player_state"]
+    groups = {group.group_key: group.feature_keys for group in layout.base_groups}
+    resource_keys = groups["resource_state"]
+    player_keys = groups["player_state"]
     resource_index = {key: index for index, key in enumerate(resource_keys)}
     player_index = {key: index for index, key in enumerate(player_keys)}
     resource_values = values[resource_slice]

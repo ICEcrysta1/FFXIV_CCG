@@ -93,8 +93,8 @@ public sealed class ModelStateSemanticsTests
         Assert.True(queued.Queued);
         simulator.AdvanceTo(2.8);
         var entry = simulator.GetState().History[1];
-        Assert.Equal(2.3, entry.ModelState!.PreviousActionAfter.Player.TimeSeconds, 8);
-        Assert.Equal(2.76, entry.ModelState.RequestState.Player.TimeSeconds, 8);
+        Assert.Equal(2.3, entry.ModelState!.PreviousActionAfter.State.Player.TimeSeconds, 8);
+        Assert.Equal(2.76, entry.ModelState.RequestState.State.Player.TimeSeconds, 8);
         Assert.Equal(2.8, entry.StateAfter.Player.TimeSeconds, 8);
     }
 
@@ -128,9 +128,9 @@ public sealed class ModelStateSemanticsTests
         simulator.SubmitAction(0, "ogcd_punch");
         simulator.SubmitAction(0, "ogcd_punch");
         var entries = simulator.GetState().History;
-        Assert.Equal(0, entries[0].ModelState!.PreviousActionAfter.Target.CumulativePotency);
-        Assert.Equal(200, entries[1].ModelState!.PreviousActionAfter.Target.CumulativePotency);
-        Assert.Equal(200, entries[1].ModelState!.RequestState.Target.CumulativePotency);
+        Assert.Equal(0, entries[0].ModelState!.PreviousActionAfter.State.Target.CumulativePotency);
+        Assert.Equal(200, entries[1].ModelState!.PreviousActionAfter.State.Target.CumulativePotency);
+        Assert.Equal(200, entries[1].ModelState!.RequestState.State.Target.CumulativePotency);
         Assert.Equal(400, entries[1].StateAfter.Target.CumulativePotency);
     }
 

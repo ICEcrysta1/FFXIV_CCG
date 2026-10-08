@@ -41,7 +41,7 @@ def test_checkpoint_restores_history_embedding_and_logits_after_yaml_vocab_drift
     from common.policy.config import ModelConfig
     from common.policy.data import ActionSpace, DataSpec, ModelInputContract, Normalizer
     from common.policy.data import skill_vocab as vocab_module
-    from common.policy.data.schema import SceneWindowSchema, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
+    from common.policy.data.schema import SceneWindowSchema, StateFeatureGroup, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
     from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
     from common.policy.model import CausalPolicyModel
     from scripts.autoregressive_replay.backends import PyTorchPolicyBackend
@@ -54,17 +54,28 @@ def test_checkpoint_restores_history_embedding_and_logits_after_yaml_vocab_drift
     actions = ActionSpace.from_config(original, skill_vocab=vocab)
     keys = ("previous_action_after.time_seconds", "previous_action_after.mp",
             "request_state.time_seconds", "request_state.mp")
+    keys += tuple(f"{prefix}.{field}" for prefix in ("previous_action_after", "request_state")
+                  for field in ("next_untargetable_in_seconds", "downtime_remaining_seconds"))
+    availability_keys = tuple(f"{prefix}.{key}" for prefix in ("previous_action_after", "request_state")
+                              for key in actions.action_keys)
     schema = TrainingSchema(
         serialization_format="test", sample_schema_version=TRAINING_SAMPLE_SCHEMA_VERSION,
         context_schema_version=CANONICAL_CONTEXT_SCHEMA_VERSION, scene_context_mode="absolute",
         scene_windows=(SceneWindowSchema.from_feature_keys(
             context_key="targetable_window_context", scene_type_id=0,
             feature_keys=("start_offset_seconds", "end_offset_seconds", "duration_seconds"),
-        ),), state_group_feature_keys={"player_state": keys},
+        ),), state_groups=(
+            StateFeatureGroup("player_state", "player_state_feature_keys", keys, "anchored_delta"),
+            StateFeatureGroup("skill_availability", "skill_availability_feature_keys", availability_keys, "absolute_binary"),
+        ), state_snapshots=("previous_action_after", "request_state"),
         skill_history_fields=("kind", "potency"),
     )
-    spec = DataSpec("black_mage", len(actions.action_keys), 4, 3, 2, 1,
-                    actions.action_keys, ("kind", "potency"), actions.action_to_vocab_id, actions.action_is_gcd)
+    layout = schema.state_layout(actions.action_keys)
+    spec = DataSpec(job_tag="black_mage", num_actions=len(actions.action_keys),
+                    state_dim=layout.state_dim, base_state_dim=layout.base_state_dim,
+                    scene_dim=3, skill_feature_dim=2, num_scene_types=1,
+                    action_keys=actions.action_keys, skill_feature_names=("kind", "potency"),
+                    action_to_vocab_id=actions.action_to_vocab_id, action_is_gcd=actions.action_is_gcd)
     normalizer = Normalizer()
     normalizer.ensure_job_resources("black_mage")
     contract = ModelInputContract.from_training(data_spec=spec, schema=schema, normalizer=normalizer, skill_vocab=vocab)
@@ -77,6 +88,7 @@ def test_checkpoint_restores_history_embedding_and_logits_after_yaml_vocab_drift
     torch.save({"data_spec": asdict(spec), "model_config": asdict(config),
                 "input_contract": contract.to_dict(), "model_state_dict": model.state_dict()}, path)
     canonical = {
+        "schema_version": CANONICAL_CONTEXT_SCHEMA_VERSION,
         "history_cursor": 3,
         "action_keys": actions.action_keys, "action_legal_mask": [True] * len(actions.action_keys),
         "skill_history_context": [
@@ -94,13 +106,20 @@ def test_checkpoint_restores_history_embedding_and_logits_after_yaml_vocab_drift
         ]},
     }
 
+    for name in ("state_history_context", "current_state_context"):
+        canonical[name]["skill_availability_feature_keys"] = availability_keys
+        for token in canonical[name]["tokens"]:
+            token["player_state"].extend([0.0] * 4)
+            token["skill_availability"] = [1] * layout.availability_dim
+
     def build(saved_vocab, saved_normalizer):
         return LiveBatchBuilder(
             backend=None, vocab=saved_vocab, normalizer=saved_normalizer, schema=schema,
             skill_feature_names=spec.skill_feature_names, device=torch.device("cpu"), max_history=4,
             model_config=config,
             action_keys=spec.action_keys, action_is_gcd=spec.action_is_gcd,
-            scene_provider=SimpleNamespace(at_time=lambda _: (torch.tensor([[0.0, 1.0, 1.0]]), torch.zeros(1, dtype=torch.long))),
+            scene_provider=SimpleNamespace(at_time=lambda _: (torch.tensor([[0.0, 1.0, 1.0]]), torch.zeros(1, dtype=torch.long)),
+                                           state_at=lambda _: SimpleNamespace(next_downtime_eta=0.0, downtime_remaining=0.0)),
         ).build_from_canonical(canonical, gcd_phase=True, max_history=4)[0]
 
     before = build(vocab, contract.create_normalizer())

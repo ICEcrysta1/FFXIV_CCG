@@ -78,6 +78,9 @@ public sealed class SimulationSession : IDisposable
     public SessionResult<ExternalEventResult> ApplyExternalEvent(ExternalCombatEvent externalEvent) =>
         Execute(simulator => simulator.ApplyExternalEvent(externalEvent));
 
+    public SessionResult<ExternalEventResult> ApplyExternalEvents(IReadOnlyList<ExternalCombatEvent> externalEvents) =>
+        Execute(simulator => simulator.ApplyExternalEvents(externalEvents));
+
     public SessionResult<PolicyDecision> RecordPolicyAction(
         double timestamp, string actionKey, double nextObservationTimestamp) =>
         Execute(simulator => _policy!.Record(simulator, timestamp, actionKey, nextObservationTimestamp));

@@ -195,7 +195,7 @@ def test_repetition_cache_is_bounded_and_policy_changes_rebuild_mask():
 
 
 def _sample(history_length, scene_length):
-    spec = make_data_spec(state_dim=3, scene_dim=3)
+    spec = make_data_spec(base_state_dim=3, scene_dim=3)
     values = make_batch(spec, history_length=history_length, scene_length=scene_length)
     sample = {key: value[0] for key, value in values.items()}
     sample.update(metadata={}, label_action_key=spec.action_keys[0], label_index=0)
@@ -213,15 +213,18 @@ def _sample(history_length, scene_length):
         ("skill_features", torch.zeros(history_length, spec.skill_feature_dim)),
         ("state_abs_values", states), ("state_delta_values", deltas),
         ("state_null_mask", nulls), ("state_delta_reset_mask", resets),
+        ("state_skill_availability", torch.zeros((history_length, 2 * spec.num_actions), dtype=torch.bool)),
     ):
         sample["history_bank_" + name] = torch.cat((value.new_zeros((1, *value.shape[1:])), value))
     sample.update(history_length=history_length, history_end=history_length + 1,
                   history_bank_id=str(id(sample)),
                   history_bank_action_keys=("", *([spec.action_keys[0]] * history_length)))
-    sample["current_state_abs_values"] = sample.pop("current_state_vectors")
+    combined = sample.pop("current_state_vectors")
+    sample["current_state_abs_values"] = combined[:spec.base_state_dim]
+    sample["current_state_skill_availability"] = combined[spec.base_state_dim:].bool()
     sample.pop("current_state_reset_mask")
-    sample["current_state_delta_values"] = torch.zeros(spec.state_dim)
-    sample["current_state_delta_reset_mask"] = torch.zeros(spec.state_dim, dtype=torch.bool)
+    sample["current_state_delta_values"] = torch.zeros(spec.base_state_dim)
+    sample["current_state_delta_reset_mask"] = torch.zeros(spec.base_state_dim, dtype=torch.bool)
     sample.pop("scene_vectors")
     sample["scene_abs_values"] = torch.tensor([0.0, 200.0, 200.0]).expand(scene_length, -1).clone()
     return sample
@@ -231,8 +234,8 @@ def _sample(history_length, scene_length):
 def test_native_padding_preserves_values_dtypes_empty_shapes_and_null_mask(lengths):
     samples = [_sample(*length) for length in lengths]
     originals = deepcopy(samples)
-    contract = make_input_contract(make_data_spec(state_dim=3, scene_dim=3))
-    encoder = ContextEncoder(contract.create_normalizer(), contract.schema, ModelConfig())
+    contract = make_input_contract(make_data_spec(base_state_dim=3, scene_dim=3))
+    encoder = ContextEncoder(contract.create_normalizer(), contract.schema, ModelConfig(), layout=contract.schema.state_layout(tuple(contract.data_spec["action_keys"])))
     expected = [encoder.encode(TrainingCollator()([sample])) for sample in samples]
     batch = encoder.encode(TrainingCollator()(samples))
     for kind, key in (("history", "history_skill_ids"), ("scene", "scene_vectors")):

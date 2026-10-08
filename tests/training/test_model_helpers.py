@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.training._causal_fixtures import make_state_groups
+
 import logging
 from contextlib import nullcontext
 from dataclasses import asdict, replace
@@ -41,7 +43,7 @@ from scripts.convert_fflogs import cache as cache_module
 from scripts.convert_fflogs.cache import cache_compile as cache_compile_module
 from common.policy.data import source_selection as cache_paths_module
 from training.config import ActionQualityLossConfig, RunConfig, ValuePreferenceConfig
-from tests.training._causal_fixtures import make_checkpoint
+from tests.training._causal_fixtures import make_checkpoint, make_data_spec, make_input_contract
 
 
 def _attach_rope(encoder):
@@ -410,7 +412,8 @@ def test_data_spec_from_dict_and_mismatch_error():
     payload = {
         "job_tag": "black_mage",
         "num_actions": 2,
-        "state_dim": 3,
+        "base_state_dim": 3,
+        "state_dim": 7,
         "scene_dim": 1,
         "skill_feature_dim": 4,
         "num_scene_types": 1,
@@ -423,8 +426,8 @@ def test_data_spec_from_dict_and_mismatch_error():
     assert spec.action_keys == ("fire_iii", "fire_iv")
     assert spec.skill_feature_names[-1] == "value"
 
-    other = DataSpec.from_dict({**payload, "state_dim": 4})
-    with pytest.raises(ValueError, match=r"training data spec mismatch: state_dim: 3 != 4"):
+    other = DataSpec.from_dict({**payload, "state_dim": 8})
+    with pytest.raises(ValueError, match=r"training data spec mismatch: state_dim: 7 != 8"):
         spec.assert_compatible_with(other)
 
 
@@ -476,7 +479,7 @@ def _encoder_spec() -> DataSpec:
     return DataSpec(
         job_tag="black_mage",
         num_actions=2,
-        state_dim=3,
+        base_state_dim=3, state_dim=(3) + 2 * (2),
         scene_dim=2,
         skill_feature_dim=1,
         num_scene_types=1,
@@ -491,11 +494,11 @@ def _encoder_batch() -> dict[str, torch.Tensor]:
     return {
         "history_skill_ids": torch.ones((1, 1), dtype=torch.long),
         "history_skill_features": torch.zeros((1, 1, 1)),
-        "history_state_vectors": torch.zeros((1, 1, 3)),
+        "history_state_vectors": torch.nn.functional.pad(torch.zeros((1, 1, 3)), (0, 4)),
         "history_mask": torch.ones((1, 1), dtype=torch.bool),
 
 
-        "current_state_vectors": torch.zeros((1, 3)),
+        "current_state_vectors": torch.nn.functional.pad(torch.zeros((1, 3)), (0, 4)),
         "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
         "action_legal_mask": torch.ones((1, 2), dtype=torch.bool),
         "scene_vectors": torch.zeros((1, 1, 2)),
@@ -513,7 +516,7 @@ def test_input_encoder_handles_null_state_and_rejects_bad_shapes():
         ModelConfig(d_model=8, n_layers=1, n_heads=2, ff_dim=16),
         vocab_size=4,
     )
-    assert encoder._embed_state(torch.zeros((1, 3)), None, torch.ones((1, 3), dtype=torch.bool)).shape == (1, 8)
+    assert encoder._embed_state(torch.zeros((1, spec.state_dim)), None, torch.ones((1, spec.base_state_dim), dtype=torch.bool)).shape == (1, 8)
 
     with pytest.raises(ValueError, match="non-empty scene"):
         CausalInputEncoder(
@@ -523,12 +526,12 @@ def test_input_encoder_handles_null_state_and_rejects_bad_shapes():
         )
 
     invalid_batches = [
-        ("history skill/state lengths", "history_state_vectors", torch.zeros((1, 2, 3))),
+        ("history_state_vectors must have shape", "history_state_vectors", torch.zeros((1, 2, 7))),
         ("current_state_vectors must have shape", "current_state_vectors", torch.zeros((1, 1, 3))),
-        ("current state dimension", "current_state_vectors", torch.zeros((1, 4))),
-        ("history state dimension", "history_state_vectors", torch.zeros((1, 1, 4))),
-        ("scene dimension", "scene_vectors", torch.zeros((1, 1, 3))),
-        ("skill feature dimension", "history_skill_features", torch.zeros((1, 1, 2))),
+        ("current_state_vectors must have shape", "current_state_vectors", torch.zeros((1, 4))),
+        ("history_state_vectors must have shape", "history_state_vectors", torch.zeros((1, 1, 4))),
+        ("scene_vectors must have shape", "scene_vectors", torch.zeros((1, 1, 3))),
+        ("history_skill_features must have shape", "history_skill_features", torch.zeros((1, 1, 2))),
         ("action legal mask", "action_legal_mask", torch.ones((1, 1), dtype=torch.bool)),
     ]
     for message, key, value in invalid_batches:
@@ -1090,7 +1093,7 @@ def test_training_helpers_and_epoch_metrics(tmp_path, monkeypatch):
     spec = DataSpec(
         job_tag="black_mage",
         num_actions=2,
-        state_dim=3,
+        base_state_dim=3, state_dim=(3) + 2 * (2),
         scene_dim=3,
         skill_feature_dim=1,
         num_scene_types=1,
@@ -1115,7 +1118,7 @@ def test_training_helpers_and_epoch_metrics(tmp_path, monkeypatch):
                 scene_type_id=0,
             ),
         ),
-        state_group_feature_keys={"player_state": ("request_state.time_seconds", "b", "c")},
+        state_groups=make_state_groups({"player_state": ("request_state.time_seconds", "b", "c")}, ("a", "b")), state_snapshots=("previous_action_after", "request_state"),
 
         skill_history_fields=(),
     )
@@ -1193,15 +1196,13 @@ def test_select_training_raw_paths_reports_internal_allocation_mismatch(tmp_path
 def _fake_training_dataset(job_tag: str = "black_mage", *, actions=("a", "b")):
     class FakeDataset:
         def __init__(self):
-            self.job_tag = job_tag
-            self.num_actions = len(actions)
-            self.state_dim = 3
-            self.scene_dim = 1
-            self.num_scene_types = 1
-            self.action_keys = tuple(actions)
-            self.action_to_vocab_id = tuple(range(1, len(actions) + 1))
-            self.action_is_gcd = (True,) * len(actions)
-            self.skill_feature_names = ("potency",)
+            spec = make_data_spec(job_tag=job_tag, num_actions=len(actions), base_state_dim=3,
+                                  scene_dim=3, skill_feature_dim=1, action_keys=tuple(actions),
+                                  action_to_vocab_id=tuple(range(1, len(actions) + 1)),
+                                  action_is_gcd=(True,) * len(actions), skill_feature_names=("potency",))
+            self.__dict__.update(asdict(spec))
+            self.schema = make_input_contract(spec).schema
+            self.state_layout = self.schema.state_layout(spec.action_keys)
 
         def __len__(self):
             return 2
@@ -1531,7 +1532,7 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
                 scene_type_id=0,
             ),
         ),
-        state_group_feature_keys={"player_state": ("request_state.time_seconds", "b", "c")},
+        state_groups=make_state_groups({"player_state": ("request_state.time_seconds", "b", "c")}, ("a", "b")), state_snapshots=("previous_action_after", "request_state"),
 
         skill_history_fields=(),
     )
@@ -1540,7 +1541,7 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
     dataset = SimpleNamespace(
         job_tag="black_mage",
         num_actions=2,
-        state_dim=3,
+        base_state_dim=3, state_dim=(3) + 2 * (2),
         scene_dim=3,
         num_scene_types=1,
         action_keys=("a", "b"),
@@ -1808,7 +1809,7 @@ def test_run_training_closes_tensorboard_writer_when_validation_callback_raises(
             feature_keys=("start_offset_seconds", "end_offset_seconds", "duration_seconds"),
             scene_type_id=0,
         ),),
-        state_group_feature_keys={"player_state": ("request_state.time_seconds", "b", "c")},
+        state_groups=make_state_groups({"player_state": ("request_state.time_seconds", "b", "c")}, ("a", "b")), state_snapshots=("previous_action_after", "request_state"),
 
         skill_history_fields=(),
     )
@@ -1817,7 +1818,7 @@ def test_run_training_closes_tensorboard_writer_when_validation_callback_raises(
     dataset = SimpleNamespace(
         job_tag="black_mage",
         num_actions=2,
-        state_dim=3,
+        base_state_dim=3, state_dim=(3) + 2 * (2),
         scene_dim=3,
         num_scene_types=1,
         action_keys=("a", "b"),
@@ -1935,7 +1936,7 @@ def _resume_validation_context(tmp_path: Path, *, max_epochs: int = 3):
         context_schema_version=1,
         scene_context_mode="absolute",
         scene_windows=(),
-        state_group_feature_keys={"player_state": ("request_state.time_seconds", "b", "c")},
+        state_groups=make_state_groups({"player_state": ("request_state.time_seconds", "b", "c")}, ("a", "b")), state_snapshots=("previous_action_after", "request_state"),
 
         skill_history_fields=(),
     )
@@ -1944,7 +1945,7 @@ def _resume_validation_context(tmp_path: Path, *, max_epochs: int = 3):
     dataset = SimpleNamespace(
         job_tag="black_mage",
         num_actions=2,
-        state_dim=3,
+        base_state_dim=3, state_dim=(3) + 2 * (2),
         scene_dim=0,
         num_scene_types=0,
         action_keys=("a", "b"),

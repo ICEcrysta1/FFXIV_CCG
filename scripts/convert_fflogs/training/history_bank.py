@@ -118,13 +118,13 @@ def build_history_bank(
         dtype=torch.float32,
     )
     # 原始状态先保留完整物理值；缺失只由 mask 表达，不参与相邻差分。
-    state_abs = state_matrix.values
+    state_abs = state_matrix.base_values
     previous_abs = torch.cat((torch.zeros_like(state_abs[:1]), state_abs[:-1]), dim=0)
     previous_null = torch.cat(
-        (torch.ones_like(state_matrix.null_mask[:1]), state_matrix.null_mask[:-1]), dim=0,
+        (torch.ones_like(state_matrix.base_null_mask[:1]), state_matrix.base_null_mask[:-1]), dim=0,
     )
     state_delta, state_reset = raw_state_delta(
-        state_abs, state_matrix.null_mask, previous_abs, previous_null,
+        state_abs, state_matrix.base_null_mask, previous_abs, previous_null,
     )
     state_abs_values = torch.cat(
         (
@@ -136,8 +136,8 @@ def build_history_bank(
     state_delta_values = torch.cat((torch.zeros_like(state_abs_values[:1]), state_delta), dim=0)
     state_null_mask = torch.cat(
         (
-            torch.zeros((1, state_matrix.null_mask.shape[-1]), dtype=torch.bool),
-            state_matrix.null_mask,
+            torch.zeros((1, state_matrix.base_null_mask.shape[-1]), dtype=torch.bool),
+            state_matrix.base_null_mask,
         ),
         dim=0,
     )
@@ -150,6 +150,7 @@ def build_history_bank(
         "state_delta_values": state_delta_values,
         "state_null_mask": state_null_mask,
         "state_delta_reset_mask": state_delta_reset_mask,
+        "state_skill_availability": torch.cat((torch.zeros((1, state_matrix.availability.shape[-1]), dtype=torch.bool), state_matrix.availability), dim=0),
         "action_keys": tuple(action_keys),
         # PPG 使用原始历史威力；kind 已经在 skill_features 中以数值维度保存。
         "skill_potencies": torch.tensor(skill_potencies, dtype=float_dtype),

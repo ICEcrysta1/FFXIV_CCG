@@ -9,8 +9,9 @@ from torch import nn
 
 from ..config import ModelConfig
 from .normalizer import Normalizer
-from .schema import TrainingSchema
-from .context_fields import ENCODING_BANK_FIELDS, RAW_ONLY_FIELD_NAMES
+from .schema import StateFeatureLayout, TrainingSchema
+from .context_fields import CURRENT_STATE_RAW_FIELDS, ENCODING_BANK_FIELDS, HISTORY_RAW_FIELDS, RAW_ONLY_FIELD_NAMES, tensor_dimensions
+from .state_features import assemble_state_inputs
 
 
 def raw_state_delta(
@@ -44,16 +45,19 @@ def _validate_raw_state(values: torch.Tensor, nulls: torch.Tensor) -> None:
 class ContextEncoder(nn.Module):
     """共享读侧编码：完整 raw bank 的窗口 gather、重锚和有符号归一化。"""
 
-    def __init__(self, normalizer: Normalizer, schema: TrainingSchema, config: ModelConfig):
+    def __init__(self, normalizer: Normalizer, schema: TrainingSchema, config: ModelConfig, *, layout: StateFeatureLayout):
         super().__init__()
         metadata = normalizer.state_encoding_metadata(schema)
-        self.state_dim = schema.state_vector_dim()
+        if layout.groups != schema.state_groups or layout.snapshots != schema.state_snapshots:
+            raise ValueError("ContextEncoder layout must match its saved schema")
+        self.layout = layout
+        self.base_state_dim = layout.base_state_dim
+        self.state_dim = layout.state_dim
         self.scene_dim = schema.scene_feature_dim()
         self.time_delta_scale = config.time_delta_scale
-        try:
-            self.request_time_index = metadata.feature_keys.index("request_state.time_seconds")
-        except ValueError as exc:
-            raise ValueError("context encoding requires request_state.time_seconds") from exc
+        if metadata.feature_keys != layout.base_feature_keys:
+            raise ValueError("normalizer base field order must match the state layout")
+        self.request_time_index = layout.request_time_index
         time_mask = [key.rsplit(".", 1)[-1] == "time_seconds" for key in metadata.feature_keys]
         divisors = [self.time_delta_scale if is_time else divisor
                     for is_time, divisor in zip(time_mask, metadata.divisors, strict=True)]
@@ -94,26 +98,33 @@ class ContextEncoder(nn.Module):
         current_abs = batch["current_state_abs_values"]
         current_null = batch["current_state_null_mask"]
         _validate_raw_state(current_abs, current_null)
-        if current_abs.ndim != 2 or current_abs.shape[-1] != self.state_dim:
-            raise ValueError("current raw states must have shape [batch, state_dim]")
+        if current_abs.ndim != 2 or current_abs.shape[-1] != self.base_state_dim:
+            raise ValueError("current raw states must have shape [batch, base_state_dim]")
         if current_abs.device != self.state_divisors.device or self.state_divisors.dtype != torch.float32:
             raise ValueError("ContextEncoder buffers must be FP32 on the raw batch device")
         history_mask = batch["history_mask"]
         if history_mask.dtype != torch.bool or history_mask.ndim != 2 or history_mask.shape[0] != current_abs.shape[0]:
             raise ValueError("history_mask must be boolean with shape [batch, history]")
         dense = self._gather_history(batch)
+        dimensions = tensor_dimensions(self, batch=current_abs.shape[0], history=history_mask.shape[1],
+                                       skill_feature_dim=dense["history_skill_features"].shape[-1])
+        for field in CURRENT_STATE_RAW_FIELDS:
+            field.validate_tensor(batch[field.name], dimensions, torch=torch)
+        for field in HISTORY_RAW_FIELDS:
+            field.validate_tensor(dense[field.name], dimensions, torch=torch,
+                                  float_dtype=dense["history_skill_features"].dtype)
         history_abs = dense["history_state_abs_values"]
         history_null = dense["history_state_null_mask"]
         _validate_raw_state(history_abs, history_null)
-        if history_abs.shape != (*history_mask.shape, self.state_dim):
-            raise ValueError("history raw states must have shape [batch, history, state_dim]")
+        if history_abs.shape != (*history_mask.shape, self.base_state_dim):
+            raise ValueError("history raw states must have shape [batch, history, base_state_dim]")
         has_history = history_mask.any(dim=1)
         first = history_mask & (history_mask.to(torch.long).cumsum(dim=1) == 1)
         anchor = current_abs[:, self.request_time_index]
         anchor_null = current_null[:, self.request_time_index]
         if history_mask.shape[1]:
             first_indices = history_mask.to(torch.long).argmax(dim=1)
-            first_values = history_abs.gather(1, first_indices[:, None, None].expand(-1, 1, self.state_dim)).squeeze(1)
+            first_values = history_abs.gather(1, first_indices[:, None, None].expand(-1, 1, self.base_state_dim)).squeeze(1)
             anchor = torch.where(has_history, first_values[:, self.request_time_index], anchor)
             first_null = history_null[..., self.request_time_index].gather(1, first_indices[:, None]).squeeze(1)
             anchor_null = torch.where(has_history, first_null, anchor_null)
@@ -139,10 +150,10 @@ class ContextEncoder(nn.Module):
         prepared.update(
             history_skill_ids=dense["history_skill_ids"].masked_fill(~history_mask, 0),
             history_skill_features=dense["history_skill_features"].masked_fill(~history_mask[..., None], 0),
-            history_state_vectors=history_vectors.masked_fill(~history_mask[..., None], 0),
+            history_state_vectors=assemble_state_inputs(history_vectors, dense["history_state_skill_availability"], history_mask, self.layout),
             history_state_null_mask=history_null | ~history_mask[..., None],
             history_state_reset_mask=history_reset & history_mask[..., None],
-            current_state_vectors=current_vectors,
+            current_state_vectors=assemble_state_inputs(current_vectors, batch["current_state_skill_availability"], None, self.layout),
             current_state_null_mask=current_null,
             current_state_reset_mask=current_reset,
         )

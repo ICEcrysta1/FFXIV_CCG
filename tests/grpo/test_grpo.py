@@ -18,6 +18,7 @@ from common.policy.data import ActionSpace, SkillVocab
 from common.policy.model import repetition as repetition_module
 from grpo.config import GrpoConfig, GrpoRunConfig, load_grpo_config
 from grpo.storage import GrpoRolloutStore
+from tests.training._causal_fixtures import make_data_spec, make_input_contract
 from grpo.trainer import (
     GrpoDecision,
     _detach_batch_to_cpu,
@@ -81,10 +82,18 @@ def test_grpo_checkpoint_save_rejects_missing_model_variant(tmp_path):
         )
 
 
+def _rollout_contract():
+    return make_input_contract(make_data_spec(
+        num_actions=3, base_state_dim=3, scene_dim=3,
+        action_keys=("fire_iii", "blizzard_iii", "ogcd_wait"),
+        action_to_vocab_id=(1, 2, 3), action_is_gcd=(True, True, False),
+    ))
+
+
 def _decision(*, history_length: int, scene_length: int, action_index: int) -> GrpoDecision:
     action_keys = ["fire_iii", "blizzard_iii", "ogcd_wait"]
     batch = {
-        "scene_vectors": torch.zeros((1, scene_length, 2), dtype=torch.float32),
+        "scene_vectors": torch.zeros((1, scene_length, 3), dtype=torch.float32),
         "scene_types": torch.zeros((1, scene_length), dtype=torch.int32),
         "scene_mask": torch.ones((1, scene_length), dtype=torch.bool),
         "history_skill_ids": torch.zeros((1, history_length), dtype=torch.int32),
@@ -93,7 +102,7 @@ def _decision(*, history_length: int, scene_length: int, action_index: int) -> G
             dtype=torch.float32,
         ),
         "history_state_vectors": torch.zeros(
-            (1, history_length, 3),
+            (1, history_length, 9),
             dtype=torch.float32,
         ),
         "history_state_null_mask": torch.zeros(
@@ -101,7 +110,7 @@ def _decision(*, history_length: int, scene_length: int, action_index: int) -> G
             dtype=torch.bool,
         ),
         "history_mask": torch.ones((1, history_length), dtype=torch.bool),
-        "current_state_vectors": torch.zeros((1, 3), dtype=torch.float32),
+        "current_state_vectors": torch.zeros((1, 9), dtype=torch.float32),
         "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
         "history_state_reset_mask": torch.zeros((1, history_length, 3), dtype=torch.bool),
         "current_state_reset_mask": torch.zeros((1, 3), dtype=torch.bool),
@@ -207,7 +216,7 @@ def test_collate_grpo_decisions_right_pads_scene_and_history():
         )
     )
 
-    assert batch["scene_vectors"].shape == (2, 2, 2)
+    assert batch["scene_vectors"].shape == (2, 2, 3)
     assert batch["scene_mask"].tolist() == [[True, True], [False, False]]
     assert batch["history_skill_ids"].shape == (2, 3)
     assert batch["history_mask"].tolist() == [[True, False, False], [True, True, True]]
@@ -280,7 +289,7 @@ def test_collate_grpo_decisions_preserves_all_empty_sequences():
     assert batch["history_skill_ids"].shape == (2, 0)
     assert batch["history_state_null_mask"].shape == (2, 0, 3)
     assert batch["history_state_null_mask"].dtype == torch.bool
-    assert batch["scene_vectors"].shape == (2, 0, 2)
+    assert batch["scene_vectors"].shape == (2, 0, 3)
     assert batch["scene_mask"].shape == (2, 0)
 
 
@@ -860,7 +869,7 @@ def test_grpo_directory_follows_env_cache_root_and_job(monkeypatch, tmp_path):
 
 def test_grpo_rollout_store_persists_and_streams_cpu_decisions(tmp_path):
     decision = _decision(history_length=1, scene_length=2, action_index=1)
-    store = GrpoRolloutStore(tmp_path / "grpo", iteration=1, run_id="test-run")
+    store = GrpoRolloutStore(tmp_path / "grpo", input_contract=_rollout_contract(), iteration=1, run_id="test-run")
 
     entry = store.write_trajectory(
         scene_json_path=tmp_path / "scene.json",
@@ -887,7 +896,7 @@ def test_grpo_rollout_store_persists_and_streams_cpu_decisions(tmp_path):
 @pytest.mark.parametrize("previous_format", [1, 2, 3])
 def test_grpo_rollout_store_rejects_previous_input_format(tmp_path, previous_format):
     """动作输入改为固定词表后，旧轨迹不能按新输入格式继续更新策略。"""
-    store = GrpoRolloutStore(tmp_path / "grpo", iteration=1, run_id="old-format")
+    store = GrpoRolloutStore(tmp_path / "grpo", input_contract=_rollout_contract(), iteration=1, run_id="old-format")
     entry = store.write_trajectory(
         scene_json_path=tmp_path / "scene.json", decisions=(_decision(history_length=0, scene_length=0, action_index=0),),
         ppg=1.0, greedy_ppg=1.0, reward=0.0,
@@ -923,7 +932,7 @@ def test_grpo_update_keeps_minibatch_weighting_and_defers_host_reads(monkeypatch
 def test_grpo_update_streams_disk_rollouts_without_full_decision_buffer(monkeypatch, tmp_path):
     policy = torch.nn.Linear(1, 1)
     optimizer = torch.optim.SGD(policy.parameters(), lr=0)
-    store = GrpoRolloutStore(tmp_path / "grpo", iteration=1, run_id="stream-test")
+    store = GrpoRolloutStore(tmp_path / "grpo", input_contract=_rollout_contract(), iteration=1, run_id="stream-test")
     for index in range(3):
         store.write_trajectory(
             scene_json_path=tmp_path / f"scene-{index}.json",
@@ -999,8 +1008,8 @@ def test_grpo_update_logs_optimizer_metrics_to_tensorboard(monkeypatch):
 def test_grpo_store_rejects_incomplete_anchored_input_before_write(tmp_path, field):
     decision = _decision(history_length=1, scene_length=1, action_index=0)
     decision.batch.pop(field)
-    store = GrpoRolloutStore(tmp_path / "grpo", iteration=1, run_id="missing")
-    with pytest.raises(ValueError, match="anchored context"):
+    store = GrpoRolloutStore(tmp_path / "grpo", input_contract=_rollout_contract(), iteration=1, run_id="missing")
+    with pytest.raises(ValueError, match="state_reset_mask"):
         store.write_trajectory(scene_json_path=tmp_path / "scene.json", decisions=(decision,),
                                ppg=1.0, greedy_ppg=0.0, reward=1.0)
     assert not store.entries
@@ -1012,7 +1021,7 @@ def test_grpo_store_rejects_raw_states_and_old_rollout_format(tmp_path, raw_fiel
 
     decision = _decision(history_length=1, scene_length=1, action_index=0)
     decision.batch[raw_field] = torch.zeros((1, 3))
-    store = GrpoRolloutStore(tmp_path / "grpo", iteration=1, run_id="raw")
+    store = GrpoRolloutStore(tmp_path / "grpo", input_contract=_rollout_contract(), iteration=1, run_id="raw")
     with pytest.raises(ValueError, match="not raw context"):
         store.write_trajectory(scene_json_path=tmp_path / "scene.json", decisions=(decision,),
                                ppg=1.0, greedy_ppg=0.0, reward=1.0)
@@ -1021,8 +1030,8 @@ def test_grpo_store_rejects_raw_states_and_old_rollout_format(tmp_path, raw_fiel
                                    ppg=1.0, greedy_ppg=0.0, reward=1.0)
     store.set_advantages((1.0,))
     payload = safe_torch_load(entry.path)
-    assert payload["format"] == 6
-    payload["format"] = 5
+    assert payload["format"] == 7
+    payload["format"] = 6
     torch.save(payload, entry.path)
     with pytest.raises(ValueError, match="unsupported GRPO trajectory format"):
         list(store.iter_minibatches(1))
@@ -1041,7 +1050,7 @@ def test_grpo_store_validates_independent_window_metadata(tmp_path, metadata, er
 
     decision = replace(_decision(history_length=1, scene_length=1, action_index=0),
                        context_metadata=metadata)
-    store = GrpoRolloutStore(tmp_path / "grpo", iteration=1, run_id="metadata")
+    store = GrpoRolloutStore(tmp_path / "grpo", input_contract=_rollout_contract(), iteration=1, run_id="metadata")
     with pytest.raises(ValueError, match=error):
         store.write_trajectory(scene_json_path=tmp_path / "scene.json", decisions=(decision,),
                                ppg=1.0, greedy_ppg=0.0, reward=1.0)
@@ -1054,7 +1063,7 @@ def test_grpo_cursor_roundtrips_after_history_reset_without_entering_model_batch
 
     decision = replace(_decision(history_length=8, scene_length=1, action_index=0),
                        context_metadata={"history_cursor": 301})
-    store = GrpoRolloutStore(tmp_path / "grpo", iteration=1, run_id="reset")
+    store = GrpoRolloutStore(tmp_path / "grpo", input_contract=_rollout_contract(), iteration=1, run_id="reset")
     entry = store.write_trajectory(scene_json_path=tmp_path / "scene.json", decisions=(decision,),
                                    ppg=1.0, greedy_ppg=0.0, reward=1.0)
     store.set_advantages((1.0,))
@@ -1075,7 +1084,49 @@ def test_grpo_cursor_roundtrips_after_history_reset_without_entering_model_batch
 def test_grpo_store_rejects_window_metadata_inside_model_batch(tmp_path):
     decision = _decision(history_length=1, scene_length=1, action_index=0)
     decision.batch["history_cursor"] = torch.tensor([1], dtype=torch.long)
-    store = GrpoRolloutStore(tmp_path / "grpo", iteration=1, run_id="mixed")
+    store = GrpoRolloutStore(tmp_path / "grpo", input_contract=_rollout_contract(), iteration=1, run_id="mixed")
     with pytest.raises(ValueError, match="outside the model batch"):
         store.write_trajectory(scene_json_path=tmp_path / "scene.json", decisions=(decision,),
                                ppg=1.0, greedy_ppg=0.0, reward=1.0)
+
+
+@pytest.mark.parametrize("location", ["batch", "decision", "contract"])
+def test_grpo_store_rejects_same_width_action_order_drift_on_read(tmp_path, location):
+    from common.torch_serialization import safe_torch_load
+
+    contract = _rollout_contract()
+    store = GrpoRolloutStore(tmp_path, iteration=1, input_contract=contract)
+    decision = _decision(history_length=1, scene_length=1, action_index=0)
+    entry = store.write_trajectory(scene_json_path=tmp_path / "scene.json", decisions=(decision,),
+                                   ppg=1, greedy_ppg=0, reward=1)
+    payload = safe_torch_load(entry.path)
+    if location == "batch":
+        keys = payload["decisions"][0]["batch"]["action_keys"][0]
+    elif location == "decision":
+        keys = payload["decisions"][0]["action_keys"]
+    else:
+        data = payload["model_input_contract"]["data_spec"]
+        keys = list(data["action_keys"])
+        data["action_keys"] = keys
+    keys[0], keys[1] = keys[1], keys[0]
+    torch.save(payload, entry.path)
+    with pytest.raises(ValueError, match="order"):
+        store._load_decisions(entry.path)
+
+
+def test_grpo_store_validates_base_masks_and_binary_availability_before_write(tmp_path):
+    contract = _rollout_contract()
+    store = GrpoRolloutStore(tmp_path, iteration=1, input_contract=contract)
+    decision = _decision(history_length=1, scene_length=1, action_index=0)
+    assert decision.batch["current_state_vectors"].shape[-1] == 9
+    assert decision.batch["current_state_null_mask"].shape[-1] == 3
+    decision.batch["current_state_vectors"][0, 3] = -1
+    with pytest.raises(ValueError, match="absolute binary"):
+        store.write_trajectory(scene_json_path=tmp_path / "scene.json", decisions=(decision,),
+                               ppg=1, greedy_ppg=0, reward=1)
+    assert not store.entries
+    decision.batch["current_state_vectors"][0, 3] = 1
+    decision.batch["action_keys"][0].reverse()
+    with pytest.raises(ValueError, match="action order"):
+        store.write_trajectory(scene_json_path=tmp_path / "scene.json", decisions=(decision,),
+                               ppg=1, greedy_ppg=0, reward=1)

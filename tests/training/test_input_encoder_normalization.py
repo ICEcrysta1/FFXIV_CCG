@@ -35,6 +35,8 @@ def _dense_batch(*, scene_length=2, history_length=2, dtype=torch.float64):
         2, history_length, 2) / 3 - 0.1
     batch['current_state_vectors'] = torch.tensor(
         [[0.2, -0.5, 0.8, 1.2], [-0.3, 0.4, 0.1, 0.9]], dtype=dtype)
+    batch['history_state_vectors'] = torch.cat((batch['history_state_vectors'], torch.zeros((2, history_length, 4), dtype=dtype)), dim=-1)
+    batch['current_state_vectors'] = torch.cat((batch['current_state_vectors'], torch.zeros((2, 4), dtype=dtype)), dim=-1)
     batch['current_state_null_mask'] = torch.tensor(
         [[True, False, False, False], [False, True, False, False]])
     if scene_length == 2:

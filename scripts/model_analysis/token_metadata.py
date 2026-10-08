@@ -40,7 +40,7 @@ def build_token_metadata(
     *,
     batch: dict[str, object],
     encoded: dict[str, object],
-    schema,
+    layout,
     job_tag: str,
     logits: np.ndarray,
 ) -> dict[str, np.ndarray]:
@@ -70,7 +70,7 @@ def build_token_metadata(
         metadata["fight_id"][batch_index, :] = str(sample_metadata.get("fight_id", "unknown"))
         metadata["step_index"][batch_index, :] = float(sample_metadata.get("step", np.nan))
         elemental_state, mp_bucket = decision_state_labels(
-            job_tag, batch_index, batch=batch, schema=schema,
+            job_tag, batch_index, batch=batch, layout=layout,
         )
         metadata["elemental_state"][batch_index, position] = elemental_state
         metadata["mp_bucket"][batch_index, position] = mp_bucket

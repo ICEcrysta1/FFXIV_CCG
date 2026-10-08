@@ -54,24 +54,25 @@ public sealed class StateOutputRouter
     }
 
     /// <summary>输出单个状态快照的 canonical 模型结果（对照 format_vectors）。</summary>
-    public Dictionary<string, object?> FormatVectors(
+    internal Dictionary<string, object?> FormatVectors(
         CombatState state,
         IReadOnlyList<string> actionKeys,
-        IReadOnlyList<bool> actionLegalMask,
-        IReadOnlyList<double> actionValues) =>
+        IReadOnlyList<double> actionValues,
+        ModelStateSnapshot current,
+        IReadOnlyList<ModelHistoryRow>? history = null) =>
         ModelVectorFormatter.Format(
-            _contextBuilder.BuildContext(state, actionKeys, actionLegalMask, actionValues));
+            _contextBuilder.BuildContext(state, actionKeys, actionValues, current, history));
 
     /// <summary>输出单个状态快照的 tensor 友好模型结果（对照 format_tensors，懒加载精度配置）。</summary>
-    public object? FormatTensors(
+    internal object? FormatTensors(
         CombatState state,
         IReadOnlyList<string> actionKeys,
-        IReadOnlyList<bool> actionLegalMask,
-        IReadOnlyList<double> actionValues)
+        IReadOnlyList<double> actionValues,
+        ModelStateSnapshot current)
     {
         _modelTensorFormatter ??= LoadTensorFormatter();
         return _modelTensorFormatter.Format(
-            _contextBuilder.BuildContext(state, actionKeys, actionLegalMask, actionValues));
+            _contextBuilder.BuildContext(state, actionKeys, actionValues, current));
     }
 
     /// <summary>输出状态上下文原料（对照 build_state_context）。</summary>
@@ -81,8 +82,7 @@ public sealed class StateOutputRouter
     internal IReadOnlyDictionary<string, object> BuildNoopResourceTransition(CombatState state) =>
         _contextBuilder.BuildNoopResourceTransition(state);
 
-    internal Dictionary<string, double[]> BuildModelStateToken(ModelStateSnapshot snapshot) =>
-        _contextBuilder.BuildModelStateToken(snapshot);
+    internal IReadOnlyList<ModelHistoryRow> CollectHistory(CombatState state) => _contextBuilder.CollectHistory(state);
 
     private ModelTensorFormatter LoadTensorFormatter()
     {

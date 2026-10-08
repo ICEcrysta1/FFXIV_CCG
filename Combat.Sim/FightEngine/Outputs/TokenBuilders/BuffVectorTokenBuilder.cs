@@ -34,9 +34,8 @@ public sealed class BuffVectorTokenBuilder
             .OrderBy(key => key, StringComparer.Ordinal).ToArray();
         _buffResourceKeys = systemMachine.JobResourceVectorKeys("buff").ToArray();
         _featureKeys = BuildFeatureKeys();
-        _historyFeatureKeys = _featureKeys
-            .Select(key => $"previous_action_after.{key}")
-            .Concat(_featureKeys.Select(key => $"request_state.{key}"))
+        _historyFeatureKeys = SchemaConfigLoader.Instance.StateSnapshots
+            .SelectMany(snapshot => _featureKeys.Select(key => $"{snapshot}.{key}"))
             .ToArray();
     }
 

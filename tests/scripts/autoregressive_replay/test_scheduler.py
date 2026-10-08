@@ -80,7 +80,9 @@ def test_scene_facts_are_synchronized_before_advancing_across_boundary():
     scheduler = DecisionScheduler(timeline, timeline.observe, Scene())
     assert scheduler.advance_by(timeline.observe(0), 2.0).time == 2.0
     assert timeline.advances == [1.0, 2.0]
-    assert calls[0] == (1.0, [])
+    assert calls[0] == (0.0, [])
+    assert calls[1] == (1.0, [])
+    assert calls[2] == (1.0, [1.0])
 
 
 def test_no_weave_candidate_advances_to_gcd_request_then_next_event():
@@ -91,3 +93,46 @@ def test_no_weave_candidate_advances_to_gcd_request_then_next_event():
     state = scheduler.advance_to_next_decision(state)
     assert state.time == pytest.approx(2.5)
     assert scheduler.advance_to_next_decision(state) is None
+
+
+@pytest.mark.parametrize("request_time", [0.1, 1.7])
+def test_scene_fp32_boundary_below_decision_epsilon_still_advances(request_time):
+    import struct
+    from common.contracts import FORCED_MOVEMENT_CONTEXT_KEY
+    from scripts.common.scene_state import SceneFactScheduler
+
+    boundary = struct.unpack("f", struct.pack("f", request_time))[0]
+    assert 0.0 < boundary - request_time < 1e-6
+    facts = SceneFactScheduler({FORCED_MOVEMENT_CONTEXT_KEY: {
+        "feature_keys": ["start_offset_seconds", "end_offset_seconds"],
+        "tokens": [[request_time, request_time + 3.0]],
+    }})
+    timeline = Timeline(gcd_ready=0.0)
+    batches = []
+
+    def apply_batch(events):
+        batches.append((events, list(timeline.advances)))
+        return SimpleNamespace(accepted=True)
+
+    backend = SimpleNamespace(apply_external_events=apply_batch)
+
+    class Scene:
+        def next_state_event_after(self, timestamp):
+            return facts.next_event_after(timestamp)
+
+        def sync_state(self, state):
+            facts.sync_through(backend, state.time)
+
+    scheduler = DecisionScheduler(timeline, timeline.observe, Scene())
+    state = timeline.observe(request_time)
+    result = scheduler.advance_to_next_decision(state)
+    assert result is not None
+    assert result.time == boundary
+    assert batches[-1][0][0]["event_kind"] == "movement_changed"
+    assert batches[-1][0][0]["value"] is True
+    assert batches[-1][1] == []
+    assert timeline.advances == [boundary]
+    # 再推进完整区间，不会反复卡在同一未消费场景边界。
+    result = scheduler.advance_by(result, 1.0)
+    assert result.time == boundary + 1.0
+    assert len(batches) == 2

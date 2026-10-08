@@ -197,15 +197,18 @@ class Normalizer:
 
     def register_schema(self, schema) -> None:
         """从训练 schema 注册全部状态分组。"""
-        for group_key, feature_keys in schema.state_group_feature_keys.items():
-            self.register_feature_keys(group_key, list(feature_keys))
+        for group in schema.state_groups:
+            if group.encoding == "anchored_delta":
+                self.register_feature_keys(group.group_key, list(group.feature_keys))
 
     def state_encoding_metadata(self, schema) -> StateEncodingMetadata:
         """从已注册规则生成向量化 ABS/有符号 DELTA 元数据，不重复推断字段。"""
         self.register_schema(schema)
         keys, divisors, lower_bounds, upper_bounds, logarithmic = [], [], [], [], []
-        for group_key in schema.state_group_feature_keys:
-            for rule in self._rules[group_key]:
+        for group in schema.state_groups:
+            if group.encoding != "anchored_delta":
+                continue
+            for rule in self._rules[group.group_key]:
                 divisor, lower, upper = 1.0, -math.inf, math.inf
                 kind = rule.rule_type
                 if kind in {"divide_mp_max", "divide_max_mp"}:

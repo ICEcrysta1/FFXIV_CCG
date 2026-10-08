@@ -29,9 +29,8 @@ public sealed class TargetBuffVectorTokenBuilder
         _fixedFields = SchemaConfigLoader.RequireStateVectorFields("target_buff_fixed").ToArray();
         _registeredDotKeys = systemMachine.RegisteredTargetDotKeys.ToArray();
         _featureKeys = BuildFeatureKeys();
-        _historyFeatureKeys = _featureKeys
-            .Select(key => $"previous_action_after.{key}")
-            .Concat(_featureKeys.Select(key => $"request_state.{key}"))
+        _historyFeatureKeys = SchemaConfigLoader.Instance.StateSnapshots
+            .SelectMany(snapshot => _featureKeys.Select(key => $"{snapshot}.{key}"))
             .ToArray();
     }
 

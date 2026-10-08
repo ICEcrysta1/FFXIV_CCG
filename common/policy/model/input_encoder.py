@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import torch
 import torch.nn as nn
 
 from ..config import ModelConfig
 from ..data.input_contract import TOKEN_ENCODING_CONTRACT
 from ..data.spec import DataSpec
+from ..data.context_fields import MODEL_INPUT_FIELDS, tensor_dimensions
 
 
 ROLE_SCENE = TOKEN_ENCODING_CONTRACT["role_ids"]["scene"]
@@ -36,13 +38,13 @@ class CausalInputEncoder(nn.Module):
         self.skill_embed = nn.Embedding(vocab_size, d_model, padding_idx=0)
         self.skill_feat_proj = nn.Linear(data_spec.skill_feature_dim, d_model)
         self.state_proj = nn.Linear(data_spec.state_dim, d_model)
-        self.state_null_proj = nn.Linear(data_spec.state_dim, d_model, bias=False)
+        self.state_null_proj = nn.Linear(data_spec.base_state_dim, d_model, bias=False)
         self.scene_proj = nn.ModuleList(
             nn.Linear(data_spec.scene_dim, d_model)
             for _ in range(data_spec.num_scene_types)
         )
         self.role_embed = nn.Embedding(3, d_model)
-        self.state_reset_proj = _StateResetProjection(data_spec.state_dim, d_model, bias=False)
+        self.state_reset_proj = _StateResetProjection(data_spec.base_state_dim, d_model, bias=False)
 
     @property
     def max_token_count(self) -> int:
@@ -168,7 +170,7 @@ class CausalInputEncoder(nn.Module):
         """投影已编码数值、缺失及 ABS 重置标识；精度转换发生在编码完成后。"""
         values = values.to(dtype=self.state_proj.weight.dtype)
         if null_mask is None:
-            null_mask = torch.zeros_like(values, dtype=torch.bool)
+            null_mask = torch.zeros((*values.shape[:-1], self.data_spec.base_state_dim), dtype=torch.bool, device=values.device)
         return (
             self.state_proj(values)
             + self.state_null_proj(null_mask.to(dtype=values.dtype))
@@ -189,26 +191,18 @@ class CausalInputEncoder(nn.Module):
                 "skill history context length exceeds model.history_capacity: "
                 f"{history_length} > {self.config.history_capacity}"
             )
-        if batch["history_skill_ids"].shape[1] != batch["history_state_vectors"].shape[1]:
-            raise ValueError("history skill/state lengths must match")
-        if batch["current_state_vectors"].ndim != 2:
-            raise ValueError("current_state_vectors must have shape [batch, state_dim]")
-        if batch["current_state_vectors"].shape[-1] != expected.state_dim:
-            raise ValueError("current state dimension does not match the data spec")
-        if batch["history_state_vectors"].shape[-1] != expected.state_dim:
-            raise ValueError("history state dimension does not match the data spec")
-        for key in ("current_state_null_mask", "history_state_null_mask"):
-            values_key = key.replace("null_mask", "vectors")
-            if key in batch and batch[key].shape != batch[values_key].shape:
-                raise ValueError(f"{key} must match {values_key}")
-        for prefix in ("current", "history"):
-            key = f"{prefix}_state_reset_mask"
-            if batch[key].shape != batch[f"{prefix}_state_vectors"].shape or batch[key].dtype != torch.bool:
-                raise ValueError(f"{key} must be a boolean mask matching state vectors")
-        if batch["scene_vectors"].shape[-1] != expected.scene_dim:
-            raise ValueError("scene dimension does not match the compiled cache data spec")
-        if batch["history_skill_features"].shape[-1] != expected.skill_feature_dim:
-            raise ValueError("skill feature dimension does not match the compiled cache data spec")
+        dimensions = tensor_dimensions(expected, batch=batch["scene_vectors"].shape[0], scene=scene_length, history=history_length)
+        for field in MODEL_INPUT_FIELDS:
+            if field.name.endswith("null_mask") and field.name not in batch:
+                continue
+            # 神经入口允许部署已转换的浮点精度，结构与 bool/index 仍按统一声明检查。
+            value = batch[field.name]
+            if field.dtype in {"float", "float32"}:
+                if not value.is_floating_point():
+                    raise ValueError(f"{field.name} must be floating point")
+                replace(field, dtype="float").validate_tensor(value, dimensions, torch=torch, float_dtype=value.dtype)
+            else:
+                field.validate_tensor(value, dimensions, torch=torch)
         if "action_legal_mask" in batch and batch["action_legal_mask"].shape != (
             batch["scene_vectors"].shape[0], expected.num_actions,
         ):

@@ -407,9 +407,6 @@ public sealed class CombatStateMachine
     {
         var stateBefore = _stateContextBuilder.Build(requestState);
         var stateAfter = _stateContextBuilder.Build(effectState);
-        // 老请求后来生效时，不能覆盖更新请求（包括 wait）的动作后基准。
-        if (effectState.LastDecisionId == actionInstanceId)
-            effectState.LastDecisionAfter = ModelStateSnapshot.Freeze(stateAfter);
         var snapshot = BuildSkillSnapshot(
             effectState,
             skill,

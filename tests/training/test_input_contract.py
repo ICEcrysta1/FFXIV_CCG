@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.training._causal_fixtures import make_state_groups
+
 import pytest
 
 from common.policy.data import ModelInputContract, Normalizer, SkillVocab
@@ -18,7 +20,7 @@ def _build_contract() -> ModelInputContract:
     data_spec = DataSpec(
         job_tag="black_mage",
         num_actions=1,
-        state_dim=1,
+        base_state_dim=1, state_dim=(1) + 2 * (1),
         scene_dim=3,
         skill_feature_dim=1,
         num_scene_types=1,
@@ -43,7 +45,7 @@ def _build_contract() -> ModelInputContract:
                 scene_type_id=0,
             ),
         ),
-        state_group_feature_keys={"player_state": ("previous_action_after.time_seconds",)},
+        state_groups=make_state_groups({"player_state": ("request_state.time_seconds",)}, data_spec.action_keys), state_snapshots=("previous_action_after", "request_state"),
         skill_history_fields=("skill_key",),
     )
     normalizer = Normalizer()
@@ -77,7 +79,7 @@ def test_model_input_contract_round_trips_without_project_yaml(monkeypatch):
 
     normalizer = restored.create_normalizer()
     metadata = normalizer.state_encoding_metadata(restored.schema)
-    assert metadata.feature_keys == ("previous_action_after.time_seconds",)
+    assert metadata.feature_keys == ("request_state.time_seconds",)
     assert normalizer.normalization_contract == restored.normalizer_contract
 
 
@@ -89,7 +91,7 @@ def test_model_input_contract_rejects_checkpoint_without_contract():
 def test_model_input_contract_describes_post_role_parameterless_rms():
     """保存精确编码位置与参数，避免将归一化放在 role 相加之前。"""
     payload = _build_contract().to_dict()
-    assert payload["version"] == 21
+    assert payload["version"] == 22
     encoding = payload["token_encoding"]
     assert encoding["skill"] == "E[id] + Linear(skill_features)"
     assert encoding["state"] == "Linear(state_values) + Linear(null_mask, bias=False) + Linear(state_reset_mask, bias=False)"

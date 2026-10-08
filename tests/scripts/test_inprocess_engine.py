@@ -125,3 +125,26 @@ def test_six_conversion_workers_share_engine_and_preserve_full_history(cs_skill_
 def test_invalid_capacity_is_rejected_before_loading_runtime(capacity):
     with pytest.raises(ValueError, match="capacity"):
         InProcessEngine("black_mage", capacity=capacity)
+
+
+def test_external_fact_batch_is_atomic_and_single_event_delegates():
+    with InProcessEngine("black_mage", capacity=1) as engine, engine.create_backend(max_history=None) as backend:
+        before = backend.statistics()
+        with pytest.raises(Exception):
+            backend.apply_external_events([
+                {"timestamp": 1.0, "event_kind": "movement_changed", "value": True},
+                {"timestamp": 1.0, "event_kind": "target_count_changed", "target_count": -1},
+            ])
+        assert backend.statistics() == before
+        applied = backend.apply_external_events([
+            {"timestamp": 1.0, "event_kind": "movement_changed", "value": True},
+            {"timestamp": 1.0, "event_kind": "target_count_changed", "target_count": 2},
+        ])
+        assert applied.accepted
+        assert applied.timestamp == 1.0
+        canonical = backend.observe_at(1.0, format="vector", next_observation_timestamp=1.0).context
+        current = canonical["current_state_context"]
+        index = current["player_state_feature_keys"].index("request_state.is_moving")
+        assert current["tokens"][0]["player_state"][index] == 1.0
+        assert backend.apply_external_event(1.0, "movement_changed", value=False).accepted
+        assert backend.validate_at(1.0, "fire_iii").legal

@@ -54,12 +54,35 @@ def test_current_and_history_state_share_encoder_and_role():
     encoded = model.input_encoder(batch)
     last_history_state = encoded["history_state_positions"][0, -1].item()
     current = encoded["current_state_position"]
-    torch.testing.assert_close(encoded["tokens"][:, last_history_state], encoded["tokens"][:, current], atol=0, rtol=0)
+    # 历史与当前的 GEMM 批大小不同；先按相同形状验证共享投影，再使用既有 FP32 容差。
+    projected = model.input_encoder._embed_state(batch["history_state_vectors"][:, -1],
+                                                batch["history_state_null_mask"][:, -1],
+                                                batch["history_state_reset_mask"][:, -1])
+    current_projected = model.input_encoder._embed_state(batch["current_state_vectors"],
+                                                        batch["current_state_null_mask"],
+                                                        batch["current_state_reset_mask"])
+    torch.testing.assert_close(projected, current_projected, atol=0, rtol=0)
+    torch.testing.assert_close(encoded["tokens"][:, last_history_state], encoded["tokens"][:, current])
     assert encoded["role_ids"][:, last_history_state].tolist() == [ROLE_STATE] * 2
     assert encoded["role_ids"][:, current].tolist() == [ROLE_STATE] * 2
     assert model.input_encoder.state_null_proj.bias is None
     assert not hasattr(model.input_encoder, "segment_embed")
     assert "segment_ids" not in encoded
+
+
+def test_availability_uses_shared_state_projection_without_auxiliary_columns():
+    model = _model()
+    spec = model.data_spec
+    assert model.input_encoder.state_proj.in_features == spec.state_dim
+    assert model.input_encoder.state_null_proj.in_features == spec.base_state_dim
+    assert model.input_encoder.state_reset_proj.in_features == spec.base_state_dim
+    batch = make_batch(spec)
+    original = model.input_encoder.embed_history(batch)
+    changed = {**batch, "history_state_vectors": batch["history_state_vectors"].clone()}
+    changed["history_state_vectors"][..., spec.base_state_dim:] = 1
+    updated = model.input_encoder.embed_history(changed)
+    assert not torch.equal(original["state"], updated["state"])
+    torch.testing.assert_close(original["skill"], updated["skill"], atol=0, rtol=0)
 
 
 @pytest.mark.parametrize("full_attention_residuals", [False, True])
@@ -91,7 +114,7 @@ def test_request_state_is_visible_to_its_skill_and_later_tokens(full_attention_r
     original = model.trace(batch)
     changed = dict(batch)
     changed["history_state_vectors"] = batch["history_state_vectors"].clone()
-    changed["history_state_vectors"][:, 0] = torch.tensor([3.0, -4.0, 5.0, 2.0])
+    changed["history_state_vectors"][:, 0, :model.data_spec.base_state_dim] = torch.tensor([3.0, -4.0, 5.0, 2.0])
     updated = model.trace(changed)
     state_position = original.encoded["history_state_positions"][0, 0].item()
     skill_position = original.encoded["history_skill_positions"][0, 0].item()

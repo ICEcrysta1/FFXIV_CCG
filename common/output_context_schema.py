@@ -24,6 +24,7 @@ ACTION_KEYS_KEY = CANONICAL_CONTEXT_TOP_LEVEL_KEYS[6]
 ACTION_LEGAL_MASK_KEY = CANONICAL_CONTEXT_TOP_LEVEL_KEYS[7]
 ACTION_VALUES_KEY = CANONICAL_CONTEXT_TOP_LEVEL_KEYS[8]
 STATE_CONTEXT_TOKEN_KEY = str(_output["token_key"])
+STATE_SNAPSHOTS = tuple(str(value) for value in _output["state_snapshots"])
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,11 @@ class StateVectorGroupSchema:
     group_key: str
     feature_keys_field: str
     context_key: str | None
+    encoding: str
+
+    def __post_init__(self) -> None:
+        if self.encoding not in {"anchored_delta", "absolute_binary"}:
+            raise ValueError(f"unknown state group encoding: {self.encoding!r}")
 
 
 STATE_VECTOR_GROUP_SCHEMAS = tuple(
@@ -40,6 +46,7 @@ STATE_VECTOR_GROUP_SCHEMAS = tuple(
         group_key=str(group_key),
         feature_keys_field=str(spec["feature_keys_field"]),
         context_key=None if spec["context_key"] is None else str(spec["context_key"]),
+        encoding=str(spec["encoding"]),
     )
     for group_key, spec in _output["state_vector_groups"].items()
 )

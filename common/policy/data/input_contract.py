@@ -39,7 +39,9 @@ from .spec import DataSpec
 #     checkpoint 保存尺度的 softcap；旧共享输出权重不得静默套用新读出算法。
 # 21：状态使用窗口 ABS 锚点与原始全字段 DELTA，场景时间裁剪后差分，显式保存
 #     字段 ABS 重置标识；旧归一化输入和旧 checkpoint 必须重新构建。
-INPUT_CONTRACT_VERSION = 21
+# 22：有序状态布局追加两段冻结技能表，基础 mask 保持原宽；同刻场景事实、
+#     执行时间精度和状态场景合成采用共享契约，旧输入和执行产物均不可复用。
+INPUT_CONTRACT_VERSION = 22
 
 RESIDUAL_MIX_CONFIG_FIELDS = (
     "residual_mix_r_start", "residual_mix_r_end",
@@ -98,6 +100,14 @@ def residual_composition_contract(model_config: Mapping[str, object]) -> dict[st
 # 描述固定的输入结构，不作为可调运行参数；d_model 仍由保存的 model_config 提供。
 # 数据 bank 的字段与时间语义由 schema 与转换版本负责，不把读取窗口加入 cache 身份。
 TOKEN_ENCODING_CONTRACT = {
+    "state_availability": {
+        "encoding": "absolute_binary",
+        "order": "snapshot_then_saved_action_keys",
+        "projection": "shared_state_content",
+        "auxiliary_masks": "base_state_only",
+        "scene_execution_time": "raw_fp32_endpoints_promoted_to_double",
+        "scene_state_fields": "eta_and_downtime_per_frozen_snapshot",
+    },
     "skill": "E[id] + Linear(skill_features)",
     "state": "Linear(state_values) + Linear(null_mask, bias=False) + Linear(state_reset_mask, bias=False)",
     "scene": "Linear_by_scene_type(scene_values)",
@@ -182,6 +192,7 @@ class ModelInputContract:
 
     def __post_init__(self) -> None:
         data_spec = DataSpec.from_dict(self.data_spec)
+        self.schema.state_layout(data_spec.action_keys).assert_matches_data_spec(data_spec)
         vocab = self.create_skill_vocab()
         if any(row >= vocab.size() for row in data_spec.action_to_vocab_id):
             raise ValueError("input contract output actions exceed the saved skill vocab")
@@ -244,7 +255,7 @@ class ModelInputContract:
             )
         normalized_data_spec = dict(data_spec)
         try:
-            DataSpec.from_dict(normalized_data_spec)
+            normalized_data_spec = asdict(DataSpec.from_dict(normalized_data_spec))
         except (KeyError, TypeError) as exc:
             raise ValueError("input contract data_spec is missing the fixed action output mapping") from exc
         if str(normalized_data_spec.get("job_tag", "")) != job_tag:

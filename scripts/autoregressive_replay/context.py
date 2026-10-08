@@ -8,15 +8,13 @@ from dataclasses import dataclass
 
 import torch
 
-from common.contracts import SLIDECAST_WINDOW_SECONDS
 from common.numeric import flatten_numeric_mapping
+from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
 from common.policy.data.context_encoding import ContextEncoder, raw_state_delta
 from common.policy.data.history_window import history_window_length
-from common.policy.data.schema import (
-    SCENE_TYPE_MOVEMENT,
-    SCENE_TYPE_RAID_BUFF,
-    SCENE_TYPE_TARGET_COUNT,
-    SCENE_TYPE_TARGETABLE,
+from common.policy.data.state_features import read_state_tokens, validate_state_feature_keys
+from scripts.common.scene_state import (
+    BOSS_TARGETABLE_CHANGED, SceneFactScheduler, rewrite_scene_player_state,
 )
 
 from .scheduler import gcd_request_delay, is_gcd_decision
@@ -24,367 +22,85 @@ from .scheduler import gcd_request_delay, is_gcd_decision
 REPLAY_SKILL_IGNORED_FIELDS = frozenset(
     {"skill_key", "skill_name", "invalid_reason", "skill_id"}
 )
-SCENE_TIME_EPSILON = 1e-6
-
-
-@dataclass(frozen=True)
-class SceneTargetableState:
-    """某个绝对时间点对应的 Boss 可选中状态。"""
-
-    boss_targetable: bool
-    next_downtime_eta: float | None
-    downtime_remaining: float
 
 
 class SceneTemplateProvider:
-    """保存完整 FP32 绝对场景事实；模型窗口变换由共享编码器处理。"""
+    """完整 raw scene 的容器适配；查询和事实调度只由 scene_state 持有。"""
 
-    def __init__(
-        self,
-        reader,
-        *,
-        normalizer,
-        initial_sample_index: int = 0,
-        enabled: bool = True,
-        backend=None,
-    ):
+    def __init__(self, reader, *, normalizer, initial_sample_index=0, enabled=True, backend=None):
+        del normalizer
         if reader.num_samples <= 0:
             raise ValueError("scene cache has no samples")
         if not 0 <= initial_sample_index < reader.num_samples:
-            raise ValueError(
-                f"scene sample index {initial_sample_index} out of range: {reader.num_samples} samples"
-            )
-        self._reader = reader
-        self._enabled = enabled
-        self._normalizer = normalizer
+            raise ValueError(f"scene sample index {initial_sample_index} out of range: {reader.num_samples} samples")
         self._backend = backend
-        self._last_external_signature = None
-        self._scene_dim = reader.schema.scene_feature_dim()
-        targetable_window = next(
-            (
-                window
-                for window in reader.schema.scene_windows
-                if window.scene_type_id == SCENE_TYPE_TARGETABLE
-                and "targetable" in window.feature_keys
-            ),
-            None,
-        )
-        target_count_window = next(
-            (
-                window
-                for window in reader.schema.scene_windows
-                if window.scene_type_id == SCENE_TYPE_TARGET_COUNT
-                and "target_count" in window.feature_keys
-            ),
-            None,
-        )
-        self._target_count_index = (
-            None
-            if target_count_window is None
-            else target_count_window.feature_keys.index("target_count")
-        )
-        self._targetable_flag_index = (
-            None
-            if targetable_window is None
-            else targetable_window.feature_keys.index("targetable")
-        )
-        self._targetable_start_index = (
-            None if targetable_window is None else targetable_window.start_offset_index
-        )
-        self._targetable_end_index = (
-            None if targetable_window is None else targetable_window.end_offset_index
-        )
-        self._scene_start_index = (
-            None
-            if target_count_window is None
-            else target_count_window.feature_keys.index("start_offset_seconds")
-        )
-        self._scene_end_index = (
-            None
-            if target_count_window is None
-            else target_count_window.feature_keys.index("end_offset_seconds")
-        )
-        if self._enabled:
+        scene_dim = reader.schema.scene_feature_dim()
+        if enabled:
             self._scene_abs_values, self._scene_types = reader.scene_tokens(
-                initial_sample_index,
-                float_dtype=torch.float32,
-                int_dtype=torch.int32,
+                initial_sample_index, float_dtype=torch.float32, int_dtype=torch.int32,
             )
         else:
-            self._scene_abs_values = torch.zeros((0, self._scene_dim), dtype=torch.float32)
+            self._scene_abs_values = torch.zeros((0, scene_dim), dtype=torch.float32)
             self._scene_types = torch.zeros((0,), dtype=torch.int32)
-        if self._enabled and self._scene_abs_values.shape[0] == 0:
+        if enabled and self._scene_abs_values.shape[0] == 0:
             raise ValueError("scene cache has no usable scene tokens")
         if self._scene_abs_values.dtype != torch.float32:
             raise ValueError("raw scene cache must use float32")
-        if not torch.isfinite(self._scene_abs_values).all():
-            raise ValueError("raw scene cache contains non-finite values")
-        self._targetable_windows = self._build_targetable_windows()
-        self._targetable_events = self._build_targetable_events()
-        self._movement_windows = self._build_plain_windows(SCENE_TYPE_MOVEMENT)
-        self._raid_buff_windows = self._build_plain_windows(SCENE_TYPE_RAID_BUFF)
-        self._scene_events = self._build_scene_events()
+        self._facts = SceneFactScheduler(_scene_context_from_tensors(
+            reader.schema, self._scene_abs_values, self._scene_types,
+        ))
 
     def reset(self) -> None:
-        """重置轨迹级外部事实缓存，确保新轨迹首帧重新同步。"""
-        self._last_external_signature = None
+        self._facts.reset()
 
     def at_time(self, time_seconds: float):
         del time_seconds
         return self._scene_abs_values, self._scene_types
 
+    def state_at(self, time_seconds: float):
+        return self._facts.state_at(time_seconds)
+
     def target_count_at(self, time_seconds: float) -> int:
-        """从 cache scene 模板读取当前时间的目标数量。"""
-        if self._target_count_index is None:
-            return 1
-        target = float(time_seconds)
-        scene_abs_values, scene_types = self.at_time(time_seconds)
-        for vector, scene_type in zip(scene_abs_values, scene_types):
-            if int(scene_type.item()) != SCENE_TYPE_TARGET_COUNT:
-                continue
-            start = float(vector[self._scene_start_index].item())
-            end = float(vector[self._scene_end_index].item())
-            count = float(vector[self._target_count_index].item())
-            if count < 0 or not count.is_integer():
-                raise ValueError("raw scene target_count must be a non-negative integer")
-            if start - SCENE_TIME_EPSILON <= target < end - SCENE_TIME_EPSILON:
-                return int(count)
-        return 1
+        return self.state_at(time_seconds).target_count
 
-    def sync_state(self, state) -> object:
-        """把 scene 时间线中的状态变化作为带时间戳的外部事实提交。
-
-        状态机接收 Boss 可选中、移动、目标数和团辅窗口四类外部事实。
-        移动窗口在滑步豁免点提前结束，允许已经接近完成的读条自然结算。
-        相同快照不会重复提交。
-        """
-        if self._backend is None:
-            return state
-        current_time = float(state.time)
-        raid_buff_end = self._active_window_end(
-            self._raid_buff_windows,
-            current_time,
-        )
-        targetable = self.targetable_state_at(current_time)
-        moving = self.is_moving_at(current_time)
-        signature = (
-            bool(targetable.boss_targetable),
-            bool(moving),
-            int(self.target_count_at(current_time)),
-            raid_buff_end is not None,
-        )
-        if signature == self._last_external_signature:
-            return state
-        self._backend.apply_external_event(
-            current_time,
-            "boss_targetable_changed",
-            value=signature[0],
-        )
-        self._backend.apply_external_event(
-            current_time,
-            "movement_changed",
-            value=signature[1],
-        )
-        self._backend.apply_external_event(
-            current_time,
-            "target_count_changed",
-            target_count=signature[2],
-        )
-        self._backend.apply_external_event(
-            current_time,
-            "raid_buff_window_changed",
-            value=signature[3],
-            **(
-                {}
-                if raid_buff_end is None
-                else {"remaining_seconds": max(0.0, raid_buff_end - current_time)}
-            ),
-        )
-        self._last_external_signature = signature
+    def sync_state(self, state):
+        if self._backend is not None:
+            self._facts.sync_through(self._backend, float(state.time))
         return state
 
     def targetable_at(self, time_seconds: float) -> bool:
-        """供时间推进内核判断延迟伤害发生时 Boss 是否可选中。"""
-        return self.targetable_state_at(time_seconds).boss_targetable
+        return self.state_at(time_seconds).boss_targetable
 
     def is_moving_at(self, time_seconds: float) -> bool:
-        """返回考虑固定滑步豁免后的移动状态。"""
-        current_time = float(time_seconds)
-        return any(
-            start - SCENE_TIME_EPSILON <= current_time
-            and (end - current_time)
-            > SLIDECAST_WINDOW_SECONDS + SCENE_TIME_EPSILON
-            for start, end in self._movement_windows
-        )
+        return self.state_at(time_seconds).is_moving
 
     def last_targetable_end(self) -> float:
-        """返回缓存 scene 中最后一个 Boss 可选中窗口的结束时间。"""
-        targetable_ends = [
-            end for _start, end, targetable in self._targetable_windows if targetable
-        ]
-        if not targetable_ends:
-            raise ValueError("scene cache has no targetable Boss window")
-        return max(targetable_ends)
-
-    def targetable_state_at(self, time_seconds: float) -> SceneTargetableState:
-        """解析当前可选中状态、下次上天 ETA 和剩余停机时间。"""
-        current_time = float(time_seconds)
-        active = next(
-            (
-                window
-                for window in self._targetable_windows
-                if window[0] - SCENE_TIME_EPSILON
-                <= current_time
-                < window[1] - SCENE_TIME_EPSILON
-            ),
-            None,
-        )
-        future_downtime_starts = [
-            start
-            for start, _end, targetable in self._targetable_windows
-            if not targetable and start > current_time + SCENE_TIME_EPSILON
-        ]
-        next_downtime_eta = (
-            None
-            if not future_downtime_starts
-            else max(0.0, min(future_downtime_starts) - current_time)
-        )
-        if active is None:
-            return SceneTargetableState(True, next_downtime_eta, 0.0)
-        _start, end, targetable = active
-        if targetable:
-            return SceneTargetableState(True, next_downtime_eta, 0.0)
-        return SceneTargetableState(
-            False,
-            0.0,
-            max(0.0, end - current_time),
-        )
+        return self._facts.lookup.last_targetable_end()
 
     def next_targetable_event_after(self, time_seconds: float) -> float | None:
-        """返回下一次 Boss 上天/落地的绝对时间。"""
-        current_time = float(time_seconds)
-        return next(
-            (
-                event_time
-                for event_time in self._targetable_events
-                if event_time > current_time + SCENE_TIME_EPSILON
-            ),
-            None,
-        )
+        return self._facts.next_event_after(time_seconds, event_kind=BOSS_TARGETABLE_CHANGED)
 
     def next_state_event_after(self, time_seconds: float) -> float | None:
-        """返回下一次会改变状态向量或动作合法性的 scene 边界。"""
-        current_time = float(time_seconds)
-        return next(
-            (
-                event_time
-                for event_time in self._scene_events
-                if event_time > current_time + SCENE_TIME_EPSILON
-            ),
-            None,
-        )
+        return self._facts.next_event_after(time_seconds)
 
-    def _build_targetable_windows(self) -> tuple[tuple[float, float, bool], ...]:
-        if (
-            not self._enabled
-            or self._targetable_flag_index is None
-            or self._targetable_start_index is None
-            or self._targetable_end_index is None
-        ):
-            return ()
-        windows = []
-        for vector, scene_type in zip(self._scene_abs_values, self._scene_types):
-            if int(scene_type.item()) != SCENE_TYPE_TARGETABLE:
-                continue
-            start = float(vector[self._targetable_start_index].item())
-            end = float(vector[self._targetable_end_index].item())
-            if end <= start + SCENE_TIME_EPSILON:
-                continue
-            windows.append(
-                (
-                    start,
-                    end,
-                    bool(float(vector[self._targetable_flag_index].item()) >= 0.5),
-                )
-            )
-        return tuple(sorted(windows, key=lambda item: (item[0], item[1])))
 
-    def _build_targetable_events(self) -> tuple[float, ...]:
-        boundaries = sorted(
-            {
-                boundary
-                for start, end, _targetable in self._targetable_windows
-                for boundary in (start, end)
-                if boundary > SCENE_TIME_EPSILON
-            }
-        )
-        events = []
-        for boundary in boundaries:
-            before = self.targetable_at(max(0.0, boundary - SCENE_TIME_EPSILON * 10.0))
-            after = self.targetable_at(boundary + SCENE_TIME_EPSILON * 10.0)
-            if before != after:
-                events.append(boundary)
-        return tuple(events)
+def _scene_context_from_tensors(schema, values, types):
+    """只适配保存的列和容器；精度、窗口与边界规则委托共享场景父级。"""
+    rows, type_ids = values.tolist(), types.tolist()
+    if len(rows) != len(type_ids):
+        raise ValueError("raw scene values and types must align")
+    windows = {window.scene_type_id: window for window in schema.scene_windows}
+    if any(type_id not in windows for type_id in type_ids):
+        raise ValueError("raw scene contains an unknown scene type")
+    return {
+        window.context_key: {
+            "feature_keys": list(window.feature_keys),
+            "tokens": [row[:len(window.feature_keys)] for row, type_id in zip(rows, type_ids, strict=True)
+                       if type_id == window.scene_type_id],
+        }
+        for window in schema.scene_windows
+    }
 
-    def _build_plain_windows(self, scene_type_id: int) -> tuple[tuple[float, float], ...]:
-        if not self._enabled:
-            return ()
-        window_schema = next(
-            (
-                window
-                for window in self._reader.schema.scene_windows
-                if window.scene_type_id == scene_type_id
-            ),
-            None,
-        )
-        if window_schema is None:
-            return ()
-        windows = []
-        for vector, scene_type in zip(self._scene_abs_values, self._scene_types):
-            if int(scene_type.item()) != scene_type_id:
-                continue
-            start = float(vector[window_schema.start_offset_index].item())
-            end = float(vector[window_schema.end_offset_index].item())
-            if end > start + SCENE_TIME_EPSILON:
-                windows.append((start, end))
-        return tuple(sorted(windows))
-
-    def _build_scene_events(self) -> tuple[float, ...]:
-        boundaries = set(self._targetable_events)
-        for start, end in self._movement_windows:
-            boundaries.add(start)
-            boundaries.add(max(start, end - SLIDECAST_WINDOW_SECONDS))
-        for start, end in self._raid_buff_windows:
-            boundaries.update((start, end))
-        if self._scene_start_index is not None and self._scene_end_index is not None:
-            for vector, scene_type in zip(self._scene_abs_values, self._scene_types):
-                if int(scene_type.item()) != SCENE_TYPE_TARGET_COUNT:
-                    continue
-                boundaries.add(float(vector[self._scene_start_index].item()))
-                boundaries.add(float(vector[self._scene_end_index].item()))
-        return tuple(
-            sorted(
-                boundary
-                for boundary in boundaries
-                if boundary > SCENE_TIME_EPSILON
-            )
-        )
-
-    @staticmethod
-    def _active_window_end(
-        windows: tuple[tuple[float, float], ...],
-        time_seconds: float,
-    ) -> float | None:
-        return next(
-            (
-                end
-                for start, end in windows
-                if start - SCENE_TIME_EPSILON
-                <= time_seconds
-                < end - SCENE_TIME_EPSILON
-            ),
-            None,
-        )
 
 @dataclass(frozen=True)
 class _CachedHistoryFeatureRow:
@@ -397,6 +113,7 @@ class _CachedHistoryFeatureRow:
     skill_features: torch.Tensor
     state_vector: torch.Tensor
     state_null_mask: torch.Tensor
+    state_skill_availability: torch.Tensor
     action_key: str
 
 
@@ -426,12 +143,13 @@ class LiveBatchBuilder:
         self._vocab = vocab
         self._normalizer = normalizer
         self._schema = schema
+        if schema.context_schema_version != CANONICAL_CONTEXT_SCHEMA_VERSION:
+            raise ValueError("unsupported saved canonical context schema version; rebuild input artifacts")
         self._skill_feature_names = tuple(skill_feature_names)
         self._scene_provider = scene_provider
         self._device = device
         self._max_history = max_history
         self._model_config = model_config
-        self._context_encoder = ContextEncoder(normalizer, schema, model_config).to(device=device)
         self._action_keys = (
             None
             if action_keys is None
@@ -443,19 +161,20 @@ class LiveBatchBuilder:
         if len(kinds) != len(self._action_keys) or any(type(value) is not bool for value in kinds):
             raise ValueError("saved action kinds must be boolean and align with action vocabulary")
         self._action_kinds = dict(zip(self._action_keys, kinds, strict=True))
-        self._state_groups = tuple(schema.state_group_feature_keys)
-        self._state_dim = schema.state_vector_dim()
+        self._layout = schema.state_layout(self._action_keys)
+        self._context_encoder = ContextEncoder(
+            normalizer, schema, model_config, layout=self._layout,
+        ).to(device=device)
+        self._state_dim = self._layout.base_state_dim
         self._scene_dim = schema.scene_feature_dim()
-        player_feature_keys = self._schema.state_group_feature_keys.get("player_state", ())
-        if "request_state.time_seconds" not in player_feature_keys:
-            raise ValueError("live state schema lacks request_state.time_seconds")
-        self._history_request_time_index = player_feature_keys.index("request_state.time_seconds")
+        player_group = next(group for group in self._layout.base_groups if group.group_key == "player_state")
+        self._history_request_time_index = player_group.feature_keys.index("request_state.time_seconds")
         self._cached_history_rows: list[_CachedHistoryFeatureRow] = []
         self._cached_history_max_history: int | None = None
         self._cached_scene_batch: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None = None
         self._cached_history_device_rows: tuple[_CachedHistoryFeatureRow, ...] | None = None
         self._cached_history_device_tensors: tuple[
-            torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
+            torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
         ] | None = None
         self._history_cursor: int | None = None
 
@@ -514,8 +233,13 @@ class LiveBatchBuilder:
         gcd_phase: bool,
         max_history: int,
     ):
-        self._validate_state_feature_keys(canonical["state_history_context"], context_name="history")
-        self._validate_state_feature_keys(canonical["current_state_context"], context_name="current")
+        if canonical.get("schema_version") != self._schema.context_schema_version:
+            raise ValueError("live canonical context schema version differs from saved input contract")
+        canonical = rewrite_scene_player_state(canonical, scene_state_at=self._scene_provider.state_at)
+        # 元数据始终校验；历史数值仅解析未命中的不可变行，保留增量缓存收益。
+        history_context = canonical["state_history_context"]
+        validate_state_feature_keys(history_context, self._layout)
+        current_state = read_state_tokens(canonical["current_state_context"], self._layout)
         action_keys = tuple(str(key) for key in canonical["action_keys"])
         if not action_keys or len(set(action_keys)) != len(action_keys):
             raise ValueError("live action vocabulary must be nonempty and unique")
@@ -545,14 +269,16 @@ class LiveBatchBuilder:
             history_skill_features,
             history_state_vectors,
             history_state_null_mask,
+            history_state_skill_availability,
             history_action_keys,
         ) = self._build_history_batch(
             skill_history,
             state_history_tokens,
+            state_context=history_context,
             max_history=max_history,
         )
         scene_abs_values, scene_types, scene_mask = self._scene_batch_tensors()
-        current_state_vectors, current_state_null_mask = self._build_state_tensors(current_tokens)
+        current_state_vectors, current_state_null_mask = current_state.base_values, current_state.base_null_mask
         current_state_vectors = current_state_vectors.to(self._device)
         current_state_null_mask = current_state_null_mask.to(self._device)
         previous_values = torch.cat((torch.zeros_like(history_state_vectors[:1]), history_state_vectors[:-1]), dim=0)
@@ -586,6 +312,7 @@ class LiveBatchBuilder:
             "history_state_delta_values": state_deltas.unsqueeze(0),
             "history_state_null_mask": history_state_null_mask.unsqueeze(0),
             "history_state_delta_reset_mask": state_resets.unsqueeze(0),
+            "history_state_skill_availability": history_state_skill_availability.unsqueeze(0),
             "history_mask": torch.ones(
                 (1, history_length),
                 dtype=torch.bool,
@@ -595,6 +322,7 @@ class LiveBatchBuilder:
             "current_state_delta_values": current_deltas,
             "current_state_null_mask": current_state_null_mask,
             "current_state_delta_reset_mask": current_resets,
+            "current_state_skill_availability": current_state.availability,
             "action_legal_mask": action_legal_mask.unsqueeze(0),
             "history_action_keys": [history_action_keys],
             "action_keys": [list(action_keys)],
@@ -611,6 +339,7 @@ class LiveBatchBuilder:
         skill_tokens,
         state_tokens,
         *,
+        state_context,
         max_history: int,
     ):
         """只转换新增历史行；缓存不匹配时安全地重建当前窗口。"""
@@ -642,6 +371,7 @@ class LiveBatchBuilder:
                     skill_tokens[index],
                     state_tokens[index],
                     identities[index],
+                    state_context=state_context,
                 )
             )
 
@@ -670,7 +400,7 @@ class LiveBatchBuilder:
     def _history_tensors_for_rows(
         self,
         rows: list[_CachedHistoryFeatureRow],
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """复用设备端历史窗口；只传新行，并正确处理窗口滑动或重建。"""
         current_rows = tuple(rows)
         previous_rows = self._cached_history_device_rows
@@ -727,7 +457,7 @@ class LiveBatchBuilder:
     def _tensorize_history_rows(
         self,
         rows: tuple[_CachedHistoryFeatureRow, ...],
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         if not rows:
             return (
                 torch.empty((0,), dtype=torch.int32, device=self._device),
@@ -738,6 +468,7 @@ class LiveBatchBuilder:
                 ),
                 torch.empty((0, self._state_dim), dtype=torch.float32, device=self._device),
                 torch.empty((0, self._state_dim), dtype=torch.bool, device=self._device),
+                torch.empty((0, self._layout.availability_dim), dtype=torch.bool, device=self._device),
             )
         return (
             torch.tensor(
@@ -748,6 +479,7 @@ class LiveBatchBuilder:
             torch.stack([row.skill_features for row in rows]).to(self._device),
             torch.stack([row.state_vector for row in rows]).to(self._device),
             torch.stack([row.state_null_mask for row in rows]).to(self._device),
+            torch.stack([row.state_skill_availability for row in rows]).to(self._device),
         )
 
     @staticmethod
@@ -810,30 +542,26 @@ class LiveBatchBuilder:
         skill_token,
         state_token,
         identity: tuple[object, ...],
+        *,
+        state_context,
     ) -> _CachedHistoryFeatureRow:
         """把一条历史 token 转成可跨决策复用的 CPU 特征行。"""
         skill_features = self._build_skill_features([skill_token])[0]
-        state_vectors, state_null_mask = self._build_state_tensors([state_token])
+        parsed = read_state_tokens({**state_context, "tokens": [state_token]}, self._layout)
         return _CachedHistoryFeatureRow(
             identity=identity,
             skill_token=deepcopy(skill_token),
             state_token=deepcopy(state_token),
             skill_id=self._map_skill_id(skill_token.get("skill_id")),
             skill_features=skill_features.detach().cpu(),
-            state_vector=state_vectors[0].detach().cpu(),
-            state_null_mask=state_null_mask[0].detach().cpu(),
+            state_vector=parsed.base_values[0],
+            state_null_mask=parsed.base_null_mask[0],
+            state_skill_availability=parsed.availability[0],
             action_key=str(skill_token.get("skill_key", "")),
         )
 
     def _map_skill_id(self, raw_skill_id) -> int:
         return self._vocab.require_lookup(raw_skill_id, context="live replay")
-
-    def _validate_state_feature_keys(self, context, *, context_name: str) -> None:
-        """校验状态字段及其顺序，拒绝同宽但含义错位的状态机输出。"""
-        for group, expected in self._schema.state_group_feature_keys.items():
-            actual = context.get(f"{group}_feature_keys")
-            if not isinstance(actual, (list, tuple)) or tuple(actual) != tuple(expected):
-                raise ValueError(f"live {context_name} {group} feature keys differ from model input contract")
 
     def _build_skill_features(self, tokens) -> torch.Tensor:
         feature_rows = []
@@ -859,49 +587,6 @@ class LiveBatchBuilder:
             )
         return self._normalizer.normalize_skill_features(values, self._skill_feature_names)
 
-    def _build_state_tensors(self, tokens):
-        # 在 CPU 原料边界检查锚点时间，避免 CUDA 编码时引入同步检查。
-        for token in tokens:
-            player_values = token.get("player_state")
-            if not isinstance(player_values, (list, tuple)) or len(player_values) <= self._history_request_time_index:
-                raise ValueError("live state vector width lacks request_state.time_seconds")
-            request_time = player_values[self._history_request_time_index]
-            if isinstance(request_time, bool) or not isinstance(request_time, (int, float)) or not math.isfinite(request_time):
-                raise ValueError("live request_state.time_seconds must be finite numeric")
-        if not self._state_groups:
-            return (
-                torch.zeros((0, self._state_dim), dtype=torch.float32),
-                torch.zeros((0, self._state_dim), dtype=torch.bool),
-            )
-
-        value_rows = [[] for _ in tokens]
-        null_mask_rows = [[] for _ in tokens]
-        offset = 0
-        for group_key in self._state_groups:
-            width = len(self._schema.state_group_feature_keys[group_key])
-            offset += width
-            for row_index, token in enumerate(tokens):
-                group_values, group_null_masks = _extract_nullable_values(
-                    token.get(group_key)
-                )
-                if len(group_values) != width:
-                    raise ValueError(
-                        f"live {group_key} vector width mismatch: "
-                        f"{len(group_values)} != {width}"
-                    )
-                value_rows[row_index].extend(group_values)
-                null_mask_rows[row_index].extend(group_null_masks)
-        if value_rows:
-            values = torch.tensor(value_rows, dtype=torch.float32)
-            null_masks = torch.tensor(null_mask_rows, dtype=torch.bool)
-            if not bool(torch.isfinite(values).all()):
-                raise ValueError("live raw state values must be finite FP32")
-        else:
-            values = torch.empty((0, offset), dtype=torch.float32)
-            null_masks = torch.empty((0, offset), dtype=torch.bool)
-
-        return values, null_masks
-
 
 def _tail_history(values, max_history: int):
     """保留最近的历史；0 明确表示不提供历史。"""
@@ -910,23 +595,3 @@ def _tail_history(values, max_history: int):
     if max_history == 0:
         return []
     return values[-max_history:]
-
-
-def _extract_nullable_values(node):
-    if not isinstance(node, (list, tuple)):
-        raise ValueError("live state vector group must be a list")
-    values = []
-    null_mask = []
-    for item in node:
-        if item is None:
-            values.append(0.0)
-            null_mask.append(True)
-        elif isinstance(item, bool):
-            values.append(1.0 if item else 0.0)
-            null_mask.append(False)
-        elif isinstance(item, (int, float)):
-            values.append(float(item))
-            null_mask.append(False)
-        else:
-            raise ValueError(f"unsupported live state vector value: {item!r}")
-    return values, null_mask

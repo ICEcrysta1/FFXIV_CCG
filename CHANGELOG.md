@@ -6,6 +6,8 @@
 
 ### Added
 
+- 新增与原状态一同冻结的两段技能可用性表，每个技能名对应一个绝对 `0/1` 值；黑魔状态内容由 86 维扩为 `86 + 25 × 2 = 136` 维，仍使用同一状态投影，null/reset mask 保持基础 86 维，不增加 token 或 ONNX 输入。
+- 新增来自固定旧提交的非状态 token 基线及跨入口回归，验证技能/场景 canonical 输出、raw bank 和模型输入不变；离线 cache、live、GRPO 保存恢复与 ONNX 宿主共用保存的布局。C# 309 项回归、Python 定向回归及未训练微型模型的 ONNX CPU 导出对照通过；本次未进行训练、GPU 验证或正式产物重建，详细边界见 `docs/state-skill-availability-plan.md`。
 - 新增状态与场景差分上下文的实施计划和验收记录，保存字段语义、缓存复用边界、部署宿主责任、性能测量及同种子四轮对照结果，见 `docs/anchored-delta-context-plan.md`。
 - 新增请求时冻结的 `ModelStateSnapshot`，以动作实例身份关联上一动作后与本次请求快照；历史裁剪、fork 和 restore 保留已知前序状态，真实执行前后快照仍独立保存。
 - 新增独立历史技能与状态 embedding 的 PCA 视图，分别拟合有效 token、排除 padding，并支持空历史与单条历史；原始技能词表 embedding 图继续保留。
@@ -24,6 +26,9 @@
 
 ### Changed
 
+- 状态字段统一由有序 `StateFeatureGroup`、`StateFeatureLayout` 和公共 `TensorField` 声明派生，离线/实时共用状态 reader，`ContextEncoder` 统一拼接基础编码与绝对技能表。完整 history bank 保存逐行 bool 技能表；容量、历史重置和时间尺度继续只影响读取侧，技能和场景编码保持既有语义。
+- policy 动作在向量化前与真实动作组合，当前/历史状态由父级统一装配，删除事后补列和重复字段解析；转换与回放共用 raw FP32 场景执行视图，同刻事实整批校验、入队后统一推进，ETA/停机剩余按各快照冻结时间纯合成，不回写原 scene token。
+- 本次契约进一步升级为 canonical 15、PythonBridge 17、训练样本 11、checkpoint 输入 22、compiled cache v23/转换 v25、部署契约 25/manifest 16、GRPO rollout 7。旧缓存须重编译，旧 checkpoint/部署包须重新训练和导出，旧 rollout 须重新生成；ONNX 仍为 12 个输入。
 - 状态输入改为窗口首个状态使用 ABS、后续状态使用原始全数值 DELTA；上一动作后与请求快照分别对前一个状态 token 的同名字段求差，包括资源、计时器和布尔标志的 `−1/0/+1`。首个状态保留真实绝对资源，两个快照的时间都减去首个请求时间；当前状态有历史时对最后一个历史状态求差，无历史时自己作为锚点。
 - compiled cache 升级为 v22／转换 v24，固定保存完整 raw FP32 ABS／DELTA history bank、null／字段 reset mask 和原始绝对场景。模型外唯一的 `ContextEncoder` 负责窗口 gather、重锚及归一化，先在 FP32 中求差，再按保存的字段尺度或有符号 `log1p` 编码，最后转为激活精度；未知字段由独立 null mask 表达，恢复已知时按字段使用 ABS 并标记 reset。模型通过零初始化的 `state_reset_proj` 读取 reset 标识，公共参数初始化及随机状态保持一致。
 - 黑魔 Artzip 新增 YAML 权威参数 `history_reset_keep: 8`、`time_delta_scale: 120.0`；超过 300 条历史后保留最近 8 组状态／技能，再重新累积到容量。`time_seconds` 与场景时间按 120 秒尺度编码，保留符号且不截断，其他字段继续使用保存的归一化规则。容量、保留数、时间尺度和随机裁剪只影响读取，不进入 cache signature 或完整 bank 构建。
@@ -123,6 +128,8 @@
 
 ### Fixed
 
+- 修复 fork/restore 的动作处理器仍绑定父实例队列、同刻场景事实逐条推进导致冻结表时序错误，以及 FP32 场景端点与 double 请求只差纳秒时调度停滞的问题；冻结表、公开验证和可用动作查询统一使用正式提交接受规则。
+- 修复部署恢复时外层布局覆盖 checkpoint schema、GRPO 只校验外层动作顺序，以及实时 canonical 版本校验缺失的问题；保存的输入契约成为唯一权威，同宽错序、旧版本和非二值可用性明确拒绝。
 - 修正 Windows 中文 CLI 回归测试依赖默认代码页的问题，子 Python 与输出解码显式使用 UTF-8；全量 Python 测试 1936 项通过、4 项条件跳过，C# 测试 292 项通过，黑魔 smoke 与机工动作查询各 16 队列验证通过。
 - 修复 checkpoint 未保存完整输入技能词表，导致本机 YAML 增删或重排禁用技能后 embedding 行身份漂移的问题：输入契约保存全部 `raw_skill_id` ↔ `vocab_id` 映射（含禁用技能和 `ogcd_wait`），PyTorch 回放、模型分析与 ONNX 导出统一从 checkpoint 恢复；BC 复用数据集词表，续训核对完整映射及 embedding 行数。
 - 缓存读取、场景选择与 GRPO 回放按调用方提供的完整词表校验；重编译在写入前核对当前动作空间与完整词表，worker 复用父进程映射，兼容的完整 history bank 继续复用。ONNX profile 仅提供容量证据，部署词表必须与 checkpoint 一致。

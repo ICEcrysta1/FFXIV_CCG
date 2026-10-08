@@ -158,7 +158,7 @@ def run_training(
         raise ValueError(
             "PPG validation is enabled but validation_metrics_callback was not supplied"
         )
-    context_encoder = ContextEncoder(normalizer, train_dataset.schema, config.model).to(device=device)
+    context_encoder = ContextEncoder(normalizer, input_contract.schema, config.model, layout=input_contract.schema.state_layout(data_spec.action_keys)).to(device=device)
     vocab = train_dataset.skill_vocab
     model = model_cls(
         data_spec,

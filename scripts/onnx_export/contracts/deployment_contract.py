@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
 
@@ -12,7 +12,7 @@ import torch
 from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, ModelInputContract, SkillVocab
 from common.policy.data.input_contract import residual_composition_contract
-from common.policy.data.context_fields import MODEL_INPUT_FIELDS
+from common.policy.data.context_fields import MODEL_INPUT_FIELDS, tensor_dimensions
 from common.policy.model.repetition import parse_repetition_config
 
 from ..io.artifact_io import file_sha256
@@ -43,8 +43,8 @@ from ..runtime.tensor_runtime import GOLDEN_FORMAT, golden_encoding
 # 22：RoPE 后逐 head 归一化 Q/K，尺度由 checkpoint 保存的 model_config 提供。
 # 23：独立无 bias 动作输出头与 FP32 softcap，尺度由 checkpoint 保存的配置提供。
 # 24：宿主 FP32 重锚 ABS/DELTA 与场景裁剪差分，增加逐字段 reset mask。
-DEPLOYMENT_CONTRACT_VERSION = 24
-DEPLOYMENT_MANIFEST_VERSION = 15
+DEPLOYMENT_CONTRACT_VERSION = 25
+DEPLOYMENT_MANIFEST_VERSION = 16
 MANIFEST_SCHEMA_FILENAME = "manifest.schema.json"
 
 
@@ -176,32 +176,8 @@ class DeploymentContract:
         )
         evidence = _mapping(provenance["evidence"], "capacity evidence")
         data_spec = DataSpec.from_dict(dict(data_spec_payload))
-        parsed_input_contract = ModelInputContract.from_dict(input_payload)
-        state_layout = payload["state_layout"]
-        if not isinstance(state_layout, list):
-            raise ValueError("contract.state_layout must be a list")
-        ordered_state_groups: dict[str, tuple[str, ...]] = {}
-        for item in state_layout:
-            layout = _mapping(item, "contract.state_layout[]")
-            feature_keys = layout.get("feature_keys")
-            if not isinstance(feature_keys, list):
-                raise ValueError("contract.state_layout.feature_keys must be a list")
-            ordered_state_groups[str(layout["group_key"])] = tuple(
-                str(feature_key) for feature_key in feature_keys
-            )
-        parsed_schema = replace(
-            parsed_input_contract.schema,
-            state_group_feature_keys=ordered_state_groups,
-        )
-        # JSON 会把 DataSpec 中的 tuple 序列化为 list；部署加载后统一恢复为
-        # checkpoint 内部的权威 DataSpec 表示，再执行严格相等校验。
-        input_contract = ModelInputContract(
-            job_tag=parsed_input_contract.job_tag,
-            data_spec=asdict(data_spec),
-            schema=parsed_schema,
-            normalizer_contract=parsed_input_contract.normalizer_contract,
-            skill_vocab_entries=parsed_input_contract.skill_vocab_entries,
-        )
+        # 外层布局只用于校验；绝不覆盖 checkpoint 保存的字段顺序。
+        input_contract = ModelInputContract.from_dict(input_payload)
         capacity = CapacityContract.from_dict(capacity_payload)
         contract = cls(
             precision=str(payload["precision"]),
@@ -274,8 +250,7 @@ class DeploymentContract:
         if len(self.data_spec.skill_feature_names) != self.data_spec.skill_feature_dim:
             raise ValueError("skill feature order length differs from skill feature dimension")
         schema = self.input_contract.schema
-        if schema.state_vector_dim() != self.data_spec.state_dim:
-            raise ValueError("state schema dimension differs from checkpoint DataSpec")
+        schema.state_layout(self.data_spec.action_keys).assert_matches_data_spec(self.data_spec)
         if schema.scene_feature_dim() != self.data_spec.scene_dim:
             raise ValueError("scene schema dimension differs from checkpoint DataSpec")
         scene_type_ids = tuple(window.scene_type_id for window in schema.scene_windows)
@@ -321,30 +296,26 @@ class DeploymentContract:
         return _json_value({**core, "signatures": signatures})
 
     def tensor_inputs(self) -> tuple[TensorSpec, ...]:
-        b = self.capacity.batch_size
-        s = self.capacity.scene_capacity
-        h = self.capacity.history_capacity
-        sd = self.data_spec.state_dim
-        fd = self.data_spec.skill_feature_dim
-        xd = self.data_spec.scene_dim
+        dimensions = tensor_dimensions(self.data_spec, batch=self.capacity.batch_size,
+                                       scene=self.capacity.scene_capacity, history=self.capacity.history_capacity)
         float_dtype = precision_onnx_dtype(self.precision)
-        layouts = {
-            "scene_vectors": ((b, s, xd), "host FP32 anchor-clipped then time-differenced scene vectors; cast after encoding"),
-            "scene_types": ((b, s), "scene type ids"),
-            "scene_mask": ((b, s), "true for valid scene tokens"),
-            "history_skill_ids": ((b, h), "right-padded vocab ids"),
-            "history_skill_features": ((b, h, fd), "ordered skill features"),
-            "history_state_vectors": ((b, h, sd), "host FP32 first-visible ABS anchor then raw numeric DELTA; normalized before cast"),
-            "history_state_null_mask": ((b, h, sd), "history state null flags; right-padded positions are true"),
-            "history_mask": ((b, h), "true for valid actions; shared by independent skill and state tokens"),
-            "current_state_vectors": ((b, sd), "host FP32 current DELTA from last visible history, or ABS without history"),
-            "current_state_null_mask": ((b, sd), "current request state null flags"),
-            "history_state_reset_mask": ((b, h, sd), "per-field ABS reset markers; first visible state is absolute"),
-            "current_state_reset_mask": ((b, sd), "current per-field ABS reset markers"),
+        semantics = {
+            "scene_vectors": "host FP32 anchor-clipped then time-differenced scene vectors; cast after encoding",
+            "scene_types": "scene type ids",
+            "scene_mask": "true for valid scene tokens",
+            "history_skill_ids": "right-padded vocab ids",
+            "history_skill_features": "ordered skill features",
+            "history_state_vectors": "base first-visible ABS then numeric DELTA; absolute binary availability tail",
+            "history_state_null_mask": "base state null flags; right-padded positions are true",
+            "history_mask": "true for valid actions; shared by independent skill and state tokens",
+            "current_state_vectors": "base current DELTA or ABS without history; absolute binary availability tail",
+            "current_state_null_mask": "current base state null flags",
+            "history_state_reset_mask": "base per-field ABS reset markers; first visible state is absolute",
+            "current_state_reset_mask": "current base per-field ABS reset markers",
         }
         # 宿主 FP32 和技能浮点载荷在图入口统一转换到部署精度。
         dtypes = {"float32": float_dtype, "float": float_dtype, "index": "tensor(int64)", "bool": "tensor(bool)"}
-        return tuple(TensorSpec(field.name, dtypes[field.dtype], *layouts[field.name]) for field in MODEL_INPUT_FIELDS)
+        return tuple(TensorSpec(field.name, dtypes[field.dtype], field.resolve_shape(dimensions), semantics[field.name]) for field in MODEL_INPUT_FIELDS)
 
     def tensor_outputs(self) -> tuple[TensorSpec, ...]:
         float_dtype = precision_onnx_dtype(self.precision)
@@ -379,6 +350,12 @@ class DeploymentContract:
             raise ValueError("history_skill_ids contains an id outside the deployment vocab")
         _validate_right_padding(named_inputs["scene_mask"], "scene_mask")
         _validate_right_padding(named_inputs["history_mask"], "history_mask")
+        for prefix in ("history", "current"):
+            availability = named_inputs[f"{prefix}_state_vectors"][..., self.data_spec.base_state_dim:]
+            if prefix == "history":
+                availability = availability[named_inputs["history_mask"]]
+            if not bool(((availability == 0) | (availability == 1)).all()):
+                raise ValueError("state skill availability must contain absolute binary values")
 
     def validate_host_action_order(
         self,
@@ -398,10 +375,7 @@ class DeploymentContract:
 
     def _unsigned_dict(self) -> dict[str, object]:
         schema = self.input_contract.schema
-        state_layout = [
-            {"group_key": group_key, "feature_keys": list(feature_keys)}
-            for group_key, feature_keys in schema.state_group_feature_keys.items()
-        ]
+        state_layout = [asdict(group) for group in schema.state_groups]
         scene_layout = [
             {
                 "scene_type_id": window.scene_type_id,

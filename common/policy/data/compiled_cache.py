@@ -12,10 +12,11 @@ from common.torch_dependencies import import_torch
 from common.torch_serialization import safe_torch_load
 from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
 
-from .schema import SceneWindowSchema, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
+from .schema import SceneWindowSchema, StateFeatureGroup, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
+from .spec import DataSpec
 from .action_space import ActionSpace
 from .skill_vocab import SkillVocab
-from .context_fields import CURRENT_STATE_RAW_FIELDS, HISTORY_BANK_FIELDS, HISTORY_BANK_METADATA_NAMES, STATE_BANK_FIELDS
+from .context_fields import CURRENT_STATE_RAW_FIELDS, HISTORY_BANK_FIELDS, HISTORY_BANK_METADATA_NAMES, STATE_BANK_FIELDS, tensor_dimensions
 
 # v15：样本只保存配置无关的动作质量等级代码 1/2/3；旧权重缓存必须重编译。
 # v14：样本新增排名区间、标注状态和配置映射后的数值等级权重；旧缓存必须重编译。
@@ -29,7 +30,8 @@ from .context_fields import CURRENT_STATE_RAW_FIELDS, HISTORY_BANK_FIELDS, HISTO
 # v20：模型历史保存请求时冻结的跨步状态，真实执行统计与状态向量分离。
 # v21：技能字段与完整 history bank 移除绝对时间列，状态时间仍保留。
 # v22：完整状态保存未归一化 FP32 ABS／DELTA；场景保存原始绝对秒值。
-CACHE_FORMAT = "raw_json_compiled_samples_v22_raw_state_deltas"
+# v23：保存有序状态分组与完整冻结技能表，基础 ABS／DELTA／mask 不扩宽。
+CACHE_FORMAT = "raw_json_compiled_samples_v23_state_skill_availability"
 # v11：C# 状态机把硬读条的服务器效果结算与完整读条锁结束拆开；转换请求时刻
 # 仍按统一滑步窗口恢复，日志抖动只由容量一动作队列吸收。旧缓存的效果状态时序不可复用。
 # v10：硬读条请求时刻改由 `cast − 实际读条时长 + 0.5 秒滑步窗口` 解析，
@@ -50,7 +52,8 @@ CACHE_FORMAT = "raw_json_compiled_samples_v22_raw_state_deltas"
 # v22：真实技能与等待按统一历史写入序号合并，并拒绝不稳定的历史前缀。
 # v23：所有技能 token 移除绝对时间，按精简后的字段重建完整 history bank。
 # v24：归一化前保留状态原值与差分，窗口与时间尺度只属于模型读取侧。
-DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v24_raw_state_deltas"
+# v25：使用共享场景执行视图与同刻事实批次，在请求/效果时冻结技能接受能力。
+DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v25_state_skill_availability"
 # `weights_only=True` 的安全 unpickler 对 protocol 2 支持最稳定；compiled
 # cache 的样本数据只需要普通 mapping 和 tensor，不需要更高协议。
 CACHE_PICKLE_PROTOCOL = 2
@@ -128,11 +131,6 @@ class CompiledCacheReader:
             raise ValueError("unsupported compiled cache schema version; recompile raw source")
         if "time_seconds" in self._schema.skill_history_fields:
             raise ValueError("compiled cache contains removed skill time_seconds field")
-        state_keys = tuple(key for keys in self._schema.state_group_feature_keys.values() for key in keys)
-        try:
-            self._request_time_index = state_keys.index("request_state.time_seconds")
-        except ValueError as exc:
-            raise ValueError("compiled cache requires request_state.time_seconds") from exc
         self._job_tag = str(payload["job_tag"])
         self._fight_id = str(payload.get("fight_id", ""))
         self._num_samples = int(payload["num_samples"])
@@ -145,6 +143,17 @@ class CompiledCacheReader:
         self._action_keys = tuple(payload["action_keys"])
         self._action_to_vocab_id = tuple(int(value) for value in payload["action_to_vocab_id"])
         self._action_is_gcd = tuple(payload["action_is_gcd"])
+        self._state_layout = self.schema.state_layout(self._action_keys)
+        self._request_time_index = self._state_layout.request_time_index
+        self._data_spec = DataSpec(
+            job_tag=self._job_tag, num_actions=self._num_actions,
+            state_dim=self._state_layout.state_dim, base_state_dim=self._state_layout.base_state_dim,
+            scene_dim=self.schema.scene_feature_dim(), skill_feature_dim=len(self._skill_feature_names),
+            num_scene_types=len(self.schema.scene_windows), action_keys=self._action_keys,
+            skill_feature_names=self._skill_feature_names, action_to_vocab_id=self._action_to_vocab_id,
+            action_is_gcd=self._action_is_gcd,
+        )
+        self._state_layout.assert_matches_data_spec(self._data_spec)
         if self._num_actions < 1 or len(self._action_keys) != self._num_actions or len(set(self._action_keys)) != self._num_actions:
             raise ValueError("compiled cache action_keys must match the fixed output space")
         if len(self._action_to_vocab_id) != self._num_actions or any(value <= 0 for value in self._action_to_vocab_id) or len(set(self._action_to_vocab_id)) != self._num_actions:
@@ -176,6 +185,7 @@ class CompiledCacheReader:
                 f"num_samples={self._num_samples}"
             )
         torch = import_torch()
+        dimensions = tensor_dimensions(self._data_spec, bank=bank_size)
         for spec in HISTORY_BANK_FIELDS:
             key = spec.name
             field = history_bank[key]
@@ -187,13 +197,11 @@ class CompiledCacheReader:
                 raise ValueError(f"compiled cache history_bank field length mismatch: {key}")
         if history_bank["skill_features"].shape != (bank_size, len(self._skill_feature_names)):
             raise ValueError("compiled cache history_bank skill feature width mismatch")
-        state_shape = (bank_size, self.schema.state_vector_dim())
         for spec in STATE_BANK_FIELDS:
             key = spec.name
             value = history_bank[key]
             dtype = spec.torch_dtype(torch)
-            if value.shape != state_shape or value.dtype != dtype:
-                raise ValueError(f"compiled cache history_bank {key} must have shape {state_shape} and dtype {dtype}")
+            spec.validate_tensor(value, dimensions, torch=torch, stage="cache")
             if dtype == torch.float32 and not bool(torch.isfinite(value).all()):
                 raise ValueError(f"compiled cache history_bank {key} must be finite")
             if bool(value[0].any()):
@@ -329,7 +337,7 @@ class CompiledCacheReader:
         payload = safe_torch_load(
             shard_path,
             mmap=True,
-            safe_globals=(SceneWindowSchema, TrainingSchema),
+            safe_globals=(SceneWindowSchema, StateFeatureGroup, TrainingSchema),
         )
         if not isinstance(payload, dict) or payload.get("cache_format") != CACHE_FORMAT:
             raise ValueError(f"invalid compiled cache shard: {shard_path}")
@@ -343,8 +351,7 @@ class CompiledCacheReader:
             for spec in CURRENT_STATE_RAW_FIELDS:
                 key = spec.name
                 value = sample.get(key)
-                if not isinstance(value, torch.Tensor) or value.shape != (self.schema.state_vector_dim(),):
-                    raise ValueError(f"compiled sample {key} shape mismatch")
+                spec.validate_tensor(value, tensor_dimensions(self._data_spec), torch=torch, stage="cache")
                 dtype = spec.torch_dtype(torch)
                 if value.dtype != dtype or (dtype == torch.float32 and not bool(torch.isfinite(value).all())):
                     raise ValueError(f"compiled sample {key} must have dtype {dtype} and finite values")
@@ -445,7 +452,7 @@ def load_compiled_cache(
         payload = safe_torch_load(
             cache_path,
             mmap=True,
-            safe_globals=(SceneWindowSchema, TrainingSchema),
+            safe_globals=(SceneWindowSchema, StateFeatureGroup, TrainingSchema),
         )
     except Exception:
         return None

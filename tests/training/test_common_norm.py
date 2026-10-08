@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.training._causal_fixtures import make_state_groups
+
 import math
 
 import pytest
@@ -26,7 +28,7 @@ def _encode_states(normalizer, feature_keys, rows):
     schema = TrainingSchema(
         serialization_format="test", sample_schema_version=10, context_schema_version=14,
         scene_context_mode="absolute", skill_history_fields=("kind",),
-        state_group_feature_keys={"state": keys},
+        state_groups=make_state_groups({"state": keys}, ("first", "second")), state_snapshots=("previous_action_after", "request_state"),
         scene_windows=(SceneWindowSchema.from_feature_keys(
             context_key="combat", scene_type_id=0,
             feature_keys=("start_offset_seconds", "end_offset_seconds", "duration_seconds"),
@@ -38,7 +40,9 @@ def _encode_states(normalizer, feature_keys, rows):
         torch.cat((torch.ones_like(nulls[:1]), nulls[:-1])),
     )
     history_size = len(rows) - 1
-    output = ContextEncoder(normalizer, schema, ModelConfig()).encode({
+    output = ContextEncoder(normalizer, schema, ModelConfig(), layout=schema.state_layout(("first", "second"))).encode({
+        "history_state_skill_availability": torch.zeros((*(values[:-1][None]).shape[:-1], 4), dtype=torch.bool),
+        "current_state_skill_availability": torch.zeros((*(values[-1:]).shape[:-1], 4), dtype=torch.bool),
         "history_skill_ids": torch.ones((1, history_size), dtype=torch.long),
         "history_skill_features": torch.zeros((1, history_size, 1)),
         "history_state_abs_values": values[:-1][None],

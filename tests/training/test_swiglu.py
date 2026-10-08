@@ -25,7 +25,7 @@ def _activation_spec() -> DataSpec:
     return DataSpec(
         job_tag="black_mage",
         num_actions=2,
-        state_dim=3,
+        base_state_dim=3, state_dim=(3) + 2 * (2),
         scene_dim=2,
         skill_feature_dim=1,
         num_scene_types=1,
@@ -52,11 +52,11 @@ def _activation_batch() -> dict[str, torch.Tensor]:
     return {
         "history_skill_ids": torch.ones((1, 1), dtype=torch.long),
         "history_skill_features": torch.zeros((1, 1, 1)),
-        "history_state_vectors": torch.zeros((1, 1, 3)),
+        "history_state_vectors": torch.nn.functional.pad(torch.zeros((1, 1, 3)), (0, 4)),
         "history_state_null_mask": torch.zeros((1, 1, 3), dtype=torch.bool),
         "history_state_reset_mask": torch.ones((1, 1, 3), dtype=torch.bool),
         "history_mask": torch.ones((1, 1), dtype=torch.bool),
-        "current_state_vectors": torch.zeros((1, 3)),
+        "current_state_vectors": torch.nn.functional.pad(torch.zeros((1, 3)), (0, 4)),
         "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
         "current_state_reset_mask": torch.zeros((1, 3), dtype=torch.bool),
         "action_legal_mask": torch.ones((1, 2), dtype=torch.bool),
@@ -331,7 +331,7 @@ def test_independent_skill_and_state_embeddings_match_explicit_formula(activatio
     ).double().eval()
     batch = _activation_batch()
     batch["history_skill_features"] = torch.randn(1, 1, 1, dtype=torch.float64)
-    batch["history_state_vectors"] = torch.randn(1, 1, 3, dtype=torch.float64)
+    batch["history_state_vectors"] = torch.nn.functional.pad(torch.randn(1, 1, 3, dtype=torch.float64), (0, 4))
     batch["history_state_null_mask"] = torch.tensor([[[True, False, True]]])
     actual = encoder.embed_history(batch)
     skill_content = F.embedding(batch["history_skill_ids"], encoder.skill_embed.weight) + F.linear(

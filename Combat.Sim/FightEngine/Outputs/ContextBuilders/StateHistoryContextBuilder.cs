@@ -3,84 +3,36 @@
 // Additional permission: FightEngine GPLv3 Linking Exception, Version 1.0.
 // See LICENSE and LICENSE-FightEngine-Linking-Exception in the repository root.
 
-using Combat.Sim.Models.Combat;
 using Combat.Sim.Outputs.TokenBuilders;
 
 namespace Combat.Sim.Outputs.ContextBuilders;
 
-/// <summary>
-/// 状态历史上下文装配器（对照 history_context_builders/state_history_context_builder.py）。
-/// 与当前状态共用同一个 <see cref="StateTokenBuilder.Build"/>；
-/// 增量缓存按条目引用身份复用固定 token，避免滑动窗口逐决策全量重建。
-/// </summary>
+/// <summary>按历史身份与动作布局缓存冻结 token；分组元数据由父级统一生成。</summary>
 public sealed class StateHistoryContextBuilder
 {
     private readonly StateTokenBuilder _stateTokenBuilder;
-    private readonly int? _historyLimit;
-    private readonly List<ActionHistoryEntry> _cachedEntries = new();
-    private readonly List<Dictionary<string, double[]>> _cachedTokens = new();
+    private Dictionary<object, Dictionary<string, double[]>> _tokens = new(ReferenceEqualityComparer.Instance);
+    private string[] _actionKeys = Array.Empty<string>();
 
-    public StateHistoryContextBuilder(StateTokenBuilder stateTokenBuilder, int? historyLimit = null)
+    public StateHistoryContextBuilder(StateTokenBuilder stateTokenBuilder) => _stateTokenBuilder = stateTokenBuilder;
+
+    internal List<Dictionary<string, double[]>> Build(IReadOnlyList<ModelHistoryRow> rows, IReadOnlyList<string> actionKeys)
     {
-        _stateTokenBuilder = stateTokenBuilder;
-        _historyLimit = historyLimit;
-    }
-
-    public Dictionary<string, object?> Build(CombatState state)
-    {
-        var history = Limit(state.History);
-        var tokenByEntry = new Dictionary<ActionHistoryEntry, Dictionary<string, double[]>>(
-            ReferenceEqualityComparer.Instance);
-        for (var i = 0; i < _cachedEntries.Count; i++)
+        if (!_actionKeys.SequenceEqual(actionKeys))
         {
-            tokenByEntry[_cachedEntries[i]] = _cachedTokens[i];
+            _tokens.Clear();
+            _actionKeys = actionKeys.ToArray();
         }
-
-        var tokens = new List<Dictionary<string, double[]>>();
-        foreach (var entry in history)
+        var retained = new Dictionary<object, Dictionary<string, double[]>>(ReferenceEqualityComparer.Instance);
+        var result = new List<Dictionary<string, double[]>>(rows.Count);
+        foreach (var row in rows)
         {
-            if (!tokenByEntry.TryGetValue(entry, out var token))
-            {
-                token = _stateTokenBuilder.Build(
-                    entry.ModelState?.PreviousActionAfter ?? entry.StateBefore,
-                    entry.ModelState?.RequestState ?? entry.StateBefore);
-            }
-
-            tokens.Add(token);
+            if (!_tokens.TryGetValue(row.Identity, out var token))
+                token = _stateTokenBuilder.Build(row.ModelState, actionKeys);
+            retained.Add(row.Identity, token);
+            result.Add(token);
         }
-
-        _cachedEntries.Clear();
-        _cachedEntries.AddRange(history);
-        _cachedTokens.Clear();
-        _cachedTokens.AddRange(tokens);
-        return new Dictionary<string, object?>
-        {
-            ["player_state_feature_keys"] = _stateTokenBuilder.PlayerHistoryFeatureKeys.ToList(),
-            ["buff_state_feature_keys"] = _stateTokenBuilder.BuffHistoryFeatureKeys.ToList(),
-            ["target_buff_state_feature_keys"] = _stateTokenBuilder.TargetBuffHistoryFeatureKeys.ToList(),
-            ["resource_state_feature_keys"] = _stateTokenBuilder.ResourceHistoryFeatureKeys.ToList(),
-            ["tokens"] = tokens,
-            // 真实执行统计不进入状态向量，独立保存并与历史行同步裁剪。
-            ["execution_metrics"] = history.Select(entry => new Dictionary<string, double>
-            {
-                ["cumulative_potency"] = entry.StateAfter.Target.CumulativePotency,
-                ["cumulative_dot_potency"] = entry.StateAfter.Target.CumulativeDotPotency,
-            }).ToList(),
-        };
-    }
-
-    private List<ActionHistoryEntry> Limit(List<ActionHistoryEntry> history)
-    {
-        if (_historyLimit is null)
-        {
-            return history;
-        }
-
-        if (_historyLimit == 0)
-        {
-            return new List<ActionHistoryEntry>();
-        }
-
-        return history.Skip(Math.Max(0, history.Count - _historyLimit.Value)).ToList();
+        _tokens = retained;
+        return result;
     }
 }

@@ -181,7 +181,7 @@ public class OutputsSchemaTests
 
         Assert.Equal(OutputContextSchema.CanonicalContextSchemaVersion, schemaMetadata["schema_version"]);
         Assert.Equal(OutputContextSchema.CanonicalContextTopLevelKeys.ToList(), schemaMetadata["top_level_keys"]);
-        Assert.Equal(new List<string> { "player_state", "buff_state", "target_buff_state", "resource_state" },
+        Assert.Equal(new List<string> { "player_state", "buff_state", "target_buff_state", "resource_state", "skill_availability" },
             schemaMetadata["state_vector_group_keys"]);
         var historyState = (Dictionary<string, object?>)payload["state_history_context"];
         var currentState = (Dictionary<string, object?>)payload["current_state_context"];

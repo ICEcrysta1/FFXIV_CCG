@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.training._causal_fixtures import make_state_groups
+
 from dataclasses import replace
 
 import pytest
@@ -53,7 +55,7 @@ def test_dataset_rejects_action_order_drift_instead_of_reordering():
 @pytest.mark.parametrize("rows", [(0, 2), (1, 1), (1,)])
 def test_data_spec_rejects_invalid_shared_vocabulary_mapping(rows):
     with pytest.raises(ValueError):
-        DataSpec(job_tag="test", num_actions=2, state_dim=2, scene_dim=3,
+        DataSpec(job_tag="test", num_actions=2, base_state_dim=2, state_dim=(2) + 2 * (2), scene_dim=3,
                  skill_feature_dim=1, num_scene_types=1, action_keys=("a", "b"),
                  skill_feature_names=("kind",), action_to_vocab_id=rows, action_is_gcd=(True, False))
 
@@ -66,14 +68,14 @@ def test_cache_uses_caller_action_contract_when_current_configuration_changes(tm
     path = tmp_path / "manifest.pt"
     path.write_bytes(b"placeholder")
     # 先提供有效 manifest；随后只改变当前配置，保留模型保存的 DataSpec。
-    spec = DataSpec("black_mage", len(space.action_keys), 1, 0, 0, 0,
+    spec = DataSpec("black_mage", len(space.action_keys), 1 + 2 * len(space.action_keys), 1, 0, 0, 0,
                     space.action_keys, (), space.action_to_vocab_id, space.action_is_gcd)
     schema = TrainingSchema(
         serialization_format=TRAINING_SOURCE_FORMAT,
         sample_schema_version=TRAINING_SAMPLE_SCHEMA_VERSION,
         context_schema_version=CANONICAL_CONTEXT_SCHEMA_VERSION,
         scene_context_mode="absolute", scene_windows=(),
-        state_group_feature_keys={"player_state": ("request_state.time_seconds",)}, skill_history_fields=(),
+        state_groups=make_state_groups({"player_state": ("request_state.time_seconds",)}, space.action_keys), state_snapshots=("previous_action_after", "request_state"), skill_history_fields=(),
     )
     payload = {
         "cache_format": CACHE_FORMAT, "cache_signature": {}, "schema": schema,
@@ -84,6 +86,7 @@ def test_cache_uses_caller_action_contract_when_current_configuration_changes(tm
         "history_bank": {"skill_ids": torch.zeros(1, dtype=torch.long), "skill_features": torch.zeros(1, 0),
                          "state_abs_values": torch.zeros(1, 1), "state_delta_values": torch.zeros(1, 1),
                          "state_null_mask": torch.zeros(1, 1, dtype=torch.bool), "state_delta_reset_mask": torch.zeros(1, 1, dtype=torch.bool),
+                         "state_skill_availability": torch.zeros(1, 2 * len(space.action_keys), dtype=torch.bool),
                          "action_keys": ("",), "skill_potencies": torch.zeros(1), "cumulative_dot_potencies": torch.zeros(1)},
     }
     monkeypatch.setattr(cache_module, "safe_torch_load", lambda *_args, **_kwargs: payload)
@@ -113,6 +116,6 @@ def test_cache_uses_caller_action_contract_when_current_configuration_changes(tm
 @pytest.mark.parametrize("flags", [(), (True,), (True, 0)])
 def test_data_spec_rejects_missing_or_nonboolean_action_kinds(flags):
     with pytest.raises(ValueError, match="action_is_gcd"):
-        DataSpec(job_tag="test", num_actions=2, state_dim=2, scene_dim=3,
+        DataSpec(job_tag="test", num_actions=2, base_state_dim=2, state_dim=(2) + 2 * (2), scene_dim=3,
                  skill_feature_dim=1, num_scene_types=1, action_keys=("a", "b"),
                  skill_feature_names=("kind",), action_to_vocab_id=(1, 2), action_is_gcd=flags)

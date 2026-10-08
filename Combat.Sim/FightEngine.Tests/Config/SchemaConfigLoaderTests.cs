@@ -70,10 +70,23 @@ public class SchemaConfigLoaderStateTests
 public class SchemaConfigContentTests
 {
     [Fact]
+    public void 状态分组共享编码与两段顺序()
+    {
+        var schema = SchemaConfigLoader.Instance;
+        Assert.Equal(new[] { "previous_action_after", "request_state" }, schema.StateSnapshots);
+        Assert.Equal(5, schema.StateVectorGroups.Count);
+        Assert.All(schema.StateVectorGroups.Take(4), group => Assert.Equal("anchored_delta", group.Encoding));
+        var availability = schema.StateVectorGroups[^1];
+        Assert.Equal("skill_availability", availability.GroupKey);
+        Assert.Equal("skill_availability_feature_keys", availability.FeatureKeysField);
+        Assert.Equal("absolute_binary", availability.Encoding);
+    }
+
+    [Fact]
     public void SidecarContractVersion_来自共享Schema()
     {
         // 契约版本来自 schema，构建时同时嵌入 FightEngine 程序集供运行时识别旧 DLL。
-        Assert.Equal(16, SchemaConfigLoader.Instance.SidecarContractVersion);
+        Assert.Equal(17, SchemaConfigLoader.Instance.SidecarContractVersion);
         Assert.Equal(
             SchemaConfigLoader.Instance.SidecarContractVersion,
             SchemaConfigLoader.AssemblySidecarContractVersion);

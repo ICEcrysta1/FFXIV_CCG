@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass
 import torch
 
 from common.policy.data.input_contract import TOKEN_ENCODING_CONTRACT
-from common.policy.data.context_fields import MODEL_INPUT_FIELDS, MODEL_INPUT_NAMES
+from common.policy.data.context_fields import MODEL_INPUT_FIELDS, MODEL_INPUT_FIELDS_BY_NAME, MODEL_INPUT_NAMES, tensor_dimensions
 
 
 TENSOR_INPUT_NAMES = MODEL_INPUT_NAMES
@@ -127,15 +127,19 @@ def make_inputs(
         raise ValueError("padding_fill must be zero or random")
     generator = torch.Generator(device="cpu").manual_seed(seed)
     batch_size = contract.batch_size
+    dimensions = tensor_dimensions(data_spec, batch=batch_size, scene=contract.scene_capacity, history=contract.history_capacity)
+
+    def shape(name: str) -> tuple[int, ...]:
+        return MODEL_INPUT_FIELDS_BY_NAME[name].resolve_shape(dimensions)
 
     def floats(*shape: int) -> torch.Tensor:
         return torch.randn(shape, generator=generator, dtype=dtype)
 
-    scene_vectors = floats(batch_size, contract.scene_capacity, data_spec.scene_dim)
+    scene_vectors = floats(*shape("scene_vectors"))
     scene_types = torch.randint(
         0,
         data_spec.num_scene_types,
-        (batch_size, contract.scene_capacity),
+        shape("scene_types"),
         generator=generator,
         dtype=torch.long,
     )
@@ -143,31 +147,25 @@ def make_inputs(
     history_skill_ids = torch.randint(
         1,
         max(vocab_size, 2),
-        (batch_size, contract.history_capacity),
+        shape("history_skill_ids"),
         generator=generator,
         dtype=torch.long,
     )
     history_skill_features = floats(
-        batch_size,
-        contract.history_capacity,
-        data_spec.skill_feature_dim,
+        *shape("history_skill_features"),
     )
     history_state_vectors = floats(
-        batch_size,
-        contract.history_capacity,
-        data_spec.state_dim,
+        *shape("history_state_vectors"),
     )
     history_state_null_mask = torch.rand(
-        batch_size,
-        contract.history_capacity,
-        data_spec.state_dim,
+        shape("history_state_null_mask"),
         generator=generator,
     ) < 0.1
     history_mask = _length_mask(history_valid, contract.history_capacity)
     history_state_null_mask[:, history_valid:] = True
-    current_state_vectors = floats(batch_size, data_spec.state_dim)
+    current_state_vectors = floats(*shape("current_state_vectors"))
     current_state_null_mask = torch.rand(
-        batch_size, data_spec.state_dim, generator=generator,
+        shape("current_state_null_mask"), generator=generator,
     ) < 0.1
     history_state_reset_mask = (
         torch.rand(history_state_null_mask.shape, generator=generator) < 0.1
@@ -180,6 +178,10 @@ def make_inputs(
     ) & ~current_state_null_mask
     if not history_valid:
         current_state_reset_mask = ~current_state_null_mask
+    # 有效状态的技能可用性为绝对布尔值；脏 padding 仍用于检验 mask。
+    for values in (history_state_vectors[:, :history_valid], current_state_vectors):
+        availability = values[..., data_spec.base_state_dim:]
+        availability.copy_(torch.randint(0, 2, availability.shape, generator=generator).to(dtype))
     named_inputs = {
         "scene_vectors": scene_vectors,
         "scene_types": scene_types,
