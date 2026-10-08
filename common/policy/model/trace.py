@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from contextlib import nullcontext
 from dataclasses import dataclass
 
@@ -19,7 +20,7 @@ from .grouped_attention import GroupedQueryAttention
 
 
 class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):
-    """保留标准 TransformerEncoderLayer 行为，同时提供逐 head attention。"""
+    """使用无参数 RMSNorm 的 Transformer 层，同时提供逐 head attention。"""
 
     def __init__(
         self,
@@ -36,9 +37,18 @@ class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):
         dtype=None,
         *,
         num_kv_heads: int | None = None,
+        qk_norm_scale: float = 1.2,
     ):
         if dim_feedforward < 1:
             raise ValueError("dim_feedforward must be positive")
+        if (
+            isinstance(qk_norm_scale, bool)
+            or not isinstance(qk_norm_scale, (int, float))
+            or not math.isfinite(qk_norm_scale)
+            or qk_norm_scale <= 0
+        ):
+            raise ValueError("qk_norm_scale must be a finite positive number")
+        self.qk_norm_scale = float(qk_norm_scale)
         use_swiglu = uses_gate(activation)
         # 三个投影取代两个投影；保持同一 ff_dim 配置下矩阵参数量近似相等。
         hidden_dim = gated_hidden_dim(
@@ -52,7 +62,6 @@ class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):
             nhead=nhead,
             dim_feedforward=hidden_dim,
             dropout=dropout,
-            # SiLU 也使父类关闭仅支持 ReLU/GELU 的融合快速路径，避免跳过门控。
             activation=(
                 resolve_pointwise_activation(activation) if use_swiglu else activation
             ),
@@ -62,6 +71,16 @@ class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):
             bias=bias,
             device=device,
             dtype=dtype,
+        )
+        # 父类融合路径固定执行 LayerNorm；所有激活都走模块调用，避免绕过 RMSNorm。
+        self.activation_relu_or_gelu = 0
+        self.norm1 = nn.RMSNorm(
+            d_model, eps=layer_norm_eps, elementwise_affine=False,
+            device=device, dtype=dtype,
+        )
+        self.norm2 = nn.RMSNorm(
+            d_model, eps=layer_norm_eps, elementwise_affine=False,
+            device=device, dtype=dtype,
         )
         if num_kv_heads is None:
             num_kv_heads = int(nhead)

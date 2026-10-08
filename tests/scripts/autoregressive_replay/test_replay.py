@@ -69,7 +69,7 @@ def test_checkpoint_restores_history_embedding_and_logits_after_yaml_vocab_drift
     normalizer.ensure_job_resources("black_mage")
     contract = ModelInputContract.from_training(data_spec=spec, schema=schema, normalizer=normalizer, skill_vocab=vocab)
     config = ModelConfig(d_model=8, n_layers=1, n_heads=2, num_kv_heads=1, ff_dim=16,
-                         dropout=0.0, scene_capacity=1, history_capacity=4)
+                         dropout=0.0, scene_capacity=1, history_capacity=4, history_reset_keep=4)
     with torch.random.fork_rng():
         torch.manual_seed(20261004)
         model = CausalPolicyModel(spec, config, vocab_size=vocab.size()).eval()
@@ -77,6 +77,7 @@ def test_checkpoint_restores_history_embedding_and_logits_after_yaml_vocab_drift
     torch.save({"data_spec": asdict(spec), "model_config": asdict(config),
                 "input_contract": contract.to_dict(), "model_state_dict": model.state_dict()}, path)
     canonical = {
+        "history_cursor": 3,
         "action_keys": actions.action_keys, "action_legal_mask": [True] * len(actions.action_keys),
         "skill_history_context": [
             {"skill_id": 3577, "skill_key": "fire_iv", "kind": 1, "potency": 310},
@@ -97,6 +98,7 @@ def test_checkpoint_restores_history_embedding_and_logits_after_yaml_vocab_drift
         return LiveBatchBuilder(
             backend=None, vocab=saved_vocab, normalizer=saved_normalizer, schema=schema,
             skill_feature_names=spec.skill_feature_names, device=torch.device("cpu"), max_history=4,
+            model_config=config,
             action_keys=spec.action_keys, action_is_gcd=spec.action_is_gcd,
             scene_provider=SimpleNamespace(at_time=lambda _: (torch.tensor([[0.0, 1.0, 1.0]]), torch.zeros(1, dtype=torch.long))),
         ).build_from_canonical(canonical, gcd_phase=True, max_history=4)[0]
@@ -313,6 +315,7 @@ def test_replay_cache_store_reuses_reader_for_unchanged_scene(monkeypatch, tmp_p
 
 def test_replay_session_reset_reinitializes_backend_and_state_machine():
     class FakeBackend:
+        model_config = SimpleNamespace(history_capacity=8, history_reset_keep=8, time_delta_scale=120.0)
         input_device = torch.device("cpu")
 
         def __init__(self):
@@ -424,6 +427,7 @@ def test_replay_uses_session_normalizer_for_context_builders(monkeypatch, constr
 
     class FakeBackend:
         input_device = torch.device("cpu")
+        model_config = SimpleNamespace(history_capacity=8, history_reset_keep=8, time_delta_scale=120.0)
 
         def __init__(self):
             self.cache_calls = []

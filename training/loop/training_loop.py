@@ -15,6 +15,7 @@ from common.config import load_precision_config
 from common.policy.config import PROJECT_ROOT, resolve_policy_cache_dir
 from common.policy.data import DataSpec, ModelInputContract
 from common.policy.model import CausalPolicyModel
+from common.policy.data.context_encoding import ContextEncoder
 from common.policy.model.repetition import RepetitionConfig, prepare_repetition_penalty
 from common.project_config import resolve_registered_job_tags
 from common.torch_runtime import autocast_context, model_dtype, move_batch
@@ -157,6 +158,7 @@ def run_training(
         raise ValueError(
             "PPG validation is enabled but validation_metrics_callback was not supplied"
         )
+    context_encoder = ContextEncoder(normalizer, train_dataset.schema, config.model).to(device=device)
     vocab = train_dataset.skill_vocab
     model = model_cls(
         data_spec,
@@ -267,6 +269,7 @@ def run_training(
                 "value_preference": config.value_preference,
                 "runtime_debug": debug_recorder,
                 "epoch": epoch,
+                "context_encoder": context_encoder,
             }
             if tensorboard_writer is not None:
                 train_epoch_kwargs.update(
@@ -289,6 +292,7 @@ def run_training(
                 device,
                 config.precision,
                 value_preference=config.value_preference,
+                context_encoder=context_encoder,
             )
             if config.ppg.enabled:
                 extra_metrics = validation_metrics_callback(
@@ -427,6 +431,7 @@ def train_epoch(
     tensorboard_writer=None,
     tensorboard_log_every_steps: int = 50,
     global_step_offset: int = 0,
+    context_encoder: ContextEncoder | None = None,
 ) -> dict[str, float]:
     model.train()
     auxiliary_losses = configured_auxiliary_losses(value_preference=value_preference)
@@ -443,6 +448,9 @@ def train_epoch(
             with _debug_stage(runtime_debug, "batch_to_device"):
                 batch = prepare_repetition_penalty(batch, repetition)
                 batch = move_batch(batch, device, non_blocking=device.type == "cuda")
+            if context_encoder is not None:
+                with _debug_stage(runtime_debug, "context_encoding"):
+                    batch = context_encoder.encode(batch)
             with _debug_stage(runtime_debug, "forward"):
                 with autocast_context(device, precision):
                     output = model(batch)
@@ -502,6 +510,7 @@ def validate(
     precision: str = "float32",
     *,
     value_preference: ValuePreferenceConfig | None = None,
+    context_encoder: ContextEncoder | None = None,
 ) -> dict[str, float]:
     model.eval()
     auxiliary_losses = configured_auxiliary_losses(value_preference=value_preference)
@@ -513,6 +522,8 @@ def validate(
     for batch in loader:
         batch = prepare_repetition_penalty(batch, repetition)
         batch = move_batch(batch, device, non_blocking=device.type == "cuda")
+        if context_encoder is not None:
+            batch = context_encoder.encode(batch)
         with autocast_context(device, precision):
             output = model(batch)
         losses = compose_training_loss(

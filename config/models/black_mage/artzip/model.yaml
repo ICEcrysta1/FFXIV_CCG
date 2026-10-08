@@ -22,21 +22,21 @@ precision: bf16
 
 model:
   # Transformer token 的主维度；必须能被 n_heads 整除。
-  d_model: 768
+  d_model: 384
 
   # Transformer 编码层数。
-  n_layers: 12
+  n_layers: 6
 
   # 注意力头数量；d_model 必须能被该值整除。
-  n_heads: 12
+  n_heads: 6
 
   # K/V 头数量；1 表示 MQA，可改为 n_heads 的合法因数做 GQA。
   num_kv_heads: 1
 
   # FFN 隐藏宽度；SwiGLU 的门控投影会按模型实现使用对应内部宽度。
-  ff_dim: 3072
+  ff_dim: 1536
 
-  # Transformer 每层采用 Pre-LN；LayerNorm 位于注意力/FFN 子层之前。
+  # Transformer 每层采用 Pre-Norm；注意力/FFN 子层之前及最终输出使用无参数 RMSNorm。
   transformer_norm_first: true
 
   # Transformer 主干 FFN 激活：gelu / relu / swiglu；
@@ -46,15 +46,35 @@ model:
   # 沿深度对 embedding、attention/FFN 输出做 Full AttnRes；启用后需重新训练。
   full_attention_residuals: false
 
+  # 普通残差每层先执行 r*x+a*x0；r/a 可学习，x0 为统一 RMS 后的初始 token。
+  # 初值按层在以下端点之间线性插值；Full AttnRes 启用时不创建这组参数。
+  residual_mix_r_start: 1.15
+  residual_mix_r_end: 1.05
+  residual_mix_a_start: 0.20
+  residual_mix_a_end: 0.05
+
   # Transformer 的 dropout 概率。
   dropout: 0.1
 
   # RoPE 的基础频率参数。
   rope_theta: 10000.0
 
+  # RoPE 后逐 head 无参数 RMSNorm；Q/K 均乘以该尺度。
+  qk_norm_scale: 1.2
+
+  # 独立无 bias 动作输出头；初始化复制技能 embedding 的动作行，后续独立训练。
+  # 输出分数以 FP32 执行 s*tanh(logits/s)，之后再执行重复惩罚和宿主合法性过滤。
+  logit_softcap: 15.0
+
   # 模型最多接收的历史动作条数；每条拆成技能、状态两个 token，末尾追加当前状态。
-  # 当前总物理容量为 scene_capacity + 2 * history_capacity + 1；601 的新单位留后续阶段。
+  # 总物理容量为 scene_capacity + 2 * history_capacity + 1，300 条动作对应 601 个非场景 token。
   history_capacity: 300
+
+  # 历史超出容量时保留最近这些动作，再重新累积；仅影响读取，不改变完整 raw bank。
+  history_reset_keep: 8
+
+  # 状态单步时间增量和场景时间使用同一秒数尺度；保留符号，不截断到 [0, 1]。
+  time_delta_scale: 120.0
 
   # 部署侧 scene 容量上限；必须不小于语料实测 scene 长度最大值。
   scene_capacity: 200

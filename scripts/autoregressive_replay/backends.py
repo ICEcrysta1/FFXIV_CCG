@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
 from collections import deque
+from collections.abc import Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -12,7 +12,9 @@ from typing import Protocol
 
 import torch
 
+from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, ModelInputContract, SkillVocab
+from common.policy.data.context_fields import MODEL_INPUT_FIELDS_BY_NAME
 from common.policy.model import (
     CausalPolicyModel,
     RepetitionConfig,
@@ -29,6 +31,7 @@ from scripts.onnx_export.runtime.ort_runtime import (
 )
 from scripts.onnx_export.runtime.precision import (
     PRECISION_BF16,
+    PRECISION_FLOAT16,
     onnx_torch_dtype,
 )
 from scripts.onnx_export.runtime.tensor_runtime import run_ort_tensors
@@ -65,6 +68,7 @@ class PolicyBackend(Protocol):
     input_device: torch.device
     data_spec: DataSpec
     input_contract: ModelInputContract
+    model_config: object
     repetition: RepetitionConfig
     vocab_entries: tuple[tuple[int, int], ...]
     execution_provider: str
@@ -148,6 +152,7 @@ class PyTorchPolicyBackend(_MeasuredBackend):
         self.checkpoint = checkpoint
         self.data_spec = DataSpec.from_dict(dict(checkpoint["data_spec"]))
         self.input_contract = ModelInputContract.from_checkpoint(checkpoint)
+        self.model_config = CausalPolicyModel.checkpoint_model_config(dict(checkpoint))
         self.input_contract.assert_matches_data_spec(self.data_spec)
         self.repetition = repetition_config_from_checkpoint(checkpoint)
         vocab = self.input_contract.create_skill_vocab()
@@ -172,7 +177,7 @@ class PyTorchPolicyBackend(_MeasuredBackend):
         # 重复惩罚统一移到宿主；这里故意使用默认关闭的 repetition。
         self.model = CausalPolicyModel(
             self.data_spec,
-            CausalPolicyModel.checkpoint_model_config(dict(checkpoint)),
+            self.model_config,
             vocab_size=vocab_size,
         )
         self.model.load_state_dict(checkpoint["model_state_dict"], strict=True)
@@ -182,6 +187,7 @@ class PyTorchPolicyBackend(_MeasuredBackend):
         )
         self.model.eval()
         self._bf16_float_compute = False
+        self._fp16_output_quantization = False
         self.configure_cache(use_kv_cache)
 
     def enable_bf16_float_compute(self) -> None:
@@ -194,6 +200,15 @@ class PyTorchPolicyBackend(_MeasuredBackend):
         self._bf16_float_compute = True
         self.execution_provider = (
             f"PyTorch:{self.input_device.type}:bf16_weights_fp32_compute"
+        )
+
+    def enable_fp16_output_quantization(self) -> None:
+        """仅为部署 parity 模拟 FP32 softcap 后的 FP16 输出接口舍入。"""
+        if self.precision != PRECISION_FLOAT16 or self._fp16_output_quantization:
+            raise ValueError("FP16 output quantization requires a fresh FP16 reference")
+        self._fp16_output_quantization = True
+        self.execution_provider = (
+            f"PyTorch:{self.input_device.type}:fp16_output_quantization"
         )
 
     def raw_logits(
@@ -222,11 +237,12 @@ class PyTorchPolicyBackend(_MeasuredBackend):
             with torch.no_grad(), context:
                 output = self.model(values)
                 logits = output["logits"]
-                return (
-                    logits.bfloat16().float()
-                    if self._bf16_float_compute
-                    else logits.float()
-                )
+                if self._bf16_float_compute:
+                    return logits.bfloat16().float()
+                if self._fp16_output_quantization:
+                    # 宿主重复惩罚接收部署接口的舍入值；模型内部仍用 FP32 softcap。
+                    return logits.half().float()
+                return logits.float()
         finally:
             self._finish_measurement(started_at)
 
@@ -267,6 +283,7 @@ class OrtPolicyBackend(_MeasuredBackend):
             )
         self.data_spec = self.contract.data_spec
         self.input_contract = self.contract.input_contract
+        self.model_config = ModelConfig(**self.contract.model_config)
         self.repetition = parse_repetition_config(self.contract.repetition_config)
         self.vocab_entries = self.contract.vocab_entries
         self.input_device = torch.device("cpu")
@@ -390,6 +407,7 @@ class ParityPolicyBackend:
         self.input_device = reference.input_device
         self.data_spec = reference.data_spec
         self.input_contract = reference.input_contract
+        self.model_config = reference.model_config
         self.repetition = reference.repetition
         self.vocab_entries = reference.vocab_entries
         self.execution_provider = (
@@ -527,12 +545,16 @@ def build_fixed_ort_inputs(
     values: list[torch.Tensor] = []
     for spec in contract.tensor_inputs():
         source = _require_tensor(batch, spec.name).detach().to(device)
-        target = torch.zeros(spec.shape, dtype=onnx_torch_dtype(spec.dtype), device=device)
+        field = MODEL_INPUT_FIELDS_BY_NAME[spec.name]
+        if field.dtype == "float32" and source.dtype != torch.float32:
+            raise ValueError(f"host encoded {spec.name} must remain float32 until deployment casting")
+        target = torch.full(spec.shape, field.padding_value, dtype=onnx_torch_dtype(spec.dtype), device=device)
         source = source.to(dtype=target.dtype)
-        if spec.name.startswith("scene_"):
-            target[:, :scene_length] = source
-        elif spec.name.startswith("history_"):
-            target[:, :history_length] = source
+        if field.sequence_axis is not None:
+            lengths = {"scene": scene_length, "history": history_length}
+            indices = [slice(None)] * target.ndim
+            indices[field.sequence_axis] = slice(None, lengths[field.sequence_group])
+            target[tuple(indices)] = source
         else:
             if tuple(source.shape) != spec.shape:
                 raise ValueError(
@@ -557,7 +579,10 @@ def _to_fixed_capacity_batch(
     ORT 侧 ``build_fixed_ort_inputs`` 会自行搬回 CPU，传 CUDA 张量安全。
     """
     fixed_inputs = build_fixed_ort_inputs(batch, contract, device=device)
-    fixed_batch = dict(zip(TENSOR_INPUT_NAMES, fixed_inputs, strict=True))
+    fixed_batch = {
+        name: value.float() if value.is_floating_point() else value
+        for name, value in zip(TENSOR_INPUT_NAMES, fixed_inputs, strict=True)
+    }
     fixed_batch["action_legal_mask"] = (
         _require_tensor(batch, "action_legal_mask").detach().cpu().bool()
     )

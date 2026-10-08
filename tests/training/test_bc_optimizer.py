@@ -27,7 +27,7 @@ def _build_optimizer(model, config=None, *, weight_decay=0.03):
     )
 
 
-def _model(*, num_kv_heads=1, dtype=torch.float32) -> CausalPolicyModel:
+def _model(*, num_kv_heads=1, dtype=torch.float32, full_attention_residuals=True) -> CausalPolicyModel:
     spec = DataSpec(
         job_tag="black_mage", num_actions=2, state_dim=3, scene_dim=2,
         skill_feature_dim=2, num_scene_types=1,
@@ -39,7 +39,7 @@ def _model(*, num_kv_heads=1, dtype=torch.float32) -> CausalPolicyModel:
     config = ModelConfig(
         d_model=8, n_layers=1, n_heads=2,
         num_kv_heads=num_kv_heads, ff_dim=12, transformer_activation="swiglu",
-        dropout=0.0, full_attention_residuals=True,
+        dropout=0.0, full_attention_residuals=full_attention_residuals,
     )
     return CausalPolicyModel(spec, config, vocab_size=3).to(dtype=dtype)
 
@@ -97,8 +97,14 @@ def test_muon_groups_only_transformer_projection_matrices(num_kv_heads):
     assert len(grouped) == len({id(parameter) for parameter in grouped})
     assert {id(parameter) for parameter in grouped} == {id(parameter) for parameter in model.parameters()}
     adamw_names = set(groups["adamw"]["param_names"])
+    assert "output_head.weight" in adamw_names
+    assert "output_head.weight" not in muon_names
     assert "encoder.attention_residual.pseudo_queries" in adamw_names
-    assert "encoder.layers.0.norm1.weight" in adamw_names
+    assert "encoder.attention_residual.key_norms.0.weight" in adamw_names
+    # 主干 RMSNorm 无参数；Full AttnRes 路由自身的尺度仍归 AdamW 管理。
+    assert all(not name.startswith((
+        "encoder.layers.0.norm1.", "encoder.layers.0.norm2.", "encoder.norm.",
+    )) for name in muon_names | adamw_names)
     assert all(name in adamw_names for name, _ in model.named_parameters() if (
         name.startswith("input_encoder.") or name.endswith(".bias")
     ))
@@ -221,26 +227,35 @@ def test_muon_keeps_weights_shared_with_input_encoder_in_adamw():
     assert owners == ["adamw"]
 
 
-def test_input_and_output_gradients_accumulate_on_one_embedding_parameter():
+def test_input_and_output_gradients_update_independent_adamw_parameters():
     model = _model()
     weight = model.input_encoder.skill_embed.weight
+    head = model.output_head.weight
     input_loss = model.input_encoder.skill_embed(torch.tensor([1, 2])).sum()
     output_loss = model._score_current_hidden(torch.ones(1, model.config.d_model), {}).square().sum()
     input_grad = torch.autograd.grad(input_loss, weight, retain_graph=True)[0]
-    output_grad = torch.autograd.grad(output_loss, weight, retain_graph=True)[0]
+    output_grad = torch.autograd.grad(output_loss, head, retain_graph=True)[0]
+    assert torch.autograd.grad(output_loss, weight, allow_unused=True, retain_graph=True)[0] is None
     (input_loss + output_loss).backward()
-    torch.testing.assert_close(weight.grad, input_grad + output_grad)
+    torch.testing.assert_close(weight.grad, input_grad)
+    torch.testing.assert_close(head.grad, output_grad)
     optimizer = _build_optimizer(model)
-    assert sum(parameter is weight for group in optimizer.param_groups for parameter in group["params"]) == 1
-    assert next(group["optimizer_name"] for group in optimizer.param_groups if any(parameter is weight for parameter in group["params"])) == "adamw"
+    for parameter in (weight, head):
+        assert sum(candidate is parameter for group in optimizer.param_groups for candidate in group["params"]) == 1
+        assert next(group["optimizer_name"] for group in optimizer.param_groups
+                    if any(candidate is parameter for candidate in group["params"])) == "adamw"
 
 
 @pytest.mark.parametrize("name", ["adamw", "muon"])
-def test_shared_skill_embedding_has_exactly_one_fp32_master_across_restore(name):
+def test_input_embedding_and_independent_head_have_separate_fp32_masters_across_restore(name):
     model = _model(dtype=torch.bfloat16)
     optimizer = _build_optimizer(model, _config(name))
     weight = model.input_encoder.skill_embed.weight
+    head = model.output_head.weight
     assert sum(parameter is weight for parameter, _ in optimizer._master_pairs) == 1
+    assert sum(parameter is head for parameter, _ in optimizer._master_pairs) == 1
+    assert next(master for parameter, master in optimizer._master_pairs if parameter is weight) is not next(
+        master for parameter, master in optimizer._master_pairs if parameter is head)
     state = deepcopy(optimizer.state_dict())
     assert len(state["master_weights"]) == len(list(model.parameters()))
     embedding = [parameter for group in state["parameter_contract"] for parameter in group["parameters"]
@@ -250,8 +265,11 @@ def test_shared_skill_embedding_has_exactly_one_fp32_master_across_restore(name)
     restored_optimizer = _build_optimizer(restored, _config(name))
     restored_optimizer.load_state_dict(state)
     restored_weight = restored.input_encoder.skill_embed.weight
+    restored_head = restored.output_head.weight
     assert sum(parameter is restored_weight for parameter, _ in restored_optimizer._master_pairs) == 1
+    assert sum(parameter is restored_head for parameter, _ in restored_optimizer._master_pairs) == 1
     torch.testing.assert_close(weight, restored_weight, atol=0, rtol=0)
+    torch.testing.assert_close(head, restored_head, atol=0, rtol=0)
 
 
 def test_muon_fails_clearly_without_native_support(monkeypatch):
@@ -262,7 +280,10 @@ def test_muon_fails_clearly_without_native_support(monkeypatch):
 
 @pytest.mark.parametrize("name", ["adamw", "muon"])
 @pytest.mark.parametrize("precision", ["float32", "bf16"])
-def test_train_epoch_updates_both_parameter_groups_with_real_gradients(name, precision):
+@pytest.mark.parametrize("full_attention_residuals", [False, True])
+def test_train_epoch_updates_both_parameter_groups_with_real_gradients(
+    name, precision, full_attention_residuals,
+):
     from training.loop.training_loop import train_epoch
 
     if precision == "bf16" and not torch.cuda.is_available():
@@ -270,7 +291,7 @@ def test_train_epoch_updates_both_parameter_groups_with_real_gradients(name, pre
     device = torch.device("cuda" if precision == "bf16" else "cpu")
     dtype = torch.bfloat16 if precision == "bf16" else torch.float32
     torch.manual_seed(73)
-    model = _model(dtype=dtype).to(device)
+    model = _model(dtype=dtype, full_attention_residuals=full_attention_residuals).to(device)
     # 关闭衰减，确保检查到的权重变化确实来自前后向梯度。
     optimizer = _build_optimizer(model, _config(name), weight_decay=0.0)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda step: 0.8**step)
@@ -279,9 +300,11 @@ def test_train_epoch_updates_both_parameter_groups_with_real_gradients(name, pre
         "history_skill_features": torch.zeros((1, 1, 2)),
         "history_state_vectors": torch.zeros((1, 1, 3)),
         "history_state_null_mask": torch.zeros((1, 1, 3), dtype=torch.bool),
+        "history_state_reset_mask": torch.ones((1, 1, 3), dtype=torch.bool),
         "history_mask": torch.ones((1, 1), dtype=torch.bool),
         "current_state_vectors": torch.randn((1, 3)),
         "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
+        "current_state_reset_mask": torch.zeros((1, 3), dtype=torch.bool),
         "action_legal_mask": torch.ones((1, 2), dtype=torch.bool),
         "scene_vectors": torch.zeros((1, 1, 2)),
         "scene_types": torch.zeros((1, 1), dtype=torch.long),
@@ -291,15 +314,72 @@ def test_train_epoch_updates_both_parameter_groups_with_real_gradients(name, pre
     matrices = (
         model.encoder.layers[0].linear1.weight,
         model.input_encoder.skill_embed.weight,
+        model.output_head.weight,
     )
+    if not full_attention_residuals:
+        matrices += (model.encoder.residual_mix.r, model.encoder.residual_mix.a)
     before = [parameter.detach().clone() for parameter in matrices]
     metrics = train_epoch(model, [batch], optimizer, scheduler, device, precision)
     assert metrics and all(math.isfinite(value) for value in metrics.values())
     assert metrics["cross_entropy_loss"] > 0
     for original, parameter in zip(before, matrices, strict=True):
         assert parameter.grad is not None and parameter.grad.abs().sum() > 0
+        assert torch.isfinite(parameter.grad).all()
         assert not torch.equal(original, parameter)
     assert scheduler.get_last_lr() == [0.02 * 0.8] * (2 if name == "muon" else 1)
     if precision == "bf16":
         assert all(parameter.dtype == torch.bfloat16 for parameter in model.parameters())
         assert optimizer.state_dict()["format"] == "fp32_master_v1"
+
+
+@pytest.mark.parametrize("name", ["adamw", "muon"])
+def test_residual_coefficients_accumulate_small_bf16_updates_across_resume(name):
+    model = _model(dtype=torch.bfloat16, full_attention_residuals=False)
+    mix = model.encoder.residual_mix
+    optimizer = build_optimizer(
+        model, _config(name), learning_rate=1e-4, weight_decay=0.0,
+    )
+    expected_names = {"encoder.residual_mix.r", "encoder.residual_mix.a"}
+    scalar_groups = [group for group in optimizer.param_groups
+                     if expected_names.intersection(group["param_names"])]
+    assert len(scalar_groups) == 1
+    assert scalar_groups[0]["optimizer_name"] == "adamw"
+    assert expected_names <= set(scalar_groups[0]["param_names"])
+    assert scalar_groups[0]["lr"] == 1e-4
+    original_r = mix.r.detach().clone()
+
+    def step(current_model, current_optimizer):
+        current_optimizer.zero_grad(set_to_none=True)
+        current_model.encoder.residual_mix.r.grad = torch.ones_like(mix.r)
+        current_model.encoder.residual_mix.a.grad = torch.ones_like(mix.a)
+        current_optimizer.step()
+
+    for _ in range(4):
+        step(model, optimizer)
+    # 小于 BF16 舍入阈值的更新仍保存在 FP32 主权重中。
+    torch.testing.assert_close(mix.r, original_r, rtol=0, atol=0)
+    master_r = next(master for parameter, master in optimizer._master_pairs
+                    if parameter is mix.r)
+    assert not torch.equal(master_r, original_r.float())
+    saved_model = deepcopy(model.state_dict())
+    saved_optimizer = deepcopy(optimizer.state_dict())
+    restored = _model(dtype=torch.bfloat16, full_attention_residuals=False)
+    restored.load_state_dict(saved_model)
+    restored_optimizer = build_optimizer(
+        restored, _config(name), learning_rate=1e-4, weight_decay=0.0,
+    )
+    restored_optimizer.load_state_dict(saved_optimizer)
+    for _ in range(50):
+        step(model, optimizer)
+        step(restored, restored_optimizer)
+    assert not torch.equal(mix.r, original_r)
+    for parameter, restored_parameter in (
+        (mix.r, restored.encoder.residual_mix.r),
+        (mix.a, restored.encoder.residual_mix.a),
+    ):
+        torch.testing.assert_close(parameter, restored_parameter, rtol=0, atol=0)
+    for first, second in zip(
+        optimizer.state_dict()["master_weights"],
+        restored_optimizer.state_dict()["master_weights"], strict=True,
+    ):
+        torch.testing.assert_close(first, second, rtol=0, atol=0)

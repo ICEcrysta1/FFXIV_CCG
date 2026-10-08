@@ -16,7 +16,9 @@ from torch import nn
 
 import common.cache_compilation as cache_compilation
 from common.torch_serialization import safe_torch_load
-from common.policy.model.input_encoder import ROLE_SCENE, ROLE_STATE, ROLE_SKILL
+from common.policy.model.input_encoder import (
+    ROLE_SCENE, ROLE_STATE, ROLE_SKILL, build_position_ids, build_role_ids,
+)
 from scripts.model_analysis.common import pca_projection, skill_name_by_vocab_id
 from scripts.model_analysis import common as analysis_common
 from scripts.model_analysis.job_labels import decision_state_labels
@@ -128,7 +130,7 @@ def test_model_analysis_decodes_mp_as_linear_0_to_10000_value():
             }
 
     batch = {
-        "current_state_vectors": torch.tensor([[2.0, 0.0, 0.5]]),
+        "current_state_abs_values": torch.tensor([[2.0, 0.0, 5000.0]]),
         "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
         "action_legal_mask": torch.tensor([[True]]),
     }
@@ -261,18 +263,19 @@ def test_skill_labels_use_chinese_names_from_project_config():
 
 
 def test_sample_token_count_requires_mapping_and_sums_distinct_token_groups():
-    sample = {"scene_vectors": [[0.0]], "history_skill_ids": [1, 2]}
+    sample = {"scene_abs_values": [[0.0]], "history_skill_ids": [1, 2]}
     assert attention_output._sample_token_count(sample) == 6
     with pytest.raises(TypeError, match="expected mapping sample"):
         attention_output._sample_token_count(object())
-    with pytest.raises(TypeError, match="scene_vectors"):
-        attention_output._sample_token_count({"scene_vectors": 1})
+    with pytest.raises(TypeError, match="scene_abs_values"):
+        attention_output._sample_token_count({"scene_abs_values": 1})
 
 
 def test_sample_token_count_supports_compact_history_bank_samples():
-    samples = [{"scene_vectors": [[0.0]], "history_length": value} for value in (0, 2, 5)]
+    samples = [{"scene_abs_values": [[0.0]], "history_length": value} for value in (0, 2, 5)]
     assert [attention_output._sample_token_count(sample) for sample in samples] == [2, 6, 12]
     assert max(samples, key=attention_output._sample_token_count)["history_length"] == 5
+    assert attention_output._sample_token_count({"scene_abs_values": [[0.0]] * 3, "history_length": 2}) == 8
 
 
 def _analysis_schema():
@@ -349,11 +352,40 @@ def _analysis_context(tmp_path):
         device=torch.device("cpu"),
         precision="float32",
         autocast=nullcontext,
+        encode_batch=lambda batch: batch,
         layer_vectors=layer_vectors,
         layer_roles=layer_roles,
         layer_current_state_masks=[current_mask, current_mask],
         layer_metadata=layer_metadata,
     )
+
+
+def _history_input_encoding(skill, state, history_mask, *, scene_length=2):
+    """完整编码结果替身：scene/current 占位与交错历史必须可明确区分。"""
+    batch_size, history_length, dim = skill.shape
+    current = scene_length + 2 * history_length
+    tokens = torch.full((batch_size, current + 1, dim), -1000.0)
+    state_positions = (scene_length + 2 * torch.arange(history_length)).unsqueeze(0).expand(batch_size, -1)
+    skill_positions = state_positions + 1
+    tokens.scatter_(1, state_positions.unsqueeze(-1).expand(-1, -1, dim), state)
+    tokens.scatter_(1, skill_positions.unsqueeze(-1).expand(-1, -1, dim), skill)
+    tokens[:, current] = 1000.0
+    scene_mask = torch.ones((batch_size, scene_length), dtype=torch.bool)
+    prefix_valid = torch.cat((scene_mask, history_mask.repeat_interleave(2, dim=1)), dim=1)
+    valid = torch.cat((prefix_valid, torch.ones((batch_size, 1), dtype=torch.bool)), dim=1)
+    return {
+        'tokens': tokens, 'padding_mask': ~valid, 'valid': valid, 'prefix_valid': prefix_valid,
+        'scene_length': scene_length, 'history_length': history_length,
+        'history_token_length': 2 * history_length, 'prefix_length': current,
+        'position_ids': build_position_ids(
+            batch_size=batch_size, scene_length=scene_length, history_length=history_length,
+            device='cpu', scene_mask=scene_mask, history_mask=history_mask),
+        'role_ids': build_role_ids(
+            batch_size=batch_size, scene_length=scene_length, history_length=history_length, device='cpu'),
+        'history_skill_positions': skill_positions, 'history_state_positions': state_positions,
+        'current_state_position': current,
+        'current_state_positions': torch.full((batch_size,), current, dtype=torch.long),
+    }
 
 
 def test_model_analysis_metadata_and_black_mage_fallbacks():
@@ -363,7 +395,7 @@ def test_model_analysis_metadata_and_black_mage_fallbacks():
         "history_skill_ids": torch.tensor([[9, 0]], dtype=torch.int32),
         "history_mask": torch.tensor([[True, False]]),
         "action_legal_mask": torch.tensor([[True, False]]),
-        "current_state_vectors": torch.tensor([[0.0, 1.0, 0.5]]),
+        "current_state_abs_values": torch.tensor([[0.0, 1.0, 5000.0]]),
         "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
         "label_index": torch.tensor([0]),
     }
@@ -608,7 +640,10 @@ def test_analysis_restores_saved_input_contract_without_current_yaml(monkeypatch
     assert context.vocab.to_dict() == saved.create_skill_vocab().to_dict()
     normalizer = seen["dataset"]["normalizer"]
     assert normalizer.normalization_contract == saved.normalizer_contract
-    assert normalizer.normalize_value("player_state", "previous_action_after.time_seconds", 900) == pytest.approx(0.5)
+    time_index = tuple(
+        key for keys in saved.schema.state_group_feature_keys.values() for key in keys
+    ).index("previous_action_after.time_seconds")
+    assert context.context_encoder.state_divisors[time_index] == pytest.approx(120.0)
     assert seen["source"]["normalizer"] is normalizer
     assert seen["source"]["expected_skill_vocab"] is seen["dataset"]["skill_vocab"]
     assert context.model.input_encoder.skill_embed.weight.shape[0] == 8
@@ -642,6 +677,7 @@ def test_model_analysis_retries_after_compiling_missing_cache(monkeypatch, tmp_p
         source_path=source_path,
         cache_dir=cache_dir,
         max_history=240,
+        history_reset_keep=8,
         cache_shard_size=768,
         cache_max_shards=24,
         job_tag="black_mage",
@@ -721,11 +757,10 @@ def test_model_analysis_outputs_generate_pngs(monkeypatch, tmp_path):
     assert skill_path.is_file()
 
     class FakeHistoryEncoder:
-        @staticmethod
-        def embed_history(batch):
+        def __call__(self, batch):
             size = batch["history_skill_ids"].shape[0]
             values = torch.arange(size * 2 * 3, dtype=torch.float32).reshape(size, 2, 3)
-            return {"skill": values, "state": values + 1.0}
+            return _history_input_encoding(values, values + 1.0, batch['history_mask'])
 
     context.model.input_encoder = FakeHistoryEncoder()
     monkeypatch.setattr(history_output, "TrainingCollator", lambda: (lambda samples: {
@@ -761,6 +796,69 @@ def test_model_analysis_layer_pca_reuses_projection_cache(monkeypatch, tmp_path)
     ]
 
 
+def test_compact_causal_analysis_preserves_gathered_skill_ids_and_absolute_state_labels(monkeypatch, tmp_path):
+    """正式 compact collator 分析必须同时读取已 gather 的历史身份和未归一化的当前状态。"""
+    from common.policy.config import ModelConfig
+    from common.policy.data.context_encoding import ContextEncoder
+    from common.policy.model import CausalPolicyModel
+    from tests.training._common_fixtures import make_dataset, make_demo_pt
+    from training import TrainingCollator
+
+    source = make_demo_pt(tmp_path, ["fire_iii", "fire_iv", "blizzard_iii"], fight_id="compact_analysis")
+    dataset = make_dataset([source], max_history=4, history_reset_keep=2)
+    samples = [dataset[index] for index in range(len(dataset))]
+    raw_batch = TrainingCollator()(samples)
+    assert "history_bank_skill_ids" in raw_batch
+    assert "history_skill_ids" not in raw_batch
+    data_spec = DataSpec.from_dataset(dataset)
+    model = CausalPolicyModel(
+        data_spec,
+        ModelConfig(d_model=16, n_layers=1, n_heads=2, num_kv_heads=1, ff_dim=32,
+                    dropout=0.0, history_capacity=4, history_reset_keep=2),
+        vocab_size=SkillVocab.build_from_job_tag(data_spec.job_tag).size(),
+    ).eval()
+    encoder = ContextEncoder(dataset.normalizer, dataset.schema, model.config)
+    runtime = SimpleNamespace(
+        model=model, dataset=dataset, data_spec=data_spec, device=torch.device("cpu"),
+        checkpoint_path=tmp_path / "checkpoint.pt", source_path=source,
+        output_dir=tmp_path, vocab=SimpleNamespace(), precision="float32", autocast=nullcontext,
+        context_encoder=encoder,
+    )
+    captured = []
+
+    def capture_metadata(samples, **kwargs):
+        result = build_token_metadata(samples, **kwargs)
+        captured.append((kwargs["batch"], kwargs["encoded"], result))
+        return result
+
+    monkeypatch.setattr(analysis_common, "_load_model_analysis_context", lambda **_kwargs: runtime)
+    monkeypatch.setattr(analysis_common, "build_token_metadata", capture_metadata)
+    context = analysis_common.load_analysis_context(
+        checkpoint_path=runtime.checkpoint_path, source_path=source,
+        raw_root=tmp_path, cache_dir=tmp_path / ".cache", max_history=4,
+        cache_shard_size=1, cache_max_shards=1, output_dir=tmp_path,
+        max_samples=len(dataset), max_tokens=512, batch_size=len(dataset),
+        device_name="cpu", precision="float32",
+    )
+    assert len(captured) == 1
+    metadata_batch, encoded, metadata = captured[0]
+    prepared = encoder.encode(raw_batch)
+    torch.testing.assert_close(metadata_batch["history_skill_ids"], prepared["history_skill_ids"])
+    torch.testing.assert_close(metadata_batch["current_state_abs_values"], raw_batch["current_state_abs_values"])
+    request_mp_index = dataset.schema.state_group_feature_keys["player_state"].index("request_state.mp")
+    player_slice = dataset.schema.state_group_slices()["player_state"]
+    for index, position in enumerate(encoded["current_state_positions"].tolist()):
+        expected_mp = raw_batch["current_state_abs_values"][index, player_slice][request_mp_index].item()
+        assert metadata["mp_bucket"][index, position] == pytest.approx(expected_mp)
+        history_positions = encoded["history_skill_positions"][index]
+        valid = prepared["history_mask"][index]
+        np.testing.assert_array_equal(
+            metadata["skill_id"][index, history_positions[valid].numpy()],
+            prepared["history_skill_ids"][index, valid].numpy(),
+        )
+    assert np.nanmax(context.layer_metadata[0]["mp_bucket"]) > 1.0
+
+
 def test_real_causal_trace_loads_metadata_and_keeps_current_query_under_token_cap(monkeypatch, tmp_path):
     """完整分析入口必须兼容真实 trace 和附加历史身份元数据。"""
     from tests.training.test_kv_cache import _make_model, _make_batch
@@ -768,12 +866,14 @@ def test_real_causal_trace_loads_metadata_and_keeps_current_query_under_token_ca
     model = _make_model()
     sample = {"metadata": {"fight_id": "real-trace", "step": 0}}
     batch = _make_batch(1)
+    batch["current_state_abs_values"] = batch["current_state_vectors"]
     batch["label_index"] = torch.tensor([0])
     runtime = SimpleNamespace(
         model=model, dataset=SimpleNamespace(schema=_analysis_schema()),
         data_spec=model.data_spec, device=torch.device("cpu"),
         checkpoint_path=tmp_path / "checkpoint.pt", source_path=tmp_path / "source.json",
         output_dir=tmp_path, vocab=SimpleNamespace(), precision="float32", autocast=nullcontext,
+        context_encoder=SimpleNamespace(encode=lambda batch: batch),
     )
     class Dataset:
         schema = _analysis_schema()
@@ -794,7 +894,8 @@ def test_real_causal_trace_loads_metadata_and_keeps_current_query_under_token_ca
     for roles, metadata in zip(context.layer_roles, context.layer_metadata):
         assert roles.tolist() == [ROLE_STATE]
         assert set(metadata) == set(analysis_common.ANALYSIS_FEATURES)
-        assert metadata["model_logit"][0] == pytest.approx(expected_logit)
+        # trace 与 SDPA 存在 FP32 舍入差异；接近 0 时补绝对容差，保留原相对阈值。
+        assert metadata["model_logit"][0] == pytest.approx(expected_logit, rel=1e-6, abs=1e-6)
     assert all(mask.tolist() == [True] for mask in context.layer_current_state_masks)
     layer_projections, query_projections = pca_output._build_pca_cache(context)
     assert layer_projections[0][0].shape == (1, 3)
@@ -806,10 +907,9 @@ def test_history_embedding_views_exclude_padding_and_support_empty_history(monke
     context = _analysis_context(tmp_path)
     context.output_dir.mkdir(parents=True)
     class Encoder:
-        @staticmethod
-        def embed_history(_batch):
+        def __call__(self, batch):
             values = torch.tensor([[[1.0, 2.0], [float("nan"), float("nan")]]])
-            return {"skill": values, "state": values + 3.0}
+            return _history_input_encoding(values, values + 3.0, batch['history_mask'])
     context.model.input_encoder = Encoder()
     monkeypatch.setattr(history_output, "skill_name_by_vocab_id", lambda _context: {1: "fire"})
     values = {
@@ -823,14 +923,26 @@ def test_history_embedding_views_exclude_padding_and_support_empty_history(monke
 
 
 def test_history_skill_and_state_pca_fit_distinct_valid_observations(monkeypatch, tmp_path):
-    """技能与状态各拟合真实观测，padding 的 NaN 不进入任何一张图。"""
+    """显式位置只选归一化后的历史输入，scene/current 与 padding 都不能混入。"""
     context = _analysis_context(tmp_path)
     context.output_dir.mkdir(parents=True)
     observed = {
         "skill": torch.tensor([[[0.0, 1.0], [2.0, 3.0], [float("nan"), float("nan")]]]),
         "state": torch.tensor([[[10.0, 0.0], [0.0, 10.0], [float("nan"), float("nan")]]]),
     }
-    context.model.input_encoder = SimpleNamespace(embed_history=lambda _batch: observed)
+    class Encoder:
+        def __call__(self, batch):
+            encoded = _history_input_encoding(observed['skill'], observed['state'], batch['history_mask'])
+            assert encoded['history_state_positions'].tolist() == [[2, 4, 6]]
+            assert encoded['history_skill_positions'].tolist() == [[3, 5, 7]]
+            assert encoded['current_state_positions'].tolist() == [8]
+            return encoded
+
+        @staticmethod
+        def embed_history(_batch):
+            pytest.fail('PCA 必须使用正式 forward 输出，不能直接读取原始 content')
+
+    context.model.input_encoder = Encoder()
     monkeypatch.setattr(history_output, "skill_name_by_vocab_id", lambda _context: {1: "fire", 2: "ice"})
     monkeypatch.setattr(history_output, "TrainingCollator", lambda: (lambda _samples: {
         "history_skill_ids": torch.tensor([[1, 2, 0]]),
@@ -852,6 +964,51 @@ def test_history_skill_and_state_pca_fit_distinct_valid_observations(monkeypatch
     assert len(fitted) == 2
     np.testing.assert_array_equal(fitted[0], observed["skill"][0, :2].numpy())
     np.testing.assert_array_equal(fitted[1], observed["state"][0, :2].numpy())
+
+
+def test_history_pca_uses_actual_normalized_input_encoder_output(monkeypatch, tmp_path):
+    """用真实编码器核对 post-role 输入，不在分析或测试中复制 RMS 公式。"""
+    from common.policy.config import ModelConfig
+    from common.policy.model.input_encoder import CausalInputEncoder
+    from tests.training._causal_fixtures import make_batch, make_data_spec
+
+    torch.manual_seed(81)
+    encoder = CausalInputEncoder(
+        make_data_spec(), ModelConfig(d_model=8, n_layers=1, n_heads=2, ff_dim=16), vocab_size=3)
+    batch = make_batch(batch_size=2, scene_length=2, history_length=2)
+    batch['history_skill_ids'] = torch.tensor([[1, 0], [2, 1]])
+    batch['history_mask'] = torch.tensor([[True, False], [True, True]])
+    batch['scene_mask'] = torch.tensor([[False, True], [True, True]])
+    batch['history_state_vectors'] = torch.randn(2, 2, 4)
+    batch['history_skill_features'] = torch.randn(2, 2, 2)
+    batch['current_state_vectors'] = torch.randn(2, 4)
+    context = _analysis_context(tmp_path)
+    context.output_dir.mkdir(parents=True)
+    context.model.input_encoder = encoder
+    monkeypatch.setattr(history_output, 'TrainingCollator', lambda: (lambda _samples: batch))
+    monkeypatch.setattr(history_output, 'skill_name_by_vocab_id', lambda _context: {1: 'fire', 2: 'ice'})
+    returned = []
+    handle = encoder.register_forward_hook(lambda _module, _args, output: returned.append(output))
+    fitted = []
+    original = history_output.pca_projection
+
+    def record(values, components):
+        fitted.append(values.copy())
+        return original(values, components)
+
+    monkeypatch.setattr(history_output, 'pca_projection', record)
+    try:
+        paths = history_output.plot_history_embeddings(context, batch_size=2)
+    finally:
+        handle.remove()
+    assert all(path.is_file() for path in paths)
+    assert len(returned) == 1 and len(fitted) == 2
+    encoded = returned[0]
+    for actual, kind in zip(fitted, ('skill', 'state')):
+        positions = encoded[f'history_{kind}_positions']
+        expected = encoded['tokens'].gather(1, positions.unsqueeze(-1).expand(-1, -1, 8))
+        np.testing.assert_array_equal(actual, expected[batch['history_mask']].numpy())
+        np.testing.assert_allclose(np.sqrt(np.mean(actual ** 2, axis=1)), 1.0, atol=2e-5, rtol=0)
 
 
 def test_loss_landscape_directions_are_filter_normalized_and_orthogonal():
@@ -926,6 +1083,7 @@ def test_loss_landscape_exports_every_layer_and_restores_parameters(monkeypatch,
         output_dir=tmp_path,
         precision="float32",
         autocast=nullcontext,
+        encode_batch=lambda batch: batch,
     )
 
     def collate(samples):
@@ -1015,6 +1173,7 @@ def test_opener_attention_uses_latest_state_query_and_excludes_padding(monkeypat
         model=Model(), data_spec=SimpleNamespace(action_keys=("a", "b")),
         dataset=[{"label_action_key": "a", "label_index": 0}] * 2,
         device=torch.device("cpu"), output_dir=tmp_path, autocast=nullcontext,
+        encode_batch=lambda batch: batch,
     )
     captured = {}
     monkeypatch.setattr(attention_output, "TrainingCollator", lambda: (lambda _samples: {}))
@@ -1091,7 +1250,7 @@ def test_model_analysis_attention_output_and_main(monkeypatch, tmp_path):
     standard_context.output_dir.mkdir(parents=True)
     standard_context.dataset = [
         {
-            "scene_vectors": [[0.0]],
+            "scene_abs_values": [[0.0]],
             "history_skill_ids": [1, 2],
         }
     ]
@@ -1255,6 +1414,11 @@ def test_loss_landscape_cached_grid_matches_full_forward(full_attention_residual
         pytest.skip("Full AttnRes requires Pre-LN")
     torch.manual_seed(19)
     model = _make_model(norm_first=norm_first, full_attention_residuals=full_attention_residuals)
+    if not full_attention_residuals:
+        # 使用差异明显的系数，确保缓存路径没有漏混合或错误复用第一层系数。
+        with torch.no_grad():
+            model.encoder.residual_mix.r.copy_(torch.tensor([0.8, 1.4]))
+            model.encoder.residual_mix.a.copy_(torch.tensor([0.35, -0.15]))
     model.repetition = RepetitionConfig(mode="blacklist", skills=("fire_iv",), penalty=2.0)
     first = {key: torch.cat((value, value), dim=0) for key, value in _make_batch(3).items()}
     batches = (first, _make_batch(1))
@@ -1263,7 +1427,8 @@ def test_loss_landscape_cached_grid_matches_full_forward(full_attention_residual
         batch["label_index"] = torch.full((count,), index)
         batch["action_keys"] = [("fire_iii", "fire_iv", "blizzard_iii")] * count
         batch["history_action_keys"] = [("fire_iv",)] * count
-    context = SimpleNamespace(model=model, device=torch.device("cpu"), autocast=nullcontext)
+    context = SimpleNamespace(model=model, device=torch.device("cpu"), autocast=nullcontext,
+                              encode_batch=lambda batch: batch)
     baseline = loss_output._mean_cross_entropy(context, batches)
     coordinates = np.linspace(-0.1, 0.1, 3)
     original = {name: value.clone() for name, value in model.state_dict().items()}
@@ -1292,7 +1457,8 @@ def test_loss_landscape_restores_parameters_on_forward_failure(monkeypatch):
     model = _make_model()
     batch = _make_batch(2)
     batch["label_index"] = torch.tensor([0])
-    context = SimpleNamespace(model=model, device=torch.device("cpu"), autocast=nullcontext)
+    context = SimpleNamespace(model=model, device=torch.device("cpu"), autocast=nullcontext,
+                              encode_batch=lambda batch: batch)
     directions = loss_output._build_layer_directions(model.encoder.layers[1], seed=7)
 
     def fail(_self):

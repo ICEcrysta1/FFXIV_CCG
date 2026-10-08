@@ -10,6 +10,7 @@ from threading import Condition
 import torch
 
 from common.project_config import resolve_positive_worker_count
+from common.policy.data.context_fields import MODEL_INPUT_FIELDS_BY_NAME
 from common.torch_runtime import autocast_context
 from scripts.common.inprocess_backend import InProcessEngine
 
@@ -34,10 +35,11 @@ def collate_live_batches(samples):
         if isinstance(values[0], torch.Tensor):
             if any(value.shape[0] != 1 for value in values):
                 raise ValueError("each replay request must contain exactly one row")
-            if key.startswith(("scene_", "history_")):
+            field = MODEL_INPUT_FIELDS_BY_NAME.get(key)
+            if field is not None and field.sequence_axis is not None:
                 result[key] = torch.nn.utils.rnn.pad_sequence(
                     [value[0] for value in values], batch_first=True,
-                    padding_value=key == "history_state_null_mask",
+                    padding_value=field.padding_value,
                 )
             else:
                 result[key] = torch.cat(values, dim=0)
@@ -56,6 +58,7 @@ class TrainingPolicyBackend:
         self.data_spec = data_spec
         self.input_device = device
         self.precision = precision
+        self.model_config = model.config
 
     def configure_cache(self, enabled):
         configure = getattr(self.model, "enable_kv_cache", None)

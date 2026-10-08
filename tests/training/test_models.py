@@ -35,6 +35,174 @@ from common.policy.model.repetition import apply_repetition_penalty
 from tests.training._causal_fixtures import make_batch, make_data_spec
 
 
+@pytest.mark.parametrize("scale", (1.2, 0.9))
+def test_qk_rmsnorm_matches_independent_formula_and_gradients_at_small_norms(scale):
+    """零向量、极小向量与不同 head 幅度都遵循 epsilon 公式，并保持有限梯度。"""
+    torch = pytest.importorskip("torch")
+    from common.policy.model.attention_utils import normalize_qk
+
+    torch.manual_seed(819)
+    raw_query = torch.randn(1, 4, 3, 8, dtype=torch.float64)
+    raw_key = torch.randn(1, 2, 3, 8, dtype=torch.float64)
+    raw_query[:, 0] = 0
+    raw_query[:, 1] *= 1e-10
+    raw_query[:, 2] *= 1e4
+    raw_key[:, 0] *= 1e-10
+    actual_inputs = tuple(tensor.clone().requires_grad_(True) for tensor in (raw_query, raw_key))
+    reference_inputs = tuple(tensor.clone().requires_grad_(True) for tensor in (raw_query, raw_key))
+    actual = normalize_qk(*actual_inputs, scale=scale)
+    epsilon = torch.finfo(torch.float64).eps
+    reference = tuple(
+        tensor * scale / (tensor.square().mean(-1, keepdim=True) + epsilon).sqrt()
+        for tensor in reference_inputs
+    )
+    for left, right in zip(actual, reference):
+        assert torch.isfinite(left).all()
+        torch.testing.assert_close(left, right, rtol=1e-12, atol=1e-12)
+    assert torch.count_nonzero(actual[0][:, 0]) == 0
+    # epsilon 会衰减极小向量，不把所有 head 无条件顶到固定 RMS。
+    assert (actual[0][:, 1].square().mean(-1).sqrt() < scale / 10).all()
+    targets = tuple(torch.randn_like(tensor) for tensor in actual)
+    actual_grad = torch.autograd.grad(sum((value * target).sum() for value, target in zip(actual, targets)), actual_inputs)
+    reference_grad = torch.autograd.grad(sum((value * target).sum() for value, target in zip(reference, targets)), reference_inputs)
+    for left, right in zip(actual_grad, reference_grad):
+        assert torch.isfinite(left).all()
+        torch.testing.assert_close(left, right, rtol=1e-11, atol=1e-9)
+
+
+@pytest.mark.parametrize("num_kv_heads", (4, 2, 1))
+@pytest.mark.parametrize("full_attention_residuals", (False, True))
+@pytest.mark.parametrize("scale", (1.2, 0.7))
+def test_qk_head_rmsnorm_follows_rope_and_matches_trace_attention(
+    monkeypatch, num_kv_heads, full_attention_residuals, scale,
+):
+    """用实际 attention 边界与独立公式验证 head 范数、位置和 trace 权重。"""
+    torch = pytest.importorskip("torch")
+    from common.policy.model import causal_encoder
+
+    torch.manual_seed(820)
+    spec = make_data_spec()
+    model = CausalPolicyModel(
+        spec, ModelConfig(
+            d_model=32, n_layers=2, n_heads=4, num_kv_heads=num_kv_heads,
+            ff_dim=48, dropout=0.0, transformer_activation="swiglu",
+            full_attention_residuals=full_attention_residuals, qk_norm_scale=scale,
+        ), vocab_size=3,
+    ).double().eval()
+    batch = make_batch(spec, batch_size=2, history_length=2, scene_length=2,
+                       dtype=torch.float64)
+    batch["scene_mask"][1, -1] = False
+    batch["history_mask"][1, -1] = False
+    rotated, attention_calls = [], []
+    original_attention = causal_encoder.run_head_attention
+
+    def perturb_rope_output(_module, _args, output):
+        # 正常 RoPE 与 RMS 在数学上可交换；非均匀 hook 才能锁定真实先后顺序。
+        query, key = output
+        channels = torch.arange(1, query.shape[-1] + 1, dtype=query.dtype)
+        changed = (query * channels, key * channels.flip(0))
+        rotated.append(tuple(value.detach().clone() for value in changed))
+        return changed
+
+    def observe_attention(layer, query, key, value, **kwargs):
+        raw_query, raw_key = rotated[-1]
+        epsilon = torch.finfo(torch.float64).eps
+        expected = tuple(
+            tensor * scale / (tensor.square().mean(-1, keepdim=True) + epsilon).sqrt()
+            for tensor in (raw_query, raw_key)
+        )
+        torch.testing.assert_close(query, expected[0], rtol=1e-12, atol=1e-12)
+        torch.testing.assert_close(key, expected[1], rtol=1e-12, atol=1e-12)
+        assert query.shape[1] == 4
+        assert key.shape[1] == value.shape[1] == num_kv_heads
+        for tensor in (query, key):
+            head_rms = tensor.square().mean(-1).sqrt()
+            torch.testing.assert_close(head_rms, torch.full_like(head_rms, scale),
+                                       rtol=1e-12, atol=1e-12)
+        output, weights = original_attention(layer, query, key, value, **kwargs)
+        if kwargs["collect_attention"]:
+            # 独立展开 MQA/GQA，按合法 key 与严格因果 mask 计算完整逐 head 权重。
+            expanded_key = key.repeat_interleave(4 // num_kv_heads, dim=1)
+            scores = query @ expanded_key.transpose(-2, -1) / query.shape[-1] ** 0.5
+            count = query.shape[2]
+            causal = torch.arange(count).view(-1, 1) >= torch.arange(count).view(1, -1)
+            allowed = kwargs["key_valid"][:, None, None, :] & causal
+            expected_weights = scores.masked_fill(~allowed, -torch.inf).softmax(-1)
+            torch.testing.assert_close(weights, expected_weights, rtol=1e-12, atol=1e-12)
+        attention_calls.append(kwargs["collect_attention"])
+        return output, weights
+
+    monkeypatch.setattr(causal_encoder, "run_head_attention", observe_attention)
+    handle = model.encoder.rotary_position_encoding.register_forward_hook(perturb_rope_output)
+    try:
+        with torch.no_grad():
+            logits = model(batch)["logits"]
+            trace = model.trace(batch)
+            traced_logits = model.score_hidden(trace.encoded, trace.hidden, batch)
+    finally:
+        handle.remove()
+    assert attention_calls == [False, False, True, True]
+    torch.testing.assert_close(logits, traced_logits, rtol=1e-12, atol=1e-12)
+
+
+@pytest.mark.parametrize("num_kv_heads", (4, 2, 1))
+@pytest.mark.parametrize("full_attention_residuals", (False, True))
+@pytest.mark.parametrize("attention_block", (False, True))
+def test_qk_normalization_preserves_recomputed_forward_and_gradients(
+    num_kv_heads, full_attention_residuals, attention_block,
+):
+    """非默认 Q/K 尺度下，SDPA/整块/Full AttnRes 重算保留输入和所有参数梯度。"""
+    torch = pytest.importorskip("torch")
+    from common.policy.model.causal_encoder import run_causal_encoder
+
+    torch.manual_seed(821)
+    spec = make_data_spec()
+    config = ModelConfig(
+        d_model=16, n_layers=2, n_heads=4, num_kv_heads=num_kv_heads,
+        ff_dim=32, dropout=0.1, transformer_activation="swiglu",
+        full_attention_residuals=full_attention_residuals, qk_norm_scale=0.85,
+    )
+    eager = CausalPolicyModel(spec, config, vocab_size=3).double().train()
+    recomputed = CausalPolicyModel(spec, config, vocab_size=3).double().train()
+    recomputed.load_state_dict(eager.state_dict())
+    recomputed.enable_activation_checkpoint_attention(True, block=attention_block)
+    recomputed.enable_activation_checkpoint_ffn(True)
+    template = torch.randn(2, 5, 16, dtype=torch.float64)
+    target = torch.randn_like(template)
+    valid = torch.tensor([[True, True, True, True, True],
+                          [True, True, False, True, True]])
+    positions = torch.tensor([[0, 1, 2, 3, 4], [0, 1, 0, 2, 3]])
+
+    def run(model):
+        tokens = template.detach().clone().requires_grad_(True)
+        # 相同 dropout 起点，同时覆盖会消费 RNG 的层内和外层重算。
+        torch.manual_seed(822)
+        hidden, _, _ = run_causal_encoder(model.encoder, {
+            "tokens": tokens, "valid": valid, "position_ids": positions,
+        })
+        (hidden * target).sum().backward()
+        gradients = {name: parameter.grad.detach().clone()
+                     for name, parameter in model.encoder.named_parameters()
+                     if parameter.grad is not None}
+        return hidden.detach(), tokens.grad.detach(), gradients
+
+    expected, expected_input_grad, expected_grads = run(eager)
+    actual, actual_input_grad, actual_grads = run(recomputed)
+    torch.testing.assert_close(actual, expected, rtol=1e-11, atol=1e-11)
+    torch.testing.assert_close(actual_input_grad, expected_input_grad, rtol=1e-10, atol=1e-10)
+    assert actual_grads.keys() == expected_grads.keys()
+    for name, gradient in actual_grads.items():
+        assert torch.isfinite(gradient).all()
+        torch.testing.assert_close(gradient, expected_grads[name], rtol=1e-10, atol=1e-10)
+    # 标准 MHA 使用 packed 投影，GQA/MQA 使用独立投影；两种布局都要保留 Q/K 梯度。
+    if num_kv_heads == 4:
+        for gradient in actual_grads["layers.0.self_attn.in_proj_weight"].chunk(3, dim=0)[:2]:
+            assert torch.count_nonzero(gradient) > 0
+    else:
+        for name in ("q_proj", "k_proj"):
+            assert torch.count_nonzero(actual_grads[f"layers.0.self_attn.{name}.weight"]) > 0
+
+
 def test_future_current_state_cannot_change_earlier_context_hidden():
     torch = pytest.importorskip("torch")
     torch.manual_seed(73)
@@ -103,6 +271,9 @@ def test_common_model_uses_pt_dimensions_and_job_route(tmp_path):
         vocab_size=SkillVocab.build_from_job_tag(data_spec.job_tag).size(),
     ).eval()
     batch = TrainingCollator()([dataset[0], dataset[1]])
+    from common.policy.data.context_encoding import ContextEncoder
+
+    batch = ContextEncoder(dataset.normalizer, dataset.schema, model.config).encode(batch)
 
     output = model(batch)
     assert data_spec.job_tag == "black_mage"
@@ -138,6 +309,9 @@ def test_swiglu_training_updates_all_ffn_projections_with_checkpointing(tmp_path
     model.enable_activation_checkpoint_attention()
     model.enable_activation_checkpoint_ffn()
     batch = move_batch(TrainingCollator()([dataset[0], dataset[1]]), device)
+    from common.policy.data.context_encoding import ContextEncoder
+
+    batch = ContextEncoder(dataset.normalizer, dataset.schema, model.config).to(device=device).encode(batch)
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.01)
     weights_before = {
         (index, name): getattr(layer, name).weight.detach().clone()
@@ -257,6 +431,10 @@ def test_rope_logits_are_invariant_to_other_samples_right_padding():
         "scene_vectors": torch.tensor([[[0.1, 0.2], [0.3, 0.4]]]),
         "scene_types": torch.zeros((1, 2), dtype=torch.long),
         "scene_mask": torch.ones((1, 2), dtype=torch.bool),
+        "history_state_reset_mask": torch.zeros_like(torch.tensor([[[0.1, 0.2, 0.3]]]), dtype=torch.bool),
+        "current_state_reset_mask": torch.zeros_like((torch.tensor(
+            [[[0.2, 0.3, 0.4], [0.5, 0.6, 0.7]]]
+        ))[:, 0, :], dtype=torch.bool),
     }
     padded_batch = {
         key: torch.cat((value, value), dim=0)
@@ -291,6 +469,9 @@ def test_rope_logits_are_invariant_to_other_samples_right_padding():
     )
     padded_batch["history_mask"] = torch.tensor(
         [[True, False], [True, True]]
+    )
+    padded_batch["history_state_reset_mask"] = torch.zeros_like(
+        padded_batch["history_state_vectors"], dtype=torch.bool,
     )
 
     with torch.no_grad():
@@ -345,6 +526,8 @@ def test_causal_model_appends_one_current_state_token():
         "scene_vectors": torch.zeros((1, 1, 2)),
         "scene_types": torch.zeros((1, 1), dtype=torch.int64),
         "scene_mask": torch.ones((1, 1), dtype=torch.bool),
+        "history_state_reset_mask": torch.zeros_like(torch.zeros((1, 2, 3)), dtype=torch.bool),
+        "current_state_reset_mask": torch.zeros_like((torch.zeros((1, 2, 3)))[:, 0, :], dtype=torch.bool),
     }
 
     output = model(batch)
@@ -383,6 +566,7 @@ def test_input_encoder_derives_context_capacity_from_context_blocks():
             dropout=0.0,
             scene_capacity=4,
             history_capacity=2,
+            history_reset_keep=2,
         ),
         vocab_size=4,
     ).eval()
@@ -400,6 +584,8 @@ def test_input_encoder_derives_context_capacity_from_context_blocks():
         "scene_vectors": torch.zeros((1, 4, 2)),
         "scene_types": torch.zeros((1, 4), dtype=torch.int64),
         "scene_mask": torch.ones((1, 4), dtype=torch.bool),
+        "history_state_reset_mask": torch.zeros_like(torch.zeros((1, 2, 3)), dtype=torch.bool),
+        "current_state_reset_mask": torch.zeros_like((torch.zeros((1, 2, 3)))[:, 0, :], dtype=torch.bool),
     }
 
     with torch.no_grad():
@@ -450,6 +636,8 @@ def test_model_encode_with_attention_returns_per_head_weights():
         "scene_vectors": torch.zeros((1, 1, 2)),
         "scene_types": torch.zeros((1, 1), dtype=torch.int64),
         "scene_mask": torch.ones((1, 1), dtype=torch.bool),
+        "history_state_reset_mask": torch.zeros_like(torch.zeros((1, 1, 3)), dtype=torch.bool),
+        "current_state_reset_mask": torch.zeros_like((torch.zeros((1, 2, 3)))[:, 0, :], dtype=torch.bool),
     }
 
     encoded, hidden, attentions = model.encode_with_attention(batch)
@@ -496,6 +684,8 @@ def test_history_uses_independent_tokens_and_current_state_has_no_skill():
         "scene_vectors": torch.zeros((1, 1, 2)),
         "scene_types": torch.zeros((1, 1), dtype=torch.int64),
         "scene_mask": torch.ones((1, 1), dtype=torch.bool),
+        "history_state_reset_mask": torch.zeros_like(torch.zeros((1, 2, 3)), dtype=torch.bool),
+        "current_state_reset_mask": torch.zeros_like((torch.zeros((1, 2, 3)))[:, 0, :], dtype=torch.bool),
     }
 
     encoded = model.input_encoder(batch)
@@ -507,7 +697,7 @@ def test_history_uses_independent_tokens_and_current_state_has_no_skill():
     assert encoded["history_state_positions"].tolist() == [[1, 3]]
 
 
-def test_input_encoder_routes_each_token_source_through_its_own_norm():
+def test_input_encoder_routes_all_sources_through_one_post_role_rms(monkeypatch):
     torch = pytest.importorskip("torch")
     data_spec = DataSpec(
         job_tag="black_mage",
@@ -542,25 +732,30 @@ def test_input_encoder_routes_each_token_source_through_its_own_norm():
         "scene_vectors": torch.zeros((1, 1, 2)),
         "scene_types": torch.zeros((1, 1), dtype=torch.int64),
         "scene_mask": torch.ones((1, 1), dtype=torch.bool),
+        "history_state_reset_mask": torch.zeros_like(torch.zeros((1, 2, 3)), dtype=torch.bool),
+        "current_state_reset_mask": torch.zeros_like((torch.zeros((1, 2, 3)))[:, 0, :], dtype=torch.bool),
     }
-    captured = {}
+    captured = []
+    original_rms = torch.nn.functional.rms_norm
 
-    def capture(name):
-        def hook(_module, inputs, _output):
-            captured.setdefault(name, []).append(tuple(inputs[0].shape))
-        return hook
+    def capture_rms(values, normalized_shape, *, eps):
+        captured.append((values.detach().clone(), normalized_shape, eps))
+        return original_rms(values, normalized_shape, eps=eps)
 
-    handles = [getattr(model.input_encoder, name).register_forward_hook(capture(name))
-               for name in ("skill_norm", "state_norm", "scene_norm")]
-    try:
-        model.input_encoder(batch)
-    finally:
-        for handle in handles:
-            handle.remove()
+    monkeypatch.setattr(torch.nn.functional, "rms_norm", capture_rms)
+    encoded = model.input_encoder(batch)
 
-    assert captured["skill_norm"] == [(1, 2, 8)]
-    assert captured["state_norm"] == [(1, 2, 8), (1, 8)]
-    assert captured["scene_norm"] == [(1, 1, 8)]
+    # 全部场景、交错历史和最新状态合成后，仅进入同一处 RMSNorm。
+    assert len(captured) == 1
+    values, normalized_shape, eps = captured[0]
+    assert values.shape == (1, 6, 8)
+    assert normalized_shape == (8,)
+    assert eps == 1e-5
+    scene_content = model.input_encoder.scene_proj[0](batch["scene_vectors"])
+    scene_role = model.input_encoder.role_embed(encoded["role_ids"][:, :1])
+    torch.testing.assert_close(values[:, :1], scene_content + scene_role)
+    assert not any(isinstance(module, torch.nn.LayerNorm)
+                   for module in model.input_encoder.modules())
     assert model.input_encoder.scene_proj[0].out_features == 8
     assert model.input_encoder.role_embed.num_embeddings == 3
     assert "input_encoder.cls_token" not in model.state_dict()
@@ -659,11 +854,12 @@ def test_job_model_config_loads_runtime_debug_switch(tmp_path):
 def test_black_mage_artzip_uses_current_mainline_architecture():
     config = load_run_config(Path("config/models/black_mage/artzip/config.yaml"))
 
-    assert config.model.d_model == 768
-    assert config.model.n_layers == 12
-    assert config.model.n_heads == 12
+    assert config.model.d_model == 384
+    assert config.model.n_layers == 6
+    assert config.model.n_heads == 6
     assert config.model.num_kv_heads == 1
-    assert config.model.ff_dim == 3072
+    assert config.model.ff_dim == 1536
+    assert config.model.transformer_norm_first is True
     assert config.model.transformer_activation == "swiglu"
     assert config.model.history_capacity == 300
     assert config.model.full_attention_residuals is False
@@ -799,7 +995,7 @@ def test_training_collator_truncates_only_early_history_and_preserves_scene(tmp_
     torch = pytest.importorskip("torch")
     pt_path = _make_demo_pt(tmp_path, ["fire_iii", "fire_iv"], fight_id="history_demo")
     sample = dict(_make_dataset([pt_path])[1])
-    state_width = sample["history_bank_state_vectors"].shape[-1]
+    state_width = sample["history_bank_state_abs_values"].shape[-1]
     feature_width = sample["history_bank_skill_features"].shape[-1]
     sample["history_action_keys"] = ["old", "middle", "latest"]
     sample["history_end"] = 4
@@ -807,14 +1003,16 @@ def test_training_collator_truncates_only_early_history_and_preserves_scene(tmp_
     sample["history_bank_action_keys"] = ("", "old", "middle", "latest")
     sample["history_bank_skill_ids"] = torch.tensor([0, 1, 2, 3], dtype=torch.int32)
     sample["history_bank_skill_features"] = torch.zeros((4, feature_width))
-    sample["history_bank_state_vectors"] = torch.zeros((4, state_width))
-    sample["history_bank_state_vectors"][:, 0] = torch.tensor([0.0, 10.0, 20.0, 30.0])
+    sample["history_bank_state_abs_values"] = torch.zeros((4, state_width))
+    sample["history_bank_state_abs_values"][:, 0] = torch.tensor([0.0, 10.0, 20.0, 30.0])
     sample["history_bank_state_null_mask"] = torch.zeros((4, state_width), dtype=torch.bool)
-    scene_before = sample["scene_vectors"].clone()
+    sample["history_bank_state_delta_values"] = torch.zeros((4, state_width))
+    sample["history_bank_state_delta_reset_mask"] = torch.zeros((4, state_width), dtype=torch.bool)
+    scene_before = sample["scene_abs_values"].clone()
     decision_before = {
         key: sample[key].clone()
         for key in (
-            "current_state_vectors",
+            "current_state_abs_values",
             "current_state_null_mask",
             "action_values",
             "action_legal_mask",
@@ -831,8 +1029,8 @@ def test_training_collator_truncates_only_early_history_and_preserves_scene(tmp_
     history_length = int(batch["history_lengths"][0].item())
     assert 1 <= history_length < 3
     assert batch["history_action_keys"][0][-1] == "latest"
-    assert batch["history_bank_state_vectors"][batch["history_ends"][0] - 1, 0].item() == 30.0
-    assert torch.equal(batch["scene_vectors"][0, : scene_before.shape[0]], scene_before)
+    assert batch["history_bank_state_abs_values"][batch["history_ends"][0] - 1, 0].item() == 30.0
+    assert torch.equal(batch["scene_abs_values"][0, : scene_before.shape[0]], scene_before)
     for key, expected in decision_before.items():
         assert torch.equal(batch[key][0], expected)
 
@@ -847,7 +1045,7 @@ def test_training_collator_preserves_fixed_output_order_and_label_mapping(tmp_pa
         assert tuple(batch["action_keys"][index]) == dataset.action_keys
         label_index = batch["label_index"][index].item()
         assert batch["action_keys"][index][label_index] == sample["label_action_key"]
-        for name in ("action_values", "action_legal_mask", "current_state_vectors", "current_state_null_mask"):
+        for name in ("action_values", "action_legal_mask", "current_state_abs_values", "current_state_null_mask"):
             torch.testing.assert_close(batch[name][index], sample[name])
 
 

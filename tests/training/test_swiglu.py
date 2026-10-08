@@ -54,9 +54,11 @@ def _activation_batch() -> dict[str, torch.Tensor]:
         "history_skill_features": torch.zeros((1, 1, 1)),
         "history_state_vectors": torch.zeros((1, 1, 3)),
         "history_state_null_mask": torch.zeros((1, 1, 3), dtype=torch.bool),
+        "history_state_reset_mask": torch.ones((1, 1, 3), dtype=torch.bool),
         "history_mask": torch.ones((1, 1), dtype=torch.bool),
         "current_state_vectors": torch.zeros((1, 3)),
         "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
+        "current_state_reset_mask": torch.zeros((1, 3), dtype=torch.bool),
         "action_legal_mask": torch.ones((1, 2), dtype=torch.bool),
         "scene_vectors": torch.zeros((1, 1, 2)),
         "scene_types": torch.zeros((1, 1), dtype=torch.long),
@@ -124,6 +126,9 @@ def test_existing_ffn_keeps_torch_weights_forward_and_gradients(activation, norm
     )
     torch.manual_seed(41)
     original = nn.TransformerEncoderLayer(**kwargs)
+    # 参考层只替换归一化；投影初始化、FFN、attention 和残差布局继续由 PyTorch 实现。
+    original.norm1 = nn.RMSNorm(8, eps=1e-5, elementwise_affine=False, dtype=torch.float64)
+    original.norm2 = nn.RMSNorm(8, eps=1e-5, elementwise_affine=False, dtype=torch.float64)
     torch.manual_seed(41)
     current = TraceableTransformerEncoderLayer(**kwargs)
 
@@ -145,23 +150,99 @@ def test_existing_ffn_keeps_torch_weights_forward_and_gradients(activation, norm
         torch.testing.assert_close(parameter.grad, original_parameter.grad, atol=0, rtol=0)
 
 
+@pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
 @pytest.mark.parametrize("norm_first", (True, False))
-def test_swiglu_eval_does_not_bypass_gate_with_fused_gelu_path(norm_first, monkeypatch):
+def test_eval_does_not_bypass_rms_norm_with_fused_layer_norm_path(activation, norm_first, monkeypatch):
     layer = TraceableTransformerEncoderLayer(
         d_model=8, nhead=2, dim_feedforward=24, dropout=0.0,
-        activation="swiglu", batch_first=True, norm_first=norm_first,
+        activation=activation, batch_first=True, norm_first=norm_first,
         dtype=torch.float64,
     ).eval()
     x = torch.randn(2, 3, 8, dtype=torch.float64)
     expected = layer(x)
 
     def reject_gelu_fastpath(*args, **kwargs):
-        pytest.fail("SwiGLU must not use the fused ReLU/GELU encoder path")
+        pytest.fail("RMSNorm must not use the fused LayerNorm encoder path")
 
     monkeypatch.setattr(torch, "_transformer_encoder_layer_fwd", reject_gelu_fastpath)
     with torch.no_grad():
         actual = layer(x)
     torch.testing.assert_close(actual, expected, atol=1e-12, rtol=1e-12)
+
+
+@pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
+@pytest.mark.parametrize("norm_first", (True, False))
+def test_outer_encoder_eval_keeps_unparameterized_rms_path(activation, norm_first, monkeypatch):
+    """外层 Encoder 也不能把无参数 RMS 的层交给 LayerNorm 专用融合路径。"""
+    layer = TraceableTransformerEncoderLayer(
+        d_model=8, nhead=2, dim_feedforward=24, dropout=0.0,
+        activation=activation, batch_first=True, norm_first=norm_first,
+        dtype=torch.float64,
+    )
+    encoder = nn.TransformerEncoder(
+        layer, 2,
+        norm=nn.RMSNorm(8, eps=1e-5, elementwise_affine=False, dtype=torch.float64),
+    ).eval()
+    x = torch.randn(2, 3, 8, dtype=torch.float64)
+    expected = encoder(x)
+
+    def reject_layer_norm_fastpath(*args, **kwargs):
+        pytest.fail("RMSNorm encoder must not use the fused LayerNorm path")
+
+    monkeypatch.setattr(torch, "_transformer_encoder_layer_fwd", reject_layer_norm_fastpath)
+    with torch.no_grad():
+        actual = encoder(x)
+    torch.testing.assert_close(actual, expected, atol=1e-12, rtol=1e-12)
+
+
+def test_layer_rms_norm_honors_custom_epsilon_without_affine_parameters():
+    layer = TraceableTransformerEncoderLayer(
+        d_model=8, nhead=2, layer_norm_eps=2e-4, dtype=torch.float64,
+    )
+    for norm in (layer.norm1, layer.norm2):
+        assert isinstance(norm, nn.RMSNorm)
+        assert norm.eps == 2e-4
+        assert norm.elementwise_affine is False
+        assert list(norm.parameters()) == []
+
+
+@pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
+def test_model_rms_norm_preserves_nonzero_mean_and_shared_forward_gradients(activation):
+    """以非零均值输入区分 RMS 与 LN，并验证正式前向和 trace 共用归一化。"""
+    torch.manual_seed(57)
+    model = CausalPolicyModel(
+        _activation_spec(), _activation_config(activation), vocab_size=4,
+    ).double().eval()
+    norms = [model.encoder.norm]
+    for layer in model.encoder.layers:
+        norms.extend((layer.norm1, layer.norm2))
+    values = torch.arange(1, 9, dtype=torch.float64).reshape(1, 8).requires_grad_(True)
+    expected = values / torch.sqrt(values.square().mean(dim=-1, keepdim=True) + 1e-5)
+    for norm in norms:
+        assert norm.elementwise_affine is False
+        assert norm.eps == 1e-5
+        assert list(norm.parameters()) == []
+        actual = norm(values)
+        torch.testing.assert_close(actual, expected, atol=1e-12, rtol=1e-12)
+        assert actual.mean() > 0
+        gradient = torch.autograd.grad(actual.square().sum(), values)[0]
+        assert torch.isfinite(gradient).all()
+        assert torch.count_nonzero(gradient) > 0
+
+    batch = {
+        key: value.double() if value.is_floating_point() else value
+        for key, value in _activation_batch().items()
+    }
+    output = model(batch)
+    traced = model.trace(batch)
+    torch.testing.assert_close(
+        output["logits"], model.score_hidden(traced.encoded, traced.hidden, batch),
+        atol=1e-12, rtol=1e-12,
+    )
+    output["logits"].square().mean().backward()
+    for parameter in model.parameters():
+        assert parameter.grad is not None
+        assert torch.isfinite(parameter.grad).all()
 
 
 @pytest.mark.parametrize("activation", ("gelu", "relu", "swiglu"))
@@ -192,20 +273,22 @@ def test_checkpoint_rejects_unknown_activation():
 
 
 def test_checkpoint_rejects_removed_cls_architecture():
-    checkpoint = make_checkpoint(model_state_dict={"input_encoder.cls_token": torch.zeros(1, 1, 4)})
-    with pytest.raises(ValueError, match="unsupported fused/scoring architecture"):
-        CausalPolicyModel.checkpoint_model_config(checkpoint)
+    model = CausalPolicyModel(_activation_spec(), _activation_config("swiglu"), vocab_size=4)
+    weights = {**model.state_dict(), "input_encoder.cls_token": torch.zeros(1, 1, 4)}
+    with pytest.raises(RuntimeError, match="Unexpected key"):
+        model.load_state_dict(weights, strict=True)
 
 
 @pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
-def test_shared_skill_head_matches_explicit_dot_product_and_gradients(activation):
+def test_independent_output_head_matches_fp32_softcap_and_gradients(activation):
     torch.manual_seed(23)
     model = CausalPolicyModel(_activation_spec(), _activation_config(activation), vocab_size=4).double().eval()
     reference = deepcopy(model)
     current_hidden = torch.randn(2, 8, dtype=torch.float64, requires_grad=True)
     reference_hidden = current_hidden.detach().clone().requires_grad_(True)
     actual = model._score_current_hidden(current_hidden, {})
-    expected = reference_hidden @ reference.input_encoder.skill_embed.weight[reference.action_to_vocab_id].T
+    scale = reference.config.logit_softcap
+    expected = scale * torch.tanh(F.linear(reference_hidden, reference.output_head.weight).float() / scale)
     torch.testing.assert_close(actual, expected, atol=1e-12, rtol=1e-12)
     gradient = torch.randn_like(actual)
     actual.backward(gradient)
@@ -213,15 +296,16 @@ def test_shared_skill_head_matches_explicit_dot_product_and_gradients(activation
     torch.testing.assert_close(
         current_hidden.grad, reference_hidden.grad, atol=1e-12, rtol=1e-12,
     )
-    actual_parameter = model.input_encoder.skill_embed.weight
-    reference_parameter = reference.input_encoder.skill_embed.weight
+    actual_parameter = model.output_head.weight
+    reference_parameter = reference.output_head.weight
     assert actual_parameter.grad is not None
     torch.testing.assert_close(actual_parameter.grad, reference_parameter.grad, atol=1e-12, rtol=1e-12)
+    assert model.input_encoder.skill_embed.weight.grad is None
 
 
 @pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
-def test_shared_skill_head_has_one_semantic_parameter_table(activation):
-    """输出直接用同一张 d_model 维技能表，不保留融合或输出适配。"""
+def test_input_semantic_table_and_output_head_are_independent(activation):
+    """输入技能表保留，动作头复制其动作行后独立学习。"""
     model = CausalPolicyModel(_activation_spec(), _activation_config(activation), vocab_size=4)
     names = dict(model.named_parameters())
     assert not hasattr(model, "scorer")
@@ -230,6 +314,11 @@ def test_shared_skill_head_has_one_semantic_parameter_table(activation):
     assert semantic.shape == (4, model.config.d_model)
     assert sum(parameter is semantic for parameter in names.values()) == 1
     assert "input_encoder.skill_embed.weight" in names
+    assert "output_head.weight" in names
+    assert model.output_head.bias is None
+    assert model.output_head.weight.shape == (model.data_spec.num_actions, model.config.d_model)
+    assert model.output_head.weight is not semantic
+    torch.testing.assert_close(model.output_head.weight, semantic[model.action_to_vocab_id], atol=0, rtol=0)
 
 
 @pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
@@ -251,16 +340,15 @@ def test_independent_skill_and_state_embeddings_match_explicit_formula(activatio
     state_content = F.linear(batch["history_state_vectors"], encoder.state_proj.weight, encoder.state_proj.bias) + F.linear(
         batch["history_state_null_mask"].double(), encoder.state_null_proj.weight,
     )
-    expected_skill = F.layer_norm(skill_content, (8,), encoder.skill_norm.weight, encoder.skill_norm.bias, encoder.skill_norm.eps)
-    expected_state = F.layer_norm(state_content, (8,), encoder.state_norm.weight, encoder.state_norm.bias, encoder.state_norm.eps)
-    torch.testing.assert_close(actual["skill"], expected_skill, atol=1e-12, rtol=1e-12)
-    torch.testing.assert_close(actual["state"], expected_state, atol=1e-12, rtol=1e-12)
+    # 独立内容投影不先归一化；role 相加后的统一 RMS 由完整编码入口负责。
+    torch.testing.assert_close(actual["skill"], skill_content, atol=1e-12, rtol=1e-12)
+    torch.testing.assert_close(actual["state"], state_content, atol=1e-12, rtol=1e-12)
     assert not any("pair_fusion" in name for name, _ in encoder.named_parameters())
 
 
 @pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
 def test_model_resolves_one_activation_for_every_activation_site(activation):
-    """保留全部主干激活覆盖，输入三路编码保持独立线性投影与归一化。"""
+    """保留全部主干激活，支路与最终输出统一使用无参数 RMSNorm。"""
     model = CausalPolicyModel(
         _activation_spec(),
         _activation_config(activation),
@@ -269,9 +357,11 @@ def test_model_resolves_one_activation_for_every_activation_site(activation):
     expected = resolve_pointwise_activation(activation)
 
     assert model.encoder.layers[0].activation is expected
-    assert isinstance(model.input_encoder.skill_norm, nn.LayerNorm)
-    assert isinstance(model.input_encoder.state_norm, nn.LayerNorm)
-    assert isinstance(model.input_encoder.scene_norm, nn.LayerNorm)
+    assert not any(isinstance(module, nn.LayerNorm) for module in model.input_encoder.modules())
+    assert all(isinstance(layer.norm1, nn.RMSNorm) and isinstance(layer.norm2, nn.RMSNorm)
+               for layer in model.encoder.layers)
+    assert isinstance(model.encoder.norm, nn.RMSNorm)
+    assert not any(isinstance(module, nn.LayerNorm) for module in model.encoder.modules())
     model.eval()
     assert model(_activation_batch())["logits"].shape == (1, 2)
 
@@ -302,7 +392,6 @@ def test_activation_hidden_merges_gate_and_pointwise_paths():
 
 @pytest.mark.parametrize("key", ["scorer.network.0.weight", "scorer.up_proj.weight"])
 def test_checkpoint_rejects_removed_candidate_scorer_layout(key):
-    with pytest.raises(ValueError, match="unsupported fused/scoring architecture"):
-        CausalPolicyModel.checkpoint_model_config(
-            make_checkpoint(model_state_dict={key: torch.zeros(1)})
-        )
+    model = CausalPolicyModel(_activation_spec(), _activation_config("swiglu"), vocab_size=4)
+    with pytest.raises(RuntimeError, match="Unexpected key"):
+        model.load_state_dict({**model.state_dict(), key: torch.zeros(1)}, strict=True)

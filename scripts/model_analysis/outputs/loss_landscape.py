@@ -17,7 +17,6 @@ from torch.nn import functional as F
 from common.policy.model import CausalPolicyModel
 from common.policy.model.repetition import build_repetition_penalty_mask
 from common.policy.model.causal_encoder import run_causal_layer
-from common.torch_runtime import move_batch
 from training import TrainingCollator
 
 from ..common import (
@@ -322,17 +321,20 @@ class _LayerForward:
                 encoded = context.model.input_encoder(batch)
                 self.encoded = encoded
                 hidden = encoded["tokens"]
-                for layer in context.model.encoder.layers[:layer_index]:
-                    hidden = self._step(layer, hidden)
+                for index, layer in enumerate(context.model.encoder.layers[:layer_index]):
+                    hidden = self._step(layer, hidden, index)
                 self.hidden = hidden
 
-    def _step(self, layer, hidden):
+    def _step(self, layer, hidden, layer_index):
         encoded = self.encoded
         return run_causal_layer(
             layer, hidden,
             key_valid=encoded["valid"],
             position_ids=encoded["position_ids"],
             rotary_position_encoding=self.context.model.encoder.rotary_position_encoding,
+            residual_mix=getattr(self.context.model.encoder, "residual_mix", None),
+            initial_tokens=encoded["tokens"],
+            layer_index=layer_index,
         )[0]
 
     def logits(self):
@@ -342,8 +344,10 @@ class _LayerForward:
                 # 不计算训练用 top-k 和重复的低精度交叉熵。
                 return model({k: v for k, v in self.batch.items() if k != "label_index"})["logits"]
             hidden = self.hidden
-            for layer in model.encoder.layers[self.layer_index:]:
-                hidden = self._step(layer, hidden)
+            for index, layer in enumerate(
+                model.encoder.layers[self.layer_index:], start=self.layer_index,
+            ):
+                hidden = self._step(layer, hidden, index)
             if model.encoder.norm is not None:
                 hidden = model.encoder.norm(hidden)
             return model.score_hidden(self.encoded, hidden, self.batch)
@@ -370,7 +374,7 @@ def _evaluate_layer_grid(
     started = last_report = perf_counter()
     try:
         for batch_index, batch_cpu in enumerate(batches):
-            batch = move_batch(batch_cpu, context.device)
+            batch = context.encode_batch(batch_cpu)
             # 上一 batch 的最后一个点仍有扰动，先还原再构建前层缓存。
             _restore_parameters(directions)
             forward = _LayerForward(context, batch, layer_index)
@@ -437,7 +441,7 @@ def _mean_cross_entropy(
     loss_sum = torch.zeros((), dtype=torch.float64, device=context.device)
     sample_count = 0
     for batch_cpu in batches:
-        batch = move_batch(batch_cpu, context.device)
+        batch = context.encode_batch(batch_cpu)
         with context.autocast():
             output = context.model(batch)
         logits = output["logits"]

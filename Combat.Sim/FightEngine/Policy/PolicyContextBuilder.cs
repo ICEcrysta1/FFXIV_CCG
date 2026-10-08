@@ -48,6 +48,8 @@ public sealed class PolicyContextBuilder
         output[OutputContextSchema.ActionValuesKey] = actions.Select(action => action.Value).ToList();
 
         MergePolicyHistory(output, history, router, state.History);
+        // 完整累计游标来自状态快照；重复观测与恢复会话不会再次计数。
+        output[OutputContextSchema.HistoryCursorKey] = state.LastHistorySequence;
         return output;
     }
 

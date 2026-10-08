@@ -65,10 +65,11 @@ def _load_train_cli(monkeypatch):
 
 def test_train_script_supports_direct_invocation():
     result = subprocess.run(
-        [sys.executable, "training/train.py", "--help"],
+        [sys.executable, "-X", "utf8", "-B", "training/train.py", "--help"],
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
 

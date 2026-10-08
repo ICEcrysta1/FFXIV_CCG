@@ -43,7 +43,7 @@ def _scene_schema():
     return TrainingSchema(
         serialization_format=TRAINING_SOURCE_FORMAT, sample_schema_version=TRAINING_SAMPLE_SCHEMA_VERSION,
         context_schema_version=CANONICAL_CONTEXT_SCHEMA_VERSION, scene_context_mode="absolute", scene_windows=(),
-        state_group_feature_keys={"player_state": ("previous_action_after.time_seconds",)},
+        state_group_feature_keys={"player_state": ("request_state.time_seconds",)},
         skill_history_fields=("potency",),
     )
 
@@ -52,8 +52,12 @@ def _scene_sample():
     actions = _scene_data_spec()
     return {
         "action_keys": actions["action_keys"],
-        "current_state_vectors": torch.zeros(1),
+        "current_state_abs_values": torch.zeros(1),
+        "current_state_delta_values": torch.zeros(1),
         "current_state_null_mask": torch.zeros(1, dtype=torch.bool),
+        "current_state_delta_reset_mask": torch.ones(1, dtype=torch.bool),
+        "history_end": 1, "history_length": 0,
+        "scene_vectors": torch.zeros(0, 0), "scene_types": torch.zeros(0, dtype=torch.int32),
         "action_values": torch.ones(actions["num_actions"]),
         "action_legal_mask": torch.ones(actions["num_actions"], dtype=torch.bool),
         "label_index": 0, "label_action_key": actions["action_keys"][0],
@@ -89,8 +93,10 @@ def scene_cache(tmp_path):
         bank = {
             "skill_ids": torch.zeros(1, dtype=precision.resolve_int_dtype()),
             "skill_features": torch.zeros(1, 1, dtype=precision.resolve_float_dtype()),
-            "state_vectors": torch.zeros(1, 1, dtype=precision.resolve_float_dtype()),
+            "state_abs_values": torch.zeros(1, 1, dtype=torch.float32),
+            "state_delta_values": torch.zeros(1, 1, dtype=torch.float32),
             "state_null_mask": torch.zeros(1, 1, dtype=torch.bool),
+            "state_delta_reset_mask": torch.zeros(1, 1, dtype=torch.bool),
             "skill_potencies": torch.zeros(1, dtype=precision.resolve_float_dtype()),
             "cumulative_dot_potencies": torch.zeros(1, dtype=precision.resolve_float_dtype()),
             "action_keys": [""],
@@ -152,10 +158,11 @@ def test_scene_source_skips_invalid_cache_without_writing(scene_cache, invalid):
     assert before == after
 
 
-def test_scene_source_accepts_legacy_flat_cache(scene_cache):
+def test_scene_source_rejects_legacy_flat_cache(scene_cache):
     root, cache_dir, create = scene_cache
-    expected = create("FRU/90-100/a.json.br", legacy=True)
-    assert _select(root, cache_dir) == expected
+    create("FRU/90-100/a.json.br", legacy=True)
+    with pytest.raises(FileNotFoundError, match="先运行训练文件转换"):
+        _select(root, cache_dir)
 
 
 def test_scene_source_requires_existing_valid_cache(scene_cache):
@@ -305,7 +312,7 @@ def test_default_replay_uses_saved_contract_without_recompiling(
     sample = reader.sample(0)
     assert sample["action_keys"] == saved_spec["action_keys"]
     assert sample["label_action_key"] == sample["action_keys"][sample["label_index"]]
-    assert torch.equal(sample["current_state_vectors"], torch.zeros(1))
+    assert torch.equal(sample["current_state_abs_values"], torch.zeros(1))
 
 
 @pytest.mark.parametrize("drift", ["enabled", "kind"])
@@ -327,7 +334,7 @@ def test_model_cache_prepare_reuses_saved_actions_and_training_rejects_drift(sce
         scene_json_path=source, cache_dir=cache_dir, job_tag="black_mage",
         cache_shard_size=768, cache_max_shards=2,
         compiled_cache_shard_size=768, compiled_cache_max_shards=2,
-        model=SimpleNamespace(history_capacity=4),
+        model=SimpleNamespace(history_capacity=4, history_reset_keep=2),
     )
     before = {path: path.read_bytes() for path in cache_dir.rglob("*.pt")}
     monkeypatch.setattr(ActionSpace, "from_job_tag", lambda _job: changed)

@@ -87,6 +87,24 @@ def test_collation_preserves_masks_and_variable_lengths():
     assert batch["history_action_keys"] == [[], ["a"] * 3]
 
 
+def test_collation_pads_registered_model_fields_and_keeps_supervision_rows():
+    first, second = sample(2, 0), sample(7, 3)
+    for value in (first, second):
+        width = value["history_mask"].shape[1]
+        value["history_state_reset_mask"] = torch.ones((1, width, 1), dtype=torch.bool)
+        value["action_legal_mask"] = torch.tensor([[True, False]])
+        value["scene_vectors"] = torch.ones((1, width, 2))
+        value["scene_mask"] = torch.ones((1, width), dtype=torch.bool)
+    batch = parallel.collate_live_batches([first, second])
+    assert not batch["history_state_reset_mask"][0].any()
+    assert batch["history_state_reset_mask"][1].all()
+    assert not batch["scene_mask"][0].any()
+    assert batch["scene_mask"][1].all()
+    assert not batch["scene_vectors"][0].any()
+    assert batch["action_legal_mask"].tolist() == [[True, False], [True, False]]
+    assert batch["action_keys"] == [["a", "b"], ["a", "b"]]
+
+
 @pytest.mark.parametrize("failure", ["worker", "model"])
 def test_failure_wakes_other_queues_and_releases_engine(failure):
     policy = FakePolicy()

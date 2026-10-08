@@ -16,7 +16,9 @@ from common.policy.model import causal_encoder as causal
 from common.policy.model.trace import TraceableTransformerEncoderLayer
 from common.training.metrics import MetricAccumulator
 from training.loop import training_loop
-from tests.training._causal_fixtures import make_batch, make_data_spec
+from tests.training._causal_fixtures import make_batch, make_data_spec, make_input_contract
+from common.policy.config import ModelConfig
+from common.policy.data.context_encoding import ContextEncoder, raw_state_delta
 
 
 def _layer(*, norm_first=True, activation="swiglu", kv_heads=1, dropout=0.0):
@@ -47,6 +49,11 @@ def _reference_causal_layer(layer, encoded, rope):
         causal.split_heads(key, causal.kv_head_count(layer.self_attn)),
         encoded["position_ids"], encoded["position_ids"],
     )
+    # 独立公式覆盖投影和 RoPE 后的逐 head RMSNorm，不复用正式 helper。
+    query = query / (query.square().mean(-1, keepdim=True) + torch.finfo(query.dtype).eps).sqrt()
+    key = key / (key.square().mean(-1, keepdim=True) + torch.finfo(key.dtype).eps).sqrt()
+    query = query * layer.qk_norm_scale
+    key = key * layer.qk_norm_scale
     value = causal.split_heads(value, causal.kv_head_count(layer.self_attn))
     factor = 4 // causal.kv_head_count(layer.self_attn)
     key = key.repeat_interleave(factor, dim=1)
@@ -188,16 +195,35 @@ def test_repetition_cache_is_bounded_and_policy_changes_rebuild_mask():
 
 
 def _sample(history_length, scene_length):
-    spec = make_data_spec(state_dim=3, scene_dim=2)
+    spec = make_data_spec(state_dim=3, scene_dim=3)
     values = make_batch(spec, history_length=history_length, scene_length=scene_length)
     sample = {key: value[0] for key, value in values.items()}
     sample.update(metadata={}, label_action_key=spec.action_keys[0], label_index=0)
     sample["action_keys"] = list(spec.action_keys)
     sample["history_action_keys"] = [spec.action_keys[0]] * history_length
     sample["action_values"] = torch.ones(spec.num_actions)
-    sample["history_state_vectors"] = torch.arange(history_length * 3, dtype=torch.float32).reshape(history_length, 3)
-    sample["history_skill_ids"] = torch.arange(history_length, dtype=torch.int32)
-    sample["scene_vectors"] = torch.arange(scene_length * 2, dtype=torch.float32).reshape(scene_length, 2)
+    states = torch.arange(history_length * 3, dtype=torch.float32).reshape(history_length, 3)
+    nulls = torch.zeros_like(states, dtype=torch.bool)
+    deltas, resets = raw_state_delta(states, nulls)
+    if history_length > 1:
+        deltas[1:], resets[1:] = raw_state_delta(states[1:], nulls[1:], states[:-1], nulls[:-1])
+    sample = {key: value for key, value in sample.items() if not key.startswith("history_")}
+    for name, value in (
+        ("skill_ids", torch.arange(1, history_length + 1, dtype=torch.int32)),
+        ("skill_features", torch.zeros(history_length, spec.skill_feature_dim)),
+        ("state_abs_values", states), ("state_delta_values", deltas),
+        ("state_null_mask", nulls), ("state_delta_reset_mask", resets),
+    ):
+        sample["history_bank_" + name] = torch.cat((value.new_zeros((1, *value.shape[1:])), value))
+    sample.update(history_length=history_length, history_end=history_length + 1,
+                  history_bank_id=str(id(sample)),
+                  history_bank_action_keys=("", *([spec.action_keys[0]] * history_length)))
+    sample["current_state_abs_values"] = sample.pop("current_state_vectors")
+    sample.pop("current_state_reset_mask")
+    sample["current_state_delta_values"] = torch.zeros(spec.state_dim)
+    sample["current_state_delta_reset_mask"] = torch.zeros(spec.state_dim, dtype=torch.bool)
+    sample.pop("scene_vectors")
+    sample["scene_abs_values"] = torch.tensor([0.0, 200.0, 200.0]).expand(scene_length, -1).clone()
     return sample
 
 
@@ -205,27 +231,29 @@ def _sample(history_length, scene_length):
 def test_native_padding_preserves_values_dtypes_empty_shapes_and_null_mask(lengths):
     samples = [_sample(*length) for length in lengths]
     originals = deepcopy(samples)
-    batch = TrainingCollator()(samples)
+    contract = make_input_contract(make_data_spec(state_dim=3, scene_dim=3))
+    encoder = ContextEncoder(contract.create_normalizer(), contract.schema, ModelConfig())
+    expected = [encoder.encode(TrainingCollator()([sample])) for sample in samples]
+    batch = encoder.encode(TrainingCollator()(samples))
     for kind, key in (("history", "history_skill_ids"), ("scene", "scene_vectors")):
-        sizes = [sample[key].shape[0] for sample in samples]
+        sizes = [sample[key].shape[1] for sample in expected]
         expected_mask = [[index < length for index in range(max(sizes))] for length in sizes]
         assert batch[f"{kind}_mask"].tolist() == expected_mask
     for key, pad_value in (("history_skill_ids", 0), ("history_skill_features", 0), ("history_state_vectors", 0), ("history_state_null_mask", True), ("scene_vectors", 0), ("scene_types", 0)):
-        assert batch[key].dtype == samples[0][key].dtype
-        for index, sample in enumerate(samples):
-            length = sample[key].shape[0]
-            torch.testing.assert_close(batch[key][index, :length], sample[key])
+        assert batch[key].dtype == expected[0][key].dtype
+        for index, sample in enumerate(expected):
+            length = sample[key].shape[1]
+            torch.testing.assert_close(batch[key][index, :length], sample[key][0])
             assert (batch[key][index, length:] == pad_value).all()
-            assert torch.equal(sample[key], originals[index][key])
+    for index, sample in enumerate(samples):
+        for key, value in sample.items():
+            if isinstance(value, torch.Tensor):
+                assert torch.equal(value, originals[index][key])
 
 
 def test_compact_padding_mask_and_history_truncation_stay_aligned():
     sample = _sample(3, 0)
-    sample["history_action_keys"] = ["a", "b", "ogcd_wait"]
-    compact = {key: value for key, value in sample.items() if not key.startswith("history_")}
-    for key in ("skill_ids", "skill_features", "state_vectors", "state_null_mask"):
-        compact[f"history_bank_{key}"] = sample[f"history_{key}"]
-    compact.update(history_end=3, history_length=3, history_bank_id="test", history_bank_action_keys=sample["history_action_keys"])
+    compact = dict(sample, history_bank_action_keys=("", "a", "b", "ogcd_wait"))
 
     class KeepTwo:
         def random(self):
@@ -251,7 +279,7 @@ def test_repetition_preparation_follows_history_truncation_in_fixed_action_space
             return 2
 
     sample = _sample(3, 0)
-    sample["history_action_keys"] = ["a", "b", "ogcd_wait"]
+    sample["history_bank_action_keys"] = ("", "a", "b", "ogcd_wait")
     sample["action_keys"] = ["a", "b", "ogcd_wait"]
     sample["label_action_key"] = "a"
     sample["action_values"] = torch.ones(3)

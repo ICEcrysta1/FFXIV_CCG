@@ -6,6 +6,7 @@
 
 ### Added
 
+- 新增状态与场景差分上下文的实施计划和验收记录，保存字段语义、缓存复用边界、部署宿主责任、性能测量及同种子四轮对照结果，见 `docs/anchored-delta-context-plan.md`。
 - 新增请求时冻结的 `ModelStateSnapshot`，以动作实例身份关联上一动作后与本次请求快照；历史裁剪、fork 和 restore 保留已知前序状态，真实执行前后快照仍独立保存。
 - 新增独立历史技能与状态 embedding 的 PCA 视图，分别拟合有效 token、排除 padding，并支持空历史与单条历史；原始技能词表 embedding 图继续保留。
 - 新增固定动作词表 `ActionSpace`，将启用的真实技能与 policy 动作按稳定 Ordinal 顺序合并；`action_keys`、`action_to_vocab_id` 和 `action_is_gcd` 随缓存与 checkpoint 输入契约保存，离线恢复不依赖本机当前 YAML 重建输出顺序或动作类型。
@@ -23,6 +24,29 @@
 
 ### Changed
 
+- 状态输入改为窗口首个状态使用 ABS、后续状态使用原始全数值 DELTA；上一动作后与请求快照分别对前一个状态 token 的同名字段求差，包括资源、计时器和布尔标志的 `−1/0/+1`。首个状态保留真实绝对资源，两个快照的时间都减去首个请求时间；当前状态有历史时对最后一个历史状态求差，无历史时自己作为锚点。
+- compiled cache 升级为 v22／转换 v24，固定保存完整 raw FP32 ABS／DELTA history bank、null／字段 reset mask 和原始绝对场景。模型外唯一的 `ContextEncoder` 负责窗口 gather、重锚及归一化，先在 FP32 中求差，再按保存的字段尺度或有符号 `log1p` 编码，最后转为激活精度；未知字段由独立 null mask 表达，恢复已知时按字段使用 ABS 并标记 reset。模型通过零初始化的 `state_reset_proj` 读取 reset 标识，公共参数初始化及随机状态保持一致。
+- 黑魔 Artzip 新增 YAML 权威参数 `history_reset_keep: 8`、`time_delta_scale: 120.0`；超过 300 条历史后保留最近 8 组状态／技能，再重新累积到容量。`time_seconds` 与场景时间按 120 秒尺度编码，保留符号且不截断，其他字段继续使用保存的归一化规则。容量、保留数、时间尺度和随机裁剪只影响读取，不进入 cache signature 或完整 bank 构建。
+- 场景上下文以首个可见状态的请求时间为原点，删除此前已结束的窗口，跨过原点的窗口仅保留后半段并重算自身时长；按开始、结束、类型和原始顺序稳定排列，开始与结束时间分别对上一场景求差。窗口重置只改变模型输入，不重置状态机绝对时钟、累计伤害、回放时长或 PPG 统计。
+- 训练、真实自回归回放、GRPO、模型分析及 ONNX 宿主共用 prepared 输入语义；神经模型不再自动接受 raw／compact 双路径。canonical 升级为 14、PythonBridge 为 16、checkpoint 输入为 21、部署契约为 24／manifest 15、GRPO rollout 为 6；ONNX 新增历史和当前状态 reset mask，共 12 个输入，宿主在精度转换前完成 FP32 编码，图内不重复差分。旧缓存须重编译，旧 checkpoint 和部署包须重新训练、导出，rollout 格式 1～5 的旧轨迹须重新生成，后续窗口参数调整复用同一份新缓存。
+- 完成缓存、字段恢复、CPU/CUDA 编码、训练初始化、两种残差路径、KV-cache、真实 C# 回放、GRPO 与 ONNX 宿主一致性回归；PythonBridge 已按契约 16 重建。4×256×4×1024、100 份训练数据、30 份 VAL、seed 42 的完整四轮对照保持原八轮学习率预算，未显示整体质量收益，隐藏层 std 随深度增长的趋势也未反转；详细指标和性能代价记录在实施计划的验收部分。
+- 正式动作读出改为独立无 bias 输出头，初始化按保存的 `action_to_vocab_id` 顺序复制输入技能 embedding 的动作行，不消费额外随机数，随后独立训练；输出以 FP32 执行 `s×tanh(logits/s)`，黑魔 Artzip 的 `model.yaml` 新增 `logit_softcap: 15.0`，拒绝布尔值和超出 FP32 正常数范围的尺度。普通残差、Full AttnRes、trace、KV-cache 与 ONNX 共用动作头及 softcap；重复惩罚在 softcap 后执行，合法性过滤仍由宿主负责。独立头沿用 AdamW 与低精度训练的独立 FP32 主权重。
+- checkpoint 输入契约升级为 20、ONNX 部署契约升级为 23、manifest 升级为 14，保存独立头结构、初始化方式、FP32 softcap 算法和实际尺度；恢复已学习的独立头权重与 checkpoint 尺度，不重新复制输入 embedding。旧共享头、缺失或不一致的 softcap 配置明确拒绝，数据差异豁免不能绕过架构校验；旧 checkpoint 需重新训练，compiled cache v21/转换 v23 和 PythonBridge 15 继续复用。
+- 补充动作行顺序、初始随机状态、输入/输出独立梯度、softcap 公式与数值边界、重复惩罚顺序、AdamW 参数分组、BF16 主权重连续恢复和 checkpoint/部署契约回归；相关模型、配置、续训、KV-cache、回放、模型分析与 GRPO 检查通过。GELU/SwiGLU 的 FP32 CPU 和严格 BF16 CUDA 四套小模型完成真实 ONNX 导出及 ORT 校验，导出图包含独立动作头与 Tanh。
+- Q/K 在 RoPE 后逐 head 执行无参数 RMSNorm（`eps=None`），再乘统一固定尺度；黑魔 Artzip 的 `model.yaml` 新增 `qk_norm_scale: 1.2`，尺度随 checkpoint 的模型配置保存。训练、trace、KV-cache、Full AttnRes 与 ONNX 共用该路径；缓存仅对新 K 归一化一次，V 和普通 token attention 的 `1/√head_dim` 缩放保持不变。
+- checkpoint 输入契约升级为 19、ONNX 部署契约升级为 22、manifest 升级为 13，固定保存 Q/K 归一化算法并校验实际尺度；拒绝旧契约、缺失或无效尺度，BC 连续续训拒绝尺度不一致，即使强制忽略数据差异也不能绕过。旧 checkpoint 需重新训练；原始 token、状态机与完整 history bank 未变，compiled cache v21/转换 v23 和 PythonBridge 15 继续复用。
+- 补充 Q/K 归一化公式、梯度、RoPE 后执行顺序、MQA/GQA、KV-cache 增量、activation checkpoint 和非默认尺度恢复回归；GELU/SwiGLU 的 FP32 CPU 与严格 BF16 CUDA ONNX 实际导出及 ORT 一致性校验通过。
+- Full AttnRes 的深度 softmax 打分直接使用 `qᵀ RMSNorm(source)`，移除额外的 `1/√d_model` 缩放；保留 query 零初始化和深度源加权平均，普通 token attention 的 Q/K 缩放不变。普通前向、trace、KV-cache 与 ONNX 共用该实现，相关公式、前向和梯度回归验证为 235 项通过。使用旧缩放训练的 Full AttnRes checkpoint 在新公式下的路由会变化，应重新训练。
+- Full AttnRes 关闭时，正式残差路径改为每层先计算 `r×x + a×x0`，再累加 attention 与 FFN 输出；每层分别学习 `r`、`a`，初始化沿深度从 `1.15→1.05`、`0.20→0.05` 线性变化，端点由模型 YAML 保存。`x0` 始终来自统一输入 RMSNorm 后的原始 token，保留梯度并在每层重新注入；Full AttnRes 继续使用独立聚合路径，不创建闲置系数。
+- 普通前向、trace、KV-cache、ONNX 与 loss landscape 共用正式残差计算；缓存前缀、历史追加和当前状态读出均使用各自 token 的原始 `x0`。残差系数沿用 AdamW 分组及低精度训练的 FP32 主权重，支持参数更新和连续恢复。
+- checkpoint 输入契约升级为 18、ONNX 部署契约升级为 21、manifest 升级为 12，固定保存实际残差机制与四个初始化端点，恢复时从权重加载已学习的系数；明确拒绝旧版本、缺少配置或机制不一致的产物。原始字段与完整 history bank 未变，compiled cache v21/转换 v23 和 PythonBridge 15 继续复用。
+- 可学习残差相关回归验证为 1104 项通过、1 项按条件跳过，覆盖残差公式、输入梯度、activation checkpoint、低精度优化器恢复、KV-cache 与部署契约；正式 6 层模型通过真实 batch 20 的 CUDA BF16 反向和恢复校验。GELU/SwiGLU 的 FP32 CPU 与 BF16 存储及 I/O 的 CUDA 四套小模型 ONNX 实际导出、padding 与动作一致性校验通过。
+- Transformer 主干 attention、FFN 的子层归一化及最终输出归一化统一改为无参数 RMSNorm（`eps=1e-5`），不去均值、不设置可学习缩放或偏移；正式模型保留 Pre-Norm 残差结构。全部激活显式关闭 PyTorch 的 LayerNorm 专用融合路径，普通前向、trace、KV-cache 与 ONNX 使用一致的归一化计算。
+- 将技能、状态和场景输入的独立 LayerNorm 合并为统一输入 RMSNorm：内容投影与 scene/state/skill 的 role embedding 相加后，只执行一次无参数 RMSNorm（`eps=1e-5`），不去均值；历史与当前状态继续共享投影，技能输入与输出继续共享语义 embedding。
+- 黑魔 Artzip 的正式模型规模调整为 6 层、384 维、6 个 Query 头、FFN 1536 维；保留 1 个 KV 头、SwiGLU、300 条历史动作和 200 个场景 token 容量。
+- checkpoint 输入契约升级为 17、ONNX 部署契约升级为 20，manifest 保持 11；固定保存主干无参数 RMSNorm 的类型、位置与 epsilon，明确拒绝旧输入编码、LayerNorm 主干或带可学习尺度的 RMSNorm checkpoint 和对应部署包。原始字段、状态机与完整 history bank 未变，compiled cache v21/转换 v23 和 PythonBridge 15 继续复用。
+- 历史技能、状态 PCA 改为读取正式输入编码器产生的 content + role + RMSNorm token，并排除 padding；补齐统一归一化次数、空场景/历史、dense/compact 一致性、BF16 梯度、旧 checkpoint 拒绝和 ONNX 导出回归验证。
+- 主干 RMSNorm 相关验证为 527 项通过、1 项按条件跳过，覆盖非零均值、无参数、有限梯度、activation checkpoint、Muon 参数边界和 KV-cache 一致性；GELU/SwiGLU 的 FP32 CPU 与严格 BF16 CUDA 四套小模型 ONNX 实际导出、padding 与动作一致性校验通过，CUDA BF16 训练反向和参数更新通过。此次为架构与部署图验证，训练后的 std 趋势及真实 checkpoint 完整回放仍需新训练产物确认。
 - 完成因果策略模型阶段 5：正式输入改为 `scene, S1, A1, ..., SH, AH, S_current`，历史状态位于对应技能之前，最新状态沿用普通状态的字段、编码参数与类型；每个有效 token 独立使用连续 RoPE 位置，padding 不占逻辑位置。黑魔 Artzip 采用用户设置的 `history_capacity: 300`，单位仍为动作条数，600 个历史 token 加最新状态共 601 个非场景 token，场景容量 200 时最大物理容量为 801。
 - 同步调整状态与技能的显式位置、角色编号、因果方向测试、KV-cache、分析及 ONNX 校验；checkpoint 输入契约升级为 14、ONNX 部署契约升级为 18，manifest 保持 11，明确拒绝技能在前的旧 checkpoint 与部署包。原始字段与完整 history bank 未变，compiled cache v21/转换 v23 继续复用，历史窗口不进入缓存身份。
 - 阶段 5 全量 Python 验证为 1392 项通过、4 项按条件跳过，包含 GELU/SwiGLU 的 FP32 CPU 与严格 BF16 CUDA 四套小模型 ONNX 导出。指定 M5s 的 491 个样本、102150 行历史访问通过最终顺序检查；直接初始化 768 维、12 层 BF16 完整模型，真实状态机驱动 M5s Top-1 216 次及空场景采样 330 次决策，共核对 77070 行历史，覆盖 `ogcd_wait`、两段累计 DoT 推进和 300 对历史滑窗，违例为 0。模型未加载 checkpoint、未训练，权重哈希前后相同；本阶段未修改 C# 状态机或桥接契约。
@@ -99,6 +123,7 @@
 
 ### Fixed
 
+- 修正 Windows 中文 CLI 回归测试依赖默认代码页的问题，子 Python 与输出解码显式使用 UTF-8；全量 Python 测试 1936 项通过、4 项条件跳过，C# 测试 292 项通过，黑魔 smoke 与机工动作查询各 16 队列验证通过。
 - 修复 checkpoint 未保存完整输入技能词表，导致本机 YAML 增删或重排禁用技能后 embedding 行身份漂移的问题：输入契约保存全部 `raw_skill_id` ↔ `vocab_id` 映射（含禁用技能和 `ogcd_wait`），PyTorch 回放、模型分析与 ONNX 导出统一从 checkpoint 恢复；BC 复用数据集词表，续训核对完整映射及 embedding 行数。
 - 缓存读取、场景选择与 GRPO 回放按调用方提供的完整词表校验；重编译在写入前核对当前动作空间与完整词表，worker 复用父进程映射，兼容的完整 history bank 继续复用。ONNX profile 仅提供容量证据，部署词表必须与 checkpoint 一致。
 - 模型分析恢复 checkpoint 的 schema 和归一化规则；在线历史与最新状态逐项校验字段名称和顺序，缺失或未知技能 ID 明确报错，避免同宽错列或静默使用 padding。词表兼容性直接比较保存的映射，不用 YAML 哈希代替语义校验。
@@ -119,6 +144,9 @@
 
 ### Removed
 
+- 清理无调用的旧 Python 战斗运行时数据类、`common/gcd_utils.py`、历史矩阵读取与列式转换 helper，以及配置、技能表和训练模块的闲置方法；保留完整 history bank 读取和主线可选配置，同步更新项目结构说明。
+- 删除 FFLogs 旧高分选择与非分档批量下载方法、闲置场景查询和 ONNX softmax helper；相关测试改为覆盖正式分档下载、质量权重加载及模型 attention 路径。
+- 移除 C# 未使用的 MP 估算方法和单段状态 token builder；正式状态输出继续按双快照构建，PythonBridge 已在同一工作树重建。
 - 从真实技能和 `ogcd_wait` 的 canonical token、技能字段模板、数值特征、归一化装配及完整 history bank 中移除绝对时间 `time_seconds`，不保留默认填零的时间列；场景查询继续使用两段状态自身的时间，内部请求、生效、读条结束及历史排序时序保留。
 - 移除历史技能/状态 pair fusion、`pair_embedding_dim` 配置、公共二次 token 投影、重复 segment embedding、输出维度适配和旧 pair embedding 分析模块，旧布局仅保留明确拒绝检查。
 - 彻底移除 C# 候选预演、候选上下文 builder 与非法候选状态生成，以及 Python 候选字段、候选顺序模块/YAML、shuffle、split attention 双向块、候选 scorer 和相关测试 helper；正式链路只保留固定输出动作词表，不保留候选 token、伪候选或候选空数组入口。

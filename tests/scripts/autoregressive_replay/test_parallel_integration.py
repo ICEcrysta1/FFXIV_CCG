@@ -8,6 +8,8 @@ import torch
 from common.policy.data import DataSpec, SkillVocab
 from common.policy.model import CausalPolicyModel
 from common.policy.config import ModelConfig
+from common.policy.data.context_encoding import ContextEncoder
+from common.torch_runtime import move_batch
 from scripts.autoregressive_replay.parallel import ParallelRollouts, TrainingPolicyBackend
 from scripts.autoregressive_replay.ppg import evaluate_validation_ppg
 from tests.training._common_fixtures import make_dataset, make_demo_pt
@@ -36,9 +38,9 @@ def test_real_model_variable_history_matches_serial(dataset, use_cache, precisio
         vocab_size=SkillVocab.build_from_job_tag(spec.job_tag).size(),
     ).eval().to(device=device, dtype=torch.float32 if precision == "float32" else torch.bfloat16)
     policy = TrainingPolicyBackend(model, data_spec=spec, device=device, precision=precision)
-    samples = [TrainingCollator()([dataset[index]]) for index in range(min(3, len(dataset)))]
-    for batch in samples:
-        model.input_encoder._materialize_compact_history(batch)
+    encoder = ContextEncoder(dataset.normalizer, dataset.schema, model.config).to(device=device)
+    samples = [encoder.encode(move_batch(TrainingCollator()([dataset[index]]), device))
+               for index in range(min(3, len(dataset)))]
     # 标签与训练监督字段不属于在线模型输入。
     from scripts.onnx_export import TENSOR_INPUT_NAMES
     live_keys = {*TENSOR_INPUT_NAMES, "action_legal_mask"}
@@ -64,6 +66,89 @@ def test_real_model_variable_history_matches_serial(dataset, use_cache, precisio
         torch.testing.assert_close(result, expected, atol=tolerance, rtol=tolerance * 10)
 
 
+@pytest.mark.parametrize("precision", ["float32", "float16", "bf16"])
+def test_same_canonical_compact_training_live_and_onnx_host_encode_identically(tmp_path, precision):
+    """同一真实状态机上下文经三条消费链路，只允许部署目标 dtype 引入舍入。"""
+    from dataclasses import asdict
+
+    from common.policy.data import ModelInputContract
+    from scripts.autoregressive_replay.backends import build_fixed_ort_inputs
+    from scripts.autoregressive_replay.context import LiveBatchBuilder, SceneTemplateProvider
+    from scripts.onnx_export import TENSOR_INPUT_NAMES
+    from scripts.onnx_export.contracts.contract import CapacityContract
+    from scripts.onnx_export.contracts.deployment_contract import DeploymentContract
+    from scripts.onnx_export.policy.policy import _build_batch
+    from tests.training._common_fixtures import _TEST_TRAINING_PAYLOADS
+
+    source = make_demo_pt(
+        tmp_path,
+        ["fire_iii", "fire_iv", "blizzard_iii", "blizzard_iv", "fire_iii", "fire_iv"],
+        fight_id="same_canonical",
+    )
+    dataset = make_dataset(
+        [source], max_history=4, history_reset_keep=2,
+        float_dtype=torch.float32, int_dtype=torch.int32,
+    )
+    payload = _TEST_TRAINING_PAYLOADS[source.resolve()]
+    spec = DataSpec.from_dataset(dataset)
+    vocab = SkillVocab.build_from_job_tag(spec.job_tag)
+    config = ModelConfig(
+        d_model=16, n_layers=1, n_heads=2, num_kv_heads=1, ff_dim=32,
+        dropout=0.0, history_capacity=4, history_reset_keep=2, scene_capacity=8,
+    )
+    encoder = ContextEncoder(dataset.normalizer, dataset.schema, config)
+    scene_provider = SceneTemplateProvider(
+        next(dataset.iter_source_readers()), normalizer=dataset.normalizer,
+    )
+    builder = LiveBatchBuilder(
+        backend=None, vocab=vocab, normalizer=dataset.normalizer,
+        schema=dataset.schema, skill_feature_names=spec.skill_feature_names,
+        scene_provider=scene_provider, device=torch.device("cpu"), max_history=4,
+        model_config=config, action_keys=spec.action_keys, action_is_gcd=spec.action_is_gcd,
+    )
+    contract = DeploymentContract.create(
+        precision=precision, capacity=CapacityContract(scene_capacity=8, history_capacity=4),
+        data_spec=spec,
+        input_contract=ModelInputContract.from_training(
+            skill_vocab=vocab, data_spec=spec, schema=dataset.schema, normalizer=dataset.normalizer,
+        ),
+        model_config=asdict(config), repetition_config={}, vocab_entries=tuple(vocab),
+        capacity_report={
+            "semantic_sha256": "0" * 64, "scene_capacity": 8, "history_capacity": 4,
+            "evidence": {"fixture": "same_real_canonical"},
+        },
+        embedding_vocab_size=vocab.size(),
+    )
+    saw_overflow = False
+    for index, row in enumerate(payload["samples"]):
+        raw = TrainingCollator()([dataset[index]])
+        assert "history_bank_state_abs_values" in raw
+        assert "history_skill_ids" not in raw
+        training = encoder.encode(raw)
+        canonical = row["context"]
+        saw_overflow |= canonical["history_cursor"] > config.history_capacity
+        live, keys = builder.build_from_canonical(canonical, gcd_phase=True, max_history=4)
+        assert tuple(keys) == spec.action_keys
+        for name in TENSOR_INPUT_NAMES:
+            torch.testing.assert_close(training[name], live[name], rtol=0, atol=0, msg=name)
+        assert builder.context_metadata == {"history_cursor": canonical["history_cursor"]}
+        assert int(live["history_mask"].sum()) == int(training["history_mask"].sum())
+        assert not {"history_cursor", "history_window_start", "history_window_length"} & live.keys()
+
+        # 宿主仅补 padding 和转目标精度；图适配器直接接收 prepared tensor，不再次差分。
+        fixed = build_fixed_ort_inputs(live, contract)
+        adapted = _build_batch(*fixed)
+        for name, tensor in zip(TENSOR_INPUT_NAMES, fixed, strict=True):
+            assert adapted[name] is tensor
+            expected = training[name].to(dtype=tensor.dtype)
+            actual = tensor[:, :expected.shape[1]] if name.startswith(("scene_", "history_")) else tensor
+            torch.testing.assert_close(actual, expected, rtol=0, atol=0, msg=name)
+        history_length = training["history_mask"].shape[1]
+        assert adapted["history_state_null_mask"][:, history_length:].all()
+        assert not adapted["history_state_reset_mask"][:, history_length:].any()
+    assert saw_overflow
+
+
 @pytest.mark.parametrize("workers", [1, 3, 16])
 def test_validation_real_queues_match_serial_and_release(dataset, monkeypatch, workers):
     spec = DataSpec.from_dataset(dataset)
@@ -73,6 +158,7 @@ def test_validation_real_queues_match_serial_and_release(dataset, monkeypatch, w
         def __init__(self):
             super().__init__()
             self.batch_sizes = []
+            self.config = ModelConfig(history_capacity=4, history_reset_keep=4)
 
         def forward(self, batch):
             self.batch_sizes.append(batch["action_legal_mask"].shape[0])
@@ -82,7 +168,7 @@ def test_validation_real_queues_match_serial_and_release(dataset, monkeypatch, w
             return {"logits": values}
 
     config = SimpleNamespace(
-        model=SimpleNamespace(history_capacity=4),
+        model=ModelConfig(history_capacity=4, history_reset_keep=4),
         ppg=SimpleNamespace(enabled=True, normalization=1000, use_kv_cache=False),
         precision="float32",
     )
@@ -112,6 +198,7 @@ def test_grpo_sampling_is_independent_of_worker_count(dataset, tmp_path):
         supports_batch_inference = True
         data_spec = spec
         input_device = torch.device("cpu")
+        model_config = ModelConfig(history_capacity=4, history_reset_keep=4)
         input_contract = ModelInputContract.from_training(
             skill_vocab=vocab,
             data_spec=spec, schema=dataset.schema, normalizer=dataset.normalizer,
@@ -152,6 +239,11 @@ def test_grpo_sampling_is_independent_of_worker_count(dataset, tmp_path):
                 temperature=1, record_decisions=True, session=session, sampling_seed=120 + index,
             )
             assert decisions
+            for decision in decisions:
+                cursor = decision.context_metadata["history_cursor"]
+                assert type(cursor) is int
+                assert cursor >= int(decision.batch["history_mask"].sum())
+                assert not {"history_cursor", "history_window_start", "history_window_length"} & decision.batch.keys()
             return tuple(row.action_key for row in result.rows), result.ppg, tuple(d.old_logprob for d in decisions)
 
     with ParallelRollouts(policy, job_tag=spec.job_tag, workers=1) as pool:
@@ -178,6 +270,7 @@ def test_sixteen_real_queues_keep_bounded_history_for_180_seconds():
     keys = ("heated_split_shot", "ogcd_wait")
     batch_sizes = []
     class FixedPolicy(torch.nn.Module):
+        config = ModelConfig(history_capacity=4, history_reset_keep=4)
         def forward(self, batch):
             size = batch["action_legal_mask"].shape[0]
             batch_sizes.append(size)

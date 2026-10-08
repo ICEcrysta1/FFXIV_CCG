@@ -90,6 +90,112 @@ def _validate(context, *, optimizer=None, force=False):
 
 
 @pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("legacy_encoding", ["version_15", "content_layernorm"])
+def test_resume_rejects_legacy_input_encoding_even_when_forcing_data_mismatch(
+    resume_context, force, legacy_encoding
+):
+    """数据规模豁免不能绕过输入归一化架构契约。"""
+    payload = resume_context.checkpoint["input_contract"]
+    if legacy_encoding == "version_15":
+        payload["version"] = 15
+        message = "unsupported input contract version"
+    else:
+        payload["token_encoding"].update({
+            "skill": "LayerNorm(E[id] + Linear(skill_features))",
+            "state": "LayerNorm(Linear(state_values) + Linear(null_mask, bias=False))",
+            "scene": "LayerNorm(Linear_by_scene_type(scene_values))",
+        })
+        payload["token_encoding"].pop("token_normalization")
+        message = "token_encoding"
+    # 同时制造数据规模差异；即使请求豁免，也必须先拒绝旧输入架构。
+    resume_context.checkpoint["run_config"]["max_files"] = 10
+    with pytest.raises(ValueError, match=message):
+        _validate(resume_context, force=force)
+
+
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("legacy_backbone", ["version_16", "missing", "layernorm", "gamma_rms"])
+def test_resume_rejects_legacy_backbone_even_when_forcing_data_mismatch(
+    resume_context, force, legacy_backbone
+):
+    """输入字段相同时，数据规模豁免仍不能跳过主干归一化契约。"""
+    payload = resume_context.checkpoint["input_contract"]
+    if legacy_backbone == "version_16":
+        payload["version"] = 16
+        payload["token_encoding"].pop("backbone_normalization")
+        message = "unsupported input contract version"
+    elif legacy_backbone == "missing":
+        payload["token_encoding"].pop("backbone_normalization")
+        message = "token_encoding"
+    else:
+        backbone = payload["token_encoding"]["backbone_normalization"]
+        backbone["elementwise_affine"] = True
+        if legacy_backbone == "layernorm":
+            backbone["type"] = "LayerNorm"
+        message = "token_encoding"
+    resume_context.checkpoint["run_config"]["max_files"] = 10
+    with pytest.raises(ValueError, match=message):
+        _validate(resume_context, force=force)
+
+
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("incompatible", ["version_18", "missing_scale", "scale_mismatch"])
+def test_resume_cannot_bypass_qk_normalization_contract(resume_context, force, incompatible):
+    """数据规模豁免不能绕过 Q/K 算法版本、已保存尺度或架构一致性。"""
+    if incompatible == "version_18":
+        resume_context.checkpoint["input_contract"]["version"] = 18
+        message = "unsupported input contract version"
+    elif incompatible == "missing_scale":
+        resume_context.checkpoint["model_config"].pop("qk_norm_scale")
+        message = "missing model.qk_norm_scale"
+    else:
+        resume_context.checkpoint["model_config"]["qk_norm_scale"] = 0.7
+        message = "model config mismatch"
+    resume_context.checkpoint["run_config"]["max_files"] = 10
+    with pytest.raises(ValueError, match=message):
+        _validate(resume_context, force=force)
+
+
+def test_resume_preserves_matching_nondefault_qk_scale(resume_context):
+    """合法续训沿用 checkpoint 尺度，不补回正式配置的默认 1.2。"""
+    model_config = replace(resume_context.config.model, qk_norm_scale=1.7)
+    resume_context.config = replace(resume_context.config, model=model_config)
+    resume_context.checkpoint["model_config"] = asdict(model_config)
+    assert _validate(resume_context) == 1
+
+
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("incompatible", ["version_19", "shared_projection", "missing_cap", "cap_mismatch"])
+def test_resume_cannot_bypass_independent_head_and_softcap_contract(resume_context, force, incompatible):
+    """数据规模豁免不能把旧共享头或不同 softcap 配置当作同一训练恢复。"""
+    if incompatible == "version_19":
+        resume_context.checkpoint["input_contract"]["version"] = 19
+        message = "unsupported input contract version"
+    elif incompatible == "shared_projection":
+        resume_context.checkpoint["input_contract"]["token_encoding"]["output_projection"] = (
+            "hidden @ E[action_to_vocab_id].T"
+        )
+        message = "token_encoding"
+    elif incompatible == "missing_cap":
+        resume_context.checkpoint["model_config"].pop("logit_softcap")
+        message = "missing model.logit_softcap"
+    else:
+        resume_context.checkpoint["model_config"]["logit_softcap"] = 20.0
+        message = "model config mismatch"
+    resume_context.checkpoint["run_config"]["max_files"] = 10
+    with pytest.raises(ValueError, match=message):
+        _validate(resume_context, force=force)
+
+
+def test_resume_preserves_matching_nondefault_logit_softcap(resume_context):
+    """合法续训使用保存的 softcap，不回落到本机 YAML 默认值。"""
+    model_config = replace(resume_context.config.model, logit_softcap=9.0)
+    resume_context.config = replace(resume_context.config, model=model_config)
+    resume_context.checkpoint["model_config"] = asdict(model_config)
+    assert _validate(resume_context) == 1
+
+
+@pytest.mark.parametrize("force", [False, True])
 def test_resume_rejects_inactive_vocab_row_drift_even_when_outputs_match(resume_context, force):
     resume_context.input_contract = replace(
         resume_context.input_contract,

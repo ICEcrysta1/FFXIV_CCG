@@ -89,9 +89,6 @@ class TrainingSchema:
         if "time_seconds" in self.skill_history_fields:
             raise ValueError("removed skill time_seconds field; recompile raw source")
 
-    def state_group_keys(self) -> tuple[str, ...]:
-        return tuple(self.state_group_feature_keys.keys())
-
     def state_vector_dim(self) -> int:
         return sum(len(feature_keys) for feature_keys in self.state_group_feature_keys.values())
 

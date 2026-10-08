@@ -128,6 +128,7 @@ class _TrainableRolloutReplay(AutoregressiveReplay):
             self.decisions.append(
                 GrpoDecision(
                     batch=recorded_batch,
+                    context_metadata=self.batcher.context_metadata,
                     action_keys=tuple(str(key) for key in action_keys),
                     action_index=selected_index,
                     old_logprob=float(torch.log(selected_probability).item()),

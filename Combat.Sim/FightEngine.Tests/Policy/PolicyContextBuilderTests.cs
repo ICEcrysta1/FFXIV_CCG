@@ -18,6 +18,9 @@ public sealed class PolicyContextBuilderTests
             simulator.AdvanceTo(index);
             history.Record(simulator, index, "ogcd_wait", index + 1);
             var actual = builder.BuildVectorContext(simulator, history, index + 1);
+            Assert.Equal((long)index + 1, actual[OutputContextSchema.HistoryCursorKey]);
+            Assert.Equal(actual[OutputContextSchema.HistoryCursorKey],
+                builder.BuildVectorContext(simulator, history, index + 1)[OutputContextSchema.HistoryCursorKey]);
             var expected = new PolicyContextBuilder(registry).BuildVectorContext(simulator, history, index + 1);
             Assert.Equal(global::System.Text.Json.JsonSerializer.Serialize(expected),
                 global::System.Text.Json.JsonSerializer.Serialize(actual));
@@ -60,6 +63,7 @@ public sealed class PolicyContextBuilderTests
         if (waitFirst) Assert.True(simulator.SubmitAction(timestamp, "lucid_dreaming").Accepted);
         else history.Record(simulator, timestamp, "ogcd_wait", 1);
         var output = builder.BuildVectorContext(simulator, history, 1);
+        Assert.Equal(3L, output[OutputContextSchema.HistoryCursorKey]);
         var rows = HistoryRows(output);
         Assert.Equal(prefix, rows.Take(prefix.Length));
         var skills = Assert.IsType<List<Dictionary<string, object?>>>(output[OutputContextSchema.SkillHistoryContextKey]);
@@ -94,6 +98,8 @@ public sealed class PolicyContextBuilderTests
         var fork = simulator.Fork();
         var forkHistory = history.Fork();
         var builder = new PolicyContextBuilder(registry);
+        Assert.Equal(2L, builder.BuildVectorContext(simulator, history, 1)[OutputContextSchema.HistoryCursorKey]);
+        Assert.Equal(2L, builder.BuildVectorContext(fork, forkHistory, 1)[OutputContextSchema.HistoryCursorKey]);
 
         Assert.True(simulator.SubmitAction(0.5, "lucid_dreaming").Accepted);
         var expected = HistoryRows(builder.BuildVectorContext(simulator, history, 1));
@@ -104,6 +110,7 @@ public sealed class PolicyContextBuilderTests
 
         simulator.RestoreSnapshot(snapshot);
         history.RestoreSnapshot(historySnapshot);
+        Assert.Equal(2L, builder.BuildVectorContext(simulator, history, 1)[OutputContextSchema.HistoryCursorKey]);
         Assert.True(simulator.SubmitAction(0.5, "lucid_dreaming").Accepted);
         Assert.Equal(3, simulator.GetState().History[^1].HistorySequence);
         Assert.Equal(expected, HistoryRows(builder.BuildVectorContext(simulator, history, 1)));
@@ -124,6 +131,8 @@ public sealed class PolicyContextBuilderTests
 
         var output = new PolicyContextBuilder(registry).BuildVectorContext(simulator, history, 1);
         var skill = Assert.Single(Assert.IsType<List<Dictionary<string, object?>>>(output[OutputContextSchema.SkillHistoryContextKey]));
+        // 留存窗口只有一条，累计 canonical 游标仍为三；读取不会增加游标。
+        Assert.Equal(3L, output[OutputContextSchema.HistoryCursorKey]);
         Assert.Equal("lucid_dreaming", skill["skill_key"]);
         Assert.Equal(3, Assert.Single(simulator.GetState().History).HistorySequence);
     }

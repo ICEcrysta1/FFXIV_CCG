@@ -23,7 +23,6 @@ from scripts.convert_fflogs.cache import (
 from scripts.convert_fflogs.cache.cache_load import load_raw_compiled_cache
 from scripts.convert_fflogs.source import raw_source
 from tests.helpers import build_test_scene_context, targetable_window_token
-from training import TrainingDataset
 
 
 def test_convert_raw_file_reads_brotli_json(tmp_path, monkeypatch):
@@ -340,9 +339,8 @@ def test_cli_fails_when_annotated_inputs_produce_no_compiled_cache(tmp_path, mon
 
 
 @pytest.mark.parametrize("source_stage", ["raw", "annotated"])
-@pytest.mark.parametrize("legacy_layout", [False, True])
 def test_raw_cache_compiler_only_writes_compiled_cache(
-    cs_backend, cs_skill_book, tmp_path, monkeypatch, source_stage, legacy_layout,
+    cs_backend, cs_skill_book, tmp_path, monkeypatch, source_stage,
 ):
     torch = pytest.importorskip("torch")
     fight_payload = {
@@ -396,9 +394,6 @@ def test_raw_cache_compiler_only_writes_compiled_cache(
     assert manifest.is_file()
     assert list(manifest.parent.glob("*.shard-*.pt"))
     assert not list(cache_dir.glob("*.compiled.pt"))
-    if legacy_layout:
-        for path in manifest.parent.glob("*.pt"):
-            path.replace(cache_dir / path.name)
     monkeypatch.setattr(
         "scripts.convert_fflogs.cache.cache_compile.convert_raw_file",
         lambda *_args, **_kwargs: pytest.fail("有效缓存不应重新转换"),
@@ -421,21 +416,23 @@ def test_raw_cache_compiler_only_writes_compiled_cache(
         int_dtype=torch.int32, float_dtype=torch.float32,
         cache_dir=cache_dir, shard_size=1,
     ) == [raw_path]
-    assert manifest.is_file() is not legacy_layout
-    dataset = TrainingDataset(
-        [raw_path],
+    assert manifest.is_file()
+    read_normalizer = Normalizer()
+    read_normalizer.ensure_job_resources("black_mage")
+    reader = load_raw_compiled_cache(
+        raw_path,
         expected_action_space=ActionSpace.from_job_tag("black_mage"),
-        normalizer=Normalizer(),
-        job_tag="black_mage",
-        max_history=128,
+        normalizer=read_normalizer,
         int_dtype=torch.int32,
         float_dtype=torch.float32,
         cache_dir=cache_dir,
-        compiled_cache_shard_size=1,
+        shard_size=1,
     )
-    assert len(dataset) == 1
-    sample = dataset[0]
-    assert float(sample["scene_vectors"][:, :3].max().item()) <= 1.0
+    assert reader.num_samples == 1
+    sample = reader.sample(0)
+    assert float(sample["scene_vectors"][:, :3].max().item()) == 10.0
+    assert sample["current_state_abs_values"].dtype == torch.float32
+    assert float(sample["current_state_abs_values"].max()) >= 10000.0
     raw_path.write_text('{"changed": true}', encoding="utf-8", newline="\n")
     assert load_raw_compiled_cache(
         raw_path, cache_dir=cache_dir, normalizer=Normalizer(),
@@ -605,3 +602,77 @@ def test_real_threaded_cache_compile_matches_serial_and_keeps_full_history(tmp_p
         assert_equal(*payloads)
         for shard in payloads[0]["shard_files"]:
             assert_equal(*(torch.load(path.parent / shard, weights_only=False) for path in manifests))
+
+
+def test_real_raw_cache_reused_across_windows_scales_and_random_crops(tmp_path, monkeypatch, cs_backend):
+    """同一真实 raw source 只编译一次，读取参数变化仅改变视窗与重锚编码。"""
+    from random import Random
+
+    from common.policy.config import ModelConfig
+    from common.policy.data.context_encoding import ContextEncoder
+    from common.policy.data.history_window import history_window_length
+    from training import TrainingCollator, TrainingDataset
+
+    torch = pytest.importorskip("torch")
+    source = tmp_path / "raw" / "reuse.json.br"
+    atomic_write_json(source, {
+        "source_id": 10, "report_code": "REUSE", "fight_id": 1,
+        "events": [
+            {"type": "cast", "sourceID": 10, "timestamp": 1000 + step * 5000,
+             "abilityGameID": 152 if step % 2 == 0 else 154}
+            for step in range(12)
+        ],
+    })
+    normalizer = Normalizer()
+    normalizer.ensure_job_resources("black_mage")
+    actions = ActionSpace.from_job_tag("black_mage")
+    cache_dir = tmp_path / "cache"
+    compile_args = {
+        "job_tag": "black_mage", "normalizer": normalizer, "expected_action_space": actions,
+        "int_dtype": torch.int32, "float_dtype": torch.float32,
+        "cache_dir": cache_dir, "shard_size": 4, "max_workers": 1,
+    }
+    assert precompile_raw_training_caches([source], **compile_args) == [source]
+    manifest = cache_path_for_source(cache_dir, source)
+    saved_bytes = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in cache_dir.rglob("*.pt")}
+    monkeypatch.setattr(cache_compile_module, "_compile_raw_source_worker", lambda *_a, **_kw: pytest.fail("读侧参数变化不应重新编译"))
+    monkeypatch.setattr(cache_compile_module, "InProcessEngine", lambda *_a, **_kw: pytest.fail("有效缓存不应创建转换引擎"))
+    signatures = []
+    window_lengths = []
+    for capacity, keep, time_scale, crop in ((3, 1, 120.0, False), (5, 2, 60.0, False),
+                                            (5, 3, 240.0, True), (300, 8, 120.0, True)):
+        assert precompile_raw_training_caches([source], **compile_args) == [source]
+        dataset = TrainingDataset(
+            [source], expected_action_space=actions, normalizer=normalizer, job_tag="black_mage",
+            int_dtype=torch.int32, float_dtype=torch.float32, cache_dir=cache_dir,
+            compiled_cache_shard_size=4, max_history=capacity, history_reset_keep=keep,
+        )
+        reader = dataset._readers[0]
+        assert reader._cache_path == manifest
+        signatures.append(reader._payload["cache_signature"])
+        total = reader.sample(len(dataset) - 1)["history_length"]
+        sample = dataset[len(dataset) - 1]
+        expected = history_window_length(total, capacity, keep)
+        assert sample["history_length"] == expected
+        batch = TrainingCollator(
+            int_dtype=torch.int32, index_dtype=torch.int64, float_dtype=torch.float32,
+            history_truncation_enabled=crop, history_truncation_probability=1.0,
+            history_min_recent=1, rng=Random(7),
+        )([sample])
+        actual = batch["history_lengths"].item()
+        assert 1 <= actual <= expected
+        if crop and expected > 1:
+            assert actual < expected
+        window_lengths.append(actual)
+        keys = tuple(key for group in dataset.schema.state_group_feature_keys.values() for key in group)
+        time_index = keys.index("request_state.time_seconds")
+        encoded = ContextEncoder(normalizer, dataset.schema, ModelConfig(
+            history_capacity=capacity, history_reset_keep=keep, time_delta_scale=time_scale,
+        )).encode(batch)
+        assert encoded["history_state_vectors"][0, 0, time_index].item() == 0.0
+        assert encoded["history_state_reset_mask"][0, 0, time_index]
+        torch.testing.assert_close(encoded["current_state_vectors"][0, time_index],
+                                   sample["current_state_delta_values"][time_index] / time_scale)
+    assert all(signature == signatures[0] for signature in signatures)
+    assert len(set(window_lengths)) > 1
+    assert {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in cache_dir.rglob("*.pt")} == saved_bytes

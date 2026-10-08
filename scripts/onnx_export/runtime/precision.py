@@ -81,6 +81,20 @@ def precision_torch_dtype(precision: str) -> torch.dtype:
     return _precision_spec(precision).torch_dtype
 
 
+def validate_deployment_logit_softcap(softcap: float, *, precision: str) -> None:
+    """已由 ModelConfig 校验的尺度，还须适合部署输出的数值范围。"""
+    dtype = precision_torch_dtype(precision)
+    if dtype == torch.float16:
+        limits = torch.finfo(dtype)
+        # FP16 排除次正规尺度，避免饱和值依赖后端的次正规数处理；
+        # 上界保证即使原始 logits 为无穷，softcap 后转 FP16 仍有限。
+        if not limits.tiny <= softcap <= limits.max:
+            raise ValueError(
+                "deployment float16 model.logit_softcap must be within the FP16 normal range "
+                f"[{limits.tiny}, {limits.max}], got {softcap}"
+            )
+
+
 def precision_onnx_dtype(precision: str) -> str:
     """返回 ORT session 元数据使用的 Tensor 类型名。"""
     return _precision_spec(precision).onnx_dtype

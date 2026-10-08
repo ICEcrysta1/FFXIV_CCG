@@ -86,6 +86,7 @@ def evaluate_none_ppg(
                 scene_provider=EmptySceneProvider(data_spec.scene_dim),
                 device=device,
                 max_history=config.model.history_capacity,
+                model_config=config.model,
                 action_keys=data_spec.action_keys,
                 action_is_gcd=data_spec.action_is_gcd,
             )
@@ -188,6 +189,7 @@ def evaluate_validation_ppg(
                 scene_provider=scene_provider,
                 device=device,
                 max_history=config.model.history_capacity,
+                model_config=config.model,
                 action_keys=data_spec.action_keys,
                 action_is_gcd=data_spec.action_is_gcd,
             )
@@ -237,9 +239,9 @@ def _infer_initial_base_gcd(
     normalizer: Normalizer,
     job_tag: str,
 ) -> float:
-    """用缓存初始请求状态与保存的归一化契约恢复基础 GCD。"""
+    """从缓存的原始绝对请求状态读取基础 GCD，不从模型差分反推。"""
     sample = reader.sample(0)
-    vector = sample.get("current_state_vectors")
+    vector = sample.get("current_state_abs_values")
     null_mask = sample.get("current_state_null_mask")
     if vector is None or null_mask is None:
         raise ValueError("validation PPG cache is missing initial current state")
@@ -256,7 +258,7 @@ def _infer_initial_base_gcd(
             raise ValueError(f"validation PPG initial state is missing {feature}") from exc
         if bool(null_mask[index]):
             raise ValueError(f"validation PPG initial state has null {feature}")
-        return normalizer.inverse(group, feature, float(vector[index]))
+        return float(vector[index])
 
     base_gcd = initial_value("player_state", "request_state.current_gcd_seconds")
     if job_tag == "black_mage":

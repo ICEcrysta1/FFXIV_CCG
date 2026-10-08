@@ -15,6 +15,9 @@ def _make_model(
     norm_first: bool = True,
     full_attention_residuals: bool = False,
     activation: str = "gelu",
+    n_heads: int = 2,
+    num_kv_heads: int = 1,
+    qk_norm_scale: float = 1.2,
 ) -> CausalPolicyModel:
     data_spec = DataSpec(
         job_tag="black_mage",
@@ -32,7 +35,9 @@ def _make_model(
         ModelConfig(
             d_model=16,
             n_layers=2,
-            n_heads=2,
+            n_heads=n_heads,
+            num_kv_heads=num_kv_heads,
+            qk_norm_scale=qk_norm_scale,
             ff_dim=32,
             dropout=0.0,
             transformer_norm_first=norm_first,
@@ -49,16 +54,21 @@ def _make_model_pair(
     norm_first: bool = True,
     full_attention_residuals: bool = False,
     activation: str = "gelu",
+    n_heads: int = 2,
+    num_kv_heads: int = 1,
+    qk_norm_scale: float = 1.2,
 ):
     cached_model = _make_model(
         activation=activation,
         norm_first=norm_first,
         full_attention_residuals=full_attention_residuals,
+        n_heads=n_heads, num_kv_heads=num_kv_heads, qk_norm_scale=qk_norm_scale,
     )
     full_model = _make_model(
         activation=activation,
         norm_first=norm_first,
         full_attention_residuals=full_attention_residuals,
+        n_heads=n_heads, num_kv_heads=num_kv_heads, qk_norm_scale=qk_norm_scale,
     )
     full_model.load_state_dict(cached_model.state_dict())
     return cached_model, full_model
@@ -74,6 +84,8 @@ def _make_batch(history_length: int, *, current_state_offset: float = 0.0, chang
     if changed_history and history_length:
         history_features[:, 0, 0] += 100.0
     current_state = torch.tensor([[0.1 + current_state_offset, 0.2, 0.3]])
+    history_resets = torch.zeros_like(history_states, dtype=torch.bool)
+    history_resets[:, :1] = True
     return {
         "history_skill_ids": torch.ones((1, history_length), dtype=torch.long),
         "history_skill_features": history_features,
@@ -81,14 +93,158 @@ def _make_batch(history_length: int, *, current_state_offset: float = 0.0, chang
         "history_state_null_mask": torch.zeros(
             (1, history_length, 3), dtype=torch.bool
         ),
+        "history_state_reset_mask": history_resets,
         "history_mask": torch.ones((1, history_length), dtype=torch.bool),
         "current_state_vectors": current_state,
         "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
+        "current_state_reset_mask": torch.full_like(current_state, history_length == 0, dtype=torch.bool),
         "action_legal_mask": torch.ones((1, 3), dtype=torch.bool),
         "scene_vectors": torch.tensor([[[0.25, 0.5], [0.75, 1.0]]]),
         "scene_types": torch.zeros((1, 2), dtype=torch.long),
         "scene_mask": torch.ones((1, 2), dtype=torch.bool),
     }
+
+
+@pytest.mark.parametrize("full_attention_residuals", (False, True))
+def test_shared_context_reanchor_and_scene_clip_rebuild_kv(full_attention_residuals):
+    """分块重置重新选择 ABS 锚点和 scene view，完整前向与 KV 前向保持一致。"""
+    from common.policy.data.context_encoding import ContextEncoder, raw_state_delta
+    from common.policy.data.history_window import history_window_length
+    from common.policy.data.normalization import NormalizerConfig
+    from common.policy.data.normalizer import Normalizer
+    from common.policy.data.schema import SceneWindowSchema, TrainingSchema
+
+    schema = TrainingSchema(
+        serialization_format="test", sample_schema_version=11, context_schema_version=14,
+        scene_context_mode="absolute", skill_history_fields=("kind",),
+        state_group_feature_keys={"player_state": (
+            "previous_action_after.time_seconds", "request_state.time_seconds", "request_state.mp",
+        )},
+        scene_windows=(SceneWindowSchema.from_feature_keys(
+            context_key="targetable", scene_type_id=0,
+            feature_keys=("start_offset_seconds", "end_offset_seconds", "duration_seconds"),
+        ),),
+    )
+    spec = DataSpec(
+        job_tag="black_mage", num_actions=3, state_dim=3, scene_dim=3,
+        skill_feature_dim=2, num_scene_types=1,
+        action_keys=("fire_iii", "fire_iv", "blizzard_iii"), action_to_vocab_id=(1, 2, 3),
+        action_is_gcd=(True, True, True), skill_feature_names=("potency", "cast_time.seconds"),
+    )
+    config = ModelConfig(
+        d_model=16, n_layers=2, n_heads=2, num_kv_heads=1, ff_dim=32,
+        dropout=0.0, history_capacity=4, history_reset_keep=2, scene_capacity=3,
+        full_attention_residuals=full_attention_residuals,
+    )
+    with torch.random.fork_rng(devices=[]):
+        torch.random.default_generator.manual_seed(738)
+        cached = CausalPolicyModel(spec, config, vocab_size=8).eval()
+        full = CausalPolicyModel(spec, config, vocab_size=8).eval()
+        # 模拟已经学会使用 ABS 标识，避免零初始化投影掩盖标识变化。
+        with torch.no_grad():
+            cached.input_encoder.state_reset_proj.weight.fill_(0.031)
+        full.load_state_dict(cached.state_dict())
+    cached.enable_kv_cache(True)
+    context = ContextEncoder(Normalizer(NormalizerConfig()), schema, config)
+    states = torch.tensor([[1199 + 3 * i, 1200 + 3 * i, 10000 - 400 * i]
+                           for i in range(9)], dtype=torch.float32)
+    nulls = torch.zeros_like(states, dtype=torch.bool)
+    deltas, resets = raw_state_delta(
+        states, nulls,
+        torch.cat((torch.zeros_like(states[:1]), states[:-1])),
+        torch.cat((torch.ones_like(nulls[:1]), nulls[:-1])),
+    )
+    previous_cache = None
+    with torch.no_grad():
+        for cursor in range(9):
+            length = history_window_length(cursor, 4, 2)
+            start = cursor - length
+            raw = {
+                "history_skill_ids": torch.ones((1, length), dtype=torch.long),
+                "history_skill_features": torch.zeros((1, length, 2)),
+                "history_state_abs_values": states[start:cursor][None],
+                "history_state_delta_values": deltas[start:cursor][None],
+                "history_state_null_mask": nulls[start:cursor][None],
+                "history_state_delta_reset_mask": resets[start:cursor][None],
+                "history_mask": torch.ones((1, length), dtype=torch.bool),
+                "current_state_abs_values": states[cursor:cursor + 1],
+                "current_state_delta_values": deltas[cursor:cursor + 1],
+                "current_state_null_mask": nulls[cursor:cursor + 1],
+                "current_state_delta_reset_mask": resets[cursor:cursor + 1],
+                "scene_abs_values": torch.tensor([[[1195, 1204, 9], [1207, 1230, 23], [1213, 1220, 7]]], dtype=torch.float32),
+                "scene_types": torch.zeros((1, 3), dtype=torch.int32),
+                "scene_mask": torch.ones((1, 3), dtype=torch.bool),
+            }
+            batch = context.encode(raw)
+            torch.testing.assert_close(cached(batch)["logits"], full(batch)["logits"], rtol=2e-5, atol=2e-5)
+            if cursor in (5, 8):
+                assert length == 2
+                assert cached._kv_cache is not previous_cache
+                assert cached._kv_cache.history_length == 2
+                torch.testing.assert_close(batch["history_state_vectors"][0, 0, 1], torch.tensor(0.0))
+                assert batch["history_state_reset_mask"][0, 0].all()
+                assert not batch["scene_mask"][0, 2]
+            previous_cache = cached._kv_cache
+
+
+@pytest.mark.parametrize("num_kv_heads", (4, 2, 1))
+@pytest.mark.parametrize("full_attention_residuals", (False, True))
+def test_qk_normalized_kv_reuses_old_keys_once_and_matches_dense_trace(
+    monkeypatch, num_kv_heads, full_attention_residuals,
+):
+    """缓存保存已归一化 K，仅归一化新增块；非默认尺度下仍与 dense/trace 一致。"""
+    from common.policy.model import causal_encoder
+
+    torch.manual_seed(823)
+    scale = 1.73
+    model, dense = _make_model_pair(
+        n_heads=4, num_kv_heads=num_kv_heads, qk_norm_scale=scale,
+        full_attention_residuals=full_attention_residuals, activation="swiglu",
+    )
+    model.double()
+    dense.double()
+    model.enable_kv_cache(True)
+    calls = []
+    original = causal_encoder.normalize_qk
+
+    def observe_normalization(query, key, *, scale):
+        calls.append((query.shape[2], key.shape[2]))
+        normalized = original(query, key, scale=scale)
+        epsilon = torch.finfo(torch.float64).eps
+        for raw, actual in zip((query, key), normalized):
+            expected = raw * scale / (raw.square().mean(-1, keepdim=True) + epsilon).sqrt()
+            torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
+        return normalized
+
+    monkeypatch.setattr(causal_encoder, "normalize_qk", observe_normalization)
+    previous_keys = None
+    requests = ((0, 0.0, (2, 1)), (1, 0.0, (2, 1)),
+                (1, 7.0, (1,)), (2, 0.0, (2, 1)))
+    with torch.no_grad():
+        for history_length, offset, blocks in requests:
+            batch = _make_batch(history_length, current_state_offset=offset)
+            batch = {key: value.double() if value.is_floating_point() else value
+                     for key, value in batch.items()}
+            calls.clear()
+            cached_logits = model(batch)["logits"]
+            assert calls == [(length, length) for length in blocks
+                             for _ in range(model.config.n_layers)]
+            keys = model._kv_cache.key_cache
+            for key in keys:
+                assert key.shape[1] == num_kv_heads
+                rms = key.square().mean(-1).sqrt()
+                torch.testing.assert_close(rms, torch.full_like(rms, scale),
+                                           rtol=1e-12, atol=1e-12)
+            if previous_keys is not None:
+                for old, current in zip(previous_keys, keys):
+                    # 旧 K 必须逐位复用；结合新增块调用统计，禁止再次归一化前缀。
+                    torch.testing.assert_close(current[:, :, :old.shape[2]], old, rtol=0, atol=0)
+            previous_keys = tuple(key.clone() for key in keys)
+            trace = dense.trace(batch)
+            torch.testing.assert_close(cached_logits, dense(batch)["logits"],
+                                       rtol=1e-11, atol=1e-11)
+            torch.testing.assert_close(cached_logits, dense.score_hidden(trace.encoded, trace.hidden, batch),
+                                       rtol=1e-11, atol=1e-11)
 
 
 @pytest.mark.parametrize("norm_first", (True, False))
@@ -184,6 +340,68 @@ def test_kv_cache_recomputes_current_state_without_rebuilding_prefix():
     )
     assert model._kv_cache is original_cache
     assert model._kv_cache.prefix_tokens.shape[1] == 6
+
+
+@pytest.mark.parametrize("norm_first", (True, False))
+def test_kv_mixing_aligns_x0_for_prefix_append_current_and_rebuild(norm_first):
+    """不同于默认初值的真实 mix，必须对齐当前正在编码块的原始 token。"""
+    model, full_model = _make_model_pair(norm_first=norm_first, activation="swiglu")
+    with torch.no_grad():
+        model.encoder.residual_mix.r.copy_(torch.tensor([0.7, 1.4]))
+        model.encoder.residual_mix.a.copy_(torch.tensor([0.6, -0.2]))
+    full_model.load_state_dict(model.state_dict())
+    model.double()
+    full_model.double()
+    model.enable_kv_cache(True)
+    captured, calls = {}, []
+    input_hook = model.input_encoder.register_forward_hook(
+        lambda module, args, output: captured.update(encoded=output))
+    mix_hook = model.encoder.residual_mix.register_forward_hook(
+        lambda module, args, output: calls.append(args))
+    requests = [(0, 0.0, False), (1, 0.0, False), (1, 10.0, False),
+                (2, 0.0, False), (2, 0.0, True)]
+    previous_prefix_length = 0
+    try:
+        for step, (history_length, current_offset, rebuild) in enumerate(requests):
+            calls.clear()
+            batch = _make_batch(history_length, current_state_offset=current_offset)
+            batch = {key: value.double() if value.is_floating_point() else value
+                     for key, value in batch.items()}
+            if rebuild:
+                batch["scene_vectors"][0, 0, 0] += 7.0
+            actual = model(batch)["logits"]
+            torch.testing.assert_close(actual, full_model(batch)["logits"], rtol=1e-12, atol=1e-12)
+            encoded = captured["encoded"]
+            prefix_length = encoded["prefix_length"]
+            if step == 0 or rebuild:
+                expected_blocks = [encoded["tokens"][:, :prefix_length]]
+            elif prefix_length > previous_prefix_length:
+                expected_blocks = [encoded["tokens"][:, previous_prefix_length:prefix_length]]
+            else:
+                expected_blocks = []
+            expected_blocks.append(encoded["tokens"][:, prefix_length:])
+            assert len(calls) == len(expected_blocks) * model.config.n_layers
+            for block_index, expected in enumerate(expected_blocks):
+                for layer_index in range(model.config.n_layers):
+                    args = calls[block_index * model.config.n_layers + layer_index]
+                    assert args[2] == layer_index
+                    torch.testing.assert_close(args[1], expected, rtol=0, atol=0)
+            previous_prefix_length = prefix_length
+    finally:
+        input_hook.remove()
+        mix_hook.remove()
+
+
+def test_kv_mixing_handles_empty_scene_and_history_prefix():
+    model, full_model = _make_model_pair(activation="swiglu")
+    model.enable_kv_cache(True)
+    batch = _make_batch(0)
+    batch["scene_vectors"] = batch["scene_vectors"][:, :0]
+    batch["scene_types"] = batch["scene_types"][:, :0]
+    batch["scene_mask"] = batch["scene_mask"][:, :0]
+    torch.testing.assert_close(model(batch)["logits"], full_model(batch)["logits"], rtol=1e-5, atol=1e-6)
+    assert model._kv_cache.prefix_tokens.shape[1] == 0
+    assert all(key.shape[2] == 0 for key in model._kv_cache.key_cache)
 
 
 @pytest.mark.parametrize("full_attention_residuals", (False, True))

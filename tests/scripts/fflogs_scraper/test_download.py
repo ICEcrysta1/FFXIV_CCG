@@ -33,7 +33,7 @@ def _record(code, percentile, name="Player"):
 
 
 @pytest.mark.parametrize("mode", ["events-only", "default", "damage-only"])
-def test_batch_download_saves_full_analysis_context(monkeypatch, tmp_path, analysis_meta, mode):
+def test_stratified_download_saves_full_analysis_context(monkeypatch, tmp_path, analysis_meta, mode):
     client = FFLogsV2Client("id", "secret")
     monkeypatch.setattr(
         client, "get_report_fights",
@@ -47,8 +47,12 @@ def test_batch_download_saves_full_analysis_context(monkeypatch, tmp_path, analy
         requests.append((source_id, require_complete))
         return []
     monkeypatch.setattr(client, "get_fight_events", get_events)
-    batch._batch_download(client, [("ABC123", 33, "Player", 123)], str(tmp_path), mode)
-    payload = read_json(next(tmp_path.glob("*.json.br")))
+    result = batch._stratified_batch_download(
+        client, [_record("ABC123", 95)], {"90-100": 1}, str(tmp_path), mode,
+    )
+    assert result["success"] == 1
+    assert result["counts"] == {"90-100": 1}
+    payload = read_json(next(tmp_path.rglob("*.json.br")))
     assert payload["source_id"] == 1
     assert payload["lang"] == "cn"
     assert payload["events_complete"] is (mode != "damage-only")
@@ -65,7 +69,7 @@ def test_batch_download_uses_combined_metadata_and_player_query(monkeypatch, tmp
 
     monkeypatch.setattr(client, "get_report_fights", get_metadata)
     monkeypatch.setattr(
-        client, "resolve_source_id",
+        client, "query",
         lambda *args: pytest.fail("不应再次单独查询玩家"),
     )
     monkeypatch.setattr(client, "get_fight_events", lambda *args, **kwargs: [])

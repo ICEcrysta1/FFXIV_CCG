@@ -350,16 +350,6 @@ def test_character_history_rejects_invalid_parameters(field, value):
         client.get_character_history(**kwargs)
 
 
-def test_legacy_high_score_selection_also_excludes_anonymous(monkeypatch):
-    client = FFLogsV2Client("id", "secret")
-    monkeypatch.setattr(client, "get_encounter_rankings", lambda *args, **kwargs: {"rankings": [
-        {"name": "Anonymous", "report": {"code": "PRIVATE", "fightID": 1}},
-        {"name": "Masked", "report": {"code": "a:DfrP27RKwgqBkQGA", "fightID": 27}},
-        {"name": "Player", "amount": 123, "report": {"code": "PUBLIC", "fightID": 1}},
-    ]})
-    assert client.get_high_score_reports(1079) == [("PUBLIC", 1, "Player", 123)]
-
-
 def test_unlinked_character_resolves_by_name_and_server_before_history_query(monkeypatch):
     client = FFLogsV2Client("id", "secret")
     queries = []

@@ -17,7 +17,8 @@ from scripts.autoregressive_replay.ppg import (
 )
 from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
 from common.policy.data import Normalizer
-from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION
+from common.policy.config import ModelConfig
+from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION, TrainingSchema, SceneWindowSchema
 from scripts.autoregressive_replay.context import LiveBatchBuilder
 
 
@@ -131,17 +132,25 @@ def test_real_ppg_counts_queued_gcds_and_masks_policy_wait(cs_backend, monkeypat
     keys = tuple(canonical["action_keys"])
     from common.policy.data.action_space import ActionSpace
     action_space = ActionSpace.from_job_tag("black_mage")
+    schema = TrainingSchema(
+        serialization_format="test", sample_schema_version=TRAINING_SAMPLE_SCHEMA_VERSION,
+        context_schema_version=CANONICAL_CONTEXT_SCHEMA_VERSION, scene_context_mode="absolute",
+        state_group_feature_keys=groups, skill_history_fields=("kind",),
+        scene_windows=(SceneWindowSchema.from_feature_keys(
+            context_key="targetable_window_context", scene_type_id=0,
+            feature_keys=("start_offset_seconds", "end_offset_seconds", "duration_seconds"),
+        ),),
+    )
+    normalizer = Normalizer()
+    normalizer.ensure_job_resources("black_mage")
     builder = LiveBatchBuilder(
         backend=cs_backend,
         vocab=SimpleNamespace(require_lookup=lambda value, **kwargs: value),
-        normalizer=SimpleNamespace(normalize=lambda values, *args, **kwargs: values,
-                                   normalize_skill_features=lambda values, *args: values),
-        schema=SimpleNamespace(state_group_feature_keys=groups,
-                               state_vector_dim=lambda: sum(map(len, groups.values())),
-                               scene_feature_dim=lambda: 1),
+        normalizer=normalizer, schema=schema,
         skill_feature_names=("kind",),
-        scene_provider=SimpleNamespace(at_time=lambda _: (torch.zeros((0, 1)), torch.zeros(0, dtype=torch.int32))),
+        scene_provider=SimpleNamespace(at_time=lambda _: (torch.zeros((0, 3)), torch.zeros(0, dtype=torch.int32))),
         device=torch.device("cpu"), max_history=20,
+        model_config=ModelConfig(history_capacity=20),
         action_keys=keys, action_is_gcd=action_space.action_is_gcd,
     )
 
@@ -261,10 +270,6 @@ def test_validation_rollout_stops_at_fight_end_and_uses_executed_history():
         def next_state_event_after(_time_seconds):
             return None
 
-        @staticmethod
-        def targetable_windows():
-            return []
-
     result = _run_rollout_until_time(
         _FakeModel(),
         FakeBackend(),
@@ -299,10 +304,6 @@ def test_validation_rollout_skips_fight_when_all_actions_are_illegal(caplog):
         @staticmethod
         def next_state_event_after(_time_seconds):
             return None
-
-        @staticmethod
-        def targetable_windows():
-            return []
 
     class FakeBackend(_FakeBackend):
         def __init__(self):
@@ -344,14 +345,14 @@ def test_validation_ppg_recovers_initial_base_gcd_from_saved_current_state(base_
     )
     normalizer.register_schema(schema)
     actual_gcd = base_gcd * (0.85 if haste else 1.0)
-    previous_gcd = normalizer.normalize_value("player_state", "previous_action_after.current_gcd_seconds", 2.9)
-    request_gcd = normalizer.normalize_value("player_state", "request_state.current_gcd_seconds", actual_gcd)
+    previous_gcd = 2.9
+    request_gcd = actual_gcd
 
     class Reader:
         @staticmethod
         def sample(_index):
             return {
-                "current_state_vectors": torch.tensor([previous_gcd, request_gcd, float(not haste), float(haste)]),
+                "current_state_abs_values": torch.tensor([previous_gcd, request_gcd, float(not haste), float(haste)]),
                 "current_state_null_mask": torch.zeros(4, dtype=torch.bool),
             }
     Reader.schema = schema
@@ -368,13 +369,12 @@ def test_initial_ppg_state_cannot_silently_fall_back_to_local_gcd(missing_state,
     normalizer = Normalizer()
     keys = ("previous_action_after.current_gcd_seconds", "request_state.current_gcd_seconds")
     normalizer.register_feature_keys("player_state", list(keys))
-    normalized = normalizer.normalize_value("player_state", keys[0], gcd)
     schema = SimpleNamespace(
         state_group_feature_keys={"player_state": keys}, state_vector_dim=lambda: 2,
         state_group_slices=lambda: {"player_state": slice(0, 2)},
     )
     values = {} if missing_state else {
-        "current_state_vectors": torch.tensor([normalized, normalized]),
+        "current_state_abs_values": torch.tensor([gcd, gcd]),
         "current_state_null_mask": torch.tensor([False, null_gcd]),
     }
     reader = SimpleNamespace(schema=schema, sample=lambda _index: values)
@@ -541,6 +541,7 @@ def test_validation_ppg_reads_history_capacity_from_model_config(
             cache_events.append(("reset", self._kv_cache_enabled))
 
     model = FakeModel()
+    model.config = config.model
     model._kv_cache_enabled = cache_was_enabled
 
     result = ppg_module.evaluate_validation_ppg(

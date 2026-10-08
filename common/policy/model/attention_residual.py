@@ -23,7 +23,6 @@ class FullAttentionResidual(nn.Module):
         if num_queries <= 0:
             raise ValueError("num_queries must be positive")
         self.pseudo_queries = nn.Parameter(torch.zeros(num_queries, d_model))
-        self._logit_scale = d_model**-0.5
         self.key_norms = nn.ModuleList(
             nn.RMSNorm(d_model) for _ in range(num_queries)
         )
@@ -60,6 +59,7 @@ class FullAttentionResidual(nn.Module):
 
         query = self.pseudo_queries[query_index]
         source_values = tuple(sources)
+        # 深度打分直接使用 query 与 RMSNorm(key) 的内积，不按模型宽度缩放。
         logits = torch.cat(
             tuple(
                 torch.einsum(
@@ -67,7 +67,6 @@ class FullAttentionResidual(nn.Module):
                     query,
                     self.key_norms[query_index](source),
                 ).unsqueeze(0)
-                * self._logit_scale
                 for source in source_values
             ),
             dim=0,

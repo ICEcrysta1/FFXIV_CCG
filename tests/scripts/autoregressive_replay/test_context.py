@@ -8,15 +8,18 @@ import pytest
 import torch
 
 from common.contracts import SLIDECAST_WINDOW_SECONDS
-from common.numeric import flatten_numeric_mapping
 from common.policy.data import Normalizer
+from common.policy.config import ModelConfig
 from common.policy.data.schema import (
     SCENE_TYPE_MOVEMENT,
     SCENE_TYPE_RAID_BUFF,
     SCENE_TYPE_TARGET_COUNT,
     SCENE_TYPE_TARGETABLE,
+    SceneWindowSchema,
+    TrainingSchema,
+    TRAINING_SAMPLE_SCHEMA_VERSION,
 )
-from scripts.autoregressive_replay import context as replay_context_module
+from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
 from scripts.autoregressive_replay.context import (
     LiveBatchBuilder,
     SceneTemplateProvider,
@@ -70,8 +73,8 @@ class _SceneReader:
         return (
             torch.tensor(
                 [
-                    [0.0, 1.0 / 1800.0, 1.0 / 1800.0, 2.0 / 3.0],
-                    [1.0 / 1800.0, 3.0 / 1800.0, 2.0 / 1800.0, 1.0],
+                    [0.0, 1.0, 1.0, 2.0],
+                    [1.0, 3.0, 2.0, 3.0],
                 ],
                 dtype=float_dtype,
             ),
@@ -113,7 +116,7 @@ class _TargetableSceneReader:
     @staticmethod
     def scene_tokens(index, *, float_dtype, int_dtype):
         del index
-        scale = 1800.0
+        scale = 1.0
         return (
             torch.tensor(
                 [
@@ -127,7 +130,7 @@ class _TargetableSceneReader:
         )
 
 
-def test_scene_template_provider_uses_normalized_scene_and_resolves_target_count():
+def test_scene_template_provider_uses_raw_scene_and_resolves_target_count():
     provider = SceneTemplateProvider(_SceneReader(), normalizer=Normalizer(), initial_sample_index=1)
     vectors, types = provider.at_time(0.0)
     assert vectors.shape == (2, 4)
@@ -173,8 +176,33 @@ def test_scene_template_provider_uses_normalized_scene_and_resolves_target_count
                 vectors[:, 2] *= 1800.0
             return vectors, types
 
-    with pytest.raises(ValueError, match="must be normalized"):
-        SceneTemplateProvider(RawSceneReader(), normalizer=Normalizer(), initial_sample_index=1)
+    long_scene = SceneTemplateProvider(RawSceneReader(), normalizer=Normalizer(), initial_sample_index=1)
+    assert long_scene.at_time(0)[0][1, 1].item() == 5400.0
+    assert long_scene.target_count_at(1801.0) == 3
+
+
+@pytest.mark.parametrize("target_count", [0.0, -1.0, 0.5])
+def test_scene_template_provider_keeps_zero_targets_and_rejects_invalid_counts(target_count):
+    class TargetCountReader(_SceneReader):
+        @staticmethod
+        def scene_tokens(index, *, float_dtype, int_dtype):
+            vectors, types = _SceneReader.scene_tokens(
+                index, float_dtype=float_dtype, int_dtype=int_dtype,
+            )
+            vectors[0, 3] = target_count
+            return vectors, types
+
+    provider = SceneTemplateProvider(
+        TargetCountReader(), normalizer=Normalizer(), initial_sample_index=1,
+    )
+    if target_count == 0:
+        # 零目标是合法的完整场景事实，窗口外仍使用单目标默认值。
+        assert provider.target_count_at(0.5) == 0
+        assert provider.target_count_at(1.8) == 3
+        assert provider.target_count_at(3.0) == 1
+    else:
+        with pytest.raises(ValueError, match="non-negative integer"):
+            provider.target_count_at(0.5)
 
 
 def test_scene_template_provider_syncs_targetable_timeline_into_live_state():
@@ -292,7 +320,7 @@ def test_scene_template_provider_syncs_movement_with_slidecast_boundary():
         ),
         scene_feature_dim=lambda: 4,
     )
-    scale = 1800.0
+    scale = 1.0
 
     class Reader:
         num_samples = 1
@@ -310,7 +338,7 @@ def test_scene_template_provider_syncs_movement_with_slidecast_boundary():
                         [0.0, 100.0 / scale, 100.0 / scale, 1.0],
                         [10.0 / scale, 20.0 / scale, 10.0 / scale, 0.0],
                         [30.0 / scale, 50.0 / scale, 20.0 / scale, 1.0],
-                        [40.0 / scale, 60.0 / scale, 20.0 / scale, 2.0 / 3.0],
+                        [40.0 / scale, 60.0 / scale, 20.0 / scale, 2.0],
                     ],
                     dtype=float_dtype,
                 ),
@@ -391,6 +419,7 @@ def _live_builder_fixture(*, max_history=2, reorder_state_fields=False):
     initial_values = {"previous_action_after.time_seconds": 0.0, "previous_action_after.mp": 200.0,
                       "request_state.time_seconds": 0.0, "request_state.mp": 200.0}
     canonical = {
+        "history_cursor": 0,
         "action_keys": ["fire", "ogcd_wait"],
         "action_legal_mask": [True, True],
         "skill_history_context": [],
@@ -404,24 +433,31 @@ def _live_builder_fixture(*, max_history=2, reorder_state_fields=False):
             assert format == "vector"
             return SimpleNamespace(context=deepcopy(canonical))
 
-    schema = SimpleNamespace(
+    schema = TrainingSchema(
+        serialization_format="test", sample_schema_version=TRAINING_SAMPLE_SCHEMA_VERSION,
+        context_schema_version=CANONICAL_CONTEXT_SCHEMA_VERSION, scene_context_mode="absolute",
+        scene_windows=(SceneWindowSchema.from_feature_keys(
+            context_key="targetable_window_context", scene_type_id=0,
+            feature_keys=("start_offset_seconds", "end_offset_seconds", "duration_seconds"),
+        ),),
         state_group_feature_keys={"player_state": player_keys},
-        state_vector_dim=lambda: 4, scene_feature_dim=lambda: 2,
+        skill_history_fields=("kind", "potency"),
     )
+    normalizer = Normalizer()
+    normalizer.ensure_job_resources("black_mage")
     builder = LiveBatchBuilder(
         backend=Backend(), vocab=SimpleNamespace(require_lookup=lambda value, **kwargs: int(value)),
-        normalizer=SimpleNamespace(
-            normalize=lambda value, *args, **kwargs: value,
-            normalize_skill_features=lambda value, *args: value,
-        ), schema=schema, skill_feature_names=("kind", "potency"),
-        scene_provider=SimpleNamespace(at_time=lambda _: (torch.empty((0, 2)), torch.empty(0, dtype=torch.int32))),
+        normalizer=normalizer, schema=schema, skill_feature_names=("kind", "potency"),
+        scene_provider=SimpleNamespace(at_time=lambda _: (torch.empty((0, 3)), torch.empty(0, dtype=torch.int32))),
         device=torch.device("cpu"), max_history=max_history,
+        model_config=ModelConfig(history_capacity=max_history, history_reset_keep=max_history),
         action_keys=("fire", "ogcd_wait"), action_is_gcd=(True, False),
     )
     return builder, canonical
 
 
 def _append_live_history(canonical, index, *, after=100.0, request_time=None, skill_id=None):
+    canonical["history_cursor"] += 1
     canonical["skill_history_context"].append({
         "skill_id": index if skill_id is None else skill_id, "skill_key": "fire", "kind": 1, "potency": 50.0,
     })
@@ -439,7 +475,8 @@ def test_live_current_state_is_independent_of_action_legality_and_preserves_phas
     batch, keys = builder.build(SimpleNamespace(time=1.0, gcd_remaining=remaining))
     assert keys == ["fire", "ogcd_wait"]
     assert batch["current_state_vectors"].shape == (1, 4)
-    assert batch["current_state_vectors"].tolist() == [[0.0, 200.0, 0.0, 200.0]]
+    torch.testing.assert_close(batch["current_state_vectors"], torch.tensor([[0.0, 0.02, 0.0, 0.02]]))
+    assert batch["current_state_reset_mask"].all()
     assert batch["current_state_null_mask"].tolist() == [[False, False, False, False]]
     assert batch["history_skill_ids"].shape == (1, 0)
     assert batch["action_legal_mask"].tolist() == [expected]
@@ -455,8 +492,10 @@ def test_live_history_window_keeps_matching_skill_and_state_rows():
         _append_live_history(canonical, index, after=float(index))
     batch, _ = builder.build(SimpleNamespace(time=4.0, gcd_remaining=0.0))
     assert batch["history_skill_ids"].tolist() == [[2, 3]]
-    assert batch["history_state_vectors"].tolist() == [[[1.0, 200.0, 2.0, 2.0], [2.0, 200.0, 3.0, 3.0]]]
-    assert batch["history_skill_features"].tolist() == [[[1.0, 50.0], [1.0, 50.0]]]
+    torch.testing.assert_close(batch["history_state_vectors"], torch.tensor([[[-1/120, .02, 0, .0002], [1/120, 0, 1/120, .0001]]]))
+    assert batch["history_state_reset_mask"][0, 0].all()
+    assert not batch["history_state_reset_mask"][0, 1].any()
+    assert batch["history_skill_features"][0, :, 0].tolist() == [1.0, 1.0]
     assert batch["history_action_keys"] == [["fire", "fire"]]
     empty, _ = builder.build(SimpleNamespace(time=4.0, gcd_remaining=0.0), max_history=0)
     assert empty["history_skill_ids"].shape == (1, 0)
@@ -509,11 +548,11 @@ def test_live_history_cache_reuses_unchanged_rows_and_refreshes_mutated_rows(mon
     first, _ = builder.build(state)
     repeated, _ = builder.build(state)
     assert calls == [1, 2]
-    assert repeated["history_state_vectors"].data_ptr() == first["history_state_vectors"].data_ptr()
+    torch.testing.assert_close(repeated["history_state_vectors"], first["history_state_vectors"])
     canonical["current_state_context"]["tokens"][0]["player_state"] = [0.0, 150.0, 0.0, 150.0]
     refreshed, _ = builder.build(state)
     assert calls == [1, 2]
-    assert refreshed["current_state_vectors"].tolist() == [[0.0, 150.0, 0.0, 150.0]]
+    torch.testing.assert_close(refreshed["current_state_vectors"], torch.tensor([[-1/120, -.005, -2/120, .005]]))
     _append_live_history(canonical, 3)
     builder.build(state)
     assert calls == [1, 2, 3]
@@ -579,20 +618,21 @@ def test_live_history_cache_preserves_same_skill_same_time_rows_and_sliding_wind
     assert builder._cached_history_rows[0].identity[-1] == 10.0
     repeated, _ = builder.build(state)
     assert calls == [7, 7]
-    assert repeated["history_state_vectors"].data_ptr() == first["history_state_vectors"].data_ptr()
+    torch.testing.assert_close(repeated["history_state_vectors"], first["history_state_vectors"])
 
     _append_live_history(canonical, 3, after=140.0, request_time=10.0, skill_id=7)
     slid, _ = builder.build(state)
     mp_index = canonical["state_history_context"]["player_state_feature_keys"].index("request_state.mp")
     assert slid["history_skill_ids"].tolist() == [[7, 7]]
-    assert slid["history_state_vectors"][0, :, mp_index].tolist() == [
-        100.0 if identical_snapshots else 120.0, 140.0,
-    ]
+    first_mp = 100.0 if identical_snapshots else 120.0
+    torch.testing.assert_close(slid["history_state_vectors"][0, :, mp_index],
+                               torch.tensor([first_mp / 10000, (140.0 - first_mp) / 10000]))
     assert calls == [7, 7, 7]
 
     canonical["skill_history_context"][-1]["potency"] = 99.0
     changed, _ = builder.build(state)
-    assert changed["history_skill_features"][0, -1].tolist() == [1.0, 99.0]
+    assert changed["history_skill_features"][0, -1, 0].item() == 1.0
+    assert changed["history_skill_features"][0, -1, 1] > slid["history_skill_features"][0, -1, 1]
     assert calls == [7, 7, 7, 7]
 
 
@@ -611,4 +651,96 @@ def test_live_history_rejects_old_skill_timestamp_even_with_new_state_schema():
     _append_live_history(canonical, 1)
     canonical["skill_history_context"][0]["time_seconds"] = 1.0
     with pytest.raises(ValueError, match="live skill token must not include time_seconds"):
+        builder.build_from_canonical(canonical, gcd_phase=True, max_history=2)
+
+
+def test_live_window_uses_accumulated_cursor_after_canonical_retention():
+    """留存一直是 300 行，分段窗口仍由累计 301/593/594 游标决定。"""
+    from dataclasses import replace
+
+    builder, canonical = _live_builder_fixture(max_history=300)
+    builder._model_config = replace(builder._model_config, history_reset_keep=8)
+    expected_lengths = {300: 300, 301: 8, 593: 300, 594: 8}
+    for index in range(1, 595):
+        _append_live_history(canonical, index, after=100.0)
+        canonical["skill_history_context"] = canonical["skill_history_context"][-300:]
+        canonical["state_history_context"]["tokens"] = canonical["state_history_context"]["tokens"][-300:]
+        if index not in expected_lengths:
+            continue
+        actual, _ = builder.build_from_canonical(canonical, gcd_phase=True, max_history=300)
+        expected_length = expected_lengths[index]
+        assert actual["history_skill_ids"].shape[1] == expected_length
+        assert builder.context_metadata == {"history_cursor": index}
+        assert int(actual["history_mask"].sum()) == expected_length
+        assert not {"history_cursor", "history_window_start", "history_window_length"} & actual.keys()
+        assert actual["history_skill_ids"][0, 0].item() == index - expected_length + 1
+        assert actual["history_state_reset_mask"][0, 0].all()
+        repeated, _ = builder.build_from_canonical(canonical, gcd_phase=True, max_history=300)
+        torch.testing.assert_close(repeated["history_state_vectors"], actual["history_state_vectors"])
+        assert canonical["history_cursor"] == index
+
+
+@pytest.mark.parametrize("cursor", [None, True, -1, 1.0])
+def test_live_rejects_missing_or_invalid_accumulated_cursor(cursor):
+    builder, canonical = _live_builder_fixture()
+    canonical["history_cursor"] = cursor
+    with pytest.raises(ValueError, match="history_cursor"):
+        builder.build_from_canonical(canonical, gcd_phase=True, max_history=2)
+
+
+def test_live_history_limit_can_be_smaller_than_saved_reset_keep():
+    builder, canonical = _live_builder_fixture(max_history=8)
+    for index in range(1, 10):
+        _append_live_history(canonical, index)
+    limited, _ = builder.build_from_canonical(canonical, gcd_phase=True, max_history=4)
+    assert limited["history_skill_ids"].tolist() == [[6, 7, 8, 9]]
+    no_history, _ = builder.build_from_canonical(canonical, gcd_phase=True, max_history=0)
+    assert no_history["current_state_reset_mask"].all()
+    assert builder.context_metadata == {"history_cursor": 9}
+
+
+@pytest.mark.parametrize("capacity,total,limit,expected", [
+    (300, 33, 32, 32), (300, 33, 0, 0), (300, 301, 32, 8),
+    (300, 593, 32, 32), (300, 594, 32, 8), (32, 33, 32, 8),
+])
+def test_live_history_limit_does_not_change_model_reset_cycle(capacity, total, limit, expected):
+    """真实 builder 同时覆盖读取消融与正式容量重置，不改变完整游标。"""
+    from dataclasses import replace
+
+    builder, canonical = _live_builder_fixture(max_history=capacity)
+    builder._model_config = replace(builder._model_config, history_reset_keep=8)
+    for index in range(1, total + 1):
+        _append_live_history(canonical, index)
+    limited, _ = builder.build_from_canonical(canonical, gcd_phase=True, max_history=limit)
+    assert limited["history_skill_ids"].shape[1] == expected
+    assert limited["history_skill_ids"].tolist() == [list(range(total - expected + 1, total + 1))]
+    assert builder.context_metadata == {"history_cursor": total}
+    if expected:
+        assert limited["history_state_reset_mask"][0, 0].all()
+    else:
+        assert limited["current_state_reset_mask"].all()
+    metadata = builder.context_metadata
+    metadata["history_cursor"] = -1
+    assert builder.context_metadata == {"history_cursor": total}
+
+
+@pytest.mark.parametrize("limit", [True, -1, 1.0, None])
+def test_live_rejects_invalid_history_limit(limit):
+    builder, canonical = _live_builder_fixture()
+    with pytest.raises(ValueError, match="max_history"):
+        builder.build_from_canonical(canonical, gcd_phase=True, max_history=limit)
+
+
+def test_live_unknown_recovery_marks_absolute_fields_and_checks_current_time():
+    builder, canonical = _live_builder_fixture()
+    _append_live_history(canonical, 1, after=None)
+    _append_live_history(canonical, 2, after=150.0)
+    actual, _ = builder.build_from_canonical(canonical, gcd_phase=True, max_history=2)
+    assert actual["history_state_null_mask"][0, 0, 3]
+    assert not actual["history_state_reset_mask"][0, 0, 3]
+    assert actual["history_state_vectors"][0, 0, 3].item() == -1.0
+    assert actual["history_state_reset_mask"][0, 1, 3]
+    assert actual["history_state_vectors"][0, 1, 3].item() == pytest.approx(.015)
+    canonical["current_state_context"]["tokens"][0]["player_state"][2] = None
+    with pytest.raises(ValueError, match="request_state.time_seconds.*finite"):
         builder.build_from_canonical(canonical, gcd_phase=True, max_history=2)

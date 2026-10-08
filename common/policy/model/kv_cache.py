@@ -34,6 +34,7 @@ def encode_with_kv_cache(encoder, encoded, cache=None):
     position_ids = encoded["position_ids"]
     prefix_positions = position_ids[:, :prefix_length]
     residual = getattr(encoder, "attention_residual", None)
+    residual_mix = getattr(encoder, "residual_mix", None)
     rotary = getattr(encoder, "rotary_position_encoding", None)
     if rotary is None:
         raise ValueError("encoder is missing the required RotaryPositionEncoding module")
@@ -48,6 +49,7 @@ def encode_with_kv_cache(encoder, encoded, cache=None):
             attention_residual=residual, rotary_position_encoding=rotary,
         )
     hidden = tokens[:, prefix_length:]
+    initial_tokens = hidden
     sources = [hidden] if residual is not None else None
     valid = encoded["valid"]
     mask = build_segment_mask(
@@ -62,6 +64,7 @@ def encode_with_kv_cache(encoder, encoded, cache=None):
             existing_key=cache.key_cache[index], existing_value=cache.value_cache[index],
             existing_length=prefix_length,
             attention_residual=residual, sources=sources, query_index=2 * index,
+            residual_mix=residual_mix, initial_tokens=initial_tokens, layer_index=index,
             segment_mask=mask,
         )
     if encoder.norm is not None:
@@ -103,6 +106,7 @@ def _build_prefix_cache(
     rotary_position_encoding,
 ) -> TransformerKVCache:
     hidden = prefix_tokens
+    residual_mix = getattr(encoder, "residual_mix", None)
     sources = [prefix_tokens] if attention_residual is not None else None
     key_cache: list[torch.Tensor] = []
     value_cache: list[torch.Tensor] = []
@@ -123,6 +127,9 @@ def _build_prefix_cache(
             position_ids=prefix_position_ids,
             rotary_position_encoding=rotary_position_encoding,
             attention_residual=attention_residual,
+            residual_mix=residual_mix,
+            initial_tokens=prefix_tokens,
+            layer_index=layer_index,
             sources=sources,
             query_index=2 * layer_index,
         )
@@ -161,6 +168,7 @@ def _append_prefix(
 
     working_valid = torch.cat((cache.prefix_valid, new_valid), dim=1)
     hidden = new_tokens
+    residual_mix = getattr(encoder, "residual_mix", None)
     sources = [new_tokens] if attention_residual is not None else None
     key_cache = list(cache.key_cache)
     value_cache = list(cache.value_cache)
@@ -176,6 +184,9 @@ def _append_prefix(
             existing_value=value_cache[layer_index],
             existing_length=cached_length,
             attention_residual=attention_residual,
+            residual_mix=residual_mix,
+            initial_tokens=new_tokens,
+            layer_index=layer_index,
             sources=sources,
             query_index=2 * layer_index,
         )

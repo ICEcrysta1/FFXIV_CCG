@@ -12,10 +12,9 @@ from scripts.convert_fflogs.source.source_reader import TrainingSourceReader
 from scripts.convert_fflogs.training.history_bank import build_history_bank
 from scripts.convert_fflogs.training.sample_builder import TrainingSampleBuilder
 from scripts.convert_fflogs.utils import build_skill_book, load_job_project_config
-from common.policy.data import ActionSpace, Normalizer, NormalizerConfig, SkillVocab
+from common.policy.data import ActionSpace, Normalizer, SkillVocab
 from training import TrainingDataset
 from common.policy.data.compiled_cache import build_cache_signature, cache_path_for_source
-from common.policy.data.schema import SceneWindowSchema
 
 
 _TEST_TRAINING_PAYLOADS: dict[Path, dict[str, object]] = {}
@@ -47,6 +46,8 @@ def make_dataset(source_paths: list[Path], **kwargs) -> TrainingDataset:
     kwargs.setdefault("normalizer", Normalizer())
     kwargs.setdefault("job_tag", "black_mage")
     kwargs.setdefault("expected_action_space", ActionSpace.from_job_tag(kwargs["job_tag"]))
+    if kwargs.get("max_history") is not None:
+        kwargs.setdefault("history_reset_keep", min(8, kwargs["max_history"]))
     if "cache_dir" not in kwargs:
         kwargs["cache_dir"] = source_paths[0].parents[1] / ".cache"
     for source_path in source_paths:
@@ -209,9 +210,6 @@ def write_test_compiled_cache(
     )
     builder = TrainingSampleBuilder(
         torch=torch,
-        normalizer=normalizer,
-        skill_vocab=vocab,
-        skill_feature_names=reader.skill_feature_names,
         int_dtype=int_dtype,
         float_dtype=float_dtype,
         num_actions=reader.num_actions,

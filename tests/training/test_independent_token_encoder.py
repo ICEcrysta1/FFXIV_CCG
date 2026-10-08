@@ -8,7 +8,7 @@ import torch
 from common.policy.config import ModelConfig
 from common.policy.model import CausalPolicyModel
 from common.policy.model.input_encoder import ROLE_SCENE, ROLE_SKILL, ROLE_STATE
-from tests.training._causal_fixtures import make_batch, make_checkpoint, make_data_spec
+from tests.training._causal_fixtures import make_batch, make_data_spec
 
 
 def _model(*, full_attention_residuals=False, history_capacity=4, scene_capacity=3):
@@ -16,6 +16,7 @@ def _model(*, full_attention_residuals=False, history_capacity=4, scene_capacity
     config = ModelConfig(d_model=8, n_heads=2, num_kv_heads=1, n_layers=2,
                          ff_dim=16, dropout=0.0, scene_capacity=scene_capacity,
                          history_capacity=history_capacity,
+                         history_reset_keep=min(8, history_capacity),
                          full_attention_residuals=full_attention_residuals)
     return CausalPolicyModel(spec, config, vocab_size=3).eval()
 
@@ -150,8 +151,10 @@ def test_empty_or_fully_masked_history_keeps_only_current_state_visible(history_
 
 
 @pytest.mark.parametrize("legacy_key", ["output_adapter.weight", "input_encoder.pair_fusion_up.weight",
-                                       "input_encoder.token_embedding.0.weight", "input_encoder.segment_embed.weight"])
-def test_fused_encoder_weights_are_rejected_even_with_new_contract(legacy_key):
-    checkpoint = make_checkpoint(model_state_dict={legacy_key: torch.zeros(1)})
-    with pytest.raises(ValueError, match="unsupported fused/scoring architecture"):
-        CausalPolicyModel.checkpoint_model_config(checkpoint)
+                                       "input_encoder.token_embedding.0.weight", "input_encoder.segment_embed.weight",
+                                       "_learned_residual_mix_experiment_guard"])
+def test_unexpected_architecture_weights_are_rejected_by_strict_loading(legacy_key):
+    model = _model()
+    weights = {**model.state_dict(), legacy_key: torch.zeros(1)}
+    with pytest.raises(RuntimeError, match="Unexpected key"):
+        model.load_state_dict(weights, strict=True)

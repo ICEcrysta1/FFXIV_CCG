@@ -5,12 +5,9 @@ from __future__ import annotations
 import numpy as np
 
 
-ANALYSIS_MP_MAX = 10000.0
-
-
 def decision_state_labels(batch_index: int, *, batch, schema) -> tuple[str, float]:
     """从黑魔状态 token 的当前请求段提取 AF/UI 和实际 MP。"""
-    values = batch["current_state_vectors"][batch_index]
+    values = batch["current_state_abs_values"][batch_index]
     null_mask = batch["current_state_null_mask"][batch_index]
     resource_slice = schema.state_group_slices().get("resource_state")
     player_slice = schema.state_group_slices().get("player_state")
@@ -37,7 +34,7 @@ def decision_state_labels(batch_index: int, *, batch, schema) -> tuple[str, floa
         elemental_state = "neutral"
     if not np.isfinite(mp) or mp < 0.0:
         return elemental_state, float("nan")
-    return elemental_state, float(np.clip(mp, 0.0, 1.0) * ANALYSIS_MP_MAX)
+    return elemental_state, mp
 
 
 def _state_scalar(values, null_mask, index: int | None) -> float:

@@ -104,7 +104,7 @@ def _write_config(tmp_path: Path, payload: object) -> Path:
         ),
         (
             {"model": {"history_capacity": -1}},
-            "model.history_capacity must be >= 0",
+            "model.history_capacity must be a non-negative integer",
         ),
         (
             {"model": {"scorer_use_raw_projection": True}},
@@ -501,6 +501,8 @@ def _encoder_batch() -> dict[str, torch.Tensor]:
         "scene_vectors": torch.zeros((1, 1, 2)),
         "scene_types": torch.zeros((1, 1), dtype=torch.long),
         "scene_mask": torch.ones((1, 1), dtype=torch.bool),
+        "history_state_reset_mask": torch.zeros_like(torch.zeros((1, 1, 3)), dtype=torch.bool),
+        "current_state_reset_mask": torch.zeros_like(torch.zeros((1, 3)), dtype=torch.bool),
     }
 
 
@@ -511,7 +513,7 @@ def test_input_encoder_handles_null_state_and_rejects_bad_shapes():
         ModelConfig(d_model=8, n_layers=1, n_heads=2, ff_dim=16),
         vocab_size=4,
     )
-    assert encoder._embed_state(torch.zeros((1, 3)), None).shape == (1, 8)
+    assert encoder._embed_state(torch.zeros((1, 3)), None, torch.ones((1, 3), dtype=torch.bool)).shape == (1, 8)
 
     with pytest.raises(ValueError, match="non-empty scene"):
         CausalInputEncoder(
@@ -528,56 +530,12 @@ def test_input_encoder_handles_null_state_and_rejects_bad_shapes():
         ("scene dimension", "scene_vectors", torch.zeros((1, 1, 3))),
         ("skill feature dimension", "history_skill_features", torch.zeros((1, 1, 2))),
         ("action legal mask", "action_legal_mask", torch.ones((1, 1), dtype=torch.bool)),
-        ("label index", "label_index", torch.tensor([2])),
     ]
     for message, key, value in invalid_batches:
         batch = _encoder_batch()
         batch[key] = value
         with pytest.raises(ValueError, match=message):
             encoder._validate_batch(batch)
-
-
-def test_input_encoder_materializes_compact_history_to_dense_semantics():
-    spec = _encoder_spec()
-    encoder = CausalInputEncoder(
-        spec,
-        ModelConfig(d_model=8, n_layers=1, n_heads=2, ff_dim=16),
-        vocab_size=4,
-    )
-    dense = _encoder_batch()
-    dense["history_state_null_mask"] = torch.tensor([[[False, True, False]]])
-    dense["history_skill_features"] = torch.tensor([[[2.0]]])
-    dense["history_state_vectors"] = torch.tensor([[[3.0, 4.0, 5.0]]])
-
-    compact = {
-        key: value
-        for key, value in dense.items()
-        if not key.startswith("history_")
-    }
-    compact.update(
-        {
-            "history_lengths": torch.tensor([1], dtype=torch.int64),
-            "history_ends": torch.tensor([2], dtype=torch.int64),
-            "history_mask": torch.ones((1, 1), dtype=torch.bool),
-            "history_bank_skill_ids": torch.tensor([0, 1], dtype=torch.long),
-            "history_bank_skill_features": torch.tensor([[0.0], [2.0]]),
-            "history_bank_state_vectors": torch.tensor(
-                [[0.0, 0.0, 0.0], [3.0, 4.0, 5.0]]
-            ),
-            "history_bank_state_null_mask": torch.tensor(
-                [[False, False, False], [False, True, False]]
-            ),
-        }
-    )
-
-    encoder._materialize_compact_history(compact)
-    for key in (
-        "history_skill_ids",
-        "history_skill_features",
-        "history_state_vectors",
-        "history_state_null_mask",
-    ):
-        assert torch.equal(compact[key], dense[key]), key
 
 
 def test_model_and_trace_helpers_cover_error_and_norm_paths():
@@ -623,7 +581,7 @@ def test_model_and_trace_helpers_cover_error_and_norm_paths():
             batch_first=True,
         ),
         1,
-        norm=nn.LayerNorm(4),
+        norm=nn.RMSNorm(4, eps=1e-5, elementwise_affine=False),
     ).eval())
     encoded = {
         "tokens": tokens,
@@ -638,7 +596,7 @@ def test_model_and_trace_helpers_cover_error_and_norm_paths():
     assert trace.attentions[0].shape[-2:] == (2, 2)
 
 
-def test_model_defaults_to_pre_ln_gelu_with_final_layer_norm():
+def test_model_defaults_to_pre_norm_gelu_with_parameterless_rms():
     from torch.nn import functional as F
 
     from common.policy.model import CausalPolicyModel
@@ -652,7 +610,11 @@ def test_model_defaults_to_pre_ln_gelu_with_final_layer_norm():
     layer = model.encoder.layers[0]
     assert layer.norm_first is True
     assert layer.activation is F.gelu
-    assert isinstance(model.encoder.norm, nn.LayerNorm)
+    for norm in (layer.norm1, layer.norm2, model.encoder.norm):
+        assert isinstance(norm, nn.RMSNorm)
+        assert norm.eps == 1e-5
+        assert norm.elementwise_affine is False
+        assert tuple(norm.parameters()) == ()
     assert layer.activation_checkpoint_ffn is False
     assert layer.activation_checkpoint_attention is False
 
@@ -768,7 +730,9 @@ def test_attention_block_checkpoint_matches_sdpa_checkpoint():
         layer.set_activation_checkpoint_attention(True)
         layer.set_activation_checkpoint_attention_block(block)
         return _attach_rope(
-            nn.TransformerEncoder(layer, 1, norm=nn.LayerNorm(8)).train()
+            nn.TransformerEncoder(
+                layer, 1, norm=nn.RMSNorm(8, eps=1e-5, elementwise_affine=False),
+            ).train()
         )
 
     base_tokens = torch.randn(2, 4, 8)
@@ -824,11 +788,13 @@ def test_attention_activation_checkpoint_preserves_forward_and_gradients(num_kv_
     checkpointed_layer = TraceableTransformerEncoderLayer(**layer_kwargs)
     checkpointed_layer.load_state_dict(eager_layer.state_dict())
     checkpointed_layer.set_activation_checkpoint_attention(True)
-    eager = _attach_rope(nn.TransformerEncoder(eager_layer, 1, norm=nn.LayerNorm(8)).train())
+    eager = _attach_rope(nn.TransformerEncoder(
+        eager_layer, 1, norm=nn.RMSNorm(8, eps=1e-5, elementwise_affine=False),
+    ).train())
     checkpointed = _attach_rope(nn.TransformerEncoder(
         checkpointed_layer,
         1,
-        norm=nn.LayerNorm(8),
+        norm=nn.RMSNorm(8, eps=1e-5, elementwise_affine=False),
     ).train())
     checkpointed.norm.load_state_dict(eager.norm.state_dict())
 
@@ -888,11 +854,13 @@ def test_full_attention_residual_checkpoint_recomputes_source_path_and_preserves
     }
     eager_layer = TraceableTransformerEncoderLayer(**layer_kwargs)
     checkpointed_layer = TraceableTransformerEncoderLayer(**layer_kwargs)
-    eager = _attach_rope(nn.TransformerEncoder(eager_layer, 2, norm=nn.LayerNorm(8)).train())
+    eager = _attach_rope(nn.TransformerEncoder(
+        eager_layer, 2, norm=nn.RMSNorm(8, eps=1e-5, elementwise_affine=False),
+    ).train())
     checkpointed = _attach_rope(nn.TransformerEncoder(
         checkpointed_layer,
         2,
-        norm=nn.LayerNorm(8),
+        norm=nn.RMSNorm(8, eps=1e-5, elementwise_affine=False),
     ).train())
     eager.attention_residual = FullAttentionResidual(d_model=8, num_queries=5)
     checkpointed.attention_residual = FullAttentionResidual(d_model=8, num_queries=5)
@@ -956,7 +924,7 @@ def test_full_attention_residual_checkpoint_preserves_partial_layer_granularity(
     encoder = _attach_rope(nn.TransformerEncoder(
         TraceableTransformerEncoderLayer(**layer_kwargs),
         2,
-        norm=nn.LayerNorm(8),
+        norm=nn.RMSNorm(8, eps=1e-5, elementwise_affine=False),
     ).train())
     encoder.attention_residual = FullAttentionResidual(d_model=8, num_queries=5)
     encoder.layers[0].set_activation_checkpoint_ffn(True)
@@ -1147,7 +1115,7 @@ def test_training_helpers_and_epoch_metrics(tmp_path, monkeypatch):
                 scene_type_id=0,
             ),
         ),
-        state_group_feature_keys={"player_state": ("a", "b", "c")},
+        state_group_feature_keys={"player_state": ("request_state.time_seconds", "b", "c")},
 
         skill_history_fields=(),
     )
@@ -1511,7 +1479,7 @@ def test_run_training_rejects_device_and_data_contract_errors(tmp_path, monkeypa
         "build_dataloaders",
         lambda *_args, **_kwargs: ([0], [0], unknown_dataset, unknown_dataset),
     )
-    monkeypatch.setattr(training_module, "registered_job_tags", lambda: ("black_mage",))
+    monkeypatch.setattr(training_module, "resolve_registered_job_tags", lambda _root: ("black_mage",))
     with pytest.raises(ValueError, match="has no registered combat state-machine route"):
         training_module.run_training(
             replace(config, job_tag=None),
@@ -1563,7 +1531,7 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
                 scene_type_id=0,
             ),
         ),
-        state_group_feature_keys={"player_state": ("a", "b", "c")},
+        state_group_feature_keys={"player_state": ("request_state.time_seconds", "b", "c")},
 
         skill_history_fields=(),
     )
@@ -1663,7 +1631,7 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
 
     monkeypatch.setattr(training_module, "build_dataloaders", fake_build_dataloaders)
     monkeypatch.setattr(training_module, "resolve_policy_cache_dir", lambda job: tmp_path / "cache")
-    monkeypatch.setattr(training_module, "registered_job_tags", lambda: ("black_mage",))
+    monkeypatch.setattr(training_module, "resolve_registered_job_tags", lambda _root: ("black_mage",))
     monkeypatch.setattr(training_module, "CausalPolicyModel", FakeModel)
     monkeypatch.setattr(training_module, "train_epoch", fake_train_epoch)
     monkeypatch.setattr(training_module, "validate", fake_validate)
@@ -1835,8 +1803,12 @@ def test_run_training_closes_tensorboard_writer_when_validation_callback_raises(
         sample_schema_version=1,
         context_schema_version=1,
         scene_context_mode="absolute",
-        scene_windows=(),
-        state_group_feature_keys={"player_state": ("a", "b", "c")},
+        scene_windows=(SceneWindowSchema.from_feature_keys(
+            context_key="targetable_window_context",
+            feature_keys=("start_offset_seconds", "end_offset_seconds", "duration_seconds"),
+            scene_type_id=0,
+        ),),
+        state_group_feature_keys={"player_state": ("request_state.time_seconds", "b", "c")},
 
         skill_history_fields=(),
     )
@@ -1846,7 +1818,7 @@ def test_run_training_closes_tensorboard_writer_when_validation_callback_raises(
         job_tag="black_mage",
         num_actions=2,
         state_dim=3,
-        scene_dim=1,
+        scene_dim=3,
         num_scene_types=1,
         action_keys=("a", "b"),
         action_to_vocab_id=(1, 2),
@@ -1963,7 +1935,7 @@ def _resume_validation_context(tmp_path: Path, *, max_epochs: int = 3):
         context_schema_version=1,
         scene_context_mode="absolute",
         scene_windows=(),
-        state_group_feature_keys={"player_state": ("a", "b", "c")},
+        state_group_feature_keys={"player_state": ("request_state.time_seconds", "b", "c")},
 
         skill_history_fields=(),
     )

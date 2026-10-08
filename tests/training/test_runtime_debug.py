@@ -84,7 +84,7 @@ def test_runtime_debug_records_transformer_attention_and_ffn(tmp_path):
     encoder = torch.nn.TransformerEncoder(
         layer,
         1,
-        norm=torch.nn.LayerNorm(8),
+        norm=torch.nn.RMSNorm(8, eps=1e-5, elementwise_affine=False),
     ).train()
     encoder.rotary_position_encoding = RotaryPositionEncoding(
         encoder.layers[0].self_attn.head_dim

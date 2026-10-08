@@ -9,7 +9,10 @@ from pathlib import Path
 
 import torch
 
+from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, ModelInputContract, SkillVocab
+from common.policy.data.input_contract import residual_composition_contract
+from common.policy.data.context_fields import MODEL_INPUT_FIELDS
 from common.policy.model.repetition import parse_repetition_config
 
 from ..io.artifact_io import file_sha256
@@ -19,6 +22,7 @@ from ..runtime.precision import (
     SUPPORTED_PRECISIONS,
     onnx_torch_dtype,
     precision_onnx_dtype,
+    validate_deployment_logit_softcap,
 )
 from ..runtime.tensor_runtime import GOLDEN_FORMAT, golden_encoding
 
@@ -33,8 +37,14 @@ from ..runtime.tensor_runtime import GOLDEN_FORMAT, golden_encoding
 # 16：状态改为请求时冻结的跨步快照，同宽旧状态语义与旧部署包不兼容。
 # 17：技能数值输入删除绝对时间列，旧技能宽度与对应部署包不兼容。
 # 18：历史 token 改为状态、技能顺序，拒绝同宽但因果语义不同的旧部署包。
-DEPLOYMENT_CONTRACT_VERSION = 18
-DEPLOYMENT_MANIFEST_VERSION = 11
+# 19：删除独立内容 LayerNorm，内容与角色相加后统一无参数 RMS 归一化。
+# 20：主干两处子层归一化及最终归一化统一为无参数 RMSNorm，拒绝旧 LayerNorm 图。
+# 21：普通残差路径改为每层可学习 r/a 与初始输入混合，旧普通残差图不兼容。
+# 22：RoPE 后逐 head 归一化 Q/K，尺度由 checkpoint 保存的 model_config 提供。
+# 23：独立无 bias 动作输出头与 FP32 softcap，尺度由 checkpoint 保存的配置提供。
+# 24：宿主 FP32 重锚 ABS/DELTA 与场景裁剪差分，增加逐字段 reset mask。
+DEPLOYMENT_CONTRACT_VERSION = 24
+DEPLOYMENT_MANIFEST_VERSION = 15
 MANIFEST_SCHEMA_FILENAME = "manifest.schema.json"
 
 
@@ -119,6 +129,7 @@ class DeploymentContract:
                 "data_spec",
                 "model_input_contract",
                 "model_config",
+                "residual_composition",
                 "vocab",
                 "state_layout",
                 "scene_layout",
@@ -215,10 +226,18 @@ class DeploymentContract:
         return contract
 
     def validate(self, *, embedding_vocab_size: int) -> None:
+        residual_composition_contract(self.model_config)
+        if "qk_norm_scale" not in self.model_config:
+            raise ValueError("deployment model_config missing qk_norm_scale; re-export the package")
+        if "logit_softcap" not in self.model_config:
+            raise ValueError("deployment model_config missing logit_softcap; re-export the package")
+        # 复用模型配置的数值校验，但禁止给旧部署元数据补默认尺度。
+        parsed_model_config = ModelConfig.from_mapping(self.model_config)
         if self.precision not in SUPPORTED_PRECISIONS:
             raise ValueError(
                 "deployment precision must be bf16, float32 or float16"
             )
+        validate_deployment_logit_softcap(parsed_model_config.logit_softcap, precision=self.precision)
         normalized_repetition = _json_value(
             asdict(parse_repetition_config(self.repetition_config))
         )
@@ -309,25 +328,23 @@ class DeploymentContract:
         fd = self.data_spec.skill_feature_dim
         xd = self.data_spec.scene_dim
         float_dtype = precision_onnx_dtype(self.precision)
-        specs = (
-            TensorSpec("scene_vectors", float_dtype, (b, s, xd), "right-padded scene vectors"),
-            TensorSpec("scene_types", "tensor(int64)", (b, s), "scene type ids"),
-            TensorSpec("scene_mask", "tensor(bool)", (b, s), "true for valid scene tokens"),
-            TensorSpec("history_skill_ids", "tensor(int64)", (b, h), "right-padded vocab ids"),
-            TensorSpec("history_skill_features", float_dtype, (b, h, fd), "ordered skill features"),
-            TensorSpec("history_state_vectors", float_dtype, (b, h, sd), "ordered state vectors"),
-            TensorSpec(
-                "history_state_null_mask",
-                "tensor(bool)",
-                (b, h, sd),
-                "history state null flags; right-padded positions are true",
-            ),
-            TensorSpec("history_mask", "tensor(bool)", (b, h), "true for valid actions; shared by independent skill and state tokens"),
-            TensorSpec("current_state_vectors", float_dtype, (b, sd), "current request state in ordered state layout"),
-            TensorSpec("current_state_null_mask", "tensor(bool)", (b, sd), "current request state null flags"),
-        )
-        assert tuple(spec.name for spec in specs) == TENSOR_INPUT_NAMES
-        return specs
+        layouts = {
+            "scene_vectors": ((b, s, xd), "host FP32 anchor-clipped then time-differenced scene vectors; cast after encoding"),
+            "scene_types": ((b, s), "scene type ids"),
+            "scene_mask": ((b, s), "true for valid scene tokens"),
+            "history_skill_ids": ((b, h), "right-padded vocab ids"),
+            "history_skill_features": ((b, h, fd), "ordered skill features"),
+            "history_state_vectors": ((b, h, sd), "host FP32 first-visible ABS anchor then raw numeric DELTA; normalized before cast"),
+            "history_state_null_mask": ((b, h, sd), "history state null flags; right-padded positions are true"),
+            "history_mask": ((b, h), "true for valid actions; shared by independent skill and state tokens"),
+            "current_state_vectors": ((b, sd), "host FP32 current DELTA from last visible history, or ABS without history"),
+            "current_state_null_mask": ((b, sd), "current request state null flags"),
+            "history_state_reset_mask": ((b, h, sd), "per-field ABS reset markers; first visible state is absolute"),
+            "current_state_reset_mask": ((b, sd), "current per-field ABS reset markers"),
+        }
+        # 宿主 FP32 和技能浮点载荷在图入口统一转换到部署精度。
+        dtypes = {"float32": float_dtype, "float": float_dtype, "index": "tensor(int64)", "bool": "tensor(bool)"}
+        return tuple(TensorSpec(field.name, dtypes[field.dtype], *layouts[field.name]) for field in MODEL_INPUT_FIELDS)
 
     def tensor_outputs(self) -> tuple[TensorSpec, ...]:
         float_dtype = precision_onnx_dtype(self.precision)
@@ -336,7 +353,7 @@ class DeploymentContract:
                 OUTPUT_NAMES[0],
                 float_dtype,
                 (self.capacity.batch_size, self.data_spec.num_actions),
-                "raw logits in fixed action order before host masking/policy",
+                "softcapped logits in fixed action order before host repetition/masking/policy",
             ),
         )
 
@@ -352,15 +369,16 @@ class DeploymentContract:
                 raise ValueError(
                     f"{spec.name} dtype mismatch: {tensor.dtype} != {spec.dtype}"
                 )
-        scene_types = inputs[1]
+        named_inputs = dict(zip(TENSOR_INPUT_NAMES, inputs, strict=True))
+        scene_types = named_inputs["scene_types"]
         if bool(((scene_types < 0) | (scene_types >= self.data_spec.num_scene_types)).any()):
             raise ValueError("scene_types contains an id outside the deployment contract")
-        history_ids = inputs[3]
+        history_ids = named_inputs["history_skill_ids"]
         vocab_size = len(self.vocab_entries) + 1
         if bool(((history_ids < 0) | (history_ids >= vocab_size)).any()):
             raise ValueError("history_skill_ids contains an id outside the deployment vocab")
-        _validate_right_padding(inputs[2], "scene_mask")
-        _validate_right_padding(inputs[7], "history_mask")
+        _validate_right_padding(named_inputs["scene_mask"], "scene_mask")
+        _validate_right_padding(named_inputs["history_mask"], "history_mask")
 
     def validate_host_action_order(
         self,
@@ -401,6 +419,7 @@ class DeploymentContract:
             "data_spec": asdict(self.data_spec),
             "model_input_contract": self.input_contract.to_dict(),
             "model_config": dict(self.model_config),
+            "residual_composition": residual_composition_contract(self.model_config),
             "vocab": vocab,
             "state_layout": state_layout,
             "scene_layout": scene_layout,

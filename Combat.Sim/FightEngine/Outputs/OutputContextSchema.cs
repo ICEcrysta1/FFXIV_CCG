@@ -27,6 +27,7 @@ public static class OutputContextSchema
     public static string ActionKeysKey => TopLevelKeys[6];
     public static string ActionLegalMaskKey => TopLevelKeys[7];
     public static string ActionValuesKey => TopLevelKeys[8];
+    public static string HistoryCursorKey => TopLevelKeys[9];
     public static string StateContextTokenKey => SchemaConfigLoader.Instance.TokenKey;
 
     public static string[] CanonicalContextTopLevelKeys => TopLevelKeys.ToArray();

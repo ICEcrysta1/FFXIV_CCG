@@ -1,4 +1,4 @@
-"""独立历史技能与状态 embedding 的 PCA 视图。"""
+"""content + role 统一归一化后，真实历史输入 token 的 PCA 视图。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from common.torch_runtime import move_batch
 from training import TrainingCollator
 
 from ..common import (
@@ -27,7 +26,7 @@ def plot_history_embeddings(
     batch_size: int = 16,
     max_points: int = 6000,
 ) -> tuple[Path, Path]:
-    """分别投影真实历史技能和状态，两张图各自拟合 PCA。"""
+    """从正式编码器提取历史技能和状态输入 token，两张图各自拟合 PCA。"""
     if batch_size <= 0:
         raise ValueError("history embedding batch size must be positive")
     if max_points < 2:
@@ -38,15 +37,25 @@ def plot_history_embeddings(
     skill_id_rows: list[np.ndarray] = []
     with torch.no_grad():
         for start in range(0, len(samples), batch_size):
-            batch = move_batch(collator(samples[start : start + batch_size]), context.device)
+            batch = context.encode_batch(collator(samples[start : start + batch_size]))
             with context.autocast():
-                embeddings = context.model.input_encoder.embed_history(batch)
+                encoded = context.model.input_encoder(batch)
+            tokens = encoded["tokens"]
+            positions = {
+                kind: encoded[f"history_{kind}_positions"] for kind in embedding_rows
+            }
             valid = batch["history_mask"]
+            # 用显式位置避开 scene/current state；两类历史的 padding 都不进入 PCA。
+            for history_positions in positions.values():
+                valid = valid & encoded["valid"].gather(1, history_positions)
             if bool(valid.any()):
                 for kind in embedding_rows:
-                    embedding_rows[kind].append(embeddings[kind][valid].float().cpu().numpy())
+                    history_tokens = tokens.gather(
+                        1, positions[kind].unsqueeze(-1).expand(-1, -1, tokens.shape[-1]),
+                    )
+                    embedding_rows[kind].append(history_tokens[valid].float().cpu().numpy())
                 skill_id_rows.append(batch["history_skill_ids"][valid].detach().cpu().numpy())
-            del batch, embeddings
+            del batch, encoded, tokens, positions
 
     paths = tuple(
         context.output_dir / f"05_history_{kind}_embedding_pca.png"
@@ -55,7 +64,7 @@ def plot_history_embeddings(
     if not skill_id_rows:
         for kind, path in zip(embedding_rows, paths):
             fig, ax = create_figure((15.0, 10.0))
-            ax.text(0.5, 0.5, f"No valid history {kind} tokens in this context", ha="center", va="center")
+            ax.text(0.5, 0.5, f"No valid history {kind} input tokens in this context", ha="center", va="center")
             ax.set_axis_off()
             save_figure(fig, path)
         return paths
@@ -95,6 +104,9 @@ def _plot_history_embedding(values, skill_ids, names, kind: str, path: Path) -> 
         )
     ax.set_xlabel(f"PC1 ({explained[0]:.1%})")
     ax.set_ylabel(f"PC2 ({explained[1]:.1%})")
-    ax.set_title(f"History {kind.title()} Embedding PCA ({values.shape[1]}D; {len(values)} real tokens)")
+    ax.set_title(
+        f"History {kind.title()} Input Token PCA\n"
+        f"(content + role, RMSNorm; {values.shape[1]}D; {len(values)} real tokens)"
+    )
     ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=8, borderaxespad=0.0)
     save_figure(fig, path)

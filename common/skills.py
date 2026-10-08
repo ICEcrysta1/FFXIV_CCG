@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from .config import JobConfig, ProjectConfig, SystemConfig
+from .config import ProjectConfig
 from .models import ActionKind, SkillDefinition
 
 
@@ -24,14 +24,6 @@ class SkillBook:
                 raise ValueError(f"duplicate skill game_id: {skill.game_id}")
             self._by_key[skill.key] = skill
             self._by_game_id[skill.game_id] = skill
-
-    @classmethod
-    def from_job_config(cls, job_config: JobConfig) -> "SkillBook":
-        return cls(job_config.skills)
-
-    @classmethod
-    def from_system_config(cls, system_config: SystemConfig) -> "SkillBook":
-        return cls(system_config.skills)
 
     @classmethod
     def from_project_config(cls, project_config: ProjectConfig) -> "SkillBook":
