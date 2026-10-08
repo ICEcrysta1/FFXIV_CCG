@@ -365,7 +365,7 @@ def _history_input_encoding(skill, state, history_mask, *, scene_length=2):
         'history_token_length': 2 * history_length, 'prefix_length': current,
         'position_ids': build_position_ids(
             batch_size=batch_size, scene_length=scene_length, history_length=history_length,
-            device='cpu', scene_mask=scene_mask, history_mask=history_mask),
+            scene_mask=scene_mask, history_mask=history_mask),
         'role_ids': build_role_ids(
             batch_size=batch_size, scene_length=scene_length, history_length=history_length, device='cpu'),
         'history_skill_positions': skill_positions, 'history_state_positions': state_positions,

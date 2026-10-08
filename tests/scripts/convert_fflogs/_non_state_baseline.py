@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import os
 from pathlib import Path
 import sys
@@ -70,7 +69,7 @@ def capture_cases():
                     int_dtype=torch.int32, float_dtype=torch.float32,
                 )
                 scene_values, scene_types = reader.scene_tokens(0, float_dtype=torch.float32, int_dtype=torch.int32)
-                provider = SceneTemplateProvider(reader, normalizer=normalizer, enabled=bool(len(scene_values)))
+                provider = SceneTemplateProvider(reader, enabled=bool(len(scene_values)))
                 builder = LiveBatchBuilder(
                     backend=backend, vocab=vocabulary, normalizer=normalizer, schema=reader.schema,
                     skill_feature_names=reader.skill_feature_names, scene_provider=provider,
@@ -127,6 +126,10 @@ def main():
         raise FileExistsError(f"refuse to overwrite frozen baseline: {output}")
     os.chdir(repo)
     sys.path.insert(0, str(repo))
+    from scripts.common.json_io import JSON_BROTLI_SUFFIX, atomic_write_json
+
+    if not output.name.lower().endswith(JSON_BROTLI_SUFFIX):
+        parser.error(f"baseline output must end with {JSON_BROTLI_SUFFIX}")
     source_paths = (
         "Combat.Sim/FightEngine/Outputs/TokenBuilders/SkillTokenBuilder.cs",
         "scripts/convert_fflogs/training/training.py",
@@ -140,8 +143,7 @@ def main():
         "description": "真实技能与 policy wait；空场景和四类窗口；非二进制端点；空历史和裁剪窗口；CPU FP32，无训练",
         "cases": capture_cases(),
     }
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
+    atomic_write_json(output, artifact)
 
 
 if __name__ == "__main__":

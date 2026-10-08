@@ -286,20 +286,6 @@ class InProcessBackend:
             gcd_index=int(decision.GcdIndex),
         )
 
-    def apply_external_event(
-        self,
-        timestamp: float,
-        event_kind: str,
-        *,
-        value: bool | None = None,
-        target_count: int | None = None,
-        remaining_seconds: float | None = None,
-    ) -> ExternalEventResult:
-        return self.apply_external_events([{
-            "timestamp": timestamp, "event_kind": event_kind, "value": value,
-            "target_count": target_count, "remaining_seconds": remaining_seconds,
-        }])
-
     def apply_external_events(self, events) -> ExternalEventResult:
         """同刻事实一次交给 session；C# 完成整批校验、入队和统一推进。"""
         _, external_event, _ = self._types()

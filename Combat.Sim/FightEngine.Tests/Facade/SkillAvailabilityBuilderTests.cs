@@ -74,7 +74,7 @@ public sealed class SkillAvailabilityBuilderTests
             var expected = simulator.Fork().SubmitAction(0, key);
             Assert.Equal(expected.Accepted, simulator.ValidateActionAt(0, key).Ok);
         }
-        simulator.ApplyExternalEvent(new(0, ExternalCombatEventKinds.MovementChanged, true));
+        simulator.ApplyExternalEvents(new ExternalCombatEvent[] { new(0, ExternalCombatEventKinds.MovementChanged, true) });
         Assert.False(simulator.CaptureModelStateFrame(simulator.GetState()).SkillAvailability["fire_iii"]);
     }
 
@@ -85,7 +85,7 @@ public sealed class SkillAvailabilityBuilderTests
     {
         var simulator = new JobSimulator(FacadeKit.BuildMachine());
         var action = simulator.SubmitAction(0, "cast_skill");
-        if (!moving) simulator.ApplyExternalEvent(new(1, ExternalCombatEventKinds.MovementChanged, true));
+        if (!moving) simulator.ApplyExternalEvents(new ExternalCombatEvent[] { new(1, ExternalCombatEventKinds.MovementChanged, true) });
         var time = action.EffectTimestamp!.Value;
         simulator.ApplyExternalEvents(new[]
         {

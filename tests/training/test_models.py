@@ -341,7 +341,8 @@ def test_position_ids_are_logical_sequential_when_all_tokens_are_valid():
         batch_size=1,
         scene_length=3,
         history_length=2,
-        device=torch.device("cpu"),
+        scene_mask=torch.ones((1, 3), dtype=torch.bool),
+        history_mask=torch.ones((1, 2), dtype=torch.bool),
     )[0].tolist()
 
     assert position_ids == [0, 1, 2, 3, 4, 5, 6, 7]
@@ -354,7 +355,6 @@ def test_position_ids_ignore_right_padding_per_sample():
         batch_size=2,
         scene_length=3,
         history_length=4,
-        device=torch.device("cpu"),
         scene_mask=torch.tensor([[True, True, False], [True, True, True]]),
         history_mask=torch.tensor(
             [[True, False, False, False], [True, True, True, False]]
@@ -373,7 +373,6 @@ def test_position_ids_count_valid_tokens_without_right_padding():
         batch_size=1,
         scene_length=3,
         history_length=4,
-        device=torch.device("cpu"),
         scene_mask=torch.tensor([[False, True, True]]),
         history_mask=torch.tensor([[False, True, False, True]]),
     )
@@ -387,7 +386,8 @@ def test_current_state_rope_position_follows_scene_and_history():
         batch_size=1,
         scene_length=2,
         history_length=2,
-        device=torch.device("cpu"),
+        scene_mask=torch.ones((1, 2), dtype=torch.bool),
+        history_mask=torch.ones((1, 2), dtype=torch.bool),
     )
 
     assert position_ids.tolist() == [[0, 1, 2, 3, 4, 5, 6]]

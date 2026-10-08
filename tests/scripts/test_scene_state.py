@@ -9,7 +9,7 @@ from scripts.common.scene_state import (
     RAID_BUFF_WINDOW_CHANGED,
     TARGET_COUNT_CHANGED,
     SceneFactScheduler,
-    resolve_target_count_at,
+    SceneStateLookup,
 )
 from scripts.convert_fflogs.scene.scene_context import (
     build_raid_buff_window_token,
@@ -117,6 +117,7 @@ def test_target_count_fact_replay_matches_lookup():
         ],
     )
     facts = _target_count_facts(scene_context)
+    lookup = SceneStateLookup(scene_context)
 
     replayed = 1
     cursor = 0
@@ -125,7 +126,7 @@ def test_target_count_fact_replay_matches_lookup():
         while cursor < len(facts) and facts[cursor].timestamp <= timestamp:
             replayed = facts[cursor].target_count
             cursor += 1
-        assert replayed == resolve_target_count_at(scene_context, timestamp), timestamp
+        assert replayed == lookup.state_at(timestamp).target_count, timestamp
 
 
 def test_scene_facts_only_cover_injected_kinds():

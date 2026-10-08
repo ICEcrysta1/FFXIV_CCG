@@ -121,9 +121,9 @@ class SceneFactScheduler:
     def state_at(self, timestamp: float) -> SceneState:
         return self.lookup.state_at(timestamp)
 
-    def next_event_after(self, timestamp: float, *, event_kind: str | None = None) -> float | None:
-        return next((fact.timestamp for fact in self._facts[bisect_right(self._fact_times, timestamp):]
-                     if event_kind is None or fact.event_kind == event_kind), None)
+    def next_event_after(self, timestamp: float) -> float | None:
+        index = bisect_right(self._fact_times, timestamp)
+        return self._fact_times[index] if index < len(self._fact_times) else None
 
     def pop_facts_through(self, timestamp: float) -> list[SceneFact]:
         """取出到期事实；比较严格，不能提前把未来边界合并进当前时刻。"""
@@ -154,11 +154,6 @@ def _submit_batch(backend, facts) -> None:
     result = backend.apply_external_events([asdict(fact) for fact in facts])
     if not result.accepted:
         raise ValueError(f"scene facts rejected at {facts[0].timestamp}: {result.reason}")
-
-
-def resolve_target_count_at(scene_context: dict[str, object] | None, timestamp: float) -> int:
-    """一次性场景查询；连续查询的调用方复用 SceneStateLookup。"""
-    return SceneStateLookup(scene_context).state_at(timestamp).target_count
 
 
 def rewrite_scene_player_state(canonical: dict[str, object], *, scene_state_at) -> dict[str, object]:

@@ -213,10 +213,6 @@ class _FakeBackend:
         self.state.time = float(timestamp)
         self.history.append({"skill_key": action})
 
-    def apply_external_event(self, *args, **kwargs):
-        del args, kwargs
-        return None
-
 
 def test_fake_backend_does_not_mutate_initial_state():
     initial_state = SimpleNamespace(time=0.0)
@@ -427,7 +423,7 @@ def test_replay_requires_session_before_loading_scene(constructor_config):
         AutoregressiveReplay(config, session=None)
 
 
-def test_replay_uses_session_normalizer_for_context_builders(monkeypatch, constructor_config):
+def test_replay_uses_session_normalizer_for_batch_builder(monkeypatch, constructor_config):
     session_normalizer = object()
     schema = SimpleNamespace()
     reader = SimpleNamespace(
@@ -475,20 +471,15 @@ def test_replay_uses_session_normalizer_for_context_builders(monkeypatch, constr
     config = constructor_config
     captured = {}
 
-    def fake_scene_provider(*_args, **kwargs):
-        captured["scene_normalizer"] = kwargs["normalizer"]
-        return object()
-
     def fake_batch_builder(**kwargs):
         captured["batch_normalizer"] = kwargs["normalizer"]
         return object()
 
-    monkeypatch.setattr(replay_module, "SceneTemplateProvider", fake_scene_provider)
+    monkeypatch.setattr(replay_module, "SceneTemplateProvider", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(replay_module, "LiveBatchBuilder", fake_batch_builder)
 
     AutoregressiveReplay(config, session=session)
 
-    assert captured["scene_normalizer"] is session_normalizer
     assert captured["batch_normalizer"] is session_normalizer
     assert backend.cache_calls == [False]
 

@@ -26,6 +26,9 @@
 
 ### Changed
 
+- 清理状态重构遗留的旧入口：删除 C#/Python 单条外部事件包装，单条事实也显式提交单元素批次；删除状态机内部另一套可用技能列表查询，统一使用正式提交能力查询。
+- 模型状态 null mask 和位置计算 mask 必须显式提供，不再缺失补零或默认全真；缓存签名只读取 `Normalizer.cache_signature`，移除私有配置回退。场景 provider 删除无用 normalizer 参数及逐字段查询包装，统一通过 `state_at` 和公共事实时间序列查询。
+- 非状态 token 的冻结回归基线改用现有 Brotli JSON 读写，从 280,565 字节缩至 3,670 字节，移除 11,037 行展开 JSON；解压后的完整对象与原基线一致，未重新采集或改变期望值。同步迁移相关测试，C# 309 项及 Python 定向 CPU 回归通过，2 项 GPU 用例按条件跳过，未训练。
 - 状态字段统一由有序 `StateFeatureGroup`、`StateFeatureLayout` 和公共 `TensorField` 声明派生，离线/实时共用状态 reader，`ContextEncoder` 统一拼接基础编码与绝对技能表。完整 history bank 保存逐行 bool 技能表；容量、历史重置和时间尺度继续只影响读取侧，技能和场景编码保持既有语义。
 - policy 动作在向量化前与真实动作组合，当前/历史状态由父级统一装配，删除事后补列和重复字段解析；转换与回放共用 raw FP32 场景执行视图，同刻事实整批校验、入队后统一推进，ETA/停机剩余按各快照冻结时间纯合成，不回写原 scene token。
 - 本次契约进一步升级为 canonical 15、PythonBridge 17、训练样本 11、checkpoint 输入 22、compiled cache v23/转换 v25、部署契约 25/manifest 16、GRPO rollout 7。旧缓存须重编译，旧 checkpoint/部署包须重新训练和导出，旧 rollout 须重新生成；ONNX 仍为 12 个输入。

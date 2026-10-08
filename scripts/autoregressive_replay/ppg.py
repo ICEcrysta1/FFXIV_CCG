@@ -48,10 +48,6 @@ class EmptySceneProvider:
         del time_seconds
         return self._scene_vectors, self._scene_types
 
-    def target_count_at(self, time_seconds: float) -> int:
-        del time_seconds
-        return 1
-
     def state_at(self, time_seconds: float):
         return self._lookup.state_at(time_seconds)
 
@@ -162,7 +158,6 @@ def evaluate_validation_ppg(
             initial_time = float(initial_metadata["time_offset"])
             scene_provider = SceneTemplateProvider(
                 reader,
-                normalizer=normalizer,
                 initial_sample_index=0,
                 backend=backend,
             )

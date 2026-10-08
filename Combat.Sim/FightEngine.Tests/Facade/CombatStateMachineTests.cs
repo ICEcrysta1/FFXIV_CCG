@@ -137,10 +137,10 @@ public class CombatStateMachineTests
     public void 可用技能随状态变化()
     {
         var machine = FacadeKit.BuildMachine();
-        var state = machine.InitialState();
+        var simulator = new JobSimulator(machine);
 
-        // 初始状态：空转需要 GCD 产生的 weave 窗口，因此不可用
-        var keys = machine.AvailableActionKeys(state);
+        // 真实动作接受查询不包含策略等待动作。
+        var keys = simulator.AvailableActionKeysAt(0);
         Assert.Contains("gcd_strike", keys);
         Assert.Contains("ogcd_punch", keys);
         Assert.Contains("cd_skill", keys);
@@ -148,13 +148,12 @@ public class CombatStateMachineTests
         Assert.Contains("potion", keys);
 
         // cd_skill 用过后推进 GCD，冷却锁定使其不可用
-        state = TimelineTestDriver.Execute(machine, state, "cd_skill").NextState;
-        state = TimelineTestDriver.AdvanceBy(machine, state, 2.5);
-        Assert.DoesNotContain("cd_skill", machine.AvailableActionKeys(state));
+        Assert.True(simulator.SubmitAction(0, "cd_skill").Accepted);
+        Assert.DoesNotContain("cd_skill", simulator.AvailableActionKeysAt(2.5));
 
         // GCD 锁定中 GCD 技能不可用，真实 oGCD 仍由状态机校验
-        state = TimelineTestDriver.Execute(machine, state, "gcd_strike").NextState;
-        var lockedKeys = machine.AvailableActionKeys(state);
+        Assert.True(simulator.SubmitAction(2.5, "gcd_strike").Accepted);
+        var lockedKeys = simulator.AvailableActionKeysAt(2.5);
         Assert.DoesNotContain("gcd_strike", lockedKeys);
         Assert.Contains("ogcd_punch", lockedKeys);
         Assert.DoesNotContain("ogcd_wait", lockedKeys);
@@ -165,20 +164,20 @@ public class CombatStateMachineTests
     {
         var simulator = new JobSimulator(FacadeKit.BuildMachine());
 
-        simulator.ApplyExternalEvent(new(
+        simulator.ApplyExternalEvents(new ExternalCombatEvent[] { new(
             1.0,
             ExternalCombatEventKinds.TargetCountChanged,
-            TargetCount: 2));
+            TargetCount: 2) });
         Assert.Equal(2, simulator.GetState().TargetCount);
-        Assert.Throws<ArgumentException>(() => simulator.ApplyExternalEvent(new(
+        Assert.Throws<ArgumentException>(() => simulator.ApplyExternalEvents(new ExternalCombatEvent[] { new(
             2.0,
             ExternalCombatEventKinds.TargetCountChanged,
-            TargetCount: -3)));
+            TargetCount: -3) }));
         Assert.Equal(1.0, simulator.Time);
-        simulator.ApplyExternalEvent(new(
+        simulator.ApplyExternalEvents(new ExternalCombatEvent[] { new(
             3.0,
             ExternalCombatEventKinds.TargetCountChanged,
-            TargetCount: 4));
+            TargetCount: 4) });
         Assert.Equal(4, simulator.GetState().TargetCount);
     }
 

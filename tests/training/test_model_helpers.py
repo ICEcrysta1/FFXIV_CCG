@@ -495,9 +495,8 @@ def _encoder_batch() -> dict[str, torch.Tensor]:
         "history_skill_ids": torch.ones((1, 1), dtype=torch.long),
         "history_skill_features": torch.zeros((1, 1, 1)),
         "history_state_vectors": torch.nn.functional.pad(torch.zeros((1, 1, 3)), (0, 4)),
+        "history_state_null_mask": torch.zeros((1, 1, 3), dtype=torch.bool),
         "history_mask": torch.ones((1, 1), dtype=torch.bool),
-
-
         "current_state_vectors": torch.nn.functional.pad(torch.zeros((1, 3)), (0, 4)),
         "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
         "action_legal_mask": torch.ones((1, 2), dtype=torch.bool),
@@ -516,7 +515,11 @@ def test_input_encoder_handles_null_state_and_rejects_bad_shapes():
         ModelConfig(d_model=8, n_layers=1, n_heads=2, ff_dim=16),
         vocab_size=4,
     )
-    assert encoder._embed_state(torch.zeros((1, spec.state_dim)), None, torch.ones((1, spec.base_state_dim), dtype=torch.bool)).shape == (1, 8)
+    assert encoder._embed_state(
+        torch.zeros((1, spec.state_dim)),
+        torch.ones((1, spec.base_state_dim), dtype=torch.bool),
+        torch.zeros((1, spec.base_state_dim), dtype=torch.bool),
+    ).shape == (1, 8)
 
     with pytest.raises(ValueError, match="non-empty scene"):
         CausalInputEncoder(

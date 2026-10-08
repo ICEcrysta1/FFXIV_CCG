@@ -99,7 +99,7 @@ def test_same_canonical_compact_training_live_and_onnx_host_encode_identically(t
     )
     encoder = ContextEncoder(dataset.normalizer, dataset.schema, config, layout=dataset.state_layout)
     scene_provider = SceneTemplateProvider(
-        next(dataset.iter_source_readers()), normalizer=dataset.normalizer,
+        next(dataset.iter_source_readers()),
     )
     builder = LiveBatchBuilder(
         backend=None, vocab=vocab, normalizer=dataset.normalizer,

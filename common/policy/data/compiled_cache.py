@@ -417,16 +417,12 @@ def build_cache_signature(
     conversion_version: str = DEFAULT_CONVERSION_VERSION,
 ) -> dict[str, object]:
     stat = Path(source_path).stat()
-    normalizer_signature = getattr(normalizer, "cache_signature", None)
-    if normalizer_signature is None:
-        normalizer_config = getattr(normalizer, "_config", None)
-        normalizer_signature = normalizer_config
     return {
         "source_size": int(stat.st_size),
         "source_mtime_ns": int(stat.st_mtime_ns),
         "int_dtype": str(int_dtype),
         "float_dtype": str(float_dtype),
-        "normalizer": normalizer_signature,
+        "normalizer": normalizer.cache_signature,
         "shard_size": int(shard_size),
         "source_format": "json_brotli",
         "conversion_version": str(conversion_version),

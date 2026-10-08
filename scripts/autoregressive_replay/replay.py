@@ -301,7 +301,6 @@ class ReplayCacheStore:
             self._shard_cache.clear()
             self._readers.clear()
         self._cache_fingerprints[cache_key] = generation
-        normalizer_signature = getattr(normalizer, "cache_signature", None)
         reader_key = (
             cache_key,
             job_tag,
@@ -309,7 +308,7 @@ class ReplayCacheStore:
             int(source_stat.st_mtime_ns),
             config.cache_shard_size,
             config.cache_max_shards,
-            repr(normalizer_signature),
+            repr(normalizer.cache_signature),
             expected_action_space,
             tuple(expected_skill_vocab),
             cache_fingerprint,
@@ -506,7 +505,6 @@ class AutoregressiveReplay:
         self._state_machine = self._session.state_machine
         scene_provider = SceneTemplateProvider(
             reader,
-            normalizer=self._session.normalizer,
             initial_sample_index=config.scene_sample_index,
             enabled=config.scene_mode == "cache",
             backend=self._state_machine,

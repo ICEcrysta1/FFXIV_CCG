@@ -10,9 +10,9 @@ from types import SimpleNamespace
 import pytest
 
 from common.policy.data import ActionSpace, Normalizer, prepared_sources
-from common.policy.data.compiled_cache import CACHE_FORMAT, cache_path_for_source
+from common.policy.data.compiled_cache import CACHE_FORMAT, build_cache_signature, cache_path_for_source
 from common.policy.data.prepared_sources import select_prepared_training_sources
-from scripts.common.json_io import atomic_write_json
+from scripts.common.json_io import atomic_write_json, read_json
 from scripts.convert_fflogs import build_training_samples
 from scripts.convert_fflogs import cli as convert_cli
 from scripts.convert_fflogs.cache import cache_compile as cache_compile_module
@@ -23,6 +23,16 @@ from scripts.convert_fflogs.cache import (
 from scripts.convert_fflogs.cache.cache_load import load_raw_compiled_cache
 from scripts.convert_fflogs.source import raw_source
 from tests.helpers import build_test_scene_context, targetable_window_token
+
+
+def test_cache_signature_requires_normalizer_public_contract(tmp_path):
+    source = tmp_path / "fight.json.br"
+    atomic_write_json(source, {})
+    args = {"int_dtype": "int32", "float_dtype": "float32"}
+    normalizer = Normalizer()
+    assert build_cache_signature(source, normalizer=normalizer, **args)["normalizer"] == normalizer.cache_signature
+    with pytest.raises(AttributeError, match="cache_signature"):
+        build_cache_signature(source, normalizer=SimpleNamespace(_config={}), **args)
 
 
 def test_convert_raw_file_reads_brotli_json(tmp_path, monkeypatch):
@@ -714,7 +724,7 @@ def test_scene_execution_view_survives_real_compiled_cache_roundtrip(tmp_path, m
     reader = load_raw_compiled_cache(source, **cache_args)
     assert reader is not None
     cs_backend.init(initial_timestamp=0.0, max_history=None)
-    restored = SceneTemplateProvider(reader, normalizer=normalizer, backend=cs_backend)
+    restored = SceneTemplateProvider(reader, backend=cs_backend)
     expected = SceneStateLookup(original_scene)
     start, end = expected.movement_windows[0]
     for timestamp in (600.004, math.nextafter(start, -math.inf), start,
@@ -734,13 +744,12 @@ def test_scene_execution_view_survives_real_compiled_cache_roundtrip(tmp_path, m
 
 def test_non_state_tokens_match_frozen_pre_refactor_baseline():
     """旧源码与旧 DLL 在独立进程生成的基线不可由当前实现重录覆盖。"""
-    import json
     from tests.scripts.conftest import _require_inprocess_backend
     from tests.scripts.convert_fflogs._non_state_baseline import capture_cases
 
     _require_inprocess_backend()
-    baseline_path = Path(__file__).resolve().parents[2] / "fixtures" / "state_refactor_non_state_baseline.json"
-    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    baseline_path = Path(__file__).resolve().parents[2] / "fixtures" / "state_refactor_non_state_baseline.json.br"
+    baseline = read_json(baseline_path)
     assert len(baseline["origin_commit"]) == 40
     assert len(baseline["source_sha256"]) == 5
     assert capture_cases() == baseline["cases"]

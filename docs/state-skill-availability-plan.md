@@ -300,7 +300,7 @@ JobSimulator 统一提供 `CaptureModelStateFrame(state)` 和 `CompleteModelDeci
 2. 同刻同类冲突先由场景父级归并为最终事实，运输入口对仍存在的冲突明确拒绝，不用提交顺序猜测。
 3. 稳定顺序由父级事实规则确定；ExternalScene 先于 ConfirmedActionEffect，沿用其余事件优先级。
 4. 动作效果、DoT/周期结算和动作后 frame 捕获只能看见该批次全部场景事实生效后的状态。
-5. 单事件公共 API 如保留，必须将一个事件委托给同一个批次实现；不得保留独立推进逻辑。正式场景生产路径必须按同刻分组后调用批次 API。
+5. 删除 C# 和 Python 的单事件公共 API；单条事实也显式传入单元素批次，正式场景生产路径按同刻分组后调用批次 API，不为旧调用方式保留包装入口。
 6. 不增加子进程、RPC 或另一个引擎。Python.NET 直接暴露同一个 session 能力；批次返回值复用既有结果类型或其集合，不另造第二套场景状态。
 
 这是新增数据之前必须修复的 R1。调整 `_FACT_ORDER` 而仍逐条调用现有 ApplyExternalEvent 不算完成。
@@ -337,7 +337,7 @@ JobSimulator 统一提供 `CaptureModelStateFrame(state)` 和 `CompleteModelDeci
 
 - 转换的请求前和动作效果经过的所有场景边界，均使用共享事实流和同刻批次入口。
 - 实时路径移除独立的场景边界构造及逐条快照提交循环；`sync_state` 如仍有必要，只能作为共享调度的薄入口，不能保留旧实现。
-- `SceneTemplateProvider.is_moving_at/targetable_at/next_state_event_after` 等仍被调用的方法只委托共享规则；无调用的方法删除。
+- 场景状态统一通过 `state_at` 查询，事件推进统一通过 `next_state_event_after`；删除旧的逐字段查询包装及只筛选 Boss 事件的入口，移除 provider 不再使用的 normalizer 参数。
 - `rewrite_scene_player_state` 按第 6.5 节接入转换与实时，只合成停机 ETA/剩余；不再覆盖已经由状态机事实确定的 is_moving。
 - 真实日志执行保留 observed cast override；技能表不使用该覆盖值修正接受能力。
 
@@ -543,7 +543,7 @@ checkpoint、训练续训、实时后端、分析和导出加载器均通过 Mod
 | `config/schema.yaml` | 状态分组编码、快照顺序、第五组和运行时/canonical 版本 |
 | `Combat.Sim/FightEngine/Config/SchemaConfigLoader.cs` | 严格读取完整分组声明，拒绝缺失/未知编码 |
 | `Combat.Sim/FightEngine/Facade/JobSimulator.cs` | 捕获 frame、完成基准、统一 validate/available 与表/mask 的接受查询、动作布局复用、同刻批次、子会话处理器绑定 |
-| `Combat.Sim/FightEngine/Facade/CombatStateMachine.cs` | 保留唯一接受规则和内部执行检查，移走模型动作后基准写入；旧 AvailableActions/AvailableActionKeys 无独立用途时随调用迁移删除 |
+| `Combat.Sim/FightEngine/Facade/CombatStateMachine.cs` | 保留唯一接受规则和内部执行检查，移走模型动作后基准写入；删除旧 AvailableActions/AvailableActionKeys，测试迁至 JobSimulator 的正式提交能力查询 |
 | `Combat.Sim/FightEngine/Facade/RandomSequenceReplay.cs` | 可用动作消费统一的提交能力；更新包含排队结果的回归预期，不另加即时合法性过滤 |
 | `Combat.Sim/FightEngine/Models/Combat/CombatState.cs` | 保存完整不可变 LastDecisionAfter，clone 不共享可变容器 |
 | `Combat.Sim/FightEngine/Outputs/ModelStateSnapshot.cs` | 完整 frame 和一致冻结 |
@@ -842,7 +842,7 @@ dotnet test Combat.Sim/FightEngine.Tests/FightEngine.Tests.csproj --configuratio
 
 ### 非状态基线与真实日志
 
-从固定提交 `87080c9572c412bff5e44721c2055837d1b32c63` 的隔离源码重建旧 PythonBridge，在独立进程采集旧实现，保存为 `tests/fixtures/state_refactor_non_state_baseline.json`，包含来源提交及五份源码 SHA256。该基线没有根据新实现的结果重录。两组固定轨迹覆盖真实技能与 wait、空场景/四种窗口、非二进制精确端点，以及 0/2/5 历史窗口；旧/新 canonical、raw bank 和六项非状态模型输入**逐值相同**。采集器 `_non_state_baseline.py` 拒绝覆盖已有文件，生产不保留旧实现。
+从固定提交 `87080c9572c412bff5e44721c2055837d1b32c63` 的隔离源码重建旧 PythonBridge，在独立进程采集旧实现，保存为 `tests/fixtures/state_refactor_non_state_baseline.json.br`，包含来源提交及五份源码 SHA256。该基线没有根据新实现的结果重录。两组固定轨迹覆盖真实技能与 wait、空场景/四种窗口、非二进制精确端点，以及 0/2/5 历史窗口；旧/新 canonical、raw bank 和六项非状态模型输入**逐值相同**。采集器 `_non_state_baseline.py` 拒绝覆盖已有文件，生产不保留旧实现。
 
 额外审计一份真实日志的前 16 条动作（源 SHA256 `9acdbcdc7da3850652485f33c7b97cbd8e85aa7aa4272842503bad156e3aff28`），保留完整场景与原请求/读条时间。新旧均在 step=6、`fire_iv`、请求 `7.0584` 秒以 `gcd_locked` 拒绝；已执行前缀的提交结果、policy 决策和基础状态观测无差异。事实调用批次的分组形式改变，未造成此前缀的执行分叉。该片段未完整转换，不能把缺失的 raw/model 结果算作等价通过；完整非状态等价证据来自上述成功固定轨迹与跨入口测试。未修改日志以绕过拒绝。私有审计产物仅留于 `.tmp/state-availability-baseline-20261008/`。
 
@@ -856,3 +856,11 @@ dotnet test Combat.Sim/FightEngine.Tests/FightEngine.Tests.csproj --configuratio
 ### 本轮边界
 
 用户正在游戏，正式训练、优化器训练回归、GPU/provider 对照、长程压力/性能基准、大规模缓存重编译和正式 checkpoint/部署产物更新未执行。小型 CPU 前向与导出只验证结构/数值契约，不代表 PPG 提升或性能收益。基础维度之外每行新增 50 字节 bool bank 与 200 字节 FP32 模型状态值；状态投影新增 `50 × d_model` 权重，未新增 token 或独立投影。完整相关测试域及正式产物流程仍需在允许相应负载后执行。
+
+### 后续兼容入口清理
+
+- 删除 C#/Python 单条外部事件包装，统一使用批次入口；删除 `CombatStateMachine.AvailableActions/AvailableActionKeys`，全部查询使用正式提交能力。
+- 模型必须显式提供状态 null mask 和位置计算 mask，不再缺失补零或默认全真；缓存及 reader 复用只读取 `Normalizer.cache_signature`，不再回退到私有配置。
+- 场景 provider 移除未使用的 normalizer 参数及逐字段查询包装，统一使用 `state_at`；下一事件查询取消遗留的按类型筛选，直接查询公共事实时间序列。
+- 冻结非状态基线仅通过现有 Brotli JSON I/O 转码，从 280,565 字节降到 3,670 字节；未重新采集或改变期望值。按排序键紧凑 UTF-8 JSON 计算的完整对象 SHA256 前后均为 `d938bcd405eb0430bd0b5116cff7efc14ebb28fabc85bf9eaa3d3c05e2a6f84d`。旧版采集脚本保存在 Git 历史中，当前采集器只调用当前 API。
+- 清理后 C# 全套 309 项通过；Python 场景、转换、缓存、回放与跨入口回归 173 项通过，2 项 CUDA BF16 用例因禁用 GPU 跳过；模型及位置编码定向回归通过。未训练。

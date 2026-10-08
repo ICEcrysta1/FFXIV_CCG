@@ -21,6 +21,15 @@ def _model(*, full_attention_residuals=False, history_capacity=4, scene_capacity
     return CausalPolicyModel(spec, config, vocab_size=3).eval()
 
 
+@pytest.mark.parametrize("field", ["current_state_null_mask", "history_state_null_mask"])
+def test_model_requires_explicit_state_null_masks(field):
+    model = _model()
+    batch = make_batch(model.data_spec)
+    del batch[field]
+    with pytest.raises(ValueError, match=f"missing model input: {field}"):
+        model(batch)
+
+
 @pytest.mark.parametrize("changed_field", ["history_skill_ids", "history_skill_features",
                                          "history_state_vectors", "history_state_null_mask"])
 def test_skill_and_state_inputs_do_not_cross_before_attention(changed_field):

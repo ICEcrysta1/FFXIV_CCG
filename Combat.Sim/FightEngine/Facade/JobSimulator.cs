@@ -164,13 +164,6 @@ public sealed class JobSimulator
 
     public double? GetNextScheduledEventTime() => _timeline.GetNextScheduledEventTime();
 
-    /// <summary>提交带绝对时间戳的外部战斗事实。</summary>
-    public ExternalEventResult ApplyExternalEvent(ExternalCombatEvent externalEvent)
-    {
-        ArgumentNullException.ThrowIfNull(externalEvent);
-        return ApplyExternalEvents(new[] { externalEvent });
-    }
-
     /// <summary>同刻事实全部校验、全部入队后再推进，效果不能读取半更新的场景。</summary>
     public ExternalEventResult ApplyExternalEvents(IReadOnlyList<ExternalCombatEvent> externalEvents)
     {

@@ -128,25 +128,25 @@ class _TargetableSceneReader:
 
 
 def test_scene_template_provider_uses_raw_scene_and_resolves_target_count():
-    provider = SceneTemplateProvider(_SceneReader(), normalizer=Normalizer(), initial_sample_index=1)
+    provider = SceneTemplateProvider(_SceneReader(), initial_sample_index=1)
     vectors, types = provider.at_time(0.0)
     assert vectors.shape == (2, 4)
     assert int(types[0]) == SCENE_TYPE_TARGET_COUNT
-    assert provider.target_count_at(0.0) == 2
-    assert provider.target_count_at(1.8) == 3
-    assert provider.target_count_at(3.0) == 1
+    assert provider.state_at(0.0).target_count == 2
+    assert provider.state_at(1.8).target_count == 3
+    assert provider.state_at(3.0).target_count == 1
     later_vectors, later_types = provider.at_time(2.0)
     assert later_vectors.equal(vectors)
     assert later_types.equal(types)
 
-    disabled = SceneTemplateProvider(_SceneReader(), normalizer=Normalizer(), enabled=False)
+    disabled = SceneTemplateProvider(_SceneReader(), enabled=False)
     empty_vectors, empty_types = disabled.at_time(2.0)
     assert empty_vectors.shape == (0, 4)
     assert empty_types.shape == (0,)
-    assert disabled.target_count_at(2.0) == 1
+    assert disabled.state_at(2.0).target_count == 1
 
     with pytest.raises(ValueError, match="out of range"):
-        SceneTemplateProvider(_SceneReader(), normalizer=Normalizer(), initial_sample_index=3)
+        SceneTemplateProvider(_SceneReader(), initial_sample_index=3)
 
     class EmptyReader(_SceneReader):
         num_samples = 1
@@ -156,7 +156,7 @@ def test_scene_template_provider_uses_raw_scene_and_resolves_target_count():
             return torch.zeros((0, 4), dtype=float_dtype), torch.zeros((0,), dtype=int_dtype)
 
     with pytest.raises(ValueError, match="no usable scene tokens"):
-        SceneTemplateProvider(EmptyReader(), normalizer=Normalizer())
+        SceneTemplateProvider(EmptyReader())
 
     class RawSceneReader(_SceneReader):
         @staticmethod
@@ -173,9 +173,9 @@ def test_scene_template_provider_uses_raw_scene_and_resolves_target_count():
                 vectors[:, 2] *= 1800.0
             return vectors, types
 
-    long_scene = SceneTemplateProvider(RawSceneReader(), normalizer=Normalizer(), initial_sample_index=1)
+    long_scene = SceneTemplateProvider(RawSceneReader(), initial_sample_index=1)
     assert long_scene.at_time(0)[0][1, 1].item() == 5400.0
-    assert long_scene.target_count_at(1801.0) == 3
+    assert long_scene.state_at(1801.0).target_count == 3
 
 
 @pytest.mark.parametrize("target_count", [0.0, -1.0, 0.5])
@@ -190,13 +190,13 @@ def test_scene_template_provider_keeps_zero_targets_and_rejects_invalid_counts(t
             return vectors, types
 
     if target_count == 0:
-        provider = SceneTemplateProvider(TargetCountReader(), normalizer=Normalizer(), initial_sample_index=1)
-        assert provider.target_count_at(0.5) == 0
-        assert provider.target_count_at(1.8) == 3
-        assert provider.target_count_at(3.0) == 1
+        provider = SceneTemplateProvider(TargetCountReader(), initial_sample_index=1)
+        assert provider.state_at(0.5).target_count == 0
+        assert provider.state_at(1.8).target_count == 3
+        assert provider.state_at(3.0).target_count == 1
     else:
         with pytest.raises(ValueError, match="non-negative integer"):
-            SceneTemplateProvider(TargetCountReader(), normalizer=Normalizer(), initial_sample_index=1)
+            SceneTemplateProvider(TargetCountReader(), initial_sample_index=1)
 
 
 def test_scene_template_provider_syncs_targetable_timeline_into_live_state():
@@ -215,20 +215,19 @@ def test_scene_template_provider_syncs_targetable_timeline_into_live_state():
 
     provider = SceneTemplateProvider(
         _TargetableSceneReader(),
-        normalizer=Normalizer(),
         backend=FakeBackend(),
     )
     state = SimpleNamespace(time=10.0, fight_remaining=100.0)
     backend = provider._backend
     provider.sync_state(state)
     assert provider.last_targetable_end() == pytest.approx(600.0)
-    assert provider.next_targetable_event_after(10.0) == pytest.approx(22.0)
+    assert provider.next_state_event_after(10.0) == pytest.approx(22.0)
 
     state.time = 30.0
     provider.sync_state(state)
     assert backend.events[-1] == (22.0, "boss_targetable_changed", {"value": False})
-    assert provider.targetable_at(81.9) is False
-    assert provider.next_targetable_event_after(30.0) == pytest.approx(82.0)
+    assert provider.state_at(81.9).boss_targetable is False
+    assert provider.next_state_event_after(30.0) == pytest.approx(82.0)
 
     state.time = 82.0
     provider.sync_state(state)
@@ -252,7 +251,6 @@ def test_scene_template_provider_reset_resyncs_same_signature():
     backend = FakeBackend()
     provider = SceneTemplateProvider(
         _TargetableSceneReader(),
-        normalizer=Normalizer(),
         backend=backend,
     )
     state = SimpleNamespace(time=10.0, fight_remaining=100.0)
@@ -371,7 +369,6 @@ def test_scene_template_provider_syncs_movement_with_slidecast_boundary():
     backend = FakeBackend()
     provider = SceneTemplateProvider(
         Reader(),
-        normalizer=Normalizer(),
         backend=backend,
     )
 
@@ -383,8 +380,8 @@ def test_scene_template_provider_syncs_movement_with_slidecast_boundary():
         (12.0, "target_count_changed", {"target_count": 1}),
         (12.0, "raid_buff_window_changed", {"value": False}),
     ]
-    assert provider.is_moving_at(12.0) is True
-    assert provider.is_moving_at(19.5) is False
+    assert provider.state_at(12.0).is_moving is True
+    assert provider.state_at(19.5).is_moving is False
     assert provider.next_state_event_after(10.0) == pytest.approx(
         20.0 - SLIDECAST_WINDOW_SECONDS
     )

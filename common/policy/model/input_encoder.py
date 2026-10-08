@@ -92,7 +92,7 @@ class CausalInputEncoder(nn.Module):
         # 历史与最新状态使用同一个投影，不增加特殊当前状态参数。
         current_state = self._embed_state(
             batch["current_state_vectors"],
-            batch.get("current_state_null_mask"),
+            batch["current_state_null_mask"],
             batch["current_state_reset_mask"],
         ).unsqueeze(1)
 
@@ -105,7 +105,6 @@ class CausalInputEncoder(nn.Module):
             batch_size=batch_size,
             scene_length=scene_length,
             history_length=history_length,
-            device=device,
             scene_mask=batch["scene_mask"],
             history_mask=batch["history_mask"],
         )
@@ -161,7 +160,7 @@ class CausalInputEncoder(nn.Module):
             + self.skill_feat_proj(batch["history_skill_features"].to(dtype=self.skill_feat_proj.weight.dtype)),
             "state": self._embed_state(
                 batch["history_state_vectors"],
-                batch.get("history_state_null_mask"),
+                batch["history_state_null_mask"],
                 batch["history_state_reset_mask"],
             ),
         }
@@ -169,8 +168,6 @@ class CausalInputEncoder(nn.Module):
     def _embed_state(self, values, null_mask, reset_mask) -> torch.Tensor:
         """投影已编码数值、缺失及 ABS 重置标识；精度转换发生在编码完成后。"""
         values = values.to(dtype=self.state_proj.weight.dtype)
-        if null_mask is None:
-            null_mask = torch.zeros((*values.shape[:-1], self.data_spec.base_state_dim), dtype=torch.bool, device=values.device)
         return (
             self.state_proj(values)
             + self.state_null_proj(null_mask.to(dtype=values.dtype))
@@ -193,8 +190,8 @@ class CausalInputEncoder(nn.Module):
             )
         dimensions = tensor_dimensions(expected, batch=batch["scene_vectors"].shape[0], scene=scene_length, history=history_length)
         for field in MODEL_INPUT_FIELDS:
-            if field.name.endswith("null_mask") and field.name not in batch:
-                continue
+            if field.name not in batch:
+                raise ValueError(f"missing model input: {field.name}")
             # 神经入口允许部署已转换的浮点精度，结构与 bool/index 仍按统一声明检查。
             value = batch[field.name]
             if field.dtype in {"float", "float32"}:
@@ -214,9 +211,8 @@ def build_position_ids(
     batch_size: int,
     scene_length: int,
     history_length: int,
-    device,
-    scene_mask: torch.Tensor | None = None,
-    history_mask: torch.Tensor | None = None,
+    scene_mask: torch.Tensor,
+    history_mask: torch.Tensor,
 ) -> torch.Tensor:
     """构造按样本有效长度生成的 RoPE 逻辑位置编号。
 
@@ -225,14 +221,6 @@ def build_position_ids(
     mask 的有效计数生成，不依赖有效 token 是否位于物理布局前段；无效
     scene/history token 的位置固定为 0，并由 attention mask 完全排除。
     """
-    if scene_mask is None:
-        scene_mask = torch.ones(
-            (batch_size, scene_length), dtype=torch.bool, device=device
-        )
-    if history_mask is None:
-        history_mask = torch.ones(
-            (batch_size, history_length), dtype=torch.bool, device=device
-        )
     if tuple(scene_mask.shape) != (batch_size, scene_length):
         raise ValueError("scene_mask shape does not match the physical scene layout")
     if tuple(history_mask.shape) != (batch_size, history_length):

@@ -13,9 +13,7 @@ from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
 from common.policy.data.context_encoding import ContextEncoder, raw_state_delta
 from common.policy.data.history_window import history_window_length
 from common.policy.data.state_features import read_state_tokens, validate_state_feature_keys
-from scripts.common.scene_state import (
-    BOSS_TARGETABLE_CHANGED, SceneFactScheduler, rewrite_scene_player_state,
-)
+from scripts.common.scene_state import SceneFactScheduler, rewrite_scene_player_state
 
 from .scheduler import gcd_request_delay, is_gcd_decision
 
@@ -27,8 +25,7 @@ REPLAY_SKILL_IGNORED_FIELDS = frozenset(
 class SceneTemplateProvider:
     """完整 raw scene 的容器适配；查询和事实调度只由 scene_state 持有。"""
 
-    def __init__(self, reader, *, normalizer, initial_sample_index=0, enabled=True, backend=None):
-        del normalizer
+    def __init__(self, reader, *, initial_sample_index=0, enabled=True, backend=None):
         if reader.num_samples <= 0:
             raise ValueError("scene cache has no samples")
         if not 0 <= initial_sample_index < reader.num_samples:
@@ -60,25 +57,13 @@ class SceneTemplateProvider:
     def state_at(self, time_seconds: float):
         return self._facts.state_at(time_seconds)
 
-    def target_count_at(self, time_seconds: float) -> int:
-        return self.state_at(time_seconds).target_count
-
     def sync_state(self, state):
         if self._backend is not None:
             self._facts.sync_through(self._backend, float(state.time))
         return state
 
-    def targetable_at(self, time_seconds: float) -> bool:
-        return self.state_at(time_seconds).boss_targetable
-
-    def is_moving_at(self, time_seconds: float) -> bool:
-        return self.state_at(time_seconds).is_moving
-
     def last_targetable_end(self) -> float:
         return self._facts.lookup.last_targetable_end()
-
-    def next_targetable_event_after(self, time_seconds: float) -> float | None:
-        return self._facts.next_event_after(time_seconds, event_kind=BOSS_TARGETABLE_CHANGED)
 
     def next_state_event_after(self, time_seconds: float) -> float | None:
         return self._facts.next_event_after(time_seconds)

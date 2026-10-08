@@ -22,7 +22,9 @@ def test_sixteen_python_threads_share_one_engine_without_context_leaks(job, acti
         contexts = []
         for step in range(5):
             timestamp = index * 100 + step * 6.0
-            backend.apply_external_event(timestamp, "target_count_changed", target_count=1 + index % 3)
+            backend.apply_external_events([{
+                "timestamp": timestamp, "event_kind": "target_count_changed", "target_count": 1 + index % 3,
+            }])
             assert backend.submit_action(timestamp, action).accepted
             backend.advance_to(timestamp + 4)
             backend.record_policy_action(timestamp + 4, "ogcd_wait", timestamp + 6)
@@ -127,7 +129,7 @@ def test_invalid_capacity_is_rejected_before_loading_runtime(capacity):
         InProcessEngine("black_mage", capacity=capacity)
 
 
-def test_external_fact_batch_is_atomic_and_single_event_delegates():
+def test_external_fact_batch_is_atomic_and_accepts_single_element():
     with InProcessEngine("black_mage", capacity=1) as engine, engine.create_backend(max_history=None) as backend:
         before = backend.statistics()
         with pytest.raises(Exception):
@@ -146,5 +148,7 @@ def test_external_fact_batch_is_atomic_and_single_event_delegates():
         current = canonical["current_state_context"]
         index = current["player_state_feature_keys"].index("request_state.is_moving")
         assert current["tokens"][0]["player_state"][index] == 1.0
-        assert backend.apply_external_event(1.0, "movement_changed", value=False).accepted
+        assert backend.apply_external_events([
+            {"timestamp": 1.0, "event_kind": "movement_changed", "value": False},
+        ]).accepted
         assert backend.validate_at(1.0, "fire_iii").legal
