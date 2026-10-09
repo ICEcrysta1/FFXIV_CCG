@@ -176,7 +176,7 @@ public sealed class JobSimulator
         foreach (var item in batch)
         {
             ArgumentNullException.ThrowIfNull(item);
-            if (!double.IsFinite(item.Timestamp) || item.Timestamp < 0 || item.Timestamp < Time
+            if (!double.IsFinite(item.Timestamp) || item.Timestamp < Time
                 || item.Timestamp != timestamp)
                 throw new ArgumentException("external event batch requires one finite, non-past timestamp", nameof(externalEvents));
             if (!kinds.Add(item.Kind))

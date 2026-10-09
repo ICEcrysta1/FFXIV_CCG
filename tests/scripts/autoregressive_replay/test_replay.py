@@ -32,6 +32,65 @@ _FAKE_GCD_SKILL = SimpleNamespace(key="fire", kind=SimpleNamespace(value="gcd"))
 _FAKE_OGCD_SKILL = SimpleNamespace(key="ogcd_wait", kind=SimpleNamespace(value="ogcd"))
 
 
+@pytest.mark.parametrize("scene_mode,initial_time", [("cache", None), ("none", None), ("cache", 0.0)])
+def test_default_precast_replay_accepts_negative_scene_facts(tmp_path, scene_mode, initial_time):
+    """真实会话、场景同步和预读首个技能贯通，不需要训练或模型推理。"""
+    from dataclasses import asdict
+
+    from common.policy.config import ModelConfig
+    from common.policy.data import DataSpec, ModelInputContract
+    from common.policy.model import CausalPolicyModel
+    from scripts.autoregressive_replay.backends import PyTorchPolicyBackend
+    from scripts.common.inprocess_backend import InProcessEngine
+    from tests.training._common_fixtures import make_dataset, make_demo_pt
+
+    source = make_demo_pt(tmp_path, ["fire_iii"], fight_id="precast")
+    dataset = make_dataset([source], max_history=4, int_dtype=torch.int32, float_dtype=torch.float32)
+    spec = DataSpec.from_dataset(dataset)
+    vocab = SkillVocab.build_from_job_tag(spec.job_tag)
+    contract = ModelInputContract.from_training(
+        data_spec=spec, schema=dataset.schema, normalizer=dataset.normalizer, skill_vocab=vocab,
+    )
+    model_config = ModelConfig(
+        d_model=8, n_layers=1, n_heads=2, num_kv_heads=1, ff_dim=16,
+        dropout=0.0, scene_capacity=8, history_capacity=4, history_reset_keep=4,
+    )
+    model = CausalPolicyModel(spec, model_config, vocab_size=vocab.size()).eval()
+    checkpoint = tmp_path / "model.pt"
+    torch.save({
+        "data_spec": asdict(spec), "model_config": asdict(model_config),
+        "input_contract": contract.to_dict(), "model_state_dict": model.state_dict(),
+    }, checkpoint)
+    backend = PyTorchPolicyBackend(checkpoint, device="cpu", use_kv_cache=False)
+    config = AutoregressiveReplayConfig(
+        checkpoint_path=checkpoint, output_path=tmp_path / "replay.md", scene_json_path=source,
+        cache_dir=tmp_path / ".cache", cache_shard_size=512, cache_max_shards=2,
+        model_history_capacity=4, max_history=4, max_steps=1, scene_duration_seconds=10.0,
+        scene_mode=scene_mode, initial_time_seconds=initial_time, device="cpu", use_kv_cache=False,
+    )
+    assert config.initial_action == "fire_iii"
+    with InProcessEngine(spec.job_tag, capacity=1) as engine, AutoregressiveReplaySession(
+        config, backend=backend, engine=engine,
+    ) as session:
+        replay = AutoregressiveReplay(config, session=session)
+        expected_start = -session.skill_book.get("fire_iii").cast_time if initial_time is None else initial_time
+        # 复用同一会话再跑一遍，确保事实游标随负起点重置。
+        for _ in range(2):
+            result = replay.run()
+            assert len(result.rows) == result.output_gcds == 1
+            assert result.rows[0].forced and result.rows[0].action_key == "fire_iii"
+            assert result.ppg > 0
+            stats = session.state_machine.statistics()
+            assert stats["action_history_count"] == 1
+            canonical = session.state_machine.observe_at(
+                stats["timestamp"], format="vector", next_observation_timestamp=stats["timestamp"],
+            ).context
+            history = canonical["state_history_context"]
+            request_time = history["player_state_feature_keys"].index("request_state.time_seconds")
+            assert history["tokens"][0]["player_state"][request_time] == pytest.approx(expected_start)
+        assert backend.metrics().calls == 0
+
+
 @pytest.mark.parametrize("drift", ["reorder_disabled", "add_disabled", "remove_disabled"])
 @pytest.mark.parametrize("use_kv_cache", [False, True])
 def test_checkpoint_restores_history_embedding_and_logits_after_yaml_vocab_drift(tmp_path, monkeypatch, drift, use_kv_cache):

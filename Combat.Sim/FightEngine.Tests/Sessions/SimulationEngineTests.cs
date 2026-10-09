@@ -10,6 +10,55 @@ public sealed class SimulationEngineTests
 {
     private static string Root => RepoRootLocator.Find();
 
+    [Theory]
+    [InlineData(-3.5)]
+    [InlineData(-3.0)]
+    public void 预读负起点允许当前及未来的有限同刻场景批次(double timestamp)
+    {
+        using var engine = new SimulationEngine(Root, "black_mage", 1);
+        using var session = engine.CreateSession(8, initialTimestamp: -3.5);
+
+        var applied = session.ApplyExternalEvents(new[]
+        {
+            new ExternalCombatEvent(timestamp, ExternalCombatEventKinds.MovementChanged, true),
+            new ExternalCombatEvent(timestamp, ExternalCombatEventKinds.TargetCountChanged, TargetCount: 2),
+        });
+
+        Assert.True(applied.Value.Accepted);
+        Assert.Equal(timestamp, applied.Timestamp);
+        Assert.Equal(timestamp, session.GetStatistics().Timestamp);
+        Assert.Equal("movement_locked", session.ValidateActionAt(timestamp, "fire_iii").Value.Reason);
+        Assert.True(session.ApplyExternalEvents(new[]
+        {
+            new ExternalCombatEvent(timestamp, ExternalCombatEventKinds.MovementChanged, false),
+        }).Value.Accepted);
+        Assert.True(session.SubmitAction(timestamp, "fire_iii").Value.Accepted);
+    }
+
+    [Theory]
+    [InlineData(-4.0, -4.0)]
+    [InlineData(-3.5000000001, -3.5000000001)]
+    [InlineData(-3.0, double.NaN)]
+    [InlineData(-3.0, double.NegativeInfinity)]
+    [InlineData(-3.0, double.PositiveInfinity)]
+    [InlineData(-3.0, -2.5)]
+    public void 预读负起点拒绝过去非有限或不同时刻批次且整批零变更(double firstTimestamp, double secondTimestamp)
+    {
+        using var engine = new SimulationEngine(Root, "black_mage", 1);
+        using var session = engine.CreateSession(8, initialTimestamp: -3.5);
+        var before = JsonSerializer.Serialize(session.ObserveAt(-3.5, "vector", -3.5).Value);
+        var statistics = session.GetStatistics();
+
+        Assert.Throws<ArgumentException>(() => session.ApplyExternalEvents(new[]
+        {
+            new ExternalCombatEvent(firstTimestamp, ExternalCombatEventKinds.BossTargetableChanged, false),
+            new ExternalCombatEvent(secondTimestamp, ExternalCombatEventKinds.MovementChanged, true),
+        }));
+
+        Assert.Equal(statistics, session.GetStatistics());
+        Assert.Equal(before, JsonSerializer.Serialize(session.ObserveAt(-3.5, "vector", -3.5).Value));
+    }
+
     [Fact]
     public void 单元素批次通过正式会话结算且非法整批不改变状态()
     {
