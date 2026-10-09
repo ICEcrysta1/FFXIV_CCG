@@ -23,9 +23,9 @@
 
 ## 🖥️ 训练配置最低要求
 
-当前上下文顺序为 `scene, (state_i, skill_i)*H, current_state`。历史与最新状态统一表达“上一步技能后状态＋当前请求时状态”，请求时冻结历史输入，缺少前序快照时两段相同，`ogcd_wait` 使用同一语义。黑魔技能数值特征为 18 维、状态为 86 维，技能不含绝对时间。完整 cache 保存 FP32 原始状态和场景；模型前由共享 `ContextEncoder` 把窗口首状态重锚为 ABS，后续状态按原始数值求 DELTA，并输出逐字段 ABS/reset 标识；场景按锚点裁剪、排序后编码时间差分。累计 `history_cursor` 控制分段窗口，主线容量 300、溢出保留 8 条，最多 `200 + 2×300 + 1 = 801` 个物理 token。窗口参数变化复用完整 cache，不改变状态机推进或真实 PPG 统计。
+当前上下文顺序为 `scene, (state_i, skill_i)*H, current_state`。历史与最新状态统一表达“上一步技能后状态＋当前请求时状态”，请求时冻结历史输入，缺少前序快照时两段相同，`ogcd_wait` 使用同一语义。黑魔技能数值特征为 18 维，技能不含绝对时间；状态值为基础 86 维加两段各 25 个技能的绝对可用值，共 136 维，null/reset 仍为基础 86 维。完整 cache 保存 FP32 原始状态、场景和逐行 bool 技能表；模型前由共享 `ContextEncoder` 把窗口首基础状态重锚为 ABS，后续基础状态按原始数值求 DELTA，并输出逐字段 ABS/reset 标识；技能表保持绝对 0/1，场景按锚点裁剪、排序后编码时间差分。累计 `history_cursor` 控制分段窗口，主线容量 300、溢出保留 8 条，最多 `200 + 2×300 + 1 = 801` 个物理 token。窗口参数变化复用完整 cache，不改变状态机推进或真实 PPG 统计。
 
-输入 content 与 role 相加后统一执行无参数 RMSNorm，主干及最终读出也使用无参数 RMSNorm。固定动作由独立输出头读出并执行 FP32 softcap；ONNX 图接收宿主完成 FP32 编码后才转换目标精度的 12 个输入，包含历史与当前状态 reset mask。当前契约为 canonical 14、桥接 16、checkpoint 输入 21、训练样本 10、compiled cache v22/转换 v24、部署契约 24/manifest 15、GRPO rollout 6。旧 cache、checkpoint、部署包和 rollout 需按新契约重建，历史设计见[因果策略迁移计划](./docs/causal-policy-model-refactor-plan.md)与[重锚差分计划](./docs/anchored-delta-context-plan.md)。
+输入 content 与 role 相加后统一执行无参数 RMSNorm，主干及最终读出也使用无参数 RMSNorm。固定动作由独立输出头读出并执行 FP32 softcap；ONNX 图接收宿主完成 FP32 编码后才转换目标精度的 12 个输入，包含历史与当前状态 reset mask。当前契约为 canonical 15、桥接 17、checkpoint 输入 22、训练样本 11、compiled cache v23/转换 v25、部署契约 25/manifest 16、GRPO rollout 7。旧 cache、checkpoint、部署包和 rollout 需按新契约重建，设计及验收见[状态技能可用性计划](./docs/state-skill-availability-plan.md)、[因果策略迁移计划](./docs/causal-policy-model-refactor-plan.md)与[重锚差分计划](./docs/anchored-delta-context-plan.md)。
 
 以下是项目训练的最低硬件要求
 

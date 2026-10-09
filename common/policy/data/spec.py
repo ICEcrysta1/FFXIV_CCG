@@ -12,6 +12,7 @@ class DataSpec:
     job_tag: str
     num_actions: int
     state_dim: int
+    base_state_dim: int
     scene_dim: int
     skill_feature_dim: int
     num_scene_types: int
@@ -21,6 +22,8 @@ class DataSpec:
     action_is_gcd: tuple[bool, ...]
 
     def __post_init__(self) -> None:
+        if not 0 < self.base_state_dim < self.state_dim:
+            raise ValueError("base_state_dim must be positive and smaller than combined state_dim")
         if "time_seconds" in self.skill_feature_names:
             raise ValueError("removed skill time_seconds feature; rebuild model input")
         if self.skill_feature_dim != len(self.skill_feature_names):
@@ -40,10 +43,11 @@ class DataSpec:
 
     @classmethod
     def from_dataset(cls, dataset) -> DataSpec:
-        return cls(
+        result = cls(
             job_tag=dataset.job_tag,
             num_actions=dataset.num_actions,
             state_dim=dataset.state_dim,
+            base_state_dim=dataset.base_state_dim,
             scene_dim=dataset.scene_dim,
             skill_feature_dim=len(dataset.skill_feature_names),
             num_scene_types=dataset.num_scene_types,
@@ -52,6 +56,8 @@ class DataSpec:
             action_to_vocab_id=tuple(dataset.action_to_vocab_id),
             action_is_gcd=tuple(dataset.action_is_gcd),
         )
+        dataset.schema.state_layout(result.action_keys).assert_matches_data_spec(result)
+        return result
 
     @classmethod
     def from_dict(cls, payload: dict[str, object]) -> DataSpec:
@@ -59,6 +65,7 @@ class DataSpec:
             job_tag=str(payload["job_tag"]),
             num_actions=int(payload["num_actions"]),
             state_dim=int(payload["state_dim"]),
+            base_state_dim=int(payload["base_state_dim"]),
             scene_dim=int(payload["scene_dim"]),
             skill_feature_dim=int(payload["skill_feature_dim"]),
             num_scene_types=int(payload["num_scene_types"]),

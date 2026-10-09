@@ -1,4 +1,4 @@
-"""scene 事实流测试：三类事实的端点语义与目标数归位。"""
+"""共享场景执行视图、同刻事实批次与纯状态合成回归。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from scripts.common.scene_state import (
     RAID_BUFF_WINDOW_CHANGED,
     TARGET_COUNT_CHANGED,
     SceneFactScheduler,
-    resolve_target_count_at,
+    SceneStateLookup,
 )
 from scripts.convert_fflogs.scene.scene_context import (
     build_raid_buff_window_token,
@@ -34,17 +34,13 @@ def test_scene_lookup_cache_preserves_boundaries_is_bounded_and_releases_owner()
     movement["tokens"] = [[3.0 if key == "start_offset_seconds" else
                             7.0 if key == "end_offset_seconds" else 0.0 for key in keys]]
     lookup = module.SceneStateLookup(scene)
-    targetable, ti = module._window_tokens(scene, module.TARGETABLE_WINDOW_CONTEXT_KEY)
-    moving, mi = module._window_tokens(scene, FORCED_MOVEMENT_CONTEXT_KEY)
     timestamps = [boundary + epsilon for boundary in (0, 3, 6.5, 7, 10, 20, 30)
                   for epsilon in (-2 * SCENE_EPSILON, -SCENE_EPSILON, 0, SCENE_EPSILON)]
-    # 查询顺序可回退；缓存不四舍五入时间戳，也不更改滑步与停手端点。
+    # 端点判断与事实时刻严格一致，历史查询顺序可以回退。
     for timestamp in timestamps + list(reversed(timestamps)):
-        expected = module._resolve_targetable_state(targetable, ti, timestamp=timestamp)
-        assert lookup.state_at(timestamp) == module.SceneState(
-            module._resolve_is_moving(moving, mi, timestamp=timestamp),
-            expected["next_downtime_eta"], expected["downtime_remaining"],
-        )
+        state = lookup.state_at(timestamp)
+        assert state.is_moving == (3 <= timestamp < 6.5)
+        assert state.boss_targetable == (not 10 <= timestamp < 20)
     assert lookup._cached_state_at.cache_info().hits >= len(timestamps)
     for index in range(10000):
         lookup.state_at(index / 1000)
@@ -121,6 +117,7 @@ def test_target_count_fact_replay_matches_lookup():
         ],
     )
     facts = _target_count_facts(scene_context)
+    lookup = SceneStateLookup(scene_context)
 
     replayed = 1
     cursor = 0
@@ -129,11 +126,11 @@ def test_target_count_fact_replay_matches_lookup():
         while cursor < len(facts) and facts[cursor].timestamp <= timestamp:
             replayed = facts[cursor].target_count
             cursor += 1
-        assert replayed == resolve_target_count_at(scene_context, timestamp), timestamp
+        assert replayed == lookup.state_at(timestamp).target_count, timestamp
 
 
 def test_scene_facts_only_cover_injected_kinds():
-    """只发三类进入状态机的事实，移动状态不注入。"""
+    """没有移动窗口时只生成其余三类变化事实。"""
     scene_context = build_test_scene_context(
         targetable_tokens=[
             build_targetable_window_token(0.0, 30.0, targetable=True, segment_kind="combat"),
@@ -185,10 +182,10 @@ def test_scene_rewrite_reads_each_snapshot_time_without_skill_timestamp():
     def lookup(timestamp):
         queried.append(timestamp)
         return SimpleNamespace(is_moving=timestamp >= 10.0, next_downtime_eta=30.0-timestamp, downtime_remaining=0.0)
-    rewrite_scene_player_state(canonical, observation_timestamp=99.0, next_observation_timestamp=200.0, scene_state_at=lookup)
+    rewritten = rewrite_scene_player_state(canonical, scene_state_at=lookup)
     assert queried == [8.0, 11.0, 9.0, 12.0]
     for key, etas in (("state_history_context", [22.0, 19.0]), ("current_state_context", [21.0, 18.0])):
-        context = canonical[key]
+        context = rewritten[key]
         keys = context["player_state_feature_keys"]
         vector = context["tokens"][0]["player_state"]
         assert [vector[keys.index(f"{prefix}.next_untargetable_in_seconds")] for prefix in ("previous_action_after", "request_state")] == etas
@@ -202,12 +199,13 @@ def test_scene_rewrite_preserves_raw_boundary_precision_and_uses_names_with_reor
     context["tokens"][0]["player_state"].reverse()
     from copy import deepcopy
     canonical = {"state_history_context": context, "current_state_context": deepcopy(context)}
-    rewrite_scene_player_state(canonical, observation_timestamp=0.0, next_observation_timestamp=None,
+    rewritten = rewrite_scene_player_state(canonical,
                                scene_state_at=lambda t: SimpleNamespace(is_moving=t>=10.0, next_downtime_eta=0.0, downtime_remaining=0.0))
     keys = context["player_state_feature_keys"]
     vector = context["tokens"][0]["player_state"]
     assert vector[keys.index("previous_action_after.is_moving")] == 0.0
-    assert vector[keys.index("request_state.is_moving")] == 1.0
+    assert vector[keys.index("request_state.is_moving")] == 0.0
+    assert rewritten is canonical
 
 
 @pytest.mark.parametrize("invalid", [None, True, float("nan"), float("inf")])
@@ -217,7 +215,7 @@ def test_scene_rewrite_rejects_missing_or_invalid_time(invalid):
     context = _state_rewrite_context(invalid, 12.0)
     canonical = {"state_history_context": context, "current_state_context": deepcopy(context)}
     with pytest.raises(ValueError, match="time_seconds must be finite numeric"):
-        rewrite_scene_player_state(canonical, observation_timestamp=0.0, next_observation_timestamp=None, scene_state_at=lambda _: None)
+        rewrite_scene_player_state(canonical, scene_state_at=lambda _: None)
 
 
 def test_scene_rewrite_rejects_missing_time_key():
@@ -225,4 +223,109 @@ def test_scene_rewrite_rejects_missing_time_key():
     context = _state_rewrite_context()
     context["player_state_feature_keys"][context["player_state_feature_keys"].index("previous_action_after.time_seconds")] = "unknown"
     with pytest.raises(ValueError, match="lacks previous_action_after"):
-        rewrite_scene_player_state({"state_history_context": context}, observation_timestamp=0.0, next_observation_timestamp=None, scene_state_at=lambda _: None)
+        rewrite_scene_player_state({"state_history_context": context}, scene_state_at=lambda _: None)
+
+
+def test_scene_execution_fp32_projection_and_facts_share_exact_boundaries():
+    """原端点与 FP32 端点之间的首个差异只修正事实，不改变 scene 输出。"""
+    from copy import deepcopy
+    import math
+    import struct
+    from scripts.common.scene_state import MOVEMENT_CHANGED, SceneStateLookup
+    from tests.helpers import forced_movement_window_token
+
+    scene = build_test_scene_context(forced_movement_tokens=[
+        forced_movement_window_token(600.004, 604.007),
+        forced_movement_window_token(603.0, 608.0),
+        forced_movement_window_token(610.0, 610.2),
+    ])
+    before = deepcopy(scene)
+    lookup = SceneStateLookup(scene)
+    start = struct.unpack("f", struct.pack("f", 600.004))[0]
+    facts = [fact for fact in lookup.facts() if fact.event_kind == MOVEMENT_CHANGED]
+    assert [(fact.timestamp, fact.value) for fact in facts] == [(start, True), (607.5, False)]
+    assert lookup.state_at(600.004).is_moving is False
+    assert lookup.state_at(math.nextafter(start, -math.inf)).is_moving is False
+    assert lookup.state_at(start).is_moving is True
+    assert lookup.state_at(math.nextafter(start, math.inf)).is_moving is True
+    assert lookup.state_at(603.6).is_moving is True
+    assert lookup.state_at(math.nextafter(607.5, -math.inf)).is_moving is True
+    assert lookup.state_at(607.5).is_moving is False
+    assert scene == before
+    restored = deepcopy(scene)
+    for window in restored.values():
+        if isinstance(window, dict) and "tokens" in window:
+            window["tokens"] = [[struct.unpack("f", struct.pack("f", value))[0] for value in row]
+                                for row in window["tokens"]]
+    assert SceneStateLookup(restored).facts() == lookup.facts()
+
+
+def test_scene_sync_batches_every_same_time_fact_and_resets_nonzero_origin():
+    from types import SimpleNamespace
+    from scripts.common.scene_state import MOVEMENT_CHANGED
+    from tests.helpers import forced_movement_window_token
+
+    scene = build_test_scene_context(
+        targetable_tokens=[build_targetable_window_token(10, 20, targetable=False, segment_kind="downtime")],
+        forced_movement_tokens=[forced_movement_window_token(10, 20)],
+        target_count_tokens=[build_target_count_window_token(10, 20, 3)],
+        raid_buff_tokens=[build_raid_buff_window_token(10, 20)],
+    )
+    batches = []
+    backend = SimpleNamespace(apply_external_events=lambda batch: (
+        batches.append(batch) or SimpleNamespace(accepted=True)))
+    scheduler = SceneFactScheduler(scene)
+    scheduler.sync_through(backend, 5.0)
+    scheduler.sync_through(backend, 10.0)
+    assert [event["event_kind"] for event in batches[-1]] == [
+        BOSS_TARGETABLE_CHANGED, MOVEMENT_CHANGED, TARGET_COUNT_CHANGED, RAID_BUFF_WINDOW_CHANGED,
+    ]
+    assert {event["timestamp"] for event in batches[-1]} == {10.0}
+    scheduler.sync_through(backend, 10.0)
+    assert len(batches) == 2
+    scheduler.reset()
+    scheduler.sync_through(backend, 15.0)
+    assert len(batches[-1]) == 4
+    assert {event["timestamp"] for event in batches[-1]} == {15.0}
+    assert batches[-1][-1]["remaining_seconds"] == 5.0
+
+
+def test_scene_rewrite_only_copies_changed_state_fields_and_is_idempotent():
+    from copy import deepcopy
+    from scripts.common.scene_state import SceneStateLookup, rewrite_scene_player_state
+    scene = build_test_scene_context(targetable_tokens=[
+        build_targetable_window_token(10, 20, targetable=False, segment_kind="downtime"),
+    ])
+    canonical = {
+        "current_state_context": _state_rewrite_context(5.0, 15.0),
+        "state_history_context": _state_rewrite_context(4.0, 14.0),
+        "skill_history_context": [{"skill_key": "ogcd_wait", "kind": 0}],
+        "scene_context": scene, "action_keys": ["fire", "ogcd_wait"],
+        "execution": {"potency": 123.0},
+    }
+    before = deepcopy(canonical)
+    lookup = SceneStateLookup(scene)
+    result = rewrite_scene_player_state(canonical, scene_state_at=lookup.state_at)
+    assert canonical == before
+    for key in ("skill_history_context", "scene_context", "action_keys", "execution"):
+        assert result[key] is canonical[key]
+        assert result[key] == before[key]
+    context = result["current_state_context"]
+    keys, vector = context["player_state_feature_keys"], context["tokens"][0]["player_state"]
+    assert vector[keys.index("previous_action_after.next_untargetable_in_seconds")] == 5.0
+    assert vector[keys.index("request_state.downtime_remaining_seconds")] == 5.0
+    assert rewrite_scene_player_state(result, scene_state_at=lookup.state_at) is result
+
+
+@pytest.mark.parametrize("start,end,error", [
+    (float("nan"), 10.0, "finite numeric"), (1e40, 2e40, "finite FP32"),
+    (20.0, 10.0, "start <= end"),
+])
+def test_scene_execution_rejects_invalid_bounds_before_scheduling(start, end, error):
+    from common.contracts import FORCED_MOVEMENT_CONTEXT_KEY
+    from scripts.common.scene_state import SceneStateLookup
+    scene = {FORCED_MOVEMENT_CONTEXT_KEY: {
+        "feature_keys": ["start_offset_seconds", "end_offset_seconds"], "tokens": [[start, end]],
+    }}
+    with pytest.raises(ValueError, match=error):
+        SceneStateLookup(scene)

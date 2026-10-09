@@ -58,9 +58,7 @@ public static class RandomSequenceReplay
 
         for (var stepIndex = 1; stepIndex <= maxSteps; stepIndex++)
         {
-            var legalKeys = simulator.AvailableActionKeysAt(simulator.Time)
-                .OrderBy(key => key, StringComparer.Ordinal)
-                .ToList();
+            var legalKeys = simulator.AvailableActionKeysAt(simulator.Time).ToList();
             if (legalKeys.Count == 0)
             {
                 var nextTimestamp = simulator.GetNextScheduledEventTime();

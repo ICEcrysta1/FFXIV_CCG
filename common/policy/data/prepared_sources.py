@@ -22,7 +22,7 @@ from .compiled_cache import (
 )
 from .normalizer import Normalizer
 from .skill_vocab import SkillVocab
-from .schema import SceneWindowSchema, TrainingSchema
+from .schema import SceneWindowSchema, StateFeatureGroup, TrainingSchema
 from .source_selection import (
     RawTrainingPathGroup,
     select_training_raw_path_groups,
@@ -152,7 +152,7 @@ def select_prepared_validation_sources(
             try:
                 payload = safe_torch_load(
                     manifest, mmap=True, map_location="meta",
-                    safe_globals=(SceneWindowSchema, TrainingSchema),
+                    safe_globals=(SceneWindowSchema, StateFeatureGroup, TrainingSchema),
                 )
                 if not isinstance(payload, dict) or payload.get("cache_format") != CACHE_FORMAT:
                     continue

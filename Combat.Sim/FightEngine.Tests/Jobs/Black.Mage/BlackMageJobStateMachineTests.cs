@@ -96,7 +96,7 @@ public class BlackMageJobStateMachineTests
     public void AvailableActionsMatchCurrentState()
     {
         var machine = BuildMachine();
-        var actionKeys = machine.AvailableActionKeys(machine.InitialState()).ToHashSet();
+        var actionKeys = new JobSimulator(machine).AvailableActionKeysAt(0).ToHashSet();
 
         Assert.Contains("fire_iii", actionKeys);
         Assert.Contains("ley_lines", actionKeys);
@@ -467,7 +467,7 @@ public class BlackMageJobStateMachineTests
         Assert.DoesNotContain("surecast", machine.SystemMachine.JobStatusDefinitions.Keys);
         Assert.False(machine.JobMachine.SupportsBehavior("ley_lines_utility"));
 
-        var available = machine.AvailableActionKeys(machine.InitialState());
+        var available = new JobSimulator(machine).AvailableActionKeysAt(0);
         Assert.DoesNotContain("retrace", available);
         Assert.DoesNotContain("manaward", available);
         Assert.DoesNotContain("surecast", available);

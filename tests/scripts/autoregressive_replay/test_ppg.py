@@ -18,7 +18,7 @@ from scripts.autoregressive_replay.ppg import (
 from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
 from common.policy.data import Normalizer
 from common.policy.config import ModelConfig
-from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION, TrainingSchema, SceneWindowSchema
+from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION, TrainingSchema, SceneWindowSchema, StateFeatureGroup, StateFeatureLayout
 from scripts.autoregressive_replay.context import LiveBatchBuilder
 
 
@@ -135,7 +135,12 @@ def test_real_ppg_counts_queued_gcds_and_masks_policy_wait(cs_backend, monkeypat
     schema = TrainingSchema(
         serialization_format="test", sample_schema_version=TRAINING_SAMPLE_SCHEMA_VERSION,
         context_schema_version=CANONICAL_CONTEXT_SCHEMA_VERSION, scene_context_mode="absolute",
-        state_group_feature_keys=groups, skill_history_fields=("kind",),
+        state_groups=tuple(StateFeatureGroup(group, f"{group}_feature_keys", tuple(fields), "anchored_delta")
+                           for group, fields in groups.items()) + (
+            StateFeatureGroup("skill_availability", "skill_availability_feature_keys",
+                              tuple(state_context["skill_availability_feature_keys"]), "absolute_binary"),
+        ),
+        state_snapshots=("previous_action_after", "request_state"), skill_history_fields=("kind",),
         scene_windows=(SceneWindowSchema.from_feature_keys(
             context_key="targetable_window_context", scene_type_id=0,
             feature_keys=("start_offset_seconds", "end_offset_seconds", "duration_seconds"),
@@ -148,7 +153,8 @@ def test_real_ppg_counts_queued_gcds_and_masks_policy_wait(cs_backend, monkeypat
         vocab=SimpleNamespace(require_lookup=lambda value, **kwargs: value),
         normalizer=normalizer, schema=schema,
         skill_feature_names=("kind",),
-        scene_provider=SimpleNamespace(at_time=lambda _: (torch.zeros((0, 3)), torch.zeros(0, dtype=torch.int32))),
+        scene_provider=SimpleNamespace(at_time=lambda _: (torch.zeros((0, 3)), torch.zeros(0, dtype=torch.int32)),
+                                       state_at=lambda _: SimpleNamespace(next_downtime_eta=0.0, downtime_remaining=0.0)),
         device=torch.device("cpu"), max_history=20,
         model_config=ModelConfig(history_capacity=20),
         action_keys=keys, action_is_gcd=action_space.action_is_gcd,
@@ -338,10 +344,14 @@ def test_validation_ppg_recovers_initial_base_gcd_from_saved_current_state(base_
     schema = TrainingSchema(
         serialization_format="raw_training_source_v1", sample_schema_version=TRAINING_SAMPLE_SCHEMA_VERSION,
         context_schema_version=CANONICAL_CONTEXT_SCHEMA_VERSION, scene_context_mode="absolute_from_fight_scene_context", scene_windows=(),
-        state_group_feature_keys={
-            "player_state": ("previous_action_after.current_gcd_seconds", "request_state.current_gcd_seconds"),
-            "buff_state": ("previous_action_after.job.ley_lines.active", "request_state.job.ley_lines.active"),
-        }, skill_history_fields=(),
+        state_groups=(
+            StateFeatureGroup("player_state", "player_state_feature_keys",
+                ("previous_action_after.current_gcd_seconds", "request_state.current_gcd_seconds", "request_state.time_seconds"), "anchored_delta"),
+            StateFeatureGroup("buff_state", "buff_state_feature_keys",
+                ("previous_action_after.job.ley_lines.active", "request_state.job.ley_lines.active"), "anchored_delta"),
+            StateFeatureGroup("skill_availability", "skill_availability_feature_keys",
+                ("previous_action_after.test", "request_state.test"), "absolute_binary"),
+        ), state_snapshots=("previous_action_after", "request_state"), skill_history_fields=(),
     )
     normalizer.register_schema(schema)
     actual_gcd = base_gcd * (0.85 if haste else 1.0)
@@ -352,10 +362,11 @@ def test_validation_ppg_recovers_initial_base_gcd_from_saved_current_state(base_
         @staticmethod
         def sample(_index):
             return {
-                "current_state_abs_values": torch.tensor([previous_gcd, request_gcd, float(not haste), float(haste)]),
-                "current_state_null_mask": torch.zeros(4, dtype=torch.bool),
+                "current_state_abs_values": torch.tensor([previous_gcd, request_gcd, 0.0, float(not haste), float(haste)]),
+                "current_state_null_mask": torch.zeros(5, dtype=torch.bool),
             }
     Reader.schema = schema
+    Reader.action_keys = ("test",)
 
     assert _infer_initial_base_gcd(
         Reader(),
@@ -367,17 +378,20 @@ def test_validation_ppg_recovers_initial_base_gcd_from_saved_current_state(base_
 @pytest.mark.parametrize("missing_state,null_gcd,gcd", ((True, False, 2.5), (False, True, 2.5), (False, False, 0.0)))
 def test_initial_ppg_state_cannot_silently_fall_back_to_local_gcd(missing_state, null_gcd, gcd):
     normalizer = Normalizer()
-    keys = ("previous_action_after.current_gcd_seconds", "request_state.current_gcd_seconds")
+    keys = ("previous_action_after.current_gcd_seconds", "request_state.current_gcd_seconds", "request_state.time_seconds")
     normalizer.register_feature_keys("player_state", list(keys))
-    schema = SimpleNamespace(
-        state_group_feature_keys={"player_state": keys}, state_vector_dim=lambda: 2,
-        state_group_slices=lambda: {"player_state": slice(0, 2)},
+    groups = (
+        StateFeatureGroup("player_state", "player_state_feature_keys", keys, "anchored_delta"),
+        StateFeatureGroup("skill_availability", "skill_availability_feature_keys",
+                          ("previous_action_after.test", "request_state.test"), "absolute_binary"),
     )
+    schema = SimpleNamespace(state_layout=lambda actions: StateFeatureLayout(
+        groups, ("previous_action_after", "request_state"), actions))
     values = {} if missing_state else {
-        "current_state_abs_values": torch.tensor([gcd, gcd]),
-        "current_state_null_mask": torch.tensor([False, null_gcd]),
+        "current_state_abs_values": torch.tensor([gcd, gcd, 0.0]),
+        "current_state_null_mask": torch.tensor([False, null_gcd, False]),
     }
-    reader = SimpleNamespace(schema=schema, sample=lambda _index: values)
+    reader = SimpleNamespace(schema=schema, action_keys=("test",), sample=lambda _index: values)
     with pytest.raises(ValueError, match="missing initial current state|has null|invalid initial base GCD"):
         _infer_initial_base_gcd(reader, normalizer=normalizer, job_tag="machinist")
 

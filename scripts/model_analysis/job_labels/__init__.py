@@ -10,12 +10,12 @@ _DECISION_STATE_LABELERS = {
 }
 
 
-def decision_state_labels(job_tag: str, batch_index: int, *, batch, schema) -> tuple[str, float]:
+def decision_state_labels(job_tag: str, batch_index: int, *, batch, layout) -> tuple[str, float]:
     """按职业提取 AF/UI、MP 等分析标签；未知职业不套用黑魔规则。"""
     labeler = _DECISION_STATE_LABELERS.get(str(job_tag))
     if labeler is None:
         return "unknown", float("nan")
-    return labeler(batch_index, batch=batch, schema=schema)
+    return labeler(batch_index, batch=batch, layout=layout)
 
 
 __all__ = ["decision_state_labels"]

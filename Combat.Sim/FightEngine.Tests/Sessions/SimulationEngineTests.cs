@@ -11,6 +11,80 @@ public sealed class SimulationEngineTests
     private static string Root => RepoRootLocator.Find();
 
     [Theory]
+    [InlineData(-3.5)]
+    [InlineData(-3.0)]
+    public void 预读负起点允许当前及未来的有限同刻场景批次(double timestamp)
+    {
+        using var engine = new SimulationEngine(Root, "black_mage", 1);
+        using var session = engine.CreateSession(8, initialTimestamp: -3.5);
+
+        var applied = session.ApplyExternalEvents(new[]
+        {
+            new ExternalCombatEvent(timestamp, ExternalCombatEventKinds.MovementChanged, true),
+            new ExternalCombatEvent(timestamp, ExternalCombatEventKinds.TargetCountChanged, TargetCount: 2),
+        });
+
+        Assert.True(applied.Value.Accepted);
+        Assert.Equal(timestamp, applied.Timestamp);
+        Assert.Equal(timestamp, session.GetStatistics().Timestamp);
+        Assert.Equal("movement_locked", session.ValidateActionAt(timestamp, "fire_iii").Value.Reason);
+        Assert.True(session.ApplyExternalEvents(new[]
+        {
+            new ExternalCombatEvent(timestamp, ExternalCombatEventKinds.MovementChanged, false),
+        }).Value.Accepted);
+        Assert.True(session.SubmitAction(timestamp, "fire_iii").Value.Accepted);
+    }
+
+    [Theory]
+    [InlineData(-4.0, -4.0)]
+    [InlineData(-3.5000000001, -3.5000000001)]
+    [InlineData(-3.0, double.NaN)]
+    [InlineData(-3.0, double.NegativeInfinity)]
+    [InlineData(-3.0, double.PositiveInfinity)]
+    [InlineData(-3.0, -2.5)]
+    public void 预读负起点拒绝过去非有限或不同时刻批次且整批零变更(double firstTimestamp, double secondTimestamp)
+    {
+        using var engine = new SimulationEngine(Root, "black_mage", 1);
+        using var session = engine.CreateSession(8, initialTimestamp: -3.5);
+        var before = JsonSerializer.Serialize(session.ObserveAt(-3.5, "vector", -3.5).Value);
+        var statistics = session.GetStatistics();
+
+        Assert.Throws<ArgumentException>(() => session.ApplyExternalEvents(new[]
+        {
+            new ExternalCombatEvent(firstTimestamp, ExternalCombatEventKinds.BossTargetableChanged, false),
+            new ExternalCombatEvent(secondTimestamp, ExternalCombatEventKinds.MovementChanged, true),
+        }));
+
+        Assert.Equal(statistics, session.GetStatistics());
+        Assert.Equal(before, JsonSerializer.Serialize(session.ObserveAt(-3.5, "vector", -3.5).Value));
+    }
+
+    [Fact]
+    public void 单元素批次通过正式会话结算且非法整批不改变状态()
+    {
+        using var engine = new SimulationEngine(Root, "black_mage", 1);
+        using var batch = engine.CreateSession(8);
+        var fact = new ExternalCombatEvent(1, ExternalCombatEventKinds.MovementChanged, true);
+        var applied = batch.ApplyExternalEvents(new[] { fact });
+        Assert.True(applied.Value.Accepted);
+        Assert.Equal(1, applied.Timestamp);
+        Assert.Equal("movement_locked", batch.ValidateActionAt(1, "fire_iii").Value.Reason);
+        var before = JsonSerializer.Serialize(batch.ObserveAt(1, "vector", 1).Value);
+        Assert.Throws<ArgumentException>(() => batch.ApplyExternalEvents(new[]
+        {
+            new ExternalCombatEvent(2, ExternalCombatEventKinds.MovementChanged, false),
+            new ExternalCombatEvent(2, ExternalCombatEventKinds.TargetCountChanged, TargetCount: -1),
+        }));
+        Assert.Equal(before, JsonSerializer.Serialize(batch.ObserveAt(1, "vector", 1).Value));
+        Assert.Equal(1, batch.GetStatistics().Timestamp);
+        Assert.True(batch.ApplyExternalEvents(new[]
+        {
+            new ExternalCombatEvent(1, ExternalCombatEventKinds.MovementChanged, false),
+        }).Value.Accepted);
+        Assert.True(batch.ValidateActionAt(1, "fire_iii").Value.Ok);
+    }
+
+    [Theory]
     [InlineData("black_mage", "blizzard_iii")]
     [InlineData("machinist", "heated_split_shot")]
     public void 十六队列多线程与独立模拟器逐步输出一致(string job, string action)
@@ -33,14 +107,14 @@ public sealed class SimulationEngineTests
                 var time = index * 100 + step * 6.0;
                 var fact = new ExternalCombatEvent(time, ExternalCombatEventKinds.TargetCountChanged,
                     TargetCount: 1 + index % 3);
-                session.ApplyExternalEvent(fact);
-                reference.ApplyExternalEvent(fact);
+                session.ApplyExternalEvents(new ExternalCombatEvent[] { fact });
+                reference.ApplyExternalEvents(new ExternalCombatEvent[] { fact });
                 if (step == 0)
                 {
                     var buff = new ExternalCombatEvent(time, ExternalCombatEventKinds.RaidBuffWindowChanged,
                         Value: true, RemainingSeconds: 20);
-                    session.ApplyExternalEvent(buff);
-                    reference.ApplyExternalEvent(buff);
+                    session.ApplyExternalEvents(new ExternalCombatEvent[] { buff });
+                    reference.ApplyExternalEvents(new ExternalCombatEvent[] { buff });
                 }
                 var actual = session.SubmitAction(time, action).Value;
                 var expected = reference.SubmitAction(time, action);
@@ -68,7 +142,7 @@ public sealed class SimulationEngineTests
         using var first = engine.CreateSession(8);
         using var second = engine.CreateSession(8);
         Assert.True(first.SubmitAction(0, "fire_iii").Value.Accepted);
-        first.ApplyExternalEvent(new(0.1, ExternalCombatEventKinds.MovementChanged, Value: true));
+        first.ApplyExternalEvents(new ExternalCombatEvent[] { new(0.1, ExternalCombatEventKinds.MovementChanged, Value: true) });
         second.AdvanceTo(1000);
         Assert.Equal(0.1, first.GetStatistics().Timestamp);
         Assert.Throws<ArgumentOutOfRangeException>(() => first.AdvanceTo(-1));
@@ -108,7 +182,7 @@ public sealed class SimulationEngineTests
         using var session = engine.CreateSession(8);
         session.SubmitAction(0, "fire_iii");
         session.RecordPolicyAction(0, "ogcd_wait", 4);
-        session.ApplyExternalEvent(new(0, ExternalCombatEventKinds.MovementChanged, Value: true));
+        session.ApplyExternalEvents(new ExternalCombatEvent[] { new(0, ExternalCombatEventKinds.MovementChanged, Value: true) });
         Assert.Throws<ArgumentOutOfRangeException>(() => session.Reset(8, double.NaN));
         Assert.Equal(1, session.GetStatistics().PolicyHistoryCount);
         session.Reset(8, 2.1, 20, 60);

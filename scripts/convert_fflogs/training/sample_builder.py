@@ -37,11 +37,11 @@ class TrainingSampleBuilder:
             sample_idx,
             dtype=self._torch.float32,
         )
-        current_abs = current_state.values[0]
+        current_abs = current_state.base_values[0]
         previous_abs = self._history_bank["state_abs_values"][history_end - 1] if history_length else None
         previous_null = self._history_bank["state_null_mask"][history_end - 1] if history_length else None
         current_delta, current_reset = raw_state_delta(
-            current_abs, current_state.null_mask[0], previous_abs, previous_null,
+            current_abs, current_state.base_null_mask[0], previous_abs, previous_null,
         )
         scene_vectors, scene_types = reader.scene_tokens(
             sample_idx,
@@ -92,8 +92,9 @@ class TrainingSampleBuilder:
             "action_values": reader.action_values(sample_idx, dtype=self._float_dtype),
             "current_state_abs_values": current_abs,
             "current_state_delta_values": current_delta,
-            "current_state_null_mask": current_state.null_mask[0],
+            "current_state_null_mask": current_state.base_null_mask[0],
             "current_state_delta_reset_mask": current_reset,
+            "current_state_skill_availability": current_state.availability[0],
             "action_legal_mask": reader.action_legal_mask(sample_idx),
             "scene_vectors": scene_vectors,
             "scene_types": scene_types,

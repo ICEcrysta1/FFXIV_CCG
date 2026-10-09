@@ -58,7 +58,8 @@ def test_build_training_samples_keeps_absolute_scene_context_and_syncs_runtime_f
 
     first_index = first_sample["context"]["action_keys"].index("fire_iii")
     second_index = second_sample["context"]["action_keys"].index("fire_iii")
-    assert first_sample["context"]["action_legal_mask"][first_index] is True
+    # 移动现在进入同一状态机事实流，原始接受 mask 与冻结技能表一致。
+    assert first_sample["context"]["action_legal_mask"][first_index] is False
     assert current_state_vector_value(
         first_sample["context"],
         "player_state",

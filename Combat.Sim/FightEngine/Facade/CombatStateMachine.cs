@@ -114,16 +114,6 @@ public sealed class CombatStateMachine
     /// <summary>返回当前状态下的有效基础 GCD 秒数（对照 current_gcd_duration）。</summary>
     internal double CurrentGcdDuration(CombatState state) => JobMachine.CurrentGcdDuration(state);
 
-    /// <summary>返回当前状态下所有合法可选技能（对照 available_actions）。</summary>
-    internal IReadOnlyList<SkillDefinition> AvailableActions(CombatState state) =>
-        SkillBook.EnabledSkills()
-            .Where(skill => ValidateAction(state, skill.Key).Ok)
-            .ToList();
-
-    /// <summary>返回当前状态下所有合法可选技能 key（对照 available_action_keys）。</summary>
-    internal IReadOnlyList<string> AvailableActionKeys(CombatState state) =>
-        AvailableActions(state).Select(skill => skill.Key).ToList();
-
     /// <summary>校验一次动作在当前状态下是否合法（对照 validate_action）。</summary>
     internal ValidationResult ValidateAction(CombatState state, string skillRef) =>
         ValidateAction(state, ResolveSkill(skillRef));
@@ -407,9 +397,6 @@ public sealed class CombatStateMachine
     {
         var stateBefore = _stateContextBuilder.Build(requestState);
         var stateAfter = _stateContextBuilder.Build(effectState);
-        // 老请求后来生效时，不能覆盖更新请求（包括 wait）的动作后基准。
-        if (effectState.LastDecisionId == actionInstanceId)
-            effectState.LastDecisionAfter = ModelStateSnapshot.Freeze(stateAfter);
         var snapshot = BuildSkillSnapshot(
             effectState,
             skill,

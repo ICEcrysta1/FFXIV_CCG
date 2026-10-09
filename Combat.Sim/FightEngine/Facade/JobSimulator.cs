@@ -19,6 +19,11 @@ public sealed class JobSimulator
     private readonly CombatStateMachine _machine;
     private readonly CombatTimelineRuntime _timeline;
     private readonly HistoryRetention _historyRetention;
+    private readonly SkillAvailabilityBuilder _availability;
+    private static readonly IReadOnlySet<TimelineEventKind> InstanceHandlers = new HashSet<TimelineEventKind>
+    {
+        TimelineEventKind.ActionAccepted, TimelineEventKind.CastCompleted, TimelineEventKind.ActionEffect,
+    };
     private StateOutputRouter? _outputRouter;
     internal StateOutputRouter OutputRouter => _outputRouter ??= _machine.CreateOutputRouter();
     internal HistoryRetention HistoryRetention => _historyRetention;
@@ -34,15 +39,19 @@ public sealed class JobSimulator
     internal JobSimulator(CombatStateMachine machine, CombatState initialState, HistoryRetention? historyRetention = null)
     {
         _machine = machine;
+        _availability = new SkillAvailabilityBuilder(machine);
         _historyRetention = historyRetention ?? new HistoryRetention(machine.MaxHistory);
         _timeline = BuildTimeline(initialState);
     }
 
-    private JobSimulator(CombatStateMachine machine, CombatTimelineRuntime timeline, HistoryRetention historyRetention)
+    private JobSimulator(CombatStateMachine machine, CombatTimelineRuntime timeline,
+        HistoryRetention historyRetention, SkillAvailabilityBuilder availability)
     {
         _machine = machine;
+        _availability = availability;
         _timeline = timeline;
         _historyRetention = historyRetention;
+        BindTimelineHandlers(timeline);
     }
 
     public string JobTag => _machine.JobTag;
@@ -142,47 +151,58 @@ public sealed class JobSimulator
     {
         var skill = _machine.ResolveSkill(skillKey);
         _timeline.AdvanceClockTo(timestamp);
-        if (HasQueuedAction())
-        {
-            return new ValidationResult(false, "action_queue_occupied");
-        }
-        return _machine.ValidateAction(_timeline.GetStateWithoutHistory(), skill);
+        var submission = _machine.EvaluateActionSubmission(_timeline.GetStateWithoutHistory(), skill, HasQueuedAction());
+        return new ValidationResult(submission.Accepted, submission.Reason);
     }
 
     public IReadOnlyList<string> AvailableActionKeysAt(double timestamp)
     {
         _timeline.AdvanceClockTo(timestamp);
-        if (HasQueuedAction())
-        {
-            return Array.Empty<string>();
-        }
-        return _machine.AvailableActionKeys(_timeline.GetStateWithoutHistory());
+        var availability = _availability.Build(_timeline.GetStateWithoutHistory(), HasQueuedAction());
+        return _availability.ActionKeys.Where(key => availability[key]).ToArray();
     }
 
     public double? GetNextScheduledEventTime() => _timeline.GetNextScheduledEventTime();
 
-    /// <summary>提交带绝对时间戳的外部战斗事实。</summary>
-    public ExternalEventResult ApplyExternalEvent(ExternalCombatEvent externalEvent)
+    /// <summary>同刻事实全部校验、全部入队后再推进，效果不能读取半更新的场景。</summary>
+    public ExternalEventResult ApplyExternalEvents(IReadOnlyList<ExternalCombatEvent> externalEvents)
     {
-        ArgumentNullException.ThrowIfNull(externalEvent);
-        _machine.SystemMachine.ValidateExternalEvent(externalEvent);
-        _timeline.Schedule(new TimelineEvent(
-            externalEvent.Timestamp,
-            TimelineEventPriority.ExternalScene,
-            TimelineEventKind.SceneChanged,
-            externalEvent.Kind,
-            Payload: externalEvent));
-        _timeline.AdvanceClockTo(externalEvent.Timestamp);
-        return new(true, "", externalEvent.Timestamp);
+        ArgumentNullException.ThrowIfNull(externalEvents);
+        if (externalEvents.Count == 0) throw new ArgumentException("external event batch must not be empty", nameof(externalEvents));
+        var batch = externalEvents.ToArray();
+        ArgumentNullException.ThrowIfNull(batch[0]);
+        var timestamp = batch[0].Timestamp;
+        var kinds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var item in batch)
+        {
+            ArgumentNullException.ThrowIfNull(item);
+            if (!double.IsFinite(item.Timestamp) || item.Timestamp < Time
+                || item.Timestamp != timestamp)
+                throw new ArgumentException("external event batch requires one finite, non-past timestamp", nameof(externalEvents));
+            if (!kinds.Add(item.Kind))
+                throw new ArgumentException($"conflicting external facts: {item.Kind}", nameof(externalEvents));
+            if (item.RemainingSeconds is { } remaining && !double.IsFinite(remaining))
+                throw new ArgumentException("external event duration must be finite", nameof(externalEvents));
+            _machine.SystemMachine.ValidateExternalEvent(item);
+        }
+        // 保留调用方的稳定顺序，同刻全部 ExternalScene 均先于动作效果。
+        foreach (var item in batch)
+            _timeline.Schedule(new TimelineEvent(timestamp, TimelineEventPriority.ExternalScene,
+                TimelineEventKind.SceneChanged, item.Kind, Payload: item));
+        _timeline.AdvanceClockTo(timestamp);
+        return new(true, "", timestamp);
     }
 
     public SimulationSnapshot CreateSnapshot() => _timeline.CreateSnapshot();
 
     public void RestoreSnapshot(SimulationSnapshot snapshot) => _timeline.RestoreSnapshot(snapshot.DeepClone());
 
-    public JobSimulator Fork() => new(_machine, _timeline.Fork(), _historyRetention);
+    public JobSimulator Fork() => ForkCore(includeHistory: true);
     // 策略历史快照不携带历史前缀，待结算事件与队列载荷仍完整隔离。
-    internal JobSimulator ForkWithoutHistory() => new(_machine, _timeline.Fork(includeHistory: false), _historyRetention);
+    internal JobSimulator ForkWithoutHistory() => ForkCore(includeHistory: false);
+
+    private JobSimulator ForkCore(bool includeHistory) =>
+        new(_machine, _timeline.Fork(includeHistory, InstanceHandlers), _historyRetention, _availability);
 
     public Dictionary<string, object?> FormatState(string mode = "seconds") =>
         OutputRouter.Format(GetState(), mode);
@@ -191,25 +211,32 @@ public sealed class JobSimulator
 
     internal Dictionary<string, object?> FormatVectorState(CombatState state)
     {
-        var actions = BuildActionOutput(state);
-        return OutputRouter.FormatVectors(state, actions.Keys, actions.LegalMask, actions.Values);
+        var snapshot = CaptureCurrentModelState(state);
+        return OutputRouter.FormatVectors(state, _availability.ActionKeys, BuildActionValues(state), snapshot);
     }
 
     public object? FormatTensorState()
     {
         var state = GetState();
-        var actions = BuildActionOutput(state);
-        return OutputRouter.FormatTensors(state, actions.Keys, actions.LegalMask, actions.Values);
+        var snapshot = CaptureCurrentModelState(state);
+        return OutputRouter.FormatTensors(state, _availability.ActionKeys, BuildActionValues(state), snapshot);
     }
 
-    private (List<string> Keys, List<bool> LegalMask, List<double> Values) BuildActionOutput(CombatState state)
+    internal IReadOnlyList<string> ActionKeys => _availability.ActionKeys;
+    internal IReadOnlyList<double> BuildActionValues(CombatState state) =>
+        _availability.Skills.Select(skill => _machine.JobMachine.ResolveActionValue(state, skill, skill.Value)).ToArray();
+
+    internal ModelStateFrame CaptureModelStateFrame(CombatState state) =>
+        ModelStateFrame.Freeze(OutputRouter.BuildStateContext(state), _availability.Build(state, HasQueuedAction()));
+
+    internal ModelStateSnapshot CaptureCurrentModelState(CombatState state) =>
+        ModelStateSnapshot.Capture(state.LastDecisionAfter, CaptureModelStateFrame(state));
+
+    private void CompleteModelDecision(Guid decisionId, CombatState state)
     {
-        var skills = _machine.SkillBook.EnabledSkills().OrderBy(skill => skill.Key, StringComparer.Ordinal).ToArray();
-        var queueOccupied = HasQueuedAction();
-        // 与真实 SubmitAction 使用同一接受规则；仅判断请求，不推进技能生效或复制未来状态。
-        return (skills.Select(skill => skill.Key).ToList(),
-            skills.Select(skill => _machine.EvaluateActionSubmission(state, skill, queueOccupied).Accepted).ToList(),
-            skills.Select(skill => _machine.JobMachine.ResolveActionValue(state, skill, skill.Value)).ToList());
+        // 仅新请求自己的效果可更新基准；捕获 mutation 已变更状态，不能重新读取旧 timeline 状态。
+        if (state.LastDecisionId == decisionId)
+            state.LastDecisionAfter = CaptureModelStateFrame(state);
     }
 
     internal CombatStateMachine Rules => _machine;
@@ -218,8 +245,7 @@ public sealed class JobSimulator
     internal (ModelStateSnapshot Snapshot, long HistorySequence) RecordModelDecision(
         Guid decisionId, CombatState requestState, bool completed)
     {
-        var modelState = ModelStateSnapshot.Capture(
-            requestState.LastDecisionAfter, OutputRouter.BuildStateContext(requestState));
+        var modelState = CaptureCurrentModelState(requestState);
         long historySequence = 0;
         _timeline.ApplyMutation(new TimelineMutation(ApplyState: state =>
         {
@@ -242,10 +268,15 @@ public sealed class JobSimulator
         var timeline = _machine.SystemMachine.CreateTimeline(
             state,
             key => _machine.ResolveSkill(key).Charges);
+        BindTimelineHandlers(timeline);
+        return timeline;
+    }
+
+    private void BindTimelineHandlers(CombatTimelineRuntime timeline)
+    {
         timeline.RegisterHandler(TimelineEventKind.ActionAccepted, HandleActionAccepted);
         timeline.RegisterHandler(TimelineEventKind.CastCompleted, HandleCastCompleted);
         timeline.RegisterHandler(TimelineEventKind.ActionEffect, HandleActionEffect);
-        return timeline;
     }
 
     private TimelineMutation HandleActionAccepted(TimelineEvent item, CombatState state)
@@ -293,6 +324,7 @@ public sealed class JobSimulator
         return new TimelineMutation(ApplyState: target =>
         {
             _machine.ApplyActionEffect(payload.RequestState, target, payload.Skill);
+            CompleteModelDecision(payload.ActionInstanceId, target);
             _machine.RecordTimelineActionHistory(
                 payload.RequestState,
                 target,

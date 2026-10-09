@@ -3,6 +3,7 @@
 // Additional permission: FightEngine GPLv3 Linking Exception, Version 1.0.
 // See LICENSE and LICENSE-FightEngine-Linking-Exception in the repository root.
 
+using Combat.Sim.Config;
 using Combat.Sim.System;
 
 namespace Combat.Sim.Outputs.TokenBuilders;
@@ -21,9 +22,8 @@ public sealed class ResourceVectorTokenBuilder
     {
         _resourceKeys = systemMachine.JobResourceVectorKeys("resource").ToArray();
         _featureKeys = BuildFeatureKeys();
-        _historyFeatureKeys = _featureKeys
-            .Select(key => $"previous_action_after.{key}")
-            .Concat(_featureKeys.Select(key => $"request_state.{key}"))
+        _historyFeatureKeys = SchemaConfigLoader.Instance.StateSnapshots
+            .SelectMany(snapshot => _featureKeys.Select(key => $"{snapshot}.{key}"))
             .ToArray();
     }
 

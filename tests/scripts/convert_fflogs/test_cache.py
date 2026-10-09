@@ -10,9 +10,9 @@ from types import SimpleNamespace
 import pytest
 
 from common.policy.data import ActionSpace, Normalizer, prepared_sources
-from common.policy.data.compiled_cache import CACHE_FORMAT, cache_path_for_source
+from common.policy.data.compiled_cache import CACHE_FORMAT, build_cache_signature, cache_path_for_source
 from common.policy.data.prepared_sources import select_prepared_training_sources
-from scripts.common.json_io import atomic_write_json
+from scripts.common.json_io import atomic_write_json, read_json
 from scripts.convert_fflogs import build_training_samples
 from scripts.convert_fflogs import cli as convert_cli
 from scripts.convert_fflogs.cache import cache_compile as cache_compile_module
@@ -23,6 +23,16 @@ from scripts.convert_fflogs.cache import (
 from scripts.convert_fflogs.cache.cache_load import load_raw_compiled_cache
 from scripts.convert_fflogs.source import raw_source
 from tests.helpers import build_test_scene_context, targetable_window_token
+
+
+def test_cache_signature_requires_normalizer_public_contract(tmp_path):
+    source = tmp_path / "fight.json.br"
+    atomic_write_json(source, {})
+    args = {"int_dtype": "int32", "float_dtype": "float32"}
+    normalizer = Normalizer()
+    assert build_cache_signature(source, normalizer=normalizer, **args)["normalizer"] == normalizer.cache_signature
+    with pytest.raises(AttributeError, match="cache_signature"):
+        build_cache_signature(source, normalizer=SimpleNamespace(_config={}), **args)
 
 
 def test_convert_raw_file_reads_brotli_json(tmp_path, monkeypatch):
@@ -664,11 +674,12 @@ def test_real_raw_cache_reused_across_windows_scales_and_random_crops(tmp_path, 
         if crop and expected > 1:
             assert actual < expected
         window_lengths.append(actual)
-        keys = tuple(key for group in dataset.schema.state_group_feature_keys.values() for key in group)
+        layout = dataset.schema.state_layout(actions.action_keys)
+        keys = layout.base_feature_keys
         time_index = keys.index("request_state.time_seconds")
         encoded = ContextEncoder(normalizer, dataset.schema, ModelConfig(
             history_capacity=capacity, history_reset_keep=keep, time_delta_scale=time_scale,
-        )).encode(batch)
+        ), layout=layout).encode(batch)
         assert encoded["history_state_vectors"][0, 0, time_index].item() == 0.0
         assert encoded["history_state_reset_mask"][0, 0, time_index]
         torch.testing.assert_close(encoded["current_state_vectors"][0, time_index],
@@ -676,3 +687,69 @@ def test_real_raw_cache_reused_across_windows_scales_and_random_crops(tmp_path, 
     assert all(signature == signatures[0] for signature in signatures)
     assert len(set(window_lengths)) > 1
     assert {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in cache_dir.rglob("*.pt")} == saved_bytes
+
+
+def test_scene_execution_view_survives_real_compiled_cache_roundtrip(tmp_path, monkeypatch, cs_backend, cs_skill_book):
+    """实际转换、分片落盘和恢复后，同一动作时间读取相同状态及冻结技能表。"""
+    import math
+    from copy import deepcopy
+    import torch
+    from scripts.autoregressive_replay.context import SceneTemplateProvider
+    from scripts.common.scene_state import SceneStateLookup, rewrite_scene_player_state
+    from tests.helpers import forced_movement_window_token
+
+    scene = build_test_scene_context(
+        targetable_tokens=[targetable_window_token(0, 610, targetable=True, segment_kind="combat_final")],
+        forced_movement_tokens=[forced_movement_window_token(600.004, 603.007)],
+    )
+    original_scene = deepcopy(scene)
+    actions = [(0.0, "lucid_dreaming"), (600.004, "potion"), (606.0, "lucid_dreaming")]
+    payload = build_training_samples(cs_backend, cs_skill_book, {
+        "fight_id": "scene_fp32_roundtrip", "job_tag": "black_mage", "duration": 610.0,
+        "scene_context": scene,
+        "actions": [{"time_offset": timestamp, "request_time_offset": timestamp,
+                     "action_key": key, "time_gap": 0.0} for timestamp, key in actions],
+    })
+    assert payload["fight_scene_context"] == original_scene
+    source = tmp_path / "raw" / "scene.json.br"
+    atomic_write_json(source, {"fixture": "scene_fp32_roundtrip"})
+    monkeypatch.setattr(cache_compile_module, "convert_raw_file", lambda *_args, **_kwargs: (payload, {}))
+    normalizer = Normalizer()
+    normalizer.ensure_job_resources("black_mage")
+    action_space = ActionSpace.from_job_tag("black_mage")
+    cache_args = dict(cache_dir=tmp_path / "cache", normalizer=normalizer,
+                      expected_action_space=action_space, int_dtype=torch.int32,
+                      float_dtype=torch.float32, shard_size=4)
+    assert precompile_raw_training_caches([source], job_tag="black_mage", max_workers=1, **cache_args) == [source]
+    reader = load_raw_compiled_cache(source, **cache_args)
+    assert reader is not None
+    cs_backend.init(initial_timestamp=0.0, max_history=None)
+    restored = SceneTemplateProvider(reader, backend=cs_backend)
+    expected = SceneStateLookup(original_scene)
+    start, end = expected.movement_windows[0]
+    for timestamp in (600.004, math.nextafter(start, -math.inf), start,
+                      math.nextafter(start, math.inf), math.nextafter(end, -math.inf), end):
+        assert restored.state_at(timestamp) == expected.state_at(timestamp)
+    assert restored._facts.lookup.facts() == expected.facts()
+    for index, (timestamp, key) in enumerate(actions):
+        restored.sync_state(SimpleNamespace(time=timestamp))
+        current = cs_backend.observe_at(timestamp, format="vector", next_observation_timestamp=timestamp).context
+        current = rewrite_scene_player_state(current, scene_state_at=restored.state_at)
+        baseline = payload["samples"][index]["context"]
+        assert current["current_state_context"] == baseline["current_state_context"]
+        assert current["skill_history_context"] == baseline["skill_history_context"]
+        assert current["state_history_context"] == baseline["state_history_context"]
+        assert cs_backend.submit_action(timestamp, key).accepted
+
+
+def test_non_state_tokens_match_frozen_pre_refactor_baseline():
+    """旧源码与旧 DLL 在独立进程生成的基线不可由当前实现重录覆盖。"""
+    from tests.scripts.conftest import _require_inprocess_backend
+    from tests.scripts.convert_fflogs._non_state_baseline import capture_cases
+
+    _require_inprocess_backend()
+    baseline_path = Path(__file__).resolve().parents[2] / "fixtures" / "state_refactor_non_state_baseline.json.br"
+    baseline = read_json(baseline_path)
+    assert len(baseline["origin_commit"]) == 40
+    assert len(baseline["source_sha256"]) == 5
+    assert capture_cases() == baseline["cases"]

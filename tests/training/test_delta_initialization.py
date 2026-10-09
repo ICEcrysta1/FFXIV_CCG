@@ -13,7 +13,7 @@ from common.policy.model.model import CausalPolicyModel
 @pytest.mark.parametrize("full_attention_residuals", [False, True])
 def test_state_reset_projection_preserves_common_initialization(monkeypatch, full_attention_residuals):
     spec = DataSpec(
-        job_tag="black_mage", num_actions=4, state_dim=86, scene_dim=7,
+        job_tag="black_mage", num_actions=4, base_state_dim=86, state_dim=(86) + 2 * (4), scene_dim=7,
         skill_feature_dim=18, num_scene_types=4,
         action_keys=("a", "b", "c", "wait"),
         skill_feature_names=tuple(f"skill_{index}" for index in range(18)),

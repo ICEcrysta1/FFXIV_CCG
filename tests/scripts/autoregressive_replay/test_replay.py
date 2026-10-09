@@ -32,6 +32,65 @@ _FAKE_GCD_SKILL = SimpleNamespace(key="fire", kind=SimpleNamespace(value="gcd"))
 _FAKE_OGCD_SKILL = SimpleNamespace(key="ogcd_wait", kind=SimpleNamespace(value="ogcd"))
 
 
+@pytest.mark.parametrize("scene_mode,initial_time", [("cache", None), ("none", None), ("cache", 0.0)])
+def test_default_precast_replay_accepts_negative_scene_facts(tmp_path, scene_mode, initial_time):
+    """真实会话、场景同步和预读首个技能贯通，不需要训练或模型推理。"""
+    from dataclasses import asdict
+
+    from common.policy.config import ModelConfig
+    from common.policy.data import DataSpec, ModelInputContract
+    from common.policy.model import CausalPolicyModel
+    from scripts.autoregressive_replay.backends import PyTorchPolicyBackend
+    from scripts.common.inprocess_backend import InProcessEngine
+    from tests.training._common_fixtures import make_dataset, make_demo_pt
+
+    source = make_demo_pt(tmp_path, ["fire_iii"], fight_id="precast")
+    dataset = make_dataset([source], max_history=4, int_dtype=torch.int32, float_dtype=torch.float32)
+    spec = DataSpec.from_dataset(dataset)
+    vocab = SkillVocab.build_from_job_tag(spec.job_tag)
+    contract = ModelInputContract.from_training(
+        data_spec=spec, schema=dataset.schema, normalizer=dataset.normalizer, skill_vocab=vocab,
+    )
+    model_config = ModelConfig(
+        d_model=8, n_layers=1, n_heads=2, num_kv_heads=1, ff_dim=16,
+        dropout=0.0, scene_capacity=8, history_capacity=4, history_reset_keep=4,
+    )
+    model = CausalPolicyModel(spec, model_config, vocab_size=vocab.size()).eval()
+    checkpoint = tmp_path / "model.pt"
+    torch.save({
+        "data_spec": asdict(spec), "model_config": asdict(model_config),
+        "input_contract": contract.to_dict(), "model_state_dict": model.state_dict(),
+    }, checkpoint)
+    backend = PyTorchPolicyBackend(checkpoint, device="cpu", use_kv_cache=False)
+    config = AutoregressiveReplayConfig(
+        checkpoint_path=checkpoint, output_path=tmp_path / "replay.md", scene_json_path=source,
+        cache_dir=tmp_path / ".cache", cache_shard_size=512, cache_max_shards=2,
+        model_history_capacity=4, max_history=4, max_steps=1, scene_duration_seconds=10.0,
+        scene_mode=scene_mode, initial_time_seconds=initial_time, device="cpu", use_kv_cache=False,
+    )
+    assert config.initial_action == "fire_iii"
+    with InProcessEngine(spec.job_tag, capacity=1) as engine, AutoregressiveReplaySession(
+        config, backend=backend, engine=engine,
+    ) as session:
+        replay = AutoregressiveReplay(config, session=session)
+        expected_start = -session.skill_book.get("fire_iii").cast_time if initial_time is None else initial_time
+        # 复用同一会话再跑一遍，确保事实游标随负起点重置。
+        for _ in range(2):
+            result = replay.run()
+            assert len(result.rows) == result.output_gcds == 1
+            assert result.rows[0].forced and result.rows[0].action_key == "fire_iii"
+            assert result.ppg > 0
+            stats = session.state_machine.statistics()
+            assert stats["action_history_count"] == 1
+            canonical = session.state_machine.observe_at(
+                stats["timestamp"], format="vector", next_observation_timestamp=stats["timestamp"],
+            ).context
+            history = canonical["state_history_context"]
+            request_time = history["player_state_feature_keys"].index("request_state.time_seconds")
+            assert history["tokens"][0]["player_state"][request_time] == pytest.approx(expected_start)
+        assert backend.metrics().calls == 0
+
+
 @pytest.mark.parametrize("drift", ["reorder_disabled", "add_disabled", "remove_disabled"])
 @pytest.mark.parametrize("use_kv_cache", [False, True])
 def test_checkpoint_restores_history_embedding_and_logits_after_yaml_vocab_drift(tmp_path, monkeypatch, drift, use_kv_cache):
@@ -41,7 +100,7 @@ def test_checkpoint_restores_history_embedding_and_logits_after_yaml_vocab_drift
     from common.policy.config import ModelConfig
     from common.policy.data import ActionSpace, DataSpec, ModelInputContract, Normalizer
     from common.policy.data import skill_vocab as vocab_module
-    from common.policy.data.schema import SceneWindowSchema, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
+    from common.policy.data.schema import SceneWindowSchema, StateFeatureGroup, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
     from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
     from common.policy.model import CausalPolicyModel
     from scripts.autoregressive_replay.backends import PyTorchPolicyBackend
@@ -54,17 +113,28 @@ def test_checkpoint_restores_history_embedding_and_logits_after_yaml_vocab_drift
     actions = ActionSpace.from_config(original, skill_vocab=vocab)
     keys = ("previous_action_after.time_seconds", "previous_action_after.mp",
             "request_state.time_seconds", "request_state.mp")
+    keys += tuple(f"{prefix}.{field}" for prefix in ("previous_action_after", "request_state")
+                  for field in ("next_untargetable_in_seconds", "downtime_remaining_seconds"))
+    availability_keys = tuple(f"{prefix}.{key}" for prefix in ("previous_action_after", "request_state")
+                              for key in actions.action_keys)
     schema = TrainingSchema(
         serialization_format="test", sample_schema_version=TRAINING_SAMPLE_SCHEMA_VERSION,
         context_schema_version=CANONICAL_CONTEXT_SCHEMA_VERSION, scene_context_mode="absolute",
         scene_windows=(SceneWindowSchema.from_feature_keys(
             context_key="targetable_window_context", scene_type_id=0,
             feature_keys=("start_offset_seconds", "end_offset_seconds", "duration_seconds"),
-        ),), state_group_feature_keys={"player_state": keys},
+        ),), state_groups=(
+            StateFeatureGroup("player_state", "player_state_feature_keys", keys, "anchored_delta"),
+            StateFeatureGroup("skill_availability", "skill_availability_feature_keys", availability_keys, "absolute_binary"),
+        ), state_snapshots=("previous_action_after", "request_state"),
         skill_history_fields=("kind", "potency"),
     )
-    spec = DataSpec("black_mage", len(actions.action_keys), 4, 3, 2, 1,
-                    actions.action_keys, ("kind", "potency"), actions.action_to_vocab_id, actions.action_is_gcd)
+    layout = schema.state_layout(actions.action_keys)
+    spec = DataSpec(job_tag="black_mage", num_actions=len(actions.action_keys),
+                    state_dim=layout.state_dim, base_state_dim=layout.base_state_dim,
+                    scene_dim=3, skill_feature_dim=2, num_scene_types=1,
+                    action_keys=actions.action_keys, skill_feature_names=("kind", "potency"),
+                    action_to_vocab_id=actions.action_to_vocab_id, action_is_gcd=actions.action_is_gcd)
     normalizer = Normalizer()
     normalizer.ensure_job_resources("black_mage")
     contract = ModelInputContract.from_training(data_spec=spec, schema=schema, normalizer=normalizer, skill_vocab=vocab)
@@ -77,6 +147,7 @@ def test_checkpoint_restores_history_embedding_and_logits_after_yaml_vocab_drift
     torch.save({"data_spec": asdict(spec), "model_config": asdict(config),
                 "input_contract": contract.to_dict(), "model_state_dict": model.state_dict()}, path)
     canonical = {
+        "schema_version": CANONICAL_CONTEXT_SCHEMA_VERSION,
         "history_cursor": 3,
         "action_keys": actions.action_keys, "action_legal_mask": [True] * len(actions.action_keys),
         "skill_history_context": [
@@ -94,13 +165,20 @@ def test_checkpoint_restores_history_embedding_and_logits_after_yaml_vocab_drift
         ]},
     }
 
+    for name in ("state_history_context", "current_state_context"):
+        canonical[name]["skill_availability_feature_keys"] = availability_keys
+        for token in canonical[name]["tokens"]:
+            token["player_state"].extend([0.0] * 4)
+            token["skill_availability"] = [1] * layout.availability_dim
+
     def build(saved_vocab, saved_normalizer):
         return LiveBatchBuilder(
             backend=None, vocab=saved_vocab, normalizer=saved_normalizer, schema=schema,
             skill_feature_names=spec.skill_feature_names, device=torch.device("cpu"), max_history=4,
             model_config=config,
             action_keys=spec.action_keys, action_is_gcd=spec.action_is_gcd,
-            scene_provider=SimpleNamespace(at_time=lambda _: (torch.tensor([[0.0, 1.0, 1.0]]), torch.zeros(1, dtype=torch.long))),
+            scene_provider=SimpleNamespace(at_time=lambda _: (torch.tensor([[0.0, 1.0, 1.0]]), torch.zeros(1, dtype=torch.long)),
+                                           state_at=lambda _: SimpleNamespace(next_downtime_eta=0.0, downtime_remaining=0.0)),
         ).build_from_canonical(canonical, gcd_phase=True, max_history=4)[0]
 
     before = build(vocab, contract.create_normalizer())
@@ -193,10 +271,6 @@ class _FakeBackend:
         del next_observation_timestamp
         self.state.time = float(timestamp)
         self.history.append({"skill_key": action})
-
-    def apply_external_event(self, *args, **kwargs):
-        del args, kwargs
-        return None
 
 
 def test_fake_backend_does_not_mutate_initial_state():
@@ -408,7 +482,7 @@ def test_replay_requires_session_before_loading_scene(constructor_config):
         AutoregressiveReplay(config, session=None)
 
 
-def test_replay_uses_session_normalizer_for_context_builders(monkeypatch, constructor_config):
+def test_replay_uses_session_normalizer_for_batch_builder(monkeypatch, constructor_config):
     session_normalizer = object()
     schema = SimpleNamespace()
     reader = SimpleNamespace(
@@ -456,20 +530,15 @@ def test_replay_uses_session_normalizer_for_context_builders(monkeypatch, constr
     config = constructor_config
     captured = {}
 
-    def fake_scene_provider(*_args, **kwargs):
-        captured["scene_normalizer"] = kwargs["normalizer"]
-        return object()
-
     def fake_batch_builder(**kwargs):
         captured["batch_normalizer"] = kwargs["normalizer"]
         return object()
 
-    monkeypatch.setattr(replay_module, "SceneTemplateProvider", fake_scene_provider)
+    monkeypatch.setattr(replay_module, "SceneTemplateProvider", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(replay_module, "LiveBatchBuilder", fake_batch_builder)
 
     AutoregressiveReplay(config, session=session)
 
-    assert captured["scene_normalizer"] is session_normalizer
     assert captured["batch_normalizer"] is session_normalizer
     assert backend.cache_calls == [False]
 

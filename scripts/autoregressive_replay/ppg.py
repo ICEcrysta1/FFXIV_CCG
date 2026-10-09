@@ -10,6 +10,7 @@ import torch
 
 from common.torch_runtime import autocast_context
 from scripts.common.inprocess_backend import InProcessBackend
+from scripts.common.scene_state import SceneStateLookup
 from common.policy.data import Normalizer
 
 from .context import LiveBatchBuilder, SceneTemplateProvider
@@ -41,14 +42,14 @@ class EmptySceneProvider:
             raise ValueError("PPG requires a positive scene dimension")
         self._scene_vectors = torch.zeros((0, scene_dim), dtype=torch.float32)
         self._scene_types = torch.zeros((0,), dtype=torch.int32)
+        self._lookup = SceneStateLookup(None)
 
     def at_time(self, time_seconds: float):
         del time_seconds
         return self._scene_vectors, self._scene_types
 
-    def target_count_at(self, time_seconds: float) -> int:
-        del time_seconds
-        return 1
+    def state_at(self, time_seconds: float):
+        return self._lookup.state_at(time_seconds)
 
 
 def evaluate_none_ppg(
@@ -157,7 +158,6 @@ def evaluate_validation_ppg(
             initial_time = float(initial_metadata["time_offset"])
             scene_provider = SceneTemplateProvider(
                 reader,
-                normalizer=normalizer,
                 initial_sample_index=0,
                 backend=backend,
             )
@@ -246,12 +246,14 @@ def _infer_initial_base_gcd(
     if vector is None or null_mask is None:
         raise ValueError("validation PPG cache is missing initial current state")
     schema = reader.schema
-    if tuple(vector.shape) != (schema.state_vector_dim(),):
+    layout = schema.state_layout(reader.action_keys)
+    if tuple(vector.shape) != (layout.base_state_dim,):
         raise ValueError("validation PPG current state width differs from schema")
-    slices = schema.state_group_slices()
+    slices = layout.group_slices
+    groups = {group.group_key: group.feature_keys for group in layout.base_groups}
 
     def initial_value(group: str, feature: str) -> float:
-        keys = schema.state_group_feature_keys[group]
+        keys = groups[group]
         try:
             index = slices[group].start + keys.index(feature)
         except ValueError as exc:
@@ -263,7 +265,7 @@ def _infer_initial_base_gcd(
     base_gcd = initial_value("player_state", "request_state.current_gcd_seconds")
     if job_tag == "black_mage":
         status_feature = "request_state.job.ley_lines.active"
-        if status_feature not in schema.state_group_feature_keys.get("buff_state", ()):
+        if status_feature not in groups.get("buff_state", ()):
             raise ValueError("validation PPG initial state is missing Ley Lines status")
         if initial_value("buff_state", status_feature) >= 0.5:
             from common.config import load_project_config

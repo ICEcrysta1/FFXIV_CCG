@@ -10,7 +10,7 @@ from common.policy.data import ActionSpace, CompiledCacheReader, Normalizer
 from common.policy.data.prepared_sources import select_prepared_validation_sources
 from training import ShardBatchSampler, TrainingCollator, WeightedShardBatchSampler
 from training.config import RunConfig
-from tests.training._causal_fixtures import make_input_contract
+from tests.training._causal_fixtures import make_data_spec, make_input_contract, make_state_groups
 from training.loop import build_dataloaders
 from tests.training._common_fixtures import (
     enabled_black_mage_config,
@@ -77,7 +77,7 @@ def test_training_dataset_returns_grouped_sample_and_uses_config_vocab(tmp_path)
     assert sample["history_bank_skill_potencies"].shape == sample["history_bank_cumulative_dot_potencies"].shape
     assert sample["history_bank_state_abs_values"].shape == sample["history_bank_state_null_mask"].shape
     assert sample["action_values"].shape == (len(sample["action_keys"]),)
-    assert sample["current_state_abs_values"].shape == sample["current_state_null_mask"].shape == (dataset.state_dim,)
+    assert sample["current_state_abs_values"].shape == sample["current_state_null_mask"].shape == (dataset.base_state_dim,)
     assert sample["scene_abs_values"].shape[0] == sample["scene_types"].shape[0]
     assert "scene_vectors" not in sample
     assert sample["label_action_key"] == "fire_iv"
@@ -129,26 +129,29 @@ def test_compiled_history_and_current_state_use_compact_state_contract(tmp_path)
     assert len(dataset.skill_feature_names) == 18
     assert "time_seconds" not in dataset.skill_feature_names
     assert "job_resources_consumed.polyglot" in dataset.skill_feature_names
-    assert dataset.schema.state_vector_dim() == 86
-    player_keys = dataset.schema.state_group_feature_keys["player_state"]
+    assert dataset.base_state_dim == 86
+    assert dataset.state_dim == 136
+    groups = {group.group_key: group.feature_keys for group in dataset.schema.state_groups}
+    player_keys = groups["player_state"]
     assert len(player_keys) == 18
     assert "previous_action_after.current_gcd_seconds" in player_keys
     assert "request_state.downtime_remaining_seconds" in player_keys
-    assert len(dataset.schema.state_group_feature_keys["buff_state"]) == 40
-    assert len(dataset.schema.state_group_feature_keys["target_buff_state"]) == 14
-    resource_keys = dataset.schema.state_group_feature_keys["resource_state"]
+    assert len(groups["buff_state"]) == 40
+    assert len(groups["target_buff_state"]) == 14
+    resource_keys = groups["resource_state"]
     assert len(resource_keys) == 14
     assert all(key.startswith("previous_action_after.") for key in resource_keys[:7])
     assert all(key.startswith("request_state.") for key in resource_keys[7:])
     assert not any(
         key.rsplit(".", 1)[-1] in removed_fields or key.endswith("_gcds")
         or key.startswith("consumed.") or ".manaward." in key or ".surecast." in key
-        for keys in dataset.schema.state_group_feature_keys.values()
-        for key in keys
+        for group in dataset.state_layout.base_groups
+        for key in group.feature_keys
     )
     assert sample["history_bank_skill_features"].shape[-1] == 18
     for prefix in ("history_bank", "current"):
         assert sample[f"{prefix}_state_abs_values"].shape[-1] == 86
+        assert sample[f"{prefix}_state_skill_availability"].shape[-1] == 50
         assert sample[f"{prefix}_state_null_mask"].shape == sample[f"{prefix}_state_abs_values"].shape
 
 
@@ -157,12 +160,12 @@ def test_previous_state_layout_cache_is_rejected(tmp_path, old_contract):
     """旧输入字段缓存不可复用，即使 raw 文件身份和其余编译参数一致。"""
     torch = pytest.importorskip("torch")
     from common.policy.data.compiled_cache import cache_path_for_source
-    from common.policy.data.schema import SceneWindowSchema, TrainingSchema
+    from common.policy.data.schema import SceneWindowSchema, StateFeatureGroup, TrainingSchema
     from common.torch_serialization import safe_torch_load
 
     source_path = make_demo_pt(tmp_path, ["fire_iii", "fire_iv"], fight_id="old_progress_cache")
     cache_path = cache_path_for_source(tmp_path / ".cache", source_path)
-    payload = safe_torch_load(cache_path, safe_globals=(SceneWindowSchema, TrainingSchema))
+    payload = safe_torch_load(cache_path, safe_globals=(SceneWindowSchema, StateFeatureGroup, TrainingSchema))
     signature = dict(payload["cache_signature"])
     if old_contract == "cache_format":
         payload["cache_format"] = "raw_json_compiled_samples_v20_causal_state"
@@ -269,8 +272,9 @@ def test_corrupt_history_bank_manifest_falls_back_to_recompile(
     cache_path.write_bytes(b"corrupt manifest")
     payload_num_samples = 2
     space = ActionSpace.from_job_tag("black_mage")
-    schema = make_input_contract().schema
-    state_dim = schema.state_vector_dim()
+    schema = make_input_contract(make_data_spec(num_actions=len(space.action_keys), action_keys=space.action_keys,
+                                               action_to_vocab_id=space.action_to_vocab_id, action_is_gcd=space.action_is_gcd)).schema
+    state_dim = schema.state_layout(space.action_keys).base_state_dim
     history_bank = {
         "skill_ids": torch.zeros((2,), dtype=torch.int32),
         "skill_features": torch.zeros((2, 1)),
@@ -278,6 +282,7 @@ def test_corrupt_history_bank_manifest_falls_back_to_recompile(
         "state_delta_values": torch.zeros((2, state_dim)),
         "state_delta_reset_mask": torch.tensor([[False] * state_dim, [True] * state_dim]),
         "state_null_mask": torch.zeros((2, state_dim), dtype=torch.bool),
+        "state_skill_availability": torch.zeros((2, 2 * len(space.action_keys)), dtype=torch.bool),
         "action_keys": ("", "fire_iii"),
         "skill_potencies": torch.zeros((2,)),
         "cumulative_dot_potencies": torch.zeros((2,)),
@@ -305,7 +310,7 @@ def test_corrupt_history_bank_manifest_falls_back_to_recompile(
     elif corruption == "nonzero_sentinel":
         history_bank["state_abs_values"][0, 0] = 1.0
     elif corruption == "missing_request_time":
-        object.__setattr__(schema, "state_group_feature_keys", {"player_state": tuple(f"field_{i}" for i in range(state_dim))})
+        object.__setattr__(schema, "state_groups", make_state_groups({"player_state": tuple(f"field_{i}" for i in range(state_dim))}, space.action_keys))
     elif corruption == "null_bank_request_time":
         history_bank["state_null_mask"][1, 0] = True
     payload = {
@@ -359,8 +364,9 @@ def test_empty_compiled_cache_accepts_sentinel_history_bank(tmp_path, monkeypatc
     cache_path = tmp_path / "empty.compiled.pt"
     cache_path.write_bytes(b"empty manifest")
     space = ActionSpace.from_job_tag("black_mage")
-    schema = make_input_contract().schema
-    state_dim = schema.state_vector_dim()
+    schema = make_input_contract(make_data_spec(num_actions=len(space.action_keys), action_keys=space.action_keys,
+                                               action_to_vocab_id=space.action_to_vocab_id, action_is_gcd=space.action_is_gcd)).schema
+    state_dim = schema.state_layout(space.action_keys).base_state_dim
     payload = {
         "cache_format": CACHE_FORMAT,
         "cache_signature": {},
@@ -381,6 +387,7 @@ def test_empty_compiled_cache_accepts_sentinel_history_bank(tmp_path, monkeypatc
             "state_delta_values": torch.zeros((1, state_dim)),
             "state_delta_reset_mask": torch.zeros((1, state_dim), dtype=torch.bool),
             "state_null_mask": torch.zeros((1, state_dim), dtype=torch.bool),
+            "state_skill_availability": torch.zeros((1, 2 * len(space.action_keys)), dtype=torch.bool),
             "action_keys": ("",),
             "skill_potencies": torch.zeros((1,)),
             "cumulative_dot_potencies": torch.zeros((1,)),
@@ -414,8 +421,7 @@ def test_compiled_shard_requires_known_current_request_time(tmp_path, null_ancho
     shard_path = reader._shard_paths[0]
     shard = torch.load(shard_path, weights_only=True)
     sample = shard["samples"][0]
-    keys = tuple(key for group in reader.schema.state_group_feature_keys.values() for key in group)
-    request_time_index = keys.index("request_state.time_seconds")
+    request_time_index = reader.schema.state_layout(reader.action_keys).request_time_index
     assert not sample["current_state_null_mask"][request_time_index]
     if null_anchor:
         sample["current_state_null_mask"][request_time_index] = True
@@ -651,7 +657,7 @@ def test_training_collator_pads_history_and_scene_lengths(tmp_path):
     assert batch["history_mask"][1].sum().item() == 2
     assert batch["scene_abs_values"].ndim == 3
     assert batch["scene_mask"].shape[:2] == batch["scene_abs_values"].shape[:2]
-    assert batch["current_state_abs_values"].shape == batch["current_state_null_mask"].shape == (2, short_dataset.state_dim)
+    assert batch["current_state_abs_values"].shape == batch["current_state_null_mask"].shape == (2, short_dataset.base_state_dim)
 
 
 @pytest.mark.parametrize("levels, status, percentile, error", [

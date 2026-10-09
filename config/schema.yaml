@@ -23,7 +23,8 @@ contracts:
   # 14：真实效果与 policy 等待共用历史写入序号，不以舍入的 token 时间合并历史。
   # 15：技能 token 完全移除绝对时间字段，状态两段仍保留各自的时间锚点。
   # 16：canonical 输出公开累计真实历史行游标，读取窗口不再使用保留列表长度。
-  sidecar_contract_version: 16
+  # 17：冻结技能可用性、同刻场景批次和统一提交能力查询。
+  sidecar_contract_version: 17
   scene_context_absolute_mode: "absolute_from_fight_scene_context"
   scene_context_keys:
     targetable: "targetable_window_context"
@@ -52,7 +53,10 @@ scene_context:
       - "target_count"
 
 canonical_output:
-  schema_version: 14
+  schema_version: 15
+  state_snapshots:
+    - "previous_action_after"
+    - "request_state"
   token_key: "tokens"
   top_level_keys:
     - "job_tag"
@@ -67,19 +71,27 @@ canonical_output:
     - "history_cursor"
   state_vector_groups:
     player_state:
+      encoding: "anchored_delta"
       feature_keys_field: "player_state_feature_keys"
       context_key: "player"
     buff_state:
+      encoding: "anchored_delta"
       feature_keys_field: "buff_state_feature_keys"
       context_key: null
     # 该分组由 state_vector_fields 的两个条目按序拼接：
     # 先 target_buff_dot_state（按注册 DoT 逐个展开），后 target_buff_fixed（固定威力字段）
     target_buff_state:
+      encoding: "anchored_delta"
       feature_keys_field: "target_buff_state_feature_keys"
       context_key: null
     resource_state:
+      encoding: "anchored_delta"
       feature_keys_field: "resource_state_feature_keys"
       context_key: "resources"
+    skill_availability:
+      encoding: "absolute_binary"
+      feature_keys_field: "skill_availability_feature_keys"
+      context_key: null
 
 state_vector_fields:
   player_state:

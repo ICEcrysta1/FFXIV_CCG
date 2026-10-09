@@ -61,9 +61,6 @@ class DecisionScheduler:
 
     def _next_scene_event_after(self, timestamp: float) -> float | None:
         resolver = getattr(self._scene_provider, "next_state_event_after", None)
-        if callable(resolver):
-            return resolver(timestamp)
-        resolver = getattr(self._scene_provider, "next_targetable_event_after", None)
         return None if not callable(resolver) else resolver(timestamp)
 
     def advance_by(
@@ -75,22 +72,25 @@ class DecisionScheduler:
         end_time: float | None = None,
     ):
         """按绝对时间推进，必要时在 scene 边界重新同步外部事实。"""
+        state = self._sync_scene(state)
         remaining = max(0.0, float(seconds))
-        while remaining > DECISION_TIME_EPSILON:
+        while remaining > 0.0:
             next_scene_event = self._next_scene_event_after(float(state.time))
             step = remaining
             if next_scene_event is not None:
                 step = min(step, max(0.0, float(next_scene_event) - float(state.time)))
             if end_time is not None:
                 step = min(step, max(0.0, float(end_time) - float(state.time)))
-            if step <= DECISION_TIME_EPSILON:
+            if step <= 0.0:
                 break
             target_time = float(state.time) + step
+            if target_time <= float(state.time):
+                break
             # 外部事实与同戳内部事件共用时间线排序；先挂载 scene 事实，
             # 再推进到边界，才能让外部事实按 ExternalScene 优先级生效。
             if (
                 next_scene_event is not None
-                and abs(target_time - float(next_scene_event)) <= DECISION_TIME_EPSILON
+                and target_time == float(next_scene_event)
             ):
                 self._sync_scene(SimpleNamespace(time=target_time))
             point = self._backend.advance_to(target_time)
@@ -100,7 +100,7 @@ class DecisionScheduler:
             if (
                 interrupt_on_scene_event
                 and next_scene_event is not None
-                and abs(float(state.time) - float(next_scene_event)) <= DECISION_TIME_EPSILON
+                and float(state.time) == float(next_scene_event)
                 and remaining > DECISION_TIME_EPSILON
             ):
                 break
@@ -150,10 +150,11 @@ class DecisionScheduler:
                      self._next_scene_event_after(float(state.time))]
             if float(state.gcd_remaining) > DECISION_TIME_EPSILON:
                 times.append(float(state.time) + float(state.gcd_remaining))
+            # 场景 FP32 端点可能只比 double 请求晚几个纳秒，仍是尚未消费的真实事件。
             future = [float(value) - float(state.time) for value in times
-                      if value is not None and float(value) > float(state.time) + DECISION_TIME_EPSILON]
+                      if value is not None and float(value) > float(state.time)]
             if not future:
                 return None
             delay = min(future)
         result = self.advance_by(state, delay, end_time=end_time)
-        return result if float(result.time) > float(state.time) + DECISION_TIME_EPSILON else None
+        return result if float(result.time) > float(state.time) else None

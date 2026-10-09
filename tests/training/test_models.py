@@ -273,7 +273,7 @@ def test_common_model_uses_pt_dimensions_and_job_route(tmp_path):
     batch = TrainingCollator()([dataset[0], dataset[1]])
     from common.policy.data.context_encoding import ContextEncoder
 
-    batch = ContextEncoder(dataset.normalizer, dataset.schema, model.config).encode(batch)
+    batch = ContextEncoder(dataset.normalizer, dataset.schema, model.config, layout=dataset.state_layout).encode(batch)
 
     output = model(batch)
     assert data_spec.job_tag == "black_mage"
@@ -311,7 +311,7 @@ def test_swiglu_training_updates_all_ffn_projections_with_checkpointing(tmp_path
     batch = move_batch(TrainingCollator()([dataset[0], dataset[1]]), device)
     from common.policy.data.context_encoding import ContextEncoder
 
-    batch = ContextEncoder(dataset.normalizer, dataset.schema, model.config).to(device=device).encode(batch)
+    batch = ContextEncoder(dataset.normalizer, dataset.schema, model.config, layout=dataset.state_layout).to(device=device).encode(batch)
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.01)
     weights_before = {
         (index, name): getattr(layer, name).weight.detach().clone()
@@ -341,7 +341,8 @@ def test_position_ids_are_logical_sequential_when_all_tokens_are_valid():
         batch_size=1,
         scene_length=3,
         history_length=2,
-        device=torch.device("cpu"),
+        scene_mask=torch.ones((1, 3), dtype=torch.bool),
+        history_mask=torch.ones((1, 2), dtype=torch.bool),
     )[0].tolist()
 
     assert position_ids == [0, 1, 2, 3, 4, 5, 6, 7]
@@ -354,7 +355,6 @@ def test_position_ids_ignore_right_padding_per_sample():
         batch_size=2,
         scene_length=3,
         history_length=4,
-        device=torch.device("cpu"),
         scene_mask=torch.tensor([[True, True, False], [True, True, True]]),
         history_mask=torch.tensor(
             [[True, False, False, False], [True, True, True, False]]
@@ -373,7 +373,6 @@ def test_position_ids_count_valid_tokens_without_right_padding():
         batch_size=1,
         scene_length=3,
         history_length=4,
-        device=torch.device("cpu"),
         scene_mask=torch.tensor([[False, True, True]]),
         history_mask=torch.tensor([[False, True, False, True]]),
     )
@@ -387,7 +386,8 @@ def test_current_state_rope_position_follows_scene_and_history():
         batch_size=1,
         scene_length=2,
         history_length=2,
-        device=torch.device("cpu"),
+        scene_mask=torch.ones((1, 2), dtype=torch.bool),
+        history_mask=torch.ones((1, 2), dtype=torch.bool),
     )
 
     assert position_ids.tolist() == [[0, 1, 2, 3, 4, 5, 6]]
@@ -398,7 +398,7 @@ def test_rope_logits_are_invariant_to_other_samples_right_padding():
     data_spec = DataSpec(
         job_tag="black_mage",
         num_actions=2,
-        state_dim=3,
+        base_state_dim=3, state_dim=(3) + 2 * (2),
         scene_dim=2,
         skill_feature_dim=1,
         num_scene_types=1,
@@ -420,12 +420,12 @@ def test_rope_logits_are_invariant_to_other_samples_right_padding():
     short_batch = {
         "history_skill_ids": torch.tensor([[1]]),
         "history_skill_features": torch.tensor([[[0.25]]]),
-        "history_state_vectors": torch.tensor([[[0.1, 0.2, 0.3]]]),
+        "history_state_vectors": torch.nn.functional.pad(torch.tensor([[[0.1, 0.2, 0.3]]]), (0, 4)),
         "history_state_null_mask": torch.zeros((1, 1, 3), dtype=torch.bool),
         "history_mask": torch.ones((1, 1), dtype=torch.bool),
-        'current_state_vectors': (torch.tensor(
+        'current_state_vectors': torch.nn.functional.pad((torch.tensor(
             [[[0.2, 0.3, 0.4], [0.5, 0.6, 0.7]]]
-        ))[:, 0, :],
+        ))[:, 0, :], (0, 4)),
         'current_state_null_mask': (torch.zeros((1, 2, 3), dtype=torch.bool))[:, 0, :],
         "action_legal_mask": torch.ones((1, 2), dtype=torch.bool),
         "scene_vectors": torch.tensor([[[0.1, 0.2], [0.3, 0.4]]]),
@@ -455,12 +455,12 @@ def test_rope_logits_are_invariant_to_other_samples_right_padding():
     padded_batch["history_skill_features"] = torch.tensor(
         [[[0.25], [0.0]], [[0.6], [0.7]]]
     )
-    padded_batch["history_state_vectors"] = torch.tensor(
+    padded_batch["history_state_vectors"] = torch.nn.functional.pad(torch.tensor(
         [
             [[0.1, 0.2, 0.3], [0.0, 0.0, 0.0]],
             [[0.8, 0.9, 1.0], [1.1, 1.2, 1.3]],
         ]
-    )
+    ), (0, 4))
     padded_batch["history_state_null_mask"] = torch.tensor(
         [
             [[False, False, False], [True, True, True]],
@@ -471,7 +471,7 @@ def test_rope_logits_are_invariant_to_other_samples_right_padding():
         [[True, False], [True, True]]
     )
     padded_batch["history_state_reset_mask"] = torch.zeros_like(
-        padded_batch["history_state_vectors"], dtype=torch.bool,
+        padded_batch["history_state_vectors"][..., :data_spec.base_state_dim], dtype=torch.bool,
     )
 
     with torch.no_grad():
@@ -496,7 +496,7 @@ def test_causal_model_appends_one_current_state_token():
     data_spec = DataSpec(
         job_tag="black_mage",
         num_actions=2,
-        state_dim=3,
+        base_state_dim=3, state_dim=(3) + 2 * (2),
         scene_dim=2,
         skill_feature_dim=1,
         num_scene_types=1,
@@ -517,10 +517,10 @@ def test_causal_model_appends_one_current_state_token():
     batch = {
         "history_skill_ids": torch.ones((1, 2), dtype=torch.int64),
         "history_skill_features": torch.zeros((1, 2, 1)),
-        "history_state_vectors": torch.zeros((1, 2, 3)),
+        "history_state_vectors": torch.nn.functional.pad(torch.zeros((1, 2, 3)), (0, 4)),
         "history_state_null_mask": torch.zeros((1, 2, 3), dtype=torch.bool),
         "history_mask": torch.ones((1, 2), dtype=torch.bool),
-        'current_state_vectors': (torch.zeros((1, 2, 3)))[:, 0, :],
+        'current_state_vectors': torch.nn.functional.pad((torch.zeros((1, 2, 3)))[:, 0, :], (0, 4)),
         'current_state_null_mask': (torch.zeros((1, 2, 3), dtype=torch.bool))[:, 0, :],
         "action_legal_mask": torch.ones((1, 2), dtype=torch.bool),
         "scene_vectors": torch.zeros((1, 1, 2)),
@@ -549,7 +549,7 @@ def test_input_encoder_derives_context_capacity_from_context_blocks():
     data_spec = DataSpec(
         job_tag="black_mage",
         num_actions=2,
-        state_dim=3,
+        base_state_dim=3, state_dim=(3) + 2 * (2),
         scene_dim=2,
         skill_feature_dim=1,
         num_scene_types=1,
@@ -575,10 +575,10 @@ def test_input_encoder_derives_context_capacity_from_context_blocks():
     batch = {
         "history_skill_ids": torch.ones((1, 2), dtype=torch.int64),
         "history_skill_features": torch.zeros((1, 2, 1)),
-        "history_state_vectors": torch.zeros((1, 2, 3)),
+        "history_state_vectors": torch.nn.functional.pad(torch.zeros((1, 2, 3)), (0, 4)),
         "history_state_null_mask": torch.zeros((1, 2, 3), dtype=torch.bool),
         "history_mask": torch.ones((1, 2), dtype=torch.bool),
-        'current_state_vectors': (torch.zeros((1, 2, 3)))[:, 0, :],
+        'current_state_vectors': torch.nn.functional.pad((torch.zeros((1, 2, 3)))[:, 0, :], (0, 4)),
         'current_state_null_mask': (torch.zeros((1, 2, 3), dtype=torch.bool))[:, 0, :],
         "action_legal_mask": torch.ones((1, 2), dtype=torch.bool),
         "scene_vectors": torch.zeros((1, 4, 2)),
@@ -604,7 +604,7 @@ def test_model_encode_with_attention_returns_per_head_weights():
     data_spec = DataSpec(
         job_tag="black_mage",
         num_actions=2,
-        state_dim=3,
+        base_state_dim=3, state_dim=(3) + 2 * (2),
         scene_dim=2,
         skill_feature_dim=1,
         num_scene_types=1,
@@ -627,10 +627,10 @@ def test_model_encode_with_attention_returns_per_head_weights():
         "action_keys": [["fire_iii", "fire_iv"]],
         "history_skill_ids": torch.ones((1, 1), dtype=torch.int64),
         "history_skill_features": torch.zeros((1, 1, 1)),
-        "history_state_vectors": torch.zeros((1, 1, 3)),
+        "history_state_vectors": torch.nn.functional.pad(torch.zeros((1, 1, 3)), (0, 4)),
         "history_state_null_mask": torch.zeros((1, 1, 3), dtype=torch.bool),
         "history_mask": torch.ones((1, 1), dtype=torch.bool),
-        'current_state_vectors': (torch.zeros((1, 2, 3)))[:, 0, :],
+        'current_state_vectors': torch.nn.functional.pad((torch.zeros((1, 2, 3)))[:, 0, :], (0, 4)),
         'current_state_null_mask': (torch.zeros((1, 2, 3), dtype=torch.bool))[:, 0, :],
         "action_legal_mask": torch.ones((1, 2), dtype=torch.bool),
         "scene_vectors": torch.zeros((1, 1, 2)),
@@ -654,7 +654,7 @@ def test_history_uses_independent_tokens_and_current_state_has_no_skill():
     data_spec = DataSpec(
         job_tag="black_mage",
         num_actions=2,
-        state_dim=3,
+        base_state_dim=3, state_dim=(3) + 2 * (2),
         scene_dim=2,
         skill_feature_dim=1,
         num_scene_types=1,
@@ -675,10 +675,10 @@ def test_history_uses_independent_tokens_and_current_state_has_no_skill():
     batch = {
         "history_skill_ids": torch.ones((1, 2), dtype=torch.int64),
         "history_skill_features": torch.zeros((1, 2, 1)),
-        "history_state_vectors": torch.zeros((1, 2, 3)),
+        "history_state_vectors": torch.nn.functional.pad(torch.zeros((1, 2, 3)), (0, 4)),
         "history_state_null_mask": torch.zeros((1, 2, 3), dtype=torch.bool),
         "history_mask": torch.ones((1, 2), dtype=torch.bool),
-        'current_state_vectors': (torch.zeros((1, 2, 3)))[:, 0, :],
+        'current_state_vectors': torch.nn.functional.pad((torch.zeros((1, 2, 3)))[:, 0, :], (0, 4)),
         'current_state_null_mask': (torch.zeros((1, 2, 3), dtype=torch.bool))[:, 0, :],
         "action_legal_mask": torch.ones((1, 2), dtype=torch.bool),
         "scene_vectors": torch.zeros((1, 1, 2)),
@@ -702,7 +702,7 @@ def test_input_encoder_routes_all_sources_through_one_post_role_rms(monkeypatch)
     data_spec = DataSpec(
         job_tag="black_mage",
         num_actions=2,
-        state_dim=3,
+        base_state_dim=3, state_dim=(3) + 2 * (2),
         scene_dim=2,
         skill_feature_dim=1,
         num_scene_types=1,
@@ -723,10 +723,10 @@ def test_input_encoder_routes_all_sources_through_one_post_role_rms(monkeypatch)
     batch = {
         "history_skill_ids": torch.ones((1, 2), dtype=torch.int64),
         "history_skill_features": torch.zeros((1, 2, 1)),
-        "history_state_vectors": torch.zeros((1, 2, 3)),
+        "history_state_vectors": torch.nn.functional.pad(torch.zeros((1, 2, 3)), (0, 4)),
         "history_state_null_mask": torch.zeros((1, 2, 3), dtype=torch.bool),
         "history_mask": torch.ones((1, 2), dtype=torch.bool),
-        'current_state_vectors': (torch.zeros((1, 2, 3)))[:, 0, :],
+        'current_state_vectors': torch.nn.functional.pad((torch.zeros((1, 2, 3)))[:, 0, :], (0, 4)),
         'current_state_null_mask': (torch.zeros((1, 2, 3), dtype=torch.bool))[:, 0, :],
         "action_legal_mask": torch.ones((1, 2), dtype=torch.bool),
         "scene_vectors": torch.zeros((1, 1, 2)),

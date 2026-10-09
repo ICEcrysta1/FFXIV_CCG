@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ffxiv-ccg.local/schemas/onnx-manifest-v15.json",
+  "$id": "https://ffxiv-ccg.local/schemas/onnx-manifest-v16.json",
   "title": "FFXIV_CCG ONNX Deployment Manifest",
   "type": "object",
   "additionalProperties": false,
@@ -21,7 +21,7 @@
       "const": "manifest.schema.json"
     },
     "manifest_version": {
-      "const": 15
+      "const": 16
     },
     "format": {
       "const": "onnx"
@@ -273,7 +273,7 @@
       ],
       "properties": {
         "contract_version": {
-          "const": 24
+          "const": 25
         },
         "job_tag": {
           "type": "string",
@@ -322,10 +322,18 @@
           ],
           "properties": {
             "version": {
-              "const": 21
+              "const": 22
             },
             "token_encoding": {
               "const": {
+                "state_availability": {
+                  "encoding": "absolute_binary",
+                  "order": "snapshot_then_saved_action_keys",
+                  "projection": "shared_state_content",
+                  "auxiliary_masks": "base_state_only",
+                  "scene_execution_time": "raw_fp32_endpoints_promoted_to_double",
+                  "scene_state_fields": "eta_and_downtime_per_frozen_snapshot"
+                },
                 "skill": "E[id] + Linear(skill_features)",
                 "state": "Linear(state_values) + Linear(null_mask, bias=False) + Linear(state_reset_mask, bias=False)",
                 "scene": "Linear_by_scene_type(scene_values)",
@@ -626,7 +634,9 @@
             "additionalProperties": false,
             "required": [
               "group_key",
-              "feature_keys"
+              "feature_keys",
+              "feature_keys_field",
+              "encoding"
             ],
             "properties": {
               "group_key": {
@@ -639,6 +649,13 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "feature_keys_field": {
+                "type": "string",
+                "minLength": 1
+              },
+              "encoding": {
+                "enum": ["anchored_delta", "absolute_binary"]
               }
             }
           }

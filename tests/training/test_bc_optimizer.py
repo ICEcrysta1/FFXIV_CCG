@@ -29,7 +29,7 @@ def _build_optimizer(model, config=None, *, weight_decay=0.03):
 
 def _model(*, num_kv_heads=1, dtype=torch.float32, full_attention_residuals=True) -> CausalPolicyModel:
     spec = DataSpec(
-        job_tag="black_mage", num_actions=2, state_dim=3, scene_dim=2,
+        job_tag="black_mage", num_actions=2, base_state_dim=3, state_dim=(3) + 2 * (2), scene_dim=2,
         skill_feature_dim=2, num_scene_types=1,
         action_keys=("first", "second"),
         skill_feature_names=("kind", "potency"),
@@ -298,11 +298,11 @@ def test_train_epoch_updates_both_parameter_groups_with_real_gradients(
     batch = {
         "history_skill_ids": torch.ones((1, 1), dtype=torch.long),
         "history_skill_features": torch.zeros((1, 1, 2)),
-        "history_state_vectors": torch.zeros((1, 1, 3)),
+        "history_state_vectors": torch.nn.functional.pad(torch.zeros((1, 1, 3)), (0, 4)),
         "history_state_null_mask": torch.zeros((1, 1, 3), dtype=torch.bool),
         "history_state_reset_mask": torch.ones((1, 1, 3), dtype=torch.bool),
         "history_mask": torch.ones((1, 1), dtype=torch.bool),
-        "current_state_vectors": torch.randn((1, 3)),
+        "current_state_vectors": torch.nn.functional.pad(torch.randn((1, 3)), (0, 4)),
         "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
         "current_state_reset_mask": torch.zeros((1, 3), dtype=torch.bool),
         "action_legal_mask": torch.ones((1, 2), dtype=torch.bool),

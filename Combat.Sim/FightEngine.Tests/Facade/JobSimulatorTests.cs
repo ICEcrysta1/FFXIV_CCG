@@ -150,10 +150,10 @@ public sealed class JobSimulatorTests
         var accepted = simulator.SubmitAction(0.0, "cast_skill", actualCastSeconds: 2.0);
 
         Assert.True(accepted.Accepted);
-        simulator.ApplyExternalEvent(new ExternalCombatEvent(
+        simulator.ApplyExternalEvents(new ExternalCombatEvent[] { new ExternalCombatEvent(
             1.6,
             ExternalCombatEventKinds.MovementChanged,
-            true));
+            true) });
 
         simulator.AdvanceTo(1.6);
         Assert.Single(simulator.GetState().History);
@@ -306,16 +306,16 @@ public sealed class JobSimulatorTests
     public void 外部事实按时间戳进入同一时间线且分支隔离()
     {
         var simulator = new JobSimulator(FacadeKit.BuildMachine());
-        simulator.ApplyExternalEvent(new ExternalCombatEvent(
+        simulator.ApplyExternalEvents(new ExternalCombatEvent[] { new ExternalCombatEvent(
             1.0,
             ExternalCombatEventKinds.BossTargetableChanged,
-            false));
+            false) });
 
         var fork = simulator.Fork();
-        fork.ApplyExternalEvent(new ExternalCombatEvent(
+        fork.ApplyExternalEvents(new ExternalCombatEvent[] { new ExternalCombatEvent(
             2.0,
             ExternalCombatEventKinds.BossTargetableChanged,
-            true));
+            true) });
 
         Assert.True(fork.ValidateActionAt(2.0, "gcd_strike").Ok);
         Assert.Equal("boss_untargetable", simulator.ValidateActionAt(2.0, "gcd_strike").Reason);
@@ -325,22 +325,22 @@ public sealed class JobSimulatorTests
     public void 外部事实覆盖移动和目标数且非法载荷不推进()
     {
         var simulator = new JobSimulator(FacadeKit.BuildMachine());
-        simulator.ApplyExternalEvent(new ExternalCombatEvent(
+        simulator.ApplyExternalEvents(new ExternalCombatEvent[] { new ExternalCombatEvent(
             1.0,
             ExternalCombatEventKinds.MovementChanged,
-            true));
-        simulator.ApplyExternalEvent(new ExternalCombatEvent(
+            true) });
+        simulator.ApplyExternalEvents(new ExternalCombatEvent[] { new ExternalCombatEvent(
             1.0,
             ExternalCombatEventKinds.TargetCountChanged,
-            TargetCount: 3));
+            TargetCount: 3) });
         var state = simulator.GetState();
         Assert.True(state.IsMoving);
         Assert.Equal(3, state.TargetCount);
 
-        Assert.Throws<ArgumentException>(() => simulator.ApplyExternalEvent(new ExternalCombatEvent(
+        Assert.Throws<ArgumentException>(() => simulator.ApplyExternalEvents(new ExternalCombatEvent[] { new ExternalCombatEvent(
             2.0,
             ExternalCombatEventKinds.TargetCountChanged,
-            TargetCount: -1)));
+            TargetCount: -1) }));
         Assert.Equal(1.0, simulator.Time, 9);
     }
 
@@ -348,11 +348,11 @@ public sealed class JobSimulatorTests
     public void 团辅外部事实使用注册状态并按绝对时间到期()
     {
         var simulator = new JobSimulator(CombatStateMachine.FromDefaultConfig(FindRepoRoot(), "black_mage"));
-        simulator.ApplyExternalEvent(new ExternalCombatEvent(
+        simulator.ApplyExternalEvents(new ExternalCombatEvent[] { new ExternalCombatEvent(
             1.0,
             ExternalCombatEventKinds.RaidBuffWindowChanged,
             true,
-            RemainingSeconds: 5.0));
+            RemainingSeconds: 5.0) });
 
         Assert.Equal(5.0, simulator.GetState().Statuses["raid_buff_window"].Remaining, 9);
 
@@ -371,8 +371,8 @@ public sealed class JobSimulatorTests
         Assert.Throws<KeyNotFoundException>(() => simulator.ValidateActionAt(4.0, "missing_action"));
         Assert.Equal(0.0, simulator.Time, 9);
 
-        Assert.Throws<ArgumentException>(() => simulator.ApplyExternalEvent(
-            new ExternalCombatEvent(5.0, "unsupported")));
+        Assert.Throws<ArgumentException>(() => simulator.ApplyExternalEvents(new ExternalCombatEvent[] {
+            new ExternalCombatEvent(5.0, "unsupported") }));
         Assert.Equal(0.0, simulator.Time, 9);
     }
 

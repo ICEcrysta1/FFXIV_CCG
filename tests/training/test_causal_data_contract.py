@@ -19,12 +19,13 @@ from tests.helpers import build_test_scene_context, targetable_window_token
 def _source(*, history_length=0):
     space = ActionSpace.from_job_tag("black_mage")
     keys = {
-        "player_state_feature_keys": ["previous_action_after.mp", "request_state.mp"],
+        "player_state_feature_keys": ["previous_action_after.mp", "request_state.mp", "request_state.time_seconds"],
         "buff_state_feature_keys": [],
         "target_buff_state_feature_keys": ["previous_action_after.target.cumulative_dot_potency", "request_state.target.cumulative_dot_potency"],
         "resource_state_feature_keys": [],
+        "skill_availability_feature_keys": [f"{snapshot}.{key}" for snapshot in ("previous_action_after", "request_state") for key in space.action_keys],
     }
-    token = {"player_state": [10000.0, 10000.0], "buff_state": [], "target_buff_state": [0.0, 0.0], "resource_state": []}
+    token = {"player_state": [10000.0, 10000.0, 0.0], "buff_state": [], "target_buff_state": [0.0, 0.0], "resource_state": [], "skill_availability": [1] * (2 * len(space.action_keys))}
     samples = []
     for step in range(history_length + 1):
         history = [{"skill_id": 0, "skill_key": "ogcd_wait", "kind": 0, "potency": 0.0} for _ in range(step)]
@@ -70,8 +71,8 @@ def test_empty_history_and_wait_only_history_share_stable_skill_schema():
     wait_sample = _builder(wait).build(wait, 1)
     assert empty_sample["history_length"] == 0
     assert wait_sample["history_length"] == 1
-    assert empty_sample["current_state_abs_values"].shape == (empty.schema.state_vector_dim(),)
-    assert wait_sample["current_state_delta_values"].tolist() == [0.0] * empty.schema.state_vector_dim()
+    assert empty_sample["current_state_abs_values"].shape == (empty.schema.state_layout(empty.action_keys).base_state_dim,)
+    assert wait_sample["current_state_delta_values"].tolist() == [0.0] * empty.schema.state_layout(empty.action_keys).base_state_dim
     assert empty_sample["label_index"] == wait_sample["label_index"] == empty.action_keys.index("ogcd_wait")
     assert all("candidate" not in key for key in empty_sample)
     assert not any(key.startswith("history_skill") for key in empty_sample)
@@ -79,16 +80,16 @@ def test_empty_history_and_wait_only_history_share_stable_skill_schema():
 
 def test_current_state_preserves_explicit_missing_values_without_action_dimension():
     payload = _source()
-    payload["samples"][0]["context"]["current_state_context"]["tokens"][0]["player_state"] = [None, None]
+    payload["samples"][0]["context"]["current_state_context"]["tokens"][0]["player_state"] = [None, None, 0.0]
     reader = TrainingSourceReader(payload)
     raw = reader.current_state_matrix(0, dtype=torch.float32)
-    assert raw.values.tolist() == [[0.0, 0.0, 0.0, 0.0]]
-    assert raw.null_mask.tolist() == [[True, True, False, False]]
+    assert raw.base_values.tolist() == [[0.0] * 5]
+    assert raw.base_null_mask.tolist() == [[True, True, False, False, False]]
     sample = _builder(reader).build(reader, 0)
-    assert sample["current_state_null_mask"].tolist() == [True, True, False, False]
-    assert sample["current_state_abs_values"].tolist() == [0.0, 0.0, 0.0, 0.0]
-    assert sample["current_state_delta_values"].tolist() == [0.0, 0.0, 0.0, 0.0]
-    assert sample["current_state_delta_reset_mask"].tolist() == [False, False, True, True]
+    assert sample["current_state_null_mask"].tolist() == [True, True, False, False, False]
+    assert sample["current_state_abs_values"].tolist() == [0.0] * 5
+    assert sample["current_state_delta_values"].tolist() == [0.0] * 5
+    assert sample["current_state_delta_reset_mask"].tolist() == [False, False, True, True, True]
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float64])
@@ -103,7 +104,7 @@ def test_raw_reader_rejects_precision_changes_before_state_difference(dtype):
 
 
 @pytest.mark.parametrize("change,error", [
-    ("state_width", "current request state group width mismatch"),
+    ("state_width", "state group width mismatch"),
     ("mask_width", "action_legal_mask must match"),
     ("action_order", "output action space must match"),
     ("nonfinite_value", "numeric request-time values"),
@@ -170,7 +171,7 @@ def test_previous_internal_training_packet_versions_are_rejected(contract):
 
 def test_current_state_accepts_different_previous_and_request_snapshots():
     payload = _source()
-    payload["samples"][0]["context"]["current_state_context"]["tokens"][0]["player_state"] = [8000.0, 9000.0]
+    payload["samples"][0]["context"]["current_state_context"]["tokens"][0]["player_state"] = [8000.0, 9000.0, 0.0]
     reader = TrainingSourceReader(payload)
     assert _builder(reader).build(reader, 0)["current_state_abs_values"][:2].tolist() == [8000.0, 9000.0]
 
@@ -244,13 +245,13 @@ def test_raw_state_bank_preserves_signed_mp_bool_and_damage_deltas_without_norma
 
     payload = _source(history_length=3)
     keys = payload["samples"][0]["context"]["current_state_context"]["player_state_feature_keys"]
-    keys[:] = ["previous_action_after.is_moving", "request_state.mp"]
+    keys[:] = ["previous_action_after.is_moving", "request_state.mp", "request_state.time_seconds"]
     states = [(1.0, 10000.0, 50000.0), (0.0, 9200.0, 50700.0), (1.0, 10000.0, 51350.0)]
     for sample in payload["samples"]:
         context = sample["context"]
         context["state_history_context"]["player_state_feature_keys"] = list(keys)
         for token, (moving, mp, damage) in zip(context["state_history_context"]["tokens"], states):
-            token["player_state"] = [moving, mp]
+            token["player_state"] = [moving, mp, 0.0]
             token["target_buff_state"] = [damage, damage + 20.0]
     reader = TrainingSourceReader(payload)
     normalizer = Normalizer()
@@ -263,9 +264,9 @@ def test_raw_state_bank_preserves_signed_mp_bool_and_damage_deltas_without_norma
         int_dtype=torch.int32, float_dtype=torch.bfloat16,
     )
     assert bank["state_abs_values"].dtype == bank["state_delta_values"].dtype == torch.float32
-    assert bank["state_abs_values"][1].tolist() == [1.0, 10000.0, 50000.0, 50020.0]
-    assert bank["state_delta_values"][2].tolist() == [-1.0, -800.0, 700.0, 700.0]
-    assert bank["state_delta_values"][3].tolist() == [1.0, 800.0, 650.0, 650.0]
+    assert bank["state_abs_values"][1].tolist() == [1.0, 10000.0, 0.0, 50000.0, 50020.0]
+    assert bank["state_delta_values"][2].tolist() == [-1.0, -800.0, 0.0, 700.0, 700.0]
+    assert bank["state_delta_values"][3].tolist() == [1.0, 800.0, 0.0, 650.0, 650.0]
     assert bank["state_delta_reset_mask"][1].all()
     assert not bank["state_delta_reset_mask"][2:].any()
     torch.testing.assert_close(bank["state_abs_values"][1:].diff(dim=0), bank["state_delta_values"][2:])
@@ -275,11 +276,11 @@ def test_raw_history_and_current_state_reset_fields_when_null_becomes_known():
     payload = _source(history_length=2)
     for sample in payload["samples"][1:]:
         rows = sample["context"]["state_history_context"]["tokens"]
-        rows[0]["player_state"] = [None, 10000.0]
+        rows[0]["player_state"] = [None, 10000.0, 0.0]
         if len(rows) > 1:
-            rows[1]["player_state"] = [7600.0, None]
+            rows[1]["player_state"] = [7600.0, None, 0.0]
     current = payload["samples"][2]["context"]["current_state_context"]["tokens"][0]
-    current["player_state"] = [8000.0, 8200.0]
+    current["player_state"] = [8000.0, 8200.0, 0.0]
     reader = TrainingSourceReader(payload)
     builder = _builder(reader)
     bank = builder._history_bank
@@ -293,10 +294,10 @@ def test_raw_history_and_current_state_reset_fields_when_null_becomes_known():
 
 def test_raw_current_state_deltas_use_last_actual_history_not_previous_sample_request():
     payload = _source(history_length=1)
-    payload["samples"][0]["context"]["current_state_context"]["tokens"][0]["player_state"] = [111.0, 222.0]
+    payload["samples"][0]["context"]["current_state_context"]["tokens"][0]["player_state"] = [111.0, 222.0, 0.0]
     context = payload["samples"][1]["context"]
-    context["state_history_context"]["tokens"][0]["player_state"] = [7600.0, 7800.0]
-    context["current_state_context"]["tokens"][0]["player_state"] = [8000.0, 8200.0]
+    context["state_history_context"]["tokens"][0]["player_state"] = [7600.0, 7800.0, 0.0]
+    context["current_state_context"]["tokens"][0]["player_state"] = [8000.0, 8200.0, 0.0]
     reader = TrainingSourceReader(payload)
     sample = _builder(reader).build(reader, 1)
     assert sample["current_state_abs_values"][:2].tolist() == [8000.0, 8200.0]

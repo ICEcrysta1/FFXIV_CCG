@@ -776,7 +776,7 @@ def run_grpo_training(
             group_trajectories: list[list[GrpoTrajectory]] = []
             reward_groups: list[list[float]] = []
             baseline_ppgs: list[float] = []
-            rollout_store = GrpoRolloutStore(rollout_root, iteration=iteration)
+            rollout_store = GrpoRolloutStore(rollout_root, iteration=iteration, input_contract=input_contract)
             # 阶段一：完整自回归采样并用 C# 状态机完成 PPG/奖励标注。
             # 这一步完全 inference-only；所有 decisions 在 _score_row 中已脱离到 CPU。
             baseline_tasks = ((path, 0.0, False, None) for path in selected_scenes)

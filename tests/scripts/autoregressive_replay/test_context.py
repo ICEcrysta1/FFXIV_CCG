@@ -17,6 +17,7 @@ from common.policy.data.schema import (
     SCENE_TYPE_TARGETABLE,
     SceneWindowSchema,
     TrainingSchema,
+    StateFeatureGroup,
     TRAINING_SAMPLE_SCHEMA_VERSION,
 )
 from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
@@ -37,6 +38,7 @@ def test_tail_history_keeps_only_recent_entries_and_supports_empty_history():
 
 class _SceneWindow:
     scene_type_id = SCENE_TYPE_TARGET_COUNT
+    context_key = "target_count_window_context"
     feature_keys = (
         "start_offset_seconds",
         "end_offset_seconds",
@@ -47,16 +49,10 @@ class _SceneWindow:
 
 class _SceneSchema:
     scene_windows = (_SceneWindow(),)
-    state_group_feature_keys = {"player_state": ("previous_action_after.mp",)}
 
     @staticmethod
     def scene_feature_dim():
         return 4
-
-    @staticmethod
-    def state_vector_dim():
-        return 1
-
 
 class _SceneReader:
     num_samples = 3
@@ -84,6 +80,7 @@ class _SceneReader:
 
 class _TargetableSceneWindow:
     scene_type_id = SCENE_TYPE_TARGETABLE
+    context_key = "targetable_window_context"
     feature_keys = (
         "start_offset_seconds",
         "end_offset_seconds",
@@ -131,25 +128,25 @@ class _TargetableSceneReader:
 
 
 def test_scene_template_provider_uses_raw_scene_and_resolves_target_count():
-    provider = SceneTemplateProvider(_SceneReader(), normalizer=Normalizer(), initial_sample_index=1)
+    provider = SceneTemplateProvider(_SceneReader(), initial_sample_index=1)
     vectors, types = provider.at_time(0.0)
     assert vectors.shape == (2, 4)
     assert int(types[0]) == SCENE_TYPE_TARGET_COUNT
-    assert provider.target_count_at(0.0) == 2
-    assert provider.target_count_at(1.8) == 3
-    assert provider.target_count_at(3.0) == 1
+    assert provider.state_at(0.0).target_count == 2
+    assert provider.state_at(1.8).target_count == 3
+    assert provider.state_at(3.0).target_count == 1
     later_vectors, later_types = provider.at_time(2.0)
     assert later_vectors.equal(vectors)
     assert later_types.equal(types)
 
-    disabled = SceneTemplateProvider(_SceneReader(), normalizer=Normalizer(), enabled=False)
+    disabled = SceneTemplateProvider(_SceneReader(), enabled=False)
     empty_vectors, empty_types = disabled.at_time(2.0)
     assert empty_vectors.shape == (0, 4)
     assert empty_types.shape == (0,)
-    assert disabled.target_count_at(2.0) == 1
+    assert disabled.state_at(2.0).target_count == 1
 
     with pytest.raises(ValueError, match="out of range"):
-        SceneTemplateProvider(_SceneReader(), normalizer=Normalizer(), initial_sample_index=3)
+        SceneTemplateProvider(_SceneReader(), initial_sample_index=3)
 
     class EmptyReader(_SceneReader):
         num_samples = 1
@@ -159,7 +156,7 @@ def test_scene_template_provider_uses_raw_scene_and_resolves_target_count():
             return torch.zeros((0, 4), dtype=float_dtype), torch.zeros((0,), dtype=int_dtype)
 
     with pytest.raises(ValueError, match="no usable scene tokens"):
-        SceneTemplateProvider(EmptyReader(), normalizer=Normalizer())
+        SceneTemplateProvider(EmptyReader())
 
     class RawSceneReader(_SceneReader):
         @staticmethod
@@ -176,9 +173,9 @@ def test_scene_template_provider_uses_raw_scene_and_resolves_target_count():
                 vectors[:, 2] *= 1800.0
             return vectors, types
 
-    long_scene = SceneTemplateProvider(RawSceneReader(), normalizer=Normalizer(), initial_sample_index=1)
+    long_scene = SceneTemplateProvider(RawSceneReader(), initial_sample_index=1)
     assert long_scene.at_time(0)[0][1, 1].item() == 5400.0
-    assert long_scene.target_count_at(1801.0) == 3
+    assert long_scene.state_at(1801.0).target_count == 3
 
 
 @pytest.mark.parametrize("target_count", [0.0, -1.0, 0.5])
@@ -192,17 +189,14 @@ def test_scene_template_provider_keeps_zero_targets_and_rejects_invalid_counts(t
             vectors[0, 3] = target_count
             return vectors, types
 
-    provider = SceneTemplateProvider(
-        TargetCountReader(), normalizer=Normalizer(), initial_sample_index=1,
-    )
     if target_count == 0:
-        # 零目标是合法的完整场景事实，窗口外仍使用单目标默认值。
-        assert provider.target_count_at(0.5) == 0
-        assert provider.target_count_at(1.8) == 3
-        assert provider.target_count_at(3.0) == 1
+        provider = SceneTemplateProvider(TargetCountReader(), initial_sample_index=1)
+        assert provider.state_at(0.5).target_count == 0
+        assert provider.state_at(1.8).target_count == 3
+        assert provider.state_at(3.0).target_count == 1
     else:
         with pytest.raises(ValueError, match="non-negative integer"):
-            provider.target_count_at(0.5)
+            SceneTemplateProvider(TargetCountReader(), initial_sample_index=1)
 
 
 def test_scene_template_provider_syncs_targetable_timeline_into_live_state():
@@ -210,39 +204,34 @@ def test_scene_template_provider_syncs_targetable_timeline_into_live_state():
         def __init__(self):
             self.events = []
 
-        def apply_external_event(self, timestamp, event_kind, **payload):
-            self.events.append((timestamp, event_kind, payload))
+        def apply_external_events(self, events):
+            for event in events:
+                self.events.append((event["timestamp"], event["event_kind"], {
+                    key: value for key, value in event.items()
+                    if key not in {"timestamp", "event_kind"} and value is not None
+                }))
+            return SimpleNamespace(accepted=True)
+
 
     provider = SceneTemplateProvider(
         _TargetableSceneReader(),
-        normalizer=Normalizer(),
         backend=FakeBackend(),
     )
     state = SimpleNamespace(time=10.0, fight_remaining=100.0)
     backend = provider._backend
     provider.sync_state(state)
     assert provider.last_targetable_end() == pytest.approx(600.0)
-    assert provider.next_targetable_event_after(10.0) == pytest.approx(22.0)
+    assert provider.next_state_event_after(10.0) == pytest.approx(22.0)
 
     state.time = 30.0
     provider.sync_state(state)
-    assert backend.events[-4:] == [
-        (30.0, "boss_targetable_changed", {"value": False}),
-        (30.0, "movement_changed", {"value": False}),
-        (30.0, "target_count_changed", {"target_count": 1}),
-        (30.0, "raid_buff_window_changed", {"value": False}),
-    ]
-    assert provider.targetable_at(81.9) is False
-    assert provider.next_targetable_event_after(30.0) == pytest.approx(82.0)
+    assert backend.events[-1] == (22.0, "boss_targetable_changed", {"value": False})
+    assert provider.state_at(81.9).boss_targetable is False
+    assert provider.next_state_event_after(30.0) == pytest.approx(82.0)
 
     state.time = 82.0
     provider.sync_state(state)
-    assert backend.events[-4:] == [
-        (82.0, "boss_targetable_changed", {"value": True}),
-        (82.0, "movement_changed", {"value": False}),
-        (82.0, "target_count_changed", {"target_count": 1}),
-        (82.0, "raid_buff_window_changed", {"value": False}),
-    ]
+    assert backend.events[-1] == (82.0, "boss_targetable_changed", {"value": True})
 
 
 def test_scene_template_provider_reset_resyncs_same_signature():
@@ -250,13 +239,18 @@ def test_scene_template_provider_reset_resyncs_same_signature():
         def __init__(self):
             self.events = []
 
-        def apply_external_event(self, timestamp, event_kind, **payload):
-            self.events.append((timestamp, event_kind, payload))
+        def apply_external_events(self, events):
+            for event in events:
+                self.events.append((event["timestamp"], event["event_kind"], {
+                    key: value for key, value in event.items()
+                    if key not in {"timestamp", "event_kind"} and value is not None
+                }))
+            return SimpleNamespace(accepted=True)
+
 
     backend = FakeBackend()
     provider = SceneTemplateProvider(
         _TargetableSceneReader(),
-        normalizer=Normalizer(),
         backend=backend,
     )
     state = SimpleNamespace(time=10.0, fight_remaining=100.0)
@@ -276,6 +270,10 @@ def test_scene_template_provider_syncs_movement_with_slidecast_boundary():
     class Window:
         def __init__(self, scene_type_id, feature_keys):
             self.scene_type_id = scene_type_id
+            self.context_key = {SCENE_TYPE_TARGETABLE: "targetable_window_context",
+                                SCENE_TYPE_MOVEMENT: "forced_movement_context",
+                                SCENE_TYPE_RAID_BUFF: "raid_buff_window_context",
+                                SCENE_TYPE_TARGET_COUNT: "target_count_window_context"}[scene_type_id]
             self.feature_keys = feature_keys
             self.start_offset_index = 0
             self.end_offset_index = 1
@@ -359,13 +357,18 @@ def test_scene_template_provider_syncs_movement_with_slidecast_boundary():
         def __init__(self):
             self.events = []
 
-        def apply_external_event(self, timestamp, event_kind, **payload):
-            self.events.append((timestamp, event_kind, payload))
+        def apply_external_events(self, events):
+            for event in events:
+                self.events.append((event["timestamp"], event["event_kind"], {
+                    key: value for key, value in event.items()
+                    if key not in {"timestamp", "event_kind"} and value is not None
+                }))
+            return SimpleNamespace(accepted=True)
+
 
     backend = FakeBackend()
     provider = SceneTemplateProvider(
         Reader(),
-        normalizer=Normalizer(),
         backend=backend,
     )
 
@@ -377,36 +380,26 @@ def test_scene_template_provider_syncs_movement_with_slidecast_boundary():
         (12.0, "target_count_changed", {"target_count": 1}),
         (12.0, "raid_buff_window_changed", {"value": False}),
     ]
-    assert provider.is_moving_at(12.0) is True
-    assert provider.is_moving_at(19.5) is False
+    assert provider.state_at(12.0).is_moving is True
+    assert provider.state_at(19.5).is_moving is False
     assert provider.next_state_event_after(10.0) == pytest.approx(
         20.0 - SLIDECAST_WINDOW_SECONDS
     )
 
     state.time = 19.6
     provider.sync_state(state)
-    assert backend.events[-4:] == [
-        (19.6, "boss_targetable_changed", {"value": True}),
-        (19.6, "movement_changed", {"value": False}),
-        (19.6, "target_count_changed", {"target_count": 1}),
-        (19.6, "raid_buff_window_changed", {"value": False}),
-    ]
+    assert backend.events[-1] == (19.5, "movement_changed", {"value": False})
 
     state.time = 45.0
     provider.sync_state(state)
-    assert backend.events[-2] == (45.0, "target_count_changed", {"target_count": 2})
-    event = backend.events[-1]
-    assert event[:2] == (45.0, "raid_buff_window_changed")
-    assert event[2]["value"] is True
-    assert event[2]["remaining_seconds"] == pytest.approx(5.0)
-
+    assert (40.0, "target_count_changed", {"target_count": 2}) in backend.events
+    assert (30.0, "raid_buff_window_changed", {"value": True, "remaining_seconds": 20.0}) in backend.events
     state.time = 55.0
     provider.sync_state(state)
-    assert backend.events[-1] == (55.0, "raid_buff_window_changed", {"value": False})
-
+    assert backend.events[-1] == (50.0, "raid_buff_window_changed", {"value": False})
     state.time = 61.0
     provider.sync_state(state)
-    assert (61.0, "target_count_changed", {"target_count": 1}) in backend.events
+    assert backend.events[-1] == (60.0, "target_count_changed", {"target_count": 1})
 
 
 def _live_builder_fixture(*, max_history=2, reorder_state_fields=False):
@@ -414,18 +407,24 @@ def _live_builder_fixture(*, max_history=2, reorder_state_fields=False):
 
     player_keys = ("previous_action_after.time_seconds", "previous_action_after.mp",
                    "request_state.time_seconds", "request_state.mp")
+    player_keys += tuple(f"{prefix}.{field}" for prefix in ("previous_action_after", "request_state")
+                         for field in ("next_untargetable_in_seconds", "downtime_remaining_seconds"))
+    availability_keys = tuple(f"{prefix}.{key}" for prefix in ("previous_action_after", "request_state")
+                              for key in ("fire", "ogcd_wait"))
     if reorder_state_fields:
         player_keys = tuple(reversed(player_keys))
     initial_values = {"previous_action_after.time_seconds": 0.0, "previous_action_after.mp": 200.0,
                       "request_state.time_seconds": 0.0, "request_state.mp": 200.0}
+    initial_values.update({key: 0.0 for key in player_keys if key not in initial_values})
     canonical = {
+        "schema_version": CANONICAL_CONTEXT_SCHEMA_VERSION,
         "history_cursor": 0,
         "action_keys": ["fire", "ogcd_wait"],
         "action_legal_mask": [True, True],
         "skill_history_context": [],
-        "state_history_context": {"player_state_feature_keys": player_keys, "tokens": []},
-        "current_state_context": {"player_state_feature_keys": player_keys,
-                                  "tokens": [{"player_state": [initial_values[key] for key in player_keys]}]},
+        "state_history_context": {"player_state_feature_keys": player_keys, "skill_availability_feature_keys": availability_keys, "tokens": []},
+        "current_state_context": {"player_state_feature_keys": player_keys, "skill_availability_feature_keys": availability_keys,
+                                  "tokens": [{"player_state": [initial_values[key] for key in player_keys], "skill_availability": [1, 1, 1, 1]}]},
     }
 
     class Backend:
@@ -440,7 +439,9 @@ def _live_builder_fixture(*, max_history=2, reorder_state_fields=False):
             context_key="targetable_window_context", scene_type_id=0,
             feature_keys=("start_offset_seconds", "end_offset_seconds", "duration_seconds"),
         ),),
-        state_group_feature_keys={"player_state": player_keys},
+        state_groups=(StateFeatureGroup("player_state", "player_state_feature_keys", player_keys, "anchored_delta"),
+                      StateFeatureGroup("skill_availability", "skill_availability_feature_keys", availability_keys, "absolute_binary")),
+        state_snapshots=("previous_action_after", "request_state"),
         skill_history_fields=("kind", "potency"),
     )
     normalizer = Normalizer()
@@ -448,7 +449,8 @@ def _live_builder_fixture(*, max_history=2, reorder_state_fields=False):
     builder = LiveBatchBuilder(
         backend=Backend(), vocab=SimpleNamespace(require_lookup=lambda value, **kwargs: int(value)),
         normalizer=normalizer, schema=schema, skill_feature_names=("kind", "potency"),
-        scene_provider=SimpleNamespace(at_time=lambda _: (torch.empty((0, 3)), torch.empty(0, dtype=torch.int32))),
+        scene_provider=SimpleNamespace(at_time=lambda _: (torch.empty((0, 3)), torch.empty(0, dtype=torch.int32)),
+                                       state_at=lambda _: SimpleNamespace(next_downtime_eta=0.0, downtime_remaining=0.0)),
         device=torch.device("cpu"), max_history=max_history,
         model_config=ModelConfig(history_capacity=max_history, history_reset_keep=max_history),
         action_keys=("fire", "ogcd_wait"), action_is_gcd=(True, False),
@@ -465,7 +467,8 @@ def _append_live_history(canonical, index, *, after=100.0, request_time=None, sk
                     "request_state.time_seconds": float(index) if request_time is None else request_time,
                     "request_state.mp": after}
     canonical["state_history_context"]["tokens"].append({
-        "player_state": [state_values[key] for key in canonical["state_history_context"]["player_state_feature_keys"]],
+        "player_state": [state_values.get(key, 0.0) for key in canonical["state_history_context"]["player_state_feature_keys"]],
+        "skill_availability": [1, 1, 1, 1],
     })
 
 
@@ -474,10 +477,11 @@ def test_live_current_state_is_independent_of_action_legality_and_preserves_phas
     builder, canonical = _live_builder_fixture()
     batch, keys = builder.build(SimpleNamespace(time=1.0, gcd_remaining=remaining))
     assert keys == ["fire", "ogcd_wait"]
-    assert batch["current_state_vectors"].shape == (1, 4)
-    torch.testing.assert_close(batch["current_state_vectors"], torch.tensor([[0.0, 0.02, 0.0, 0.02]]))
+    assert batch["current_state_vectors"].shape == (1, 12)
+    torch.testing.assert_close(batch["current_state_vectors"][..., :4], torch.tensor([[0.0, 0.02, 0.0, 0.02]]))
+    assert batch["current_state_vectors"][..., -4:].tolist() == [[1.0] * 4]
     assert batch["current_state_reset_mask"].all()
-    assert batch["current_state_null_mask"].tolist() == [[False, False, False, False]]
+    assert batch["current_state_null_mask"].tolist() == [[False] * 8]
     assert batch["history_skill_ids"].shape == (1, 0)
     assert batch["action_legal_mask"].tolist() == [expected]
     canonical["action_legal_mask"] = [False, False]
@@ -492,14 +496,14 @@ def test_live_history_window_keeps_matching_skill_and_state_rows():
         _append_live_history(canonical, index, after=float(index))
     batch, _ = builder.build(SimpleNamespace(time=4.0, gcd_remaining=0.0))
     assert batch["history_skill_ids"].tolist() == [[2, 3]]
-    torch.testing.assert_close(batch["history_state_vectors"], torch.tensor([[[-1/120, .02, 0, .0002], [1/120, 0, 1/120, .0001]]]))
+    torch.testing.assert_close(batch["history_state_vectors"][..., :4], torch.tensor([[[-1/120, .02, 0, .0002], [1/120, 0, 1/120, .0001]]]))
     assert batch["history_state_reset_mask"][0, 0].all()
     assert not batch["history_state_reset_mask"][0, 1].any()
     assert batch["history_skill_features"][0, :, 0].tolist() == [1.0, 1.0]
     assert batch["history_action_keys"] == [["fire", "fire"]]
     empty, _ = builder.build(SimpleNamespace(time=4.0, gcd_remaining=0.0), max_history=0)
     assert empty["history_skill_ids"].shape == (1, 0)
-    assert empty["current_state_vectors"].shape == (1, 4)
+    assert empty["current_state_vectors"].shape == (1, 12)
 
 
 @pytest.mark.parametrize("context_key", ["state_history_context", "current_state_context"])
@@ -516,7 +520,7 @@ def test_live_batch_rejects_same_width_state_field_drift(context_key, change):
             token["player_state"].reverse()
     else:
         context["player_state_feature_keys"] = ("wrong.time_seconds", *context["player_state_feature_keys"][1:])
-    with pytest.raises(ValueError, match="feature keys differ from model input contract"):
+    with pytest.raises(ValueError, match="feature keys mismatch|lacks"):
         builder.build_from_canonical(canonical, gcd_phase=True, max_history=2)
 
 
@@ -549,10 +553,10 @@ def test_live_history_cache_reuses_unchanged_rows_and_refreshes_mutated_rows(mon
     repeated, _ = builder.build(state)
     assert calls == [1, 2]
     torch.testing.assert_close(repeated["history_state_vectors"], first["history_state_vectors"])
-    canonical["current_state_context"]["tokens"][0]["player_state"] = [0.0, 150.0, 0.0, 150.0]
+    canonical["current_state_context"]["tokens"][0]["player_state"] = [0.0, 150.0, 0.0, 150.0, 0.0, 0.0, 0.0, 0.0]
     refreshed, _ = builder.build(state)
     assert calls == [1, 2]
-    torch.testing.assert_close(refreshed["current_state_vectors"], torch.tensor([[-1/120, -.005, -2/120, .005]]))
+    torch.testing.assert_close(refreshed["current_state_vectors"][..., :4], torch.tensor([[-1/120, -.005, -2/120, .005]]))
     _append_live_history(canonical, 3)
     builder.build(state)
     assert calls == [1, 2, 3]
@@ -560,10 +564,10 @@ def test_live_history_cache_reuses_unchanged_rows_and_refreshes_mutated_rows(mon
     slid, _ = builder.build(state)
     assert calls == [1, 2, 3, 4]
     assert slid["history_skill_ids"].tolist() == [[2, 3, 4]]
-    canonical["state_history_context"]["tokens"][-1]["player_state"] = [3.0, 10.0, 4.0, None]
+    canonical["state_history_context"]["tokens"][-1]["player_state"] = [3.0, 10.0, 4.0, None, 0.0, 0.0, 0.0, 0.0]
     changed, _ = builder.build(state)
     assert calls[-1] == 4
-    assert changed["history_state_null_mask"][0, -1].tolist() == [False, False, False, True]
+    assert changed["history_state_null_mask"][0, -1].tolist() == [False, False, False, True, False, False, False, False]
 
 
 @pytest.mark.parametrize("mutation,error", (
@@ -571,7 +575,7 @@ def test_live_history_cache_reuses_unchanged_rows_and_refreshes_mutated_rows(mon
     (lambda c: c.update(action_keys=["ogcd_wait", "fire"]), "order differs"),
     (lambda c: c.update(action_legal_mask=[True]), "legality width"),
     (lambda c: c["current_state_context"].update(tokens=[]), "exactly one"),
-    (lambda c: c["current_state_context"].update(tokens=[{"player_state": [1.0]}]), "vector width"),
+    (lambda c: c["current_state_context"].update(tokens=[{"player_state": [1.0]}]), "width"),
 ))
 def test_live_builder_rejects_incomplete_or_reordered_action_contract(mutation, error):
     builder, canonical = _live_builder_fixture()
@@ -744,3 +748,60 @@ def test_live_unknown_recovery_marks_absolute_fields_and_checks_current_time():
     canonical["current_state_context"]["tokens"][0]["player_state"][2] = None
     with pytest.raises(ValueError, match="request_state.time_seconds.*finite"):
         builder.build_from_canonical(canonical, gcd_phase=True, max_history=2)
+
+
+def test_live_scene_eta_is_shared_by_both_build_entries_and_preserves_other_tokens():
+    from copy import deepcopy
+    from scripts.common.scene_state import SceneStateLookup
+    from tests.helpers import build_test_scene_context, targetable_window_token
+    builder, canonical = _live_builder_fixture()
+    scene = build_test_scene_context(targetable_tokens=[
+        targetable_window_token(10, 20, targetable=False, segment_kind="downtime"),
+    ])
+    builder._scene_provider.state_at = SceneStateLookup(scene).state_at
+    context = canonical["current_state_context"]
+    keys, vector = context["player_state_feature_keys"], context["tokens"][0]["player_state"]
+    vector[keys.index("previous_action_after.time_seconds")] = 5.0
+    vector[keys.index("request_state.time_seconds")] = 15.0
+    baseline = deepcopy(canonical)
+    live, _ = builder.build(SimpleNamespace(time=15.0, gcd_remaining=0.0))
+    cached, _ = builder.build_from_canonical(canonical, gcd_phase=True, max_history=2)
+    assert canonical == baseline
+    for key in live:
+        if isinstance(live[key], torch.Tensor):
+            torch.testing.assert_close(live[key], cached[key])
+    # ETA/剩余沿用 Normalizer 的秒数上限，两段使用各自冻结时间。
+    expected_seconds = 5 / builder._normalizer.remaining_seconds_max
+    assert live["current_state_vectors"][0, keys.index("previous_action_after.next_untargetable_in_seconds")] == pytest.approx(expected_seconds)
+    assert live["current_state_vectors"][0, keys.index("request_state.downtime_remaining_seconds")] == pytest.approx(expected_seconds)
+    before_non_state = {key: value.clone() for key, value in live.items()
+                        if isinstance(value, torch.Tensor) and not key.startswith("current_state")}
+    context["tokens"][0]["skill_availability"][0] = 0
+    changed, _ = builder.build_from_canonical(canonical, gcd_phase=True, max_history=2)
+    for key, value in before_non_state.items():
+        torch.testing.assert_close(changed[key], value)
+    assert changed["current_state_vectors"][0, -4] == 0.0
+
+
+def test_live_history_cache_refreshes_absolute_availability_without_delta(monkeypatch):
+    builder, canonical = _live_builder_fixture()
+    _append_live_history(canonical, 1)
+    _append_live_history(canonical, 2)
+    first, _ = builder.build_from_canonical(canonical, gcd_phase=True, max_history=2)
+    canonical["state_history_context"]["tokens"][-1]["skill_availability"] = [0, 1, 0, 1]
+    changed, _ = builder.build_from_canonical(canonical, gcd_phase=True, max_history=2)
+    torch.testing.assert_close(changed["history_state_vectors"][..., :8], first["history_state_vectors"][..., :8])
+    assert changed["history_state_vectors"][0, -1, -4:].tolist() == [0.0, 1.0, 0.0, 1.0]
+
+
+@pytest.mark.parametrize("version", [None, CANONICAL_CONTEXT_SCHEMA_VERSION - 1, CANONICAL_CONTEXT_SCHEMA_VERSION + 1])
+def test_live_rejects_missing_old_or_future_canonical_version(version):
+    builder, canonical = _live_builder_fixture()
+    if version is None:
+        canonical.pop("schema_version")
+    else:
+        canonical["schema_version"] = version
+    with pytest.raises(ValueError, match="canonical context schema version"):
+        builder.build_from_canonical(canonical, gcd_phase=True, max_history=2)
+    with pytest.raises(ValueError, match="canonical context schema version"):
+        builder.build(SimpleNamespace(time=0.0, gcd_remaining=0.0))

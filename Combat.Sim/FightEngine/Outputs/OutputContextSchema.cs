@@ -33,13 +33,8 @@ public static class OutputContextSchema
     public static string[] CanonicalContextTopLevelKeys => TopLevelKeys.ToArray();
 
     /// <summary>状态向量分组 schema（对照 STATE_VECTOR_GROUP_SCHEMAS）。</summary>
-    public sealed record StateVectorGroupSchema(string GroupKey, string FeatureKeysField, string? ContextKey);
-
     public static StateVectorGroupSchema[] StateVectorGroupSchemas =>
-        SchemaConfigLoader.Instance.StateVectorGroups
-            .Select(group => new StateVectorGroupSchema(
-                group.GroupKey, group.FeatureKeysField, group.ContextKey))
-            .ToArray();
+        SchemaConfigLoader.Instance.StateVectorGroups.ToArray();
 
     /// <summary>按统一 schema 裁剪 canonical 输出（对照 format_canonical_output_context）。</summary>
     public static Dictionary<string, object?> FormatCanonicalOutputContext(

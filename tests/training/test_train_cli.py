@@ -135,7 +135,7 @@ def test_train_main_forwards_cli_overrides(monkeypatch, caplog, tmp_path):
             "data_spec": SimpleNamespace(
                 job_tag="black_mage",
                 num_actions=28,
-                state_dim=149,
+                base_state_dim=149, state_dim=(149) + 2 * (28),
                 scene_dim=7,
                 skill_feature_dim=23,
             ),
@@ -250,7 +250,7 @@ def test_train_main_uses_config_and_environment_defaults(monkeypatch):
             "data_spec": SimpleNamespace(
                 job_tag="machinist",
                 num_actions=16,
-                state_dim=100,
+                base_state_dim=100, state_dim=(100) + 2 * (16),
                 scene_dim=4,
                 skill_feature_dim=23,
             ),
@@ -304,7 +304,7 @@ def test_train_main_uses_config_max_files_when_cli_is_absent(monkeypatch, tmp_pa
             "data_spec": SimpleNamespace(
                 job_tag="black_mage",
                 num_actions=28,
-                state_dim=149,
+                base_state_dim=149, state_dim=(149) + 2 * (28),
                 scene_dim=7,
                 skill_feature_dim=23,
             ),

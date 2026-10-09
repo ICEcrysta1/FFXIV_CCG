@@ -11,7 +11,7 @@ import torch
 from common.config import load_precision_config
 from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
 from common.policy.data import DataSpec, ModelInputContract, Normalizer, SkillVocab
-from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION, TRAINING_SOURCE_FORMAT, TrainingSchema
+from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION, TRAINING_SOURCE_FORMAT, TrainingSchema, StateFeatureGroup
 from common.policy.data.action_space import ActionSpace
 from common.policy.data.compiled_cache import (
     CACHE_FORMAT,
@@ -26,7 +26,7 @@ from scripts.common.scene_source import find_prepared_scene_source
 def _scene_data_spec():
     actions = ActionSpace.from_job_tag("black_mage")
     return {
-        "job_tag": "black_mage", "num_actions": len(actions.action_keys), "state_dim": 1,
+        "job_tag": "black_mage", "num_actions": len(actions.action_keys), "state_dim": 1 + 2 * len(actions.action_keys), "base_state_dim": 1,
         "scene_dim": 0, "skill_feature_dim": 1, "num_scene_types": 0,
         "action_keys": list(actions.action_keys), "action_to_vocab_id": list(actions.action_to_vocab_id),
         "action_is_gcd": list(actions.action_is_gcd), "skill_feature_names": ["potency"],
@@ -43,7 +43,13 @@ def _scene_schema():
     return TrainingSchema(
         serialization_format=TRAINING_SOURCE_FORMAT, sample_schema_version=TRAINING_SAMPLE_SCHEMA_VERSION,
         context_schema_version=CANONICAL_CONTEXT_SCHEMA_VERSION, scene_context_mode="absolute", scene_windows=(),
-        state_group_feature_keys={"player_state": ("request_state.time_seconds",)},
+        state_groups=(
+            StateFeatureGroup("player_state", "player_state_feature_keys", ("request_state.time_seconds",), "anchored_delta"),
+            StateFeatureGroup("skill_availability", "skill_availability_feature_keys",
+                tuple(f"{prefix}.{key}" for prefix in ("previous_action_after", "request_state")
+                      for key in ActionSpace.from_job_tag("black_mage").action_keys), "absolute_binary"),
+        ),
+        state_snapshots=("previous_action_after", "request_state"),
         skill_history_fields=("potency",),
     )
 
@@ -56,6 +62,7 @@ def _scene_sample():
         "current_state_delta_values": torch.zeros(1),
         "current_state_null_mask": torch.zeros(1, dtype=torch.bool),
         "current_state_delta_reset_mask": torch.ones(1, dtype=torch.bool),
+        "current_state_skill_availability": torch.ones(2 * actions["num_actions"], dtype=torch.bool),
         "history_end": 1, "history_length": 0,
         "scene_vectors": torch.zeros(0, 0), "scene_types": torch.zeros(0, dtype=torch.int32),
         "action_values": torch.ones(actions["num_actions"]),
@@ -97,6 +104,7 @@ def scene_cache(tmp_path):
             "state_delta_values": torch.zeros(1, 1, dtype=torch.float32),
             "state_null_mask": torch.zeros(1, 1, dtype=torch.bool),
             "state_delta_reset_mask": torch.zeros(1, 1, dtype=torch.bool),
+            "state_skill_availability": torch.zeros(1, 2 * _scene_data_spec()["num_actions"], dtype=torch.bool),
             "skill_potencies": torch.zeros(1, dtype=precision.resolve_float_dtype()),
             "cumulative_dot_potencies": torch.zeros(1, dtype=precision.resolve_float_dtype()),
             "action_keys": [""],
@@ -183,7 +191,7 @@ def test_scene_source_skips_damaged_shard(scene_cache, later_shard, damage, capl
     broken = create("AAA/90-100/a.json.br")
     expected = create("ZZZ/80-90/a.json.br")
     manifest = cache_path_for_source(cache_dir, broken)
-    payload = safe_torch_load(manifest, safe_globals=(TrainingSchema,))
+    payload = safe_torch_load(manifest, safe_globals=(TrainingSchema, StateFeatureGroup))
     shard = manifest.parent / payload["shard_files"][0]
     if later_shard:
         # 第一片完整且可读，损坏只发生在后续分片。
@@ -391,7 +399,7 @@ def test_model_cache_recompile_rejects_current_actions_before_writing(scene_cach
     if existing_cache:
         # 请求旧模型契约，但已有 cache 是当前 YAML 的另一套动作契约。
         manifest = cache_path_for_source(cache_dir, source)
-        payload = safe_torch_load(manifest, safe_globals=(TrainingSchema,))
+        payload = safe_torch_load(manifest, safe_globals=(TrainingSchema, StateFeatureGroup))
         payload.update(action_keys=changed.action_keys, action_to_vocab_id=changed.action_to_vocab_id,
                        action_is_gcd=changed.action_is_gcd, num_actions=len(changed.action_keys))
         torch.save(payload, manifest)
@@ -434,7 +442,7 @@ def _cache_with_inactive_vocab(scene_cache):
     base = SkillVocab.build_from_job_tag("black_mage")
     vocab = SkillVocab.from_entries([*base, (900001, base.size()), (900002, base.size() + 1)])
     path = cache_path_for_source(cache_dir, source)
-    payload = safe_torch_load(path, safe_globals=(TrainingSchema,))
+    payload = safe_torch_load(path, safe_globals=(TrainingSchema, StateFeatureGroup))
     payload["vocab_signature"] = tuple(vocab)
     torch.save(payload, path)
     return source, cache_dir, vocab
@@ -467,7 +475,7 @@ def test_model_cache_rejects_inactive_row_drift_before_recompiling(scene_cache, 
 
     source, cache_dir, saved_vocab = _cache_with_inactive_vocab(scene_cache)
     path = cache_path_for_source(cache_dir, source)
-    payload = safe_torch_load(path, safe_globals=(TrainingSchema,))
+    payload = safe_torch_load(path, safe_globals=(TrainingSchema, StateFeatureGroup))
     entries = list(saved_vocab)
     entries[-2], entries[-1] = (entries[-2][0], entries[-1][1]), (entries[-1][0], entries[-2][1])
     changed = SkillVocab.from_entries(entries)

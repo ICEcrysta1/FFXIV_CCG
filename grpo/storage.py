@@ -12,11 +12,12 @@ import uuid
 import torch
 
 from common.torch_serialization import safe_torch_load
-from common.policy.data.context_fields import RAW_ONLY_FIELD_NAMES
+from common.policy.data import DataSpec, ModelInputContract
+from common.policy.data.context_fields import MODEL_INPUT_FIELDS, RAW_ONLY_FIELD_NAMES, tensor_dimensions
 
 
 # 轨迹的完整历史游标独立于模型 batch 保存，拒绝旧传输结构。
-GRPO_ROLLOUT_FORMAT = 6
+GRPO_ROLLOUT_FORMAT = 7
 
 
 @dataclass(frozen=True)
@@ -43,9 +44,10 @@ class StoredGrpoTrajectory:
     advantage: float | None = None
 
 
-def _decision_to_payload(decision: GrpoDecision) -> dict[str, object]:
+def _decision_to_payload(decision: GrpoDecision, data_spec: DataSpec) -> dict[str, object]:
     """将决策转换成仅含 tensor/基础类型的安全序列化结构。"""
-    _validate_encoded_context(decision.batch, decision.context_metadata)
+    _validate_encoded_context(decision.batch, decision.context_metadata, data_spec)
+    _validate_action_order(decision.action_keys, data_spec)
     return {
         "batch": decision.batch,
         "context_metadata": dict(decision.context_metadata),
@@ -55,7 +57,7 @@ def _decision_to_payload(decision: GrpoDecision) -> dict[str, object]:
     }
 
 
-def _decision_from_payload(payload: object) -> GrpoDecision:
+def _decision_from_payload(payload: object, data_spec: DataSpec) -> GrpoDecision:
     """从磁盘载荷恢复一条决策，并拒绝不完整的旧/损坏记录。"""
     if not isinstance(payload, Mapping):
         raise ValueError("GRPO decision payload must be a mapping")
@@ -64,7 +66,8 @@ def _decision_from_payload(payload: object) -> GrpoDecision:
     action_keys = payload.get("action_keys")
     if not isinstance(batch, Mapping) or not isinstance(action_keys, (list, tuple)):
         raise ValueError("GRPO decision payload is missing batch or action_keys")
-    _validate_encoded_context(batch, metadata)
+    _validate_encoded_context(batch, metadata, data_spec)
+    _validate_action_order(action_keys, data_spec)
     return GrpoDecision(
         batch=dict(batch),
         context_metadata=dict(metadata),
@@ -74,24 +77,46 @@ def _decision_from_payload(payload: object) -> GrpoDecision:
     )
 
 
-def _validate_encoded_context(batch: Mapping[str, object], metadata: object) -> None:
+def _validate_action_order(action_keys: Sequence[str], data_spec: DataSpec) -> None:
+    if tuple(action_keys) != data_spec.action_keys:
+        raise ValueError("GRPO decision action order differs from saved input contract")
+
+
+def _validate_encoded_context(batch: Mapping[str, object], metadata: object, data_spec: DataSpec) -> None:
     """轨迹只保存实际推理的 prepared 输入，禁止 raw 或旧归一化记录混用。"""
     if RAW_ONLY_FIELD_NAMES.intersection(batch) or any(key.startswith("history_bank_") for key in batch):
         raise ValueError("GRPO decision must contain encoded states and scenes, not raw context")
+    action_rows = batch.get("action_keys")
+    if not isinstance(action_rows, (list, tuple)) or len(action_rows) != 1:
+        raise ValueError("GRPO batch action order must contain one decision row")
+    _validate_action_order(action_rows[0], data_spec)
+    action_mask = batch.get("action_legal_mask")
+    if (not isinstance(action_mask, torch.Tensor) or action_mask.dtype != torch.bool
+            or action_mask.shape != (1, data_spec.num_actions)):
+        raise ValueError("GRPO action_legal_mask must match saved action order")
+    history_mask = batch.get("history_mask")
+    scene_mask = batch.get("scene_mask")
+    if not isinstance(history_mask, torch.Tensor) or history_mask.ndim != 2:
+        raise ValueError("GRPO history_mask must have two dimensions")
+    if not isinstance(scene_mask, torch.Tensor) or scene_mask.ndim != 2:
+        raise ValueError("GRPO scene_mask must have two dimensions")
+    dimensions = tensor_dimensions(data_spec, batch=1, scene=scene_mask.shape[1], history=history_mask.shape[1])
+    for field in MODEL_INPUT_FIELDS:
+        value = batch.get(field.name)
+        field.validate_tensor(value, dimensions, torch=torch, float_dtype=torch.float32)
+        if value.device.type != "cpu":
+            raise ValueError("GRPO rollout storage requires CPU tensors")
     for prefix in ("history", "current"):
-        values = batch.get(f"{prefix}_state_vectors")
-        reset = batch.get(f"{prefix}_state_reset_mask")
-        if not isinstance(values, torch.Tensor) or not isinstance(reset, torch.Tensor):
-            raise ValueError(f"GRPO decision is missing anchored context field: {prefix}_state_reset_mask")
-        if reset.dtype != torch.bool or reset.shape != values.shape:
-            raise ValueError(f"GRPO {prefix} state reset mask must be boolean and match state values")
-        if values.dtype != torch.float32:
-            raise ValueError(f"GRPO encoded {prefix} state must remain FP32 before model casting")
-        nulls = batch.get(f"{prefix}_state_null_mask")
-        if not isinstance(nulls, torch.Tensor) or nulls.dtype != torch.bool or nulls.shape != values.shape:
-            raise ValueError(f"GRPO {prefix} state null mask must be boolean and match state values")
+        values = batch[f"{prefix}_state_vectors"]
+        reset = batch[f"{prefix}_state_reset_mask"]
+        nulls = batch[f"{prefix}_state_null_mask"]
         if bool((reset & nulls).any()):
             raise ValueError("GRPO unknown state fields cannot be marked as ABS resets")
+        availability = values[..., data_spec.base_state_dim:]
+        if prefix == "history":
+            availability = availability[history_mask]
+        if not bool(((availability == 0) | (availability == 1)).all()):
+            raise ValueError("GRPO skill availability must contain absolute binary values")
     if any(name in batch for name in ("history_cursor", "history_window_start", "history_window_length")):
         raise ValueError("GRPO window audit metadata must remain outside the model batch")
     if not isinstance(metadata, Mapping) or metadata.keys() != {"history_cursor"}:
@@ -118,10 +143,14 @@ class GrpoRolloutStore:
         root: Path,
         *,
         iteration: int,
+        input_contract: ModelInputContract,
         run_id: str | None = None,
     ) -> None:
         if iteration < 1:
             raise ValueError("GRPO iteration must be >= 1")
+        self.input_contract = input_contract
+        self.data_spec = DataSpec.from_dict(input_contract.data_spec)
+        input_contract.schema.state_layout(self.data_spec.action_keys).assert_matches_data_spec(self.data_spec)
         normalized_root = Path(root).resolve()
         resolved_run_id = run_id or f"run-{uuid.uuid4().hex}"
         if not resolved_run_id.strip() or Path(resolved_run_id).name != resolved_run_id:
@@ -161,11 +190,12 @@ class GrpoRolloutStore:
         trajectory_path = self.iteration_dir / f"trajectory_{entry_index:05d}.pt"
         payload = {
             "format": GRPO_ROLLOUT_FORMAT,
+            "model_input_contract": self.input_contract.to_dict(),
             "scene_json_path": str(Path(scene_json_path).resolve()),
             "ppg": float(ppg),
             "greedy_ppg": float(greedy_ppg),
             "reward": float(reward),
-            "decisions": [_decision_to_payload(decision) for decision in decision_list],
+            "decisions": [_decision_to_payload(decision, self.data_spec) for decision in decision_list],
         }
         _atomic_torch_save(payload, trajectory_path)
         entry = StoredGrpoTrajectory(
@@ -238,10 +268,13 @@ class GrpoRolloutStore:
             raise ValueError(f"GRPO trajectory payload must be a mapping: {path}")
         if int(payload.get("format", -1)) != GRPO_ROLLOUT_FORMAT:
             raise ValueError(f"unsupported GRPO trajectory format: {path}")
+        saved_contract = ModelInputContract.from_dict(payload.get("model_input_contract"))
+        if saved_contract.to_dict() != self.input_contract.to_dict():
+            raise ValueError(f"GRPO trajectory input contract mismatch: {path}")
         raw_decisions = payload.get("decisions")
         if not isinstance(raw_decisions, list) or not raw_decisions:
             raise ValueError(f"GRPO trajectory has no decisions: {path}")
-        decisions = tuple(_decision_from_payload(item) for item in raw_decisions)
+        decisions = tuple(_decision_from_payload(item, self.data_spec) for item in raw_decisions)
         expected_count = self._entry_for_path(path).decision_count
         if len(decisions) != expected_count:
             raise ValueError(
@@ -259,6 +292,7 @@ class GrpoRolloutStore:
     def _write_manifest(self) -> None:
         payload = {
             "format": GRPO_ROLLOUT_FORMAT,
+            "model_input_contract": self.input_contract.to_dict(),
             "trajectories": [
                 {
                     "path": str(entry.path.relative_to(self.iteration_dir)),

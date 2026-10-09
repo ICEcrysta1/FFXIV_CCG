@@ -13,7 +13,7 @@ namespace Combat.Sim.Config;
 /// <summary>
 /// 状态向量分组 schema（对照 common/output_context_schema.py 的 StateVectorGroupSchema）。
 /// </summary>
-public sealed record StateVectorGroupSchema(string GroupKey, string FeatureKeysField, string? ContextKey);
+public sealed record StateVectorGroupSchema(string GroupKey, string FeatureKeysField, string? ContextKey, string Encoding);
 
 /// <summary>
 /// 共享 schema 定义（对照 common/schema_config.py 的 config/schema.yaml）。
@@ -35,6 +35,7 @@ public sealed class SchemaConfig
     public string TokenKey { get; init; } = "";
     public IReadOnlyList<string> CanonicalTopLevelKeys { get; init; } = Array.Empty<string>();
     public IReadOnlyList<StateVectorGroupSchema> StateVectorGroups { get; init; } = Array.Empty<StateVectorGroupSchema>();
+    public IReadOnlyList<string> StateSnapshots { get; init; } = Array.Empty<string>();
     public IReadOnlyDictionary<string, IReadOnlyList<string>> StateVectorFields { get; init; } = new Dictionary<string, IReadOnlyList<string>>();
 }
 
@@ -145,6 +146,7 @@ public static class SchemaConfigLoader
                 YamlValues.RequireKey(output, "top_level_keys", configPath)),
             StateVectorGroups = BuildStateVectorGroups(
                 RequireMapping(output, "state_vector_groups", configPath), configPath),
+            StateSnapshots = ReadStateSnapshots(output, configPath),
             StateVectorFields = ToStringListMapping(
                 RequireMapping(payload, "state_vector_fields", configPath), configPath),
         };
@@ -158,13 +160,26 @@ public static class SchemaConfigLoader
         {
             var spec = RequireMappingValue(rawSpec, groupKey, configPath);
             var contextKey = YamlValues.Get(spec, "context_key", null);
+            var encoding = YamlValues.ToText(YamlValues.RequireKey(spec, "encoding", configPath));
+            if (encoding is not ("anchored_delta" or "absolute_binary"))
+                throw new InvalidOperationException($"{configPath}: unsupported state encoding {encoding}");
+            if (encoding != (groupKey == "skill_availability" ? "absolute_binary" : "anchored_delta"))
+                throw new InvalidOperationException($"{configPath}: state group {groupKey} has incompatible encoding {encoding}");
             result.Add(new StateVectorGroupSchema(
                 groupKey,
                 YamlValues.ToText(YamlValues.RequireKey(spec, "feature_keys_field", configPath)),
-                contextKey is null ? null : YamlValues.ToText(contextKey)));
+                contextKey is null ? null : YamlValues.ToText(contextKey), encoding));
         }
 
         return result;
+    }
+
+    private static IReadOnlyList<string> ReadStateSnapshots(Dictionary<string, object?> output, string context)
+    {
+        var snapshots = ToStringList(YamlValues.RequireKey(output, "state_snapshots", context));
+        if (!snapshots.SequenceEqual(new[] { "previous_action_after", "request_state" }))
+            throw new InvalidOperationException($"{context}: unsupported state snapshot order");
+        return snapshots.AsReadOnly();
     }
 
     private static Dictionary<string, object?> RequireMapping(

@@ -12,6 +12,10 @@ using Combat.Sim.System;
 
 namespace Combat.Sim.Outputs;
 
+/// <summary>只在输出装配内使用的已冻结历史行，保持技能、状态与执行统计对齐。</summary>
+internal sealed record ModelHistoryRow(object Identity, long Sequence, ModelStateSnapshot ModelState,
+    Dictionary<string, object?> Skill, Dictionary<string, double> ExecutionMetrics);
+
 /// <summary>
 /// 统一输出上下文构建模块（对照 output_context_builder.py）：
 /// 只负责定义"输出包含什么内容"并调度各类 builder，翻译交给 formatter。
@@ -45,7 +49,7 @@ public sealed class OutputContextBuilder
             _targetBuffVectorTokenBuilder,
             _resourceVectorTokenBuilder);
         _skillHistoryContextBuilder = new SkillHistoryContextBuilder(historyLimit);
-        _stateHistoryContextBuilder = new StateHistoryContextBuilder(_stateTokenBuilder, historyLimit);
+        _stateHistoryContextBuilder = new StateHistoryContextBuilder(_stateTokenBuilder);
     }
 
     /// <summary>装配单个状态的状态上下文原料（对照 build_state_context）。</summary>
@@ -57,19 +61,35 @@ public sealed class OutputContextBuilder
         return consumed;
     }
 
-    internal Dictionary<string, double[]> BuildModelStateToken(ModelStateSnapshot snapshot) =>
-        _stateTokenBuilder.Build(snapshot.PreviousActionAfter, snapshot.RequestState);
+    internal IReadOnlyList<ModelHistoryRow> CollectHistory(CombatState state)
+    {
+        var skills = _skillHistoryContextBuilder.Build(state);
+        var entries = state.History.TakeLast(skills.Count).ToArray();
+        return entries.Select((entry, index) => new ModelHistoryRow(entry, entry.HistorySequence,
+            entry.ModelState ?? throw new InvalidOperationException("history is missing its frozen model state"),
+            skills[index], new Dictionary<string, double>
+            {
+                ["cumulative_potency"] = entry.StateAfter.Target.CumulativePotency,
+                ["cumulative_dot_potency"] = entry.StateAfter.Target.CumulativeDotPotency,
+            })).ToArray();
+    }
 
     /// <summary>装配 canonical 顶层上下文（对照 build_context）。</summary>
-    public Dictionary<string, object?> BuildContext(
+    internal Dictionary<string, object?> BuildContext(
         CombatState state,
         IReadOnlyList<string> actionKeys,
-        IReadOnlyList<bool> actionLegalMask,
-        IReadOnlyList<double> actionValues)
+        IReadOnlyList<double> actionValues,
+        ModelStateSnapshot current,
+        IReadOnlyList<ModelHistoryRow>? history = null)
     {
-        if (actionKeys.Count != actionLegalMask.Count || actionKeys.Count != actionValues.Count)
+        if (actionKeys.Count != actionValues.Count)
             throw new ArgumentException("action output arrays must have matching lengths");
-        var current = BuildStateContext(state);
+        history ??= CollectHistory(state);
+        var historyContext = _stateTokenBuilder.BuildMetadata(actionKeys);
+        historyContext["tokens"] = _stateHistoryContextBuilder.Build(history, actionKeys);
+        historyContext["execution_metrics"] = history.Select(row => row.ExecutionMetrics).ToList();
+        var currentContext = _stateTokenBuilder.BuildMetadata(actionKeys);
+        currentContext["tokens"] = new List<Dictionary<string, double[]>> { _stateTokenBuilder.Build(current, actionKeys) };
         return new Dictionary<string, object?>
         {
             ["job_tag"] = _systemMachine.RegisteredJobTag ??
@@ -78,21 +98,11 @@ public sealed class OutputContextBuilder
             // 与真实效果、已完成 policy 等待一一对应的累计行数；不受历史裁剪影响。
             ["history_cursor"] = state.LastHistorySequence,
             ["scene_context"] = SceneContextSchema.BuildEmptySceneContext(),
-            ["skill_history_context"] = _skillHistoryContextBuilder.Build(state),
-            ["state_history_context"] = _stateHistoryContextBuilder.Build(state),
-            ["current_state_context"] = new Dictionary<string, object?>
-            {
-                ["player_state_feature_keys"] = _stateTokenBuilder.PlayerHistoryFeatureKeys.ToList(),
-                ["buff_state_feature_keys"] = _stateTokenBuilder.BuffHistoryFeatureKeys.ToList(),
-                ["target_buff_state_feature_keys"] = _stateTokenBuilder.TargetBuffHistoryFeatureKeys.ToList(),
-                ["resource_state_feature_keys"] = _stateTokenBuilder.ResourceHistoryFeatureKeys.ToList(),
-                ["tokens"] = new List<Dictionary<string, double[]>>
-                {
-                    _stateTokenBuilder.Build(state.LastDecisionAfter ?? current, current),
-                },
-            },
+            ["skill_history_context"] = history.Select(row => row.Skill).ToList(),
+            ["state_history_context"] = historyContext,
+            ["current_state_context"] = currentContext,
             ["action_keys"] = actionKeys.ToList(),
-            ["action_legal_mask"] = actionLegalMask.ToList(),
+            ["action_legal_mask"] = actionKeys.Select(key => current.RequestState.SkillAvailability[key]).ToList(),
             ["action_values"] = actionValues.ToList(),
         };
     }

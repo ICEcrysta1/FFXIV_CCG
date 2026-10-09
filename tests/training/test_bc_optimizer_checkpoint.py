@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.training._causal_fixtures import make_state_groups
+
 from dataclasses import asdict, replace
 from types import SimpleNamespace
 
@@ -24,7 +26,7 @@ def resume_context(tmp_path):
         context_schema_version=1,
         scene_context_mode="absolute",
         scene_windows=(),
-        state_group_feature_keys={"player_state": ("a", "b", "c")},
+        state_groups=make_state_groups({"player_state": ("request_state.time_seconds", "b", "c")}, ("a", "b")), state_snapshots=("previous_action_after", "request_state"),
         skill_history_fields=(),
     )
     normalizer = Normalizer()
@@ -32,7 +34,7 @@ def resume_context(tmp_path):
     dataset = SimpleNamespace(
         job_tag="black_mage",
         num_actions=2,
-        state_dim=3,
+        base_state_dim=3, state_dim=(3) + 2 * (2),
         scene_dim=0,
         num_scene_types=0,
         action_keys=("a", "b"),

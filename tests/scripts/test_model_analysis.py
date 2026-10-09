@@ -41,7 +41,9 @@ from common.policy.config import (
 from training.config import RunConfig
 from common.project_config import load_root_dotenv
 from common.policy.data import ActionSpace, DataSpec, ModelInputContract, Normalizer, SkillVocab
-from common.policy.data.schema import TrainingSchema
+from common.policy.data.schema import TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
+from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
+from tests.training._causal_fixtures import make_state_groups
 from training.loop import _save_checkpoint
 
 
@@ -116,26 +118,15 @@ def test_pca_axis_association_identifies_numeric_decision_axis():
 
 
 def test_model_analysis_decodes_mp_as_linear_0_to_10000_value():
-    class Schema:
-        state_group_feature_keys = {
-            "resource_state": ["request_state.astral_fire", "request_state.umbral_ice"],
-            "player_state": ["request_state.mp"],
-        }
-
-        @staticmethod
-        def state_group_slices():
-            return {
-                "resource_state": slice(0, 2),
-                "player_state": slice(2, 3),
-            }
+    layout = _analysis_schema().state_layout(("a", "b"))
 
     batch = {
-        "current_state_abs_values": torch.tensor([[2.0, 0.0, 5000.0]]),
-        "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
+        "current_state_abs_values": torch.tensor([[2.0, 0.0, 5000.0, 0.0]]),
+        "current_state_null_mask": torch.zeros((1, 4), dtype=torch.bool),
         "action_legal_mask": torch.tensor([[True]]),
     }
 
-    elemental_state, mp = decision_state_labels("black_mage", 0, batch=batch, schema=Schema())
+    elemental_state, mp = decision_state_labels("black_mage", 0, batch=batch, layout=layout)
 
     assert elemental_state == "AF2"
     assert mp == 5000.0
@@ -188,7 +179,8 @@ def test_checkpoint_exposes_job_tag_at_top_level(tmp_path: Path):
     data_spec = DataSpec(
         job_tag="black_mage",
         num_actions=1,
-        state_dim=1,
+        state_dim=3,
+        base_state_dim=1,
         scene_dim=0,
         skill_feature_dim=1,
         num_scene_types=0,
@@ -204,11 +196,12 @@ def test_checkpoint_exposes_job_tag_at_top_level(tmp_path: Path):
         data_spec=data_spec,
         schema=TrainingSchema(
             serialization_format="test",
-            sample_schema_version=1,
-            context_schema_version=1,
+            sample_schema_version=TRAINING_SAMPLE_SCHEMA_VERSION,
+            context_schema_version=CANONICAL_CONTEXT_SCHEMA_VERSION,
             scene_context_mode="absolute",
             scene_windows=(),
-            state_group_feature_keys={"player_state": ("value",)},
+            state_groups=make_state_groups({"player_state": ("request_state.time_seconds",)}, ("fire",)),
+            state_snapshots=("previous_action_after", "request_state"),
             skill_history_fields=("id",),
         ),
         normalizer=normalizer,
@@ -278,26 +271,19 @@ def test_sample_token_count_supports_compact_history_bank_samples():
     assert attention_output._sample_token_count({"scene_abs_values": [[0.0]] * 3, "history_length": 2}) == 8
 
 
-def _analysis_schema():
-    class Schema:
-        state_group_feature_keys = {
+def _analysis_schema(action_keys=("a", "b"), *, include_mp=True):
+    player_keys = ("request_state.mp", "request_state.time_seconds") if include_mp else ("request_state.time_seconds",)
+    return TrainingSchema(
+        serialization_format="test", sample_schema_version=TRAINING_SAMPLE_SCHEMA_VERSION,
+        context_schema_version=CANONICAL_CONTEXT_SCHEMA_VERSION, scene_context_mode="absolute",
+        scene_windows=(),
+        state_groups=make_state_groups({
             "resource_state": ("request_state.astral_fire", "request_state.umbral_ice"),
-            "player_state": ("request_state.mp",),
-        }
-
-        @staticmethod
-        def state_group_slices():
-            return {"resource_state": slice(0, 2), "player_state": slice(2, 3)}
-
-        @staticmethod
-        def state_vector_dim():
-            return 3
-
-        @staticmethod
-        def scene_feature_dim():
-            return 1
-
-    return Schema()
+            "player_state": player_keys,
+        }, action_keys),
+        state_snapshots=("previous_action_after", "request_state"),
+        skill_history_fields=("potency",),
+    )
 
 
 def _analysis_context(tmp_path):
@@ -379,7 +365,7 @@ def _history_input_encoding(skill, state, history_mask, *, scene_length=2):
         'history_token_length': 2 * history_length, 'prefix_length': current,
         'position_ids': build_position_ids(
             batch_size=batch_size, scene_length=scene_length, history_length=history_length,
-            device='cpu', scene_mask=scene_mask, history_mask=history_mask),
+            scene_mask=scene_mask, history_mask=history_mask),
         'role_ids': build_role_ids(
             batch_size=batch_size, scene_length=scene_length, history_length=history_length, device='cpu'),
         'history_skill_positions': skill_positions, 'history_state_positions': state_positions,
@@ -389,14 +375,14 @@ def _history_input_encoding(skill, state, history_mask, *, scene_length=2):
 
 
 def test_model_analysis_metadata_and_black_mage_fallbacks():
-    schema = _analysis_schema()
+    layout = _analysis_schema().state_layout(("a", "b"))
     samples = [{"metadata": {"fight_id": "fight-1", "step": 7}}]
     batch = {
         "history_skill_ids": torch.tensor([[9, 0]], dtype=torch.int32),
         "history_mask": torch.tensor([[True, False]]),
         "action_legal_mask": torch.tensor([[True, False]]),
-        "current_state_abs_values": torch.tensor([[0.0, 1.0, 5000.0]]),
-        "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
+        "current_state_abs_values": torch.tensor([[0.0, 1.0, 5000.0, 0.0]]),
+        "current_state_null_mask": torch.zeros((1, 4), dtype=torch.bool),
         "label_index": torch.tensor([0]),
     }
     encoded = {
@@ -405,7 +391,7 @@ def test_model_analysis_metadata_and_black_mage_fallbacks():
         "history_skill_positions": torch.tensor([[2, 4]]),
     }
     metadata = build_token_metadata(
-        samples, batch=batch, encoded=encoded, schema=schema,
+        samples, batch=batch, encoded=encoded, layout=layout,
         job_tag="black_mage", logits=np.array([[3.0, 1.0]]),
     )
     assert metadata["fight_id"][0, 0] == "fight-1"
@@ -417,12 +403,12 @@ def test_model_analysis_metadata_and_black_mage_fallbacks():
     assert metadata["model_logit"][0, 5] == 3.0
     assert metadata["prediction_index"][0, 5] == 0
     assert np.isnan(metadata["label_rank"][0, 1])
-    assert decision_state_labels("machinist", 0, batch=batch, schema=schema)[0] == "unknown"
-    missing_schema = SimpleNamespace(state_group_slices=lambda: {}, state_group_feature_keys={})
-    assert black_mage_labels(0, batch=batch, schema=missing_schema)[0] == "unknown"
+    assert decision_state_labels("machinist", 0, batch=batch, layout=layout)[0] == "unknown"
+    missing_layout = SimpleNamespace(group_slices={}, base_groups=())
+    assert black_mage_labels(0, batch=batch, layout=missing_layout)[0] == "unknown"
     missing_values = dict(batch)
-    missing_values["current_state_null_mask"] = torch.ones((1, 3), dtype=torch.bool)
-    elemental, mp = black_mage_labels(0, batch=missing_values, schema=schema)
+    missing_values["current_state_null_mask"] = torch.ones((1, 4), dtype=torch.bool)
+    elemental, mp = black_mage_labels(0, batch=missing_values, layout=layout)
     assert elemental == "neutral"
     assert np.isnan(mp)
 
@@ -494,7 +480,8 @@ def test_model_analysis_common_helpers_and_context_loading(monkeypatch, tmp_path
             "data_spec": {
                 "job_tag": "black_mage",
                 "num_actions": 2,
-                "state_dim": 1,
+                "state_dim": 5,
+                "base_state_dim": 1,
                 "scene_dim": 1,
                 "skill_feature_dim": 1,
                 "num_scene_types": 1,
@@ -520,7 +507,8 @@ def test_model_analysis_common_helpers_and_context_loading(monkeypatch, tmp_path
     class FakeDataset:
         job_tag = "black_mage"
         num_actions = 2
-        state_dim = 1
+        state_dim = 5
+        base_state_dim = 1
         scene_dim = 1
         num_scene_types = 1
         action_keys = ("a", "b")
@@ -587,7 +575,9 @@ def test_model_analysis_common_helpers_and_context_loading(monkeypatch, tmp_path
         for feature in analysis_common.ANALYSIS_FEATURES
     })
     monkeypatch.setattr(analysis_common.DataSpec, "from_dataset", lambda _dataset: analysis_common.DataSpec(
-        "black_mage", 2, 1, 1, 1, 1, ("a", "b"), ("potency",), (1, 2), (True, False)
+        job_tag="black_mage", num_actions=2, state_dim=5, base_state_dim=1,
+        scene_dim=1, skill_feature_dim=1, num_scene_types=1, action_keys=("a", "b"),
+        skill_feature_names=("potency",), action_to_vocab_id=(1, 2), action_is_gcd=(True, False)
     ))
     monkeypatch.setattr(analysis_common.DataSpec, "assert_compatible_with", lambda self, other: None)
     monkeypatch.setattr(analysis_common, "move_batch", lambda batch, device: batch)
@@ -613,9 +603,11 @@ def test_analysis_restores_saved_input_contract_without_current_yaml(monkeypatch
                 setattr(self, key, value)
             self.schema = saved.schema
             if reordered_schema:
-                self.schema = replace(saved.schema, state_group_feature_keys={
-                    group: tuple(reversed(keys)) for group, keys in saved.schema.state_group_feature_keys.items()
-                })
+                self.schema = replace(saved.schema, state_groups=tuple(
+                    replace(group, feature_keys=tuple(reversed(group.feature_keys)))
+                    if group.encoding == "anchored_delta" else group
+                    for group in saved.schema.state_groups
+                ))
 
         def __len__(self):
             return 1
@@ -640,9 +632,7 @@ def test_analysis_restores_saved_input_contract_without_current_yaml(monkeypatch
     assert context.vocab.to_dict() == saved.create_skill_vocab().to_dict()
     normalizer = seen["dataset"]["normalizer"]
     assert normalizer.normalization_contract == saved.normalizer_contract
-    time_index = tuple(
-        key for keys in saved.schema.state_group_feature_keys.values() for key in keys
-    ).index("previous_action_after.time_seconds")
+    time_index = saved.schema.state_layout(spec.action_keys).base_feature_keys.index("previous_action_after.time_seconds")
     assert context.context_encoder.state_divisors[time_index] == pytest.approx(120.0)
     assert seen["source"]["normalizer"] is normalizer
     assert seen["source"]["expected_skill_vocab"] is seen["dataset"]["skill_vocab"]
@@ -817,7 +807,8 @@ def test_compact_causal_analysis_preserves_gathered_skill_ids_and_absolute_state
                     dropout=0.0, history_capacity=4, history_reset_keep=2),
         vocab_size=SkillVocab.build_from_job_tag(data_spec.job_tag).size(),
     ).eval()
-    encoder = ContextEncoder(dataset.normalizer, dataset.schema, model.config)
+    layout = dataset.schema.state_layout(data_spec.action_keys)
+    encoder = ContextEncoder(dataset.normalizer, dataset.schema, model.config, layout=layout)
     runtime = SimpleNamespace(
         model=model, dataset=dataset, data_spec=data_spec, device=torch.device("cpu"),
         checkpoint_path=tmp_path / "checkpoint.pt", source_path=source,
@@ -845,8 +836,9 @@ def test_compact_causal_analysis_preserves_gathered_skill_ids_and_absolute_state
     prepared = encoder.encode(raw_batch)
     torch.testing.assert_close(metadata_batch["history_skill_ids"], prepared["history_skill_ids"])
     torch.testing.assert_close(metadata_batch["current_state_abs_values"], raw_batch["current_state_abs_values"])
-    request_mp_index = dataset.schema.state_group_feature_keys["player_state"].index("request_state.mp")
-    player_slice = dataset.schema.state_group_slices()["player_state"]
+    player_group = next(group for group in layout.base_groups if group.group_key == "player_state")
+    request_mp_index = player_group.feature_keys.index("request_state.mp")
+    player_slice = layout.group_slices["player_state"]
     for index, position in enumerate(encoded["current_state_positions"].tolist()):
         expected_mp = raw_batch["current_state_abs_values"][index, player_slice][request_mp_index].item()
         assert metadata["mp_bucket"][index, position] == pytest.approx(expected_mp)
@@ -866,17 +858,20 @@ def test_real_causal_trace_loads_metadata_and_keeps_current_query_under_token_ca
     model = _make_model()
     sample = {"metadata": {"fight_id": "real-trace", "step": 0}}
     batch = _make_batch(1)
-    batch["current_state_abs_values"] = batch["current_state_vectors"]
+    batch["current_state_abs_values"] = batch["current_state_vectors"][:, :model.data_spec.base_state_dim]
+    schema = _analysis_schema(model.data_spec.action_keys, include_mp=False)
+    layout = schema.state_layout(model.data_spec.action_keys)
     batch["label_index"] = torch.tensor([0])
     runtime = SimpleNamespace(
-        model=model, dataset=SimpleNamespace(schema=_analysis_schema()),
+        model=model, dataset=SimpleNamespace(schema=schema),
         data_spec=model.data_spec, device=torch.device("cpu"),
         checkpoint_path=tmp_path / "checkpoint.pt", source_path=tmp_path / "source.json",
         output_dir=tmp_path, vocab=SimpleNamespace(), precision="float32", autocast=nullcontext,
-        context_encoder=SimpleNamespace(encode=lambda batch: batch),
+        context_encoder=SimpleNamespace(encode=lambda batch: batch, layout=layout),
     )
     class Dataset:
-        schema = _analysis_schema()
+        def __init__(self):
+            self.schema = schema
         def __len__(self):
             return 1
         def __getitem__(self, _index):
@@ -979,9 +974,15 @@ def test_history_pca_uses_actual_normalized_input_encoder_output(monkeypatch, tm
     batch['history_skill_ids'] = torch.tensor([[1, 0], [2, 1]])
     batch['history_mask'] = torch.tensor([[True, False], [True, True]])
     batch['scene_mask'] = torch.tensor([[False, True], [True, True]])
-    batch['history_state_vectors'] = torch.randn(2, 2, 4)
+    batch['history_state_vectors'] = torch.cat((
+        torch.randn(2, 2, encoder.data_spec.base_state_dim),
+        torch.randint(0, 2, (2, 2, encoder.data_spec.state_dim - encoder.data_spec.base_state_dim)).float(),
+    ), dim=-1)
     batch['history_skill_features'] = torch.randn(2, 2, 2)
-    batch['current_state_vectors'] = torch.randn(2, 4)
+    batch['current_state_vectors'] = torch.cat((
+        torch.randn(2, encoder.data_spec.base_state_dim),
+        torch.randint(0, 2, (2, encoder.data_spec.state_dim - encoder.data_spec.base_state_dim)).float(),
+    ), dim=-1)
     context = _analysis_context(tmp_path)
     context.output_dir.mkdir(parents=True)
     context.model.input_encoder = encoder
@@ -1288,7 +1289,8 @@ def test_model_analysis_attention_output_and_main(monkeypatch, tmp_path):
         data_spec=SimpleNamespace(
             job_tag="black_mage",
             num_actions=2,
-            state_dim=3,
+            state_dim=7,
+            base_state_dim=3,
             scene_dim=1,
             skill_feature_dim=1,
         ),

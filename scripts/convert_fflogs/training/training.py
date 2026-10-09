@@ -7,10 +7,8 @@
 时间轴以日志为准：转换层已经把整场最早请求平移到 0；动作严格在归一化后的
 请求时刻提交。调用方不钳制请求时间，也不按拒绝原因补推进。
 
-转换路径只有三类场景事实进入状态机（Boss 可选中、目标数、团辅窗口），因为它们参与
-内部数值结算；移动状态仍由输出层按场景上下文改写并应用滑步豁免，不进入转换状态机。
-在线自回归、PPG 与 GRPO 的 `SceneTemplateProvider` 采用另一条口径：提交经过滑步豁免的
-`movement_changed`，由状态机负责请求时移动合法性判断。
+转换与实时复用同一场景执行视图和同刻批次；移动合法性由状态机读取事实。
+只有停机 ETA/剩余由输出层按每段冻结时间纯合成，日志读条覆盖保持原职责。
 """
 
 from __future__ import annotations
@@ -42,6 +40,7 @@ def build_training_samples(
     fight_duration = float(fight_payload.get("duration", 0.0))
     # 转换层已把最早请求归一化到 0。
     cursor = resolve_initial_timestamp(fight_payload)
+    scheduler.sync_through(backend, cursor)
 
     samples: list[dict[str, object]] = []
     resolved_sequence: list[str] = []
@@ -271,17 +270,9 @@ def _advance_to_with_facts(
 ) -> tuple[float, float]:
     """提交所有不晚于 `timestamp` 的场景事实，再把时钟推进到该时刻。
 
-    事实必须先提交：状态机拒绝过去事件，而 `apply_external_event` 自身会把
-    时钟推进到事实时刻。返回 (请求时刻, 状态机当前时刻)。
+    同刻事实全部入队后才统一推进。返回 (请求时刻, 状态机当前时刻)。
     """
-    for fact in scheduler.pop_facts_through(timestamp):
-        backend.apply_external_event(
-            fact.timestamp,
-            fact.event_kind,
-            value=fact.value,
-            target_count=fact.target_count,
-            remaining_seconds=fact.remaining_seconds,
-        )
+    scheduler.sync_through(backend, timestamp)
     return timestamp, backend.advance_to(timestamp).timestamp
 
 
@@ -299,10 +290,8 @@ def _observe_canonical(
         next_observation_timestamp=next_observation_timestamp,
     )
     context = dict(observation.context)  # type: ignore[arg-type]
-    rewrite_scene_player_state(
+    context = rewrite_scene_player_state(
         context,
-        observation_timestamp=timestamp,
-        next_observation_timestamp=next_observation_timestamp,
         scene_state_at=scheduler.state_at,
     )
     context["scene_context"] = build_scene_context_view(scheduler.scene_context)

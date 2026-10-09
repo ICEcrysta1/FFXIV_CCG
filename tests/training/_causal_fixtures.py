@@ -10,16 +10,28 @@ from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, ModelInputContract, Normalizer, SkillVocab
 from common.policy.data.normalization import NormalizerConfig
 from common.policy.data.normalizer import NORMALIZER_CONTRACT_VERSION
-from common.policy.data.schema import SceneWindowSchema, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
+from common.policy.data.schema import SceneWindowSchema, StateFeatureGroup, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
 from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
 
 
 def make_data_spec(**overrides) -> DataSpec:
-    values = dict(job_tag="black_mage", num_actions=2, state_dim=4, scene_dim=4,
+    values = dict(job_tag="black_mage", num_actions=2, base_state_dim=4, scene_dim=4,
                   skill_feature_dim=2, num_scene_types=1, action_keys=("first", "second"),
                   skill_feature_names=("kind", "potency"), action_to_vocab_id=(1, 2), action_is_gcd=(True, True))
     values.update(overrides)
+    values.setdefault("state_dim", values["base_state_dim"] + 2 * values["num_actions"])
     return DataSpec(**values)
+
+
+def make_state_groups(base_groups, action_keys=("first", "second")):
+    """小型测试契约显式保留基础列与两段完整技能列。"""
+    return (
+        *(StateFeatureGroup(key, f"{key}_feature_keys", tuple(keys), "anchored_delta")
+          for key, keys in base_groups.items()),
+        StateFeatureGroup("skill_availability", "skill_availability_feature_keys",
+                          tuple(f"{snapshot}.{key}" for snapshot in ("previous_action_after", "request_state") for key in action_keys),
+                          "absolute_binary"),
+    )
 
 
 def make_batch(data_spec=None, *, batch_size=1, history_length=2, scene_length=1,
@@ -29,12 +41,12 @@ def make_batch(data_spec=None, *, batch_size=1, history_length=2, scene_length=1
         "history_skill_ids": torch.ones((batch_size, history_length), dtype=torch.long),
         "history_skill_features": torch.zeros((batch_size, history_length, spec.skill_feature_dim), dtype=dtype),
         "history_state_vectors": torch.zeros((batch_size, history_length, spec.state_dim), dtype=dtype),
-        "history_state_null_mask": torch.zeros((batch_size, history_length, spec.state_dim), dtype=torch.bool),
-        "history_state_reset_mask": (torch.arange(history_length).reshape(1, -1, 1) == 0).expand(batch_size, -1, spec.state_dim),
+        "history_state_null_mask": torch.zeros((batch_size, history_length, spec.base_state_dim), dtype=torch.bool),
+        "history_state_reset_mask": (torch.arange(history_length).reshape(1, -1, 1) == 0).expand(batch_size, -1, spec.base_state_dim),
         "history_mask": torch.ones((batch_size, history_length), dtype=torch.bool),
         "current_state_vectors": torch.zeros((batch_size, spec.state_dim), dtype=dtype),
-        "current_state_null_mask": torch.zeros((batch_size, spec.state_dim), dtype=torch.bool),
-        "current_state_reset_mask": torch.full((batch_size, spec.state_dim), history_length == 0, dtype=torch.bool),
+        "current_state_null_mask": torch.zeros((batch_size, spec.base_state_dim), dtype=torch.bool),
+        "current_state_reset_mask": torch.full((batch_size, spec.base_state_dim), history_length == 0, dtype=torch.bool),
         "scene_vectors": torch.zeros((batch_size, scene_length, spec.scene_dim), dtype=dtype),
         "scene_types": torch.zeros((batch_size, scene_length), dtype=torch.long),
         "scene_mask": torch.ones((batch_size, scene_length), dtype=torch.bool),
@@ -59,10 +71,11 @@ def make_input_contract(data_spec=None, *, vocab_size=None) -> ModelInputContrac
     schema = TrainingSchema(serialization_format="test", sample_schema_version=TRAINING_SAMPLE_SCHEMA_VERSION,
                             context_schema_version=CANONICAL_CONTEXT_SCHEMA_VERSION, scene_context_mode="absolute",
                             scene_windows=windows,
-                            state_group_feature_keys={"player_state": (
+                            state_groups=make_state_groups({"player_state": (
                                 "request_state.time_seconds",
-                                *(f"field_{index}" for index in range(1, spec.state_dim)),
-                            )},
+                                *(f"field_{index}" for index in range(1, spec.base_state_dim)),
+                            )}, spec.action_keys),
+                            state_snapshots=("previous_action_after", "request_state"),
                             skill_history_fields=("kind", "potency"))
     normalizer = Normalizer.from_contract({
         "version": NORMALIZER_CONTRACT_VERSION, "job_tag": spec.job_tag,

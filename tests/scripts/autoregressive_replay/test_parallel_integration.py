@@ -38,7 +38,7 @@ def test_real_model_variable_history_matches_serial(dataset, use_cache, precisio
         vocab_size=SkillVocab.build_from_job_tag(spec.job_tag).size(),
     ).eval().to(device=device, dtype=torch.float32 if precision == "float32" else torch.bfloat16)
     policy = TrainingPolicyBackend(model, data_spec=spec, device=device, precision=precision)
-    encoder = ContextEncoder(dataset.normalizer, dataset.schema, model.config).to(device=device)
+    encoder = ContextEncoder(dataset.normalizer, dataset.schema, model.config, layout=dataset.state_layout).to(device=device)
     samples = [encoder.encode(move_batch(TrainingCollator()([dataset[index]]), device))
                for index in range(min(3, len(dataset)))]
     # 标签与训练监督字段不属于在线模型输入。
@@ -72,6 +72,7 @@ def test_same_canonical_compact_training_live_and_onnx_host_encode_identically(t
     from dataclasses import asdict
 
     from common.policy.data import ModelInputContract
+    from grpo.storage import GrpoDecision, GrpoRolloutStore
     from scripts.autoregressive_replay.backends import build_fixed_ort_inputs
     from scripts.autoregressive_replay.context import LiveBatchBuilder, SceneTemplateProvider
     from scripts.onnx_export import TENSOR_INPUT_NAMES
@@ -96,9 +97,9 @@ def test_same_canonical_compact_training_live_and_onnx_host_encode_identically(t
         d_model=16, n_layers=1, n_heads=2, num_kv_heads=1, ff_dim=32,
         dropout=0.0, history_capacity=4, history_reset_keep=2, scene_capacity=8,
     )
-    encoder = ContextEncoder(dataset.normalizer, dataset.schema, config)
+    encoder = ContextEncoder(dataset.normalizer, dataset.schema, config, layout=dataset.state_layout)
     scene_provider = SceneTemplateProvider(
-        next(dataset.iter_source_readers()), normalizer=dataset.normalizer,
+        next(dataset.iter_source_readers()),
     )
     builder = LiveBatchBuilder(
         backend=None, vocab=vocab, normalizer=dataset.normalizer,
@@ -119,6 +120,7 @@ def test_same_canonical_compact_training_live_and_onnx_host_encode_identically(t
         },
         embedding_vocab_size=vocab.size(),
     )
+    store = GrpoRolloutStore(tmp_path / "rollouts", iteration=1, input_contract=contract.input_contract)
     saw_overflow = False
     for index, row in enumerate(payload["samples"]):
         raw = TrainingCollator()([dataset[index]])
@@ -134,6 +136,17 @@ def test_same_canonical_compact_training_live_and_onnx_host_encode_identically(t
         assert builder.context_metadata == {"history_cursor": canonical["history_cursor"]}
         assert int(live["history_mask"].sum()) == int(training["history_mask"].sum())
         assert not {"history_cursor", "history_window_start", "history_window_length"} & live.keys()
+
+        # prepared 输入原样经过 GRPO 文件头契约保存和恢复，不建立另一套 schema。
+        entry = store.write_trajectory(
+            scene_json_path=source, decisions=(GrpoDecision(
+                batch=live, context_metadata=builder.context_metadata, action_keys=tuple(keys),
+                action_index=0, old_logprob=0.0,
+            ),), ppg=0.0, greedy_ppg=0.0, reward=0.0,
+        )
+        restored = store._load_decisions(entry.path)[0]
+        for name in TENSOR_INPUT_NAMES:
+            torch.testing.assert_close(restored.batch[name], training[name], rtol=0, atol=0, msg=name)
 
         # 宿主仅补 padding 和转目标精度；图适配器直接接收 prepared tensor，不再次差分。
         fixed = build_fixed_ort_inputs(live, contract)

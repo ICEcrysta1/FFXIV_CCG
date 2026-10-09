@@ -301,7 +301,6 @@ class ReplayCacheStore:
             self._shard_cache.clear()
             self._readers.clear()
         self._cache_fingerprints[cache_key] = generation
-        normalizer_signature = getattr(normalizer, "cache_signature", None)
         reader_key = (
             cache_key,
             job_tag,
@@ -309,7 +308,7 @@ class ReplayCacheStore:
             int(source_stat.st_mtime_ns),
             config.cache_shard_size,
             config.cache_max_shards,
-            repr(normalizer_signature),
+            repr(normalizer.cache_signature),
             expected_action_space,
             tuple(expected_skill_vocab),
             cache_fingerprint,
@@ -506,7 +505,6 @@ class AutoregressiveReplay:
         self._state_machine = self._session.state_machine
         scene_provider = SceneTemplateProvider(
             reader,
-            normalizer=self._session.normalizer,
             initial_sample_index=config.scene_sample_index,
             enabled=config.scene_mode == "cache",
             backend=self._state_machine,
@@ -542,21 +540,6 @@ class AutoregressiveReplay:
             scene_provider.reset()
         self._session.reset(self.config, initial_timestamp=initial_timestamp)
         return self._observe_state(initial_timestamp)
-
-    def _next_scene_event_after(self, time_seconds: float) -> float | None:
-        resolver = getattr(
-            self.scene_provider,
-            "next_state_event_after",
-            None,
-        )
-        if callable(resolver):
-            return resolver(time_seconds)
-        resolver = getattr(
-            self.scene_provider,
-            "next_targetable_event_after",
-            None,
-        )
-        return None if not callable(resolver) else resolver(time_seconds)
 
     def _advance_event_time(
         self,

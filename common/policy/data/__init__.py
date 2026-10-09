@@ -6,7 +6,7 @@ from .input_contract import ModelInputContract
 from .normalization import NormalizerConfig, load_normalizer_config
 from .normalizer import Normalizer
 from .policy_actions import PolicyActionDefinition, load_policy_actions
-from .schema import SceneWindowSchema, TrainingSchema
+from .schema import SceneWindowSchema, StateFeatureGroup, StateFeatureLayout, TrainingSchema
 from .skill_vocab import SkillVocab
 from .spec import DataSpec
 
@@ -19,6 +19,8 @@ __all__ = [
     "NormalizerConfig",
     "PolicyActionDefinition",
     "SceneWindowSchema",
+    "StateFeatureGroup",
+    "StateFeatureLayout",
     "SkillVocab",
     "TrainingSchema",
     "load_normalizer_config",

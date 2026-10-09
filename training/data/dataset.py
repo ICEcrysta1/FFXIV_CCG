@@ -130,7 +130,15 @@ class TrainingDataset(Dataset):
     @property
     def state_dim(self) -> int:
         """训练数据定义的状态向量维度。"""
-        return self._schema.state_vector_dim()
+        return self.state_layout.state_dim
+
+    @property
+    def state_layout(self):
+        return self._schema.state_layout(self.action_keys)
+
+    @property
+    def base_state_dim(self) -> int:
+        return self.state_layout.base_state_dim
 
     @property
     def scene_dim(self) -> int:
