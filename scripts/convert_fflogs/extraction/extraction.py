@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import math
 import statistics
 
 from collections import Counter
 
 from common.contracts import SCENE_EPSILON, SLIDECAST_WINDOW_SECONDS
+from common.models import ActionKind
 
 from ..config import GcdDetectionConfig
-from ..config.constants import MOVE_DIST_THRESHOLD, MOVEMENT_MERGE_GAP, POTION_BUFF_ID, POTION_SKILL_ID, _round_time
-from ..utils import merge_timestamps_to_windows
+from ..config.constants import MOVE_DIST_THRESHOLD, POTION_BUFF_ID, POTION_SKILL_ID, _round_time
 
 # 开怪预读的 begincast 会被战斗窗口裁掉：实测首个 cast 落在开怪后 0~800ms。
 # 落在该窗口内且缺少 begincast 的硬读条按技能表读条时长回拨请求时刻；
@@ -69,6 +70,48 @@ def extract_supported_actions(
     )
     annotate_action_movement(actions)
     return actions, ignored_skill_counts
+
+
+def extract_gcd_cast_windows(
+    events: list[dict[str, object]],
+    actions: list[dict[str, object]],
+    *,
+    source_id: int,
+    skill_book,
+) -> list[tuple[float, float]]:
+    """提取实际 GCD 读条区间，保留原生及 Buff 瞬发化的 GCD。
+
+    使用日志起读和实际 duration，包含最后的滑步时间。未完成的读条也有
+    begincast；缺少取消事件时，以下次起读作为保守上界。开怪预读复用
+    动作提取器已有的估计，禁止按静态技能读条时长扩展其他瞬发动作。
+    """
+    windows = []
+    for event in events:
+        if not isinstance(event, dict) or event.get("type") != "begincast" or event.get("sourceID") != source_id:
+            continue
+        ability_id = _get_ability_id(event)
+        if ability_id not in skill_book or skill_book.get(ability_id).kind != ActionKind.GCD:
+            continue
+        start = float(event["timestamp"]) / 1000.0
+        duration = float(event.get("duration", 0.0)) / 1000.0
+        if math.isfinite(start) and math.isfinite(duration) and duration > 0.0:
+            windows.append((start, start+duration))
+    for action in actions:
+        if action.get("cast_timing_source") != "prepull_estimated":
+            continue
+        skill_id = int(action["skill_id"])
+        if skill_id not in skill_book or skill_book.get(skill_id).kind != ActionKind.GCD:
+            continue
+        start = float(action["request_timestamp"])
+        duration = float(action["actual_cast_seconds"])
+        if math.isfinite(start) and math.isfinite(duration) and duration > 0.0:
+            windows.append((start, start+duration))
+    windows.sort()
+    return [
+        (start, min(end, windows[index+1][0]) if index+1 < len(windows) else end)
+        for index, (start, end) in enumerate(windows)
+        if index+1 == len(windows) or windows[index+1][0] > start
+    ]
 
 
 def _prepull_cutoff(report_payload: dict[str, object]) -> float:
@@ -340,27 +383,6 @@ def annotate_action_movement(actions: list[dict[str, object]]) -> None:
         current["moved"] = moved
         current["forced_move"] = moved and previous_cast_time > SLIDECAST_WINDOW_SECONDS
         current["instant_move"] = moved and previous_cast_time <= SLIDECAST_WINDOW_SECONDS
-
-
-def detect_forced_movement_windows(actions: list[dict[str, object]]) -> list[tuple[float, float]]:
-    """把强制移动动作合并成原始时间窗口。
-
-    当前转换链路把 FFLogs ``cast`` 事件的 timestamp 统一视为动作生效时刻。
-    因此当某个动作被标成 ``forced_move`` 时，真正允许开始滑步的时刻应落在
-    前一个读条动作的生效前 0.5 秒，而不是旧语义里的“起读条时刻 + 读条时长 - 0.5”。
-    """
-    move_timestamps: list[float] = []
-    for index, action in enumerate(actions):
-        if not action.get("forced_move") or index == 0:
-            continue
-        previous = actions[index - 1]
-        prev_cast_time = float(previous.get("actual_cast_seconds", previous["cast_time"]))
-        if prev_cast_time <= SLIDECAST_WINDOW_SECONDS:
-            continue
-        # 在 cast=生效时刻 语义下，滑步开始时刻 = 生效前 0.5s。
-        movement_time = float(previous["timestamp"]) - SLIDECAST_WINDOW_SECONDS
-        move_timestamps.append(movement_time)
-    return merge_timestamps_to_windows(move_timestamps, gap_seconds=MOVEMENT_MERGE_GAP)
 
 
 def detect_gcd_from_logs(

@@ -3,10 +3,10 @@
 from .downtime import detect_downtime_windows
 from .extraction import (
     annotate_action_movement,
-    detect_forced_movement_windows,
     detect_gcd_from_logs,
     extract_supported_actions,
 )
+from .movement import detect_forced_movement_windows
 from .fight_payload import build_fight_payload, build_output_fight_id
 
 __all__ = [

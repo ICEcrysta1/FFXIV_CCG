@@ -1,4 +1,12 @@
 convert_fflogs:
+  # 移动参数进入 compiled cache 签名；改动后旧缓存自动重编译，不改变 API 版本。
+  movement_detection:
+    coordinate_scale: 100.0
+    # 距离单位/秒，沿用实验阈值 0.25 / 0.75；不再按观测间隔剔除坐标。
+    speed_threshold: 0.3333333333333333
+    sample_step_seconds: 0.01
+    merge_gap_gcds: 1.0
+    minimum_window_gcds: 1.0
   gcd_detection_defaults:
     probe_skill_game_id: 0
     fallback_seconds: 2.5

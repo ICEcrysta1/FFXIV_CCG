@@ -6,6 +6,7 @@ from .config import (
     ConvertFflogsConfig,
     ConvertFflogsJobConfig,
     GcdDetectionConfig,
+    MovementDetectionConfig,
     load_convert_fflogs_config,
     load_convert_fflogs_dotenv,
     load_convert_fflogs_job_config,
@@ -15,7 +16,6 @@ from .config.constants import (
     DEFAULT_DOWNTIME_GAP_SECONDS,
     FORCED_MOVEMENT_CONTEXT_KEY,
     FORCED_MOVEMENT_FEATURE_KEYS,
-    MOVEMENT_MERGE_GAP,
     MOVE_DIST_THRESHOLD,
     POTION_BUFF_ID,
     POTION_SKILL_ID,
@@ -39,10 +39,10 @@ from .cache import (
 from .extraction.downtime import detect_downtime_windows
 from .extraction.extraction import (
     annotate_action_movement,
-    detect_forced_movement_windows,
     detect_gcd_from_logs,
     extract_supported_actions,
 )
+from .extraction.movement import detect_forced_movement_windows
 from .extraction.fight_payload import build_fight_payload, build_output_fight_id
 from .pipeline import convert_report_payload, convert_report_to_training_payload
 from .source.raw_source import convert_raw_file
@@ -58,7 +58,7 @@ from .scene.scene_context import (
     resolve_anchor,
 )
 from .training.training import build_training_samples, resolve_initial_timestamp
-from .utils import build_skill_book, load_job_project_config, merge_timestamps_to_windows
+from .utils import build_skill_book, load_job_project_config
 
 
 def main() -> None:
@@ -74,7 +74,7 @@ __all__ = [
     "FORCED_MOVEMENT_CONTEXT_KEY",
     "FORCED_MOVEMENT_FEATURE_KEYS",
     "GcdDetectionConfig",
-    "MOVEMENT_MERGE_GAP",
+    "MovementDetectionConfig",
     "MOVE_DIST_THRESHOLD",
     "POTION_BUFF_ID",
     "POTION_SKILL_ID",
@@ -111,7 +111,6 @@ __all__ = [
     "load_convert_fflogs_dotenv",
     "load_convert_fflogs_job_config",
     "main",
-    "merge_timestamps_to_windows",
     "normalize_scene_context",
     "resolve_convert_fflogs_job_tag",
     "resolve_anchor",

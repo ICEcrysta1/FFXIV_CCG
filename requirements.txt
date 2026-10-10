@@ -2,6 +2,8 @@
 # === 核心依赖 (状态机运行必需) ===
 pyyaml>=6.0
 pythonnet>=3.0.5,<4.0
+# 连续速度曲线与训练共用数值计算。
+numpy>=1.24
 
 # === 训练 / tensor 输出 (可选, 缺失时有 try/except 降级) ===
 # 训练模型使用 CUDA；固定 CUDA 13.2 构建，可在 CUDA 13.x 驱动上运行，
@@ -11,7 +13,6 @@ torch==2.12.0+cu132
 tensorboard>=2.14
 
 # === 模型分析 (scripts/model_analysis) ===
-numpy>=1.24
 matplotlib>=3.7
 
 # === FFLogs 数据抓取 (scripts/fflogs_scraper.py) ===

@@ -64,6 +64,7 @@ def convert_report_payload(
         downtime_boundary_margin=float(project_config.engine_timing.action_queue_window_seconds),
         raid_buff_marker_keys=project_config.system.raid_buff_window_marker_skills,
         raid_buff_window_duration=project_config.system.raid_buff_window_duration,
+        movement_detection=convert_job_config.movement_detection,
         raw_events=report_payload.get("events", []),
         skill_book=skill_book,
         ranking=report_payload.get("ranking"),

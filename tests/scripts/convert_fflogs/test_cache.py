@@ -35,6 +35,32 @@ def test_cache_signature_requires_normalizer_public_contract(tmp_path):
         build_cache_signature(source, normalizer=SimpleNamespace(_config={}), **args)
 
 
+
+def test_movement_parameters_invalidate_cache_without_changing_versions(tmp_path, monkeypatch):
+    """移动参数改变必须使所有共用签名的读取入口拒绝旧缓存；注释不影响签名。"""
+    import yaml
+    from common.policy.data import compiled_cache
+    from scripts.convert_fflogs.config import CONVERT_DEFAULT_CONFIG_PATH
+
+    source = tmp_path / "fight.json.br"
+    atomic_write_json(source, {})
+    config_path = tmp_path / "conversion.yaml"
+    config_text = CONVERT_DEFAULT_CONFIG_PATH.read_text(encoding="utf-8")
+    config_path.write_text(config_text, encoding="utf-8", newline="\n")
+    monkeypatch.setattr(compiled_cache, "_CONVERSION_CONFIG_PATH", config_path)
+    args = dict(normalizer=Normalizer(), int_dtype="int32", float_dtype="float32")
+    original = build_cache_signature(source, **args)
+    config_path.write_text(config_text + "\n# 仅改注释\n", encoding="utf-8", newline="\n")
+    assert build_cache_signature(source, **args) == original
+    payload = yaml.safe_load(config_text)
+    payload["convert_fflogs"]["movement_detection"]["speed_threshold"] = 0.5
+    config_path.write_text(yaml.safe_dump(payload), encoding="utf-8", newline="\n")
+    changed = build_cache_signature(source, **args)
+    assert changed != original
+    assert changed["conversion_version"] == original["conversion_version"]
+    assert changed["movement_detection"]["speed_threshold"] == 0.5
+
+
 def test_convert_raw_file_reads_brotli_json(tmp_path, monkeypatch):
     source = tmp_path / "raw" / "FRU" / "00-10" / "fight.json.br"
     atomic_write_json(source, {
