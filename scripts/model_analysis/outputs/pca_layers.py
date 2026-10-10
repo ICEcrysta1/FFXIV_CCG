@@ -66,12 +66,14 @@ def plot_layer_pca(context: AnalysisContext) -> list[Path]:
         _scatter_by_role(ax_2d, coordinates_2d, roles)
         _scatter_by_role(ax_3d, coordinates_3d, roles)
         ax_2d.set_title(
-            f"Layer {layer_index + 1} | PC1={explained_2d[0]:.1%}, PC2={explained_2d[1]:.1%}"
+            f"Layer {layer_index + 1} | {len(roles):,} tokens\n"
+            f"PC1={explained_2d[0]:.1%}, PC2={explained_2d[1]:.1%}"
         )
         ax_2d.set_xlabel("PC1")
         ax_2d.set_ylabel("PC2")
         ax_3d.set_title(
-            f"Layer {layer_index + 1} | PC1={explained_3d[0]:.1%}, "
+            f"Layer {layer_index + 1} | {len(roles):,} tokens\n"
+            f"PC1={explained_3d[0]:.1%}, "
             f"PC2={explained_3d[1]:.1%}, PC3={explained_3d[2]:.1%}"
         )
         ax_3d.set_xlabel("PC1")
@@ -205,8 +207,8 @@ def _plot_feature_pca_2d(
             linewidths=0,
         )
         ax.set_title(
-            f"Layer {layer_index + 1} | strongest={axis_name} "
-            f"score={association:.3f} | PC1={explained[0]:.1%}, PC2={explained[1]:.1%}"
+            f"Layer {layer_index + 1} | {len(raw_values):,} decisions\n"
+            f"PC1={explained[0]:.1%}, PC2={explained[1]:.1%} | {axis_name} score={association:.3f}"
         )
         ax.set_xlabel("PC1")
         ax.set_ylabel("PC2")

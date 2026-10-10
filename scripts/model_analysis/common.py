@@ -196,6 +196,9 @@ def load_analysis_context(
                 job_tag=data_spec.job_tag,
                 logits=logits.detach().float().cpu().numpy(),
             )
+            # 按所选决策的处理进度释放预算，避免早期长前缀用完整份限额。
+            # 预算足以覆盖全部决策时，各批次都能保留自己的当前状态 query。
+            batch_token_budget = max_tokens * (start + len(sample_batch)) // len(samples)
             for layer_index, hidden_rows in enumerate(layer_hidden_rows):
                 if collected_tokens[layer_index] >= max_tokens:
                     continue
@@ -206,7 +209,7 @@ def load_analysis_context(
                     feature: token_metadata[feature][valid_rows]
                     for feature in ANALYSIS_FEATURES
                 }
-                remaining = max_tokens - collected_tokens[layer_index]
+                remaining = batch_token_budget - collected_tokens[layer_index]
                 if remaining <= 0:
                     continue
                 if len(flat_vectors) > remaining:

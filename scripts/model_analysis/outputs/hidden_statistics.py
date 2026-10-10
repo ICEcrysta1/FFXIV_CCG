@@ -46,7 +46,10 @@ def plot_hidden_statistics(context: AnalysisContext) -> tuple[Path, Path]:
             linewidth=1.2,
             label="median",
         )
-        ax.set_title(f"Layer {index + 1} | mean={values.mean():.3f}, std={values.std():.3f}")
+        ax.set_title(
+            f"Layer {index + 1} | {len(vectors):,} tokens\n"
+            f"mean={values.mean():.3f}, std={values.std():.3f}"
+        )
         ax.set_xlabel("hidden value")
         ax.set_ylabel("density")
         ax.legend()

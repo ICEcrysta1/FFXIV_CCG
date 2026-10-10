@@ -35,7 +35,7 @@ def plot_skill_embedding(context: AnalysisContext) -> Path:
         ax.annotate(labels[index], (x_coord, y_coord), xytext=(4, 4), textcoords="offset points", fontsize=7)
     ax.set_xlabel(f"PC1 ({explained[0]:.1%})")
     ax.set_ylabel(f"PC2 ({explained[1]:.1%})")
-    ax.set_title(f"Raw Skill ID Embedding PCA ({weights.shape[1]}D)")
+    ax.set_title(f"Raw Skill ID Embedding PCA ({len(weights)} skills; {weights.shape[1]}D)")
     save_figure(fig, path)
     return path
 

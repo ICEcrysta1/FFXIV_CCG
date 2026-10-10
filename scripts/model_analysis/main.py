@@ -29,7 +29,6 @@ from .outputs import (
     plot_hidden_statistics,
     plot_layer_pca,
     plot_loss_landscape,
-    plot_opener_attention,
     plot_standard_attention_outputs,
     plot_history_embeddings,
     plot_skill_embedding,
@@ -87,7 +86,7 @@ def main() -> None:
         "--attention-steps",
         type=int,
         default=28,
-        help="开场注意力图使用 compiled cache 中前 N 个真实决策样本；默认 28，和旧脚本开场长度一致",
+        help="从 compiled cache 前 N 个真实决策中选取最长上下文绘制注意力矩阵；默认 28",
     )
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     args = parser.parse_args()
@@ -153,13 +152,6 @@ def main() -> None:
     outputs.extend(plot_hidden_statistics(context))
     outputs.extend(plot_layer_pca(context))
     outputs.extend(
-        plot_opener_attention(
-            context,
-            steps=args.attention_steps,
-            batch_size=args.batch_size,
-        )
-    )
-    outputs.extend(
         plot_standard_attention_outputs(
             context,
             steps=args.attention_steps,
@@ -182,6 +174,7 @@ def main() -> None:
         "skill_feature_dim": context.data_spec.skill_feature_dim,
         "layer_count": len(context.layer_vectors),
         "layer_token_counts": [int(len(values)) for values in context.layer_vectors],
+        "layer_current_state_counts": [int(mask.sum()) for mask in context.layer_current_state_masks],
     }
     if args.loss_landscape:
         loss_landscape_max_samples = (
