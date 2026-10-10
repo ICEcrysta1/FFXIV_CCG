@@ -1,5 +1,5 @@
 convert_fflogs:
-  # 移动参数进入 compiled cache 签名；改动后旧缓存自动重编译，不改变 API 版本。
+  # 移动参数只用于转换；调整后需手动清理旧 compiled cache，不改变 API 版本。
   movement_detection:
     coordinate_scale: 100.0
     # 距离单位/秒，沿用实验阈值 0.25 / 0.75；不再按观测间隔剔除坐标。

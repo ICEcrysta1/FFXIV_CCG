@@ -4,6 +4,7 @@ from pathlib import Path
 from dataclasses import replace
 from types import SimpleNamespace
 import json
+import io
 
 import pytest
 import torch
@@ -153,6 +154,51 @@ def test_scene_source_prefers_high_bucket_across_encounters(scene_cache):
     expected = create("ZZZ/90-100/a.json.br")
     assert _select(root, cache_dir) == expected
     assert _select(root, cache_dir) == expected
+
+
+@pytest.mark.parametrize("config_problem", ["missing", "missing_movement", "invalid_yaml"])
+def test_readonly_cache_consumers_do_not_load_conversion_yaml(scene_cache, monkeypatch, config_problem):
+    """转换 YAML 缺失或损坏时，已有缓存仍可供训练、VAL 和回放读取。"""
+    import builtins
+
+    from common.policy.data.prepared_sources import select_prepared_training_sources, select_prepared_validation_sources
+    from scripts.convert_fflogs.cache.cache_load import load_raw_compiled_cache
+    from scripts.convert_fflogs.config import CONVERT_DEFAULT_CONFIG_PATH
+    from training import TrainingDataset
+
+    root, cache_dir, create = scene_cache
+    source = create("FRU/90-100/a.json.br")
+    validation_source = create("VAL/FRU/a.json.br")
+    before = {path: path.read_bytes() for path in cache_dir.rglob("*.pt")}
+    original_open = builtins.open
+
+    def open_with_broken_conversion_config(file, *args, **kwargs):
+        if isinstance(file, (str, Path)) and Path(file).resolve() == CONVERT_DEFAULT_CONFIG_PATH:
+            if config_problem == "missing":
+                raise FileNotFoundError(file)
+            return io.StringIO("convert_fflogs: {}" if config_problem == "missing_movement" else "[")
+        return original_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", open_with_broken_conversion_config)
+    precision = load_precision_config()
+    normalizer = Normalizer()
+    normalizer.ensure_job_resources("black_mage")
+    actions = ActionSpace.from_job_tag("black_mage")
+    args = dict(int_dtype=precision.resolve_int_dtype(), float_dtype=precision.resolve_float_dtype(),
+                cache_dir=cache_dir)
+    assert _select(root, cache_dir) == source
+    assert select_prepared_training_sources(root, max_files=1, job_tag="black_mage", shard_size=768, **args) == [source]
+    assert select_prepared_validation_sources(max_files=1, data_dir=root, job_tag="black_mage",
+                                             shard_size=768, **args) == [validation_source]
+    dataset = TrainingDataset([source], expected_action_space=actions, normalizer=normalizer,
+                              job_tag="black_mage", compiled_cache_shard_size=768, **args)
+    restored = object.__new__(TrainingDataset)
+    restored.__setstate__(dataset.__getstate__())
+    assert len(dataset) == len(restored) == 1
+    reader = load_raw_compiled_cache(source, expected_action_space=actions, normalizer=normalizer,
+                                    shard_size=768, **args)
+    assert reader is not None and reader.num_samples == 1
+    assert before == {path: path.read_bytes() for path in cache_dir.rglob("*.pt")}
 
 
 @pytest.mark.parametrize("invalid", ["missing", "stale", "format", "job", "empty", "shard", "corrupt"])
