@@ -1,9 +1,12 @@
 convert_fflogs:
-  # 修改移动提取语义或参数后，同步提升 compiled cache 的转换版本。
+  # 移动参数进入 compiled cache 签名；改动后旧缓存自动重编译，不改变 API 版本。
   movement_detection:
     coordinate_scale: 100.0
-    minimum_displacement: 0.25
-    maximum_observation_gap_seconds: 0.75
+    # 距离单位/秒，沿用实验阈值 0.25 / 0.75；不再按观测间隔剔除坐标。
+    speed_threshold: 0.3333333333333333
+    sample_step_seconds: 0.01
+    # 局部最大值外扩和 Hann 平滑各使用一半半径，最后裁回新增的两端。
+    maximum_expansion_per_side_seconds: 0.5
     merge_gap_gcds: 1.0
     minimum_window_gcds: 1.0
   gcd_detection_defaults:

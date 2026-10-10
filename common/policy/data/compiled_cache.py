@@ -11,6 +11,7 @@ from common.dataset_layout import map_dataset_output_path
 from common.torch_dependencies import import_torch
 from common.torch_serialization import safe_torch_load
 from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
+from common.yaml_config import load_yaml_mapping
 
 from .schema import SceneWindowSchema, StateFeatureGroup, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
 from .spec import DataSpec
@@ -60,6 +61,7 @@ DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v26_gcd_movement_windows"
 CACHE_PICKLE_PROTOCOL = 2
 DEFAULT_CACHE_SHARD_SIZE = 512
 DEFAULT_CACHE_MAX_SHARDS = 8
+_CONVERSION_CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "convert_fflogs" / "default.yaml"
 
 
 class CompiledShardCache:
@@ -418,6 +420,8 @@ def build_cache_signature(
     conversion_version: str = DEFAULT_CONVERSION_VERSION,
 ) -> dict[str, object]:
     stat = Path(source_path).stat()
+    # 缓存身份保存转换参数内容；不依赖模型读取窗口，也不把参数改动冒充 API 升版。
+    conversion_config = load_yaml_mapping(_CONVERSION_CONFIG_PATH, description="raw conversion config")
     return {
         "source_size": int(stat.st_size),
         "source_mtime_ns": int(stat.st_mtime_ns),
@@ -427,6 +431,7 @@ def build_cache_signature(
         "shard_size": int(shard_size),
         "source_format": "json_brotli",
         "conversion_version": str(conversion_version),
+        "movement_detection": conversion_config["convert_fflogs"]["movement_detection"],
     }
 
 

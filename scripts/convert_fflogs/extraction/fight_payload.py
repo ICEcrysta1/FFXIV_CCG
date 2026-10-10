@@ -14,6 +14,7 @@ from ..scene.scene_context import (
     resolve_anchor,
 )
 from .downtime import detect_downtime_windows
+from .extraction import extract_gcd_cast_windows
 from .movement import detect_forced_movement_windows
 
 
@@ -74,6 +75,9 @@ def build_fight_payload(
     forced_movement_windows = detect_forced_movement_windows(
         raw_events or [], source_id=source_id, actual_base_gcd=gcd_time,
         movement_detection=movement_detection, fight_start=fight_start, fight_end=fight_end,
+        hardcast_windows=extract_gcd_cast_windows(
+            raw_events or [], fight_actions, source_id=source_id, skill_book=skill_book,
+        ) if skill_book is not None else [],
     )
     targetable_window_context = build_targetable_window_context(
         fight_start,

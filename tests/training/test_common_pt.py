@@ -155,7 +155,7 @@ def test_compiled_history_and_current_state_use_compact_state_contract(tmp_path)
         assert sample[f"{prefix}_state_null_mask"].shape == sample[f"{prefix}_state_abs_values"].shape
 
 
-@pytest.mark.parametrize("old_contract", ["cache_format", "conversion_version", "unstable_history_order", "movement_windows", "skill_time"])
+@pytest.mark.parametrize("old_contract", ["cache_format", "conversion_version", "unstable_history_order", "movement_windows", "continuous_movement", "skill_time"])
 def test_previous_state_layout_cache_is_rejected(tmp_path, old_contract):
     """旧输入字段缓存不可复用，即使 raw 文件身份和其余编译参数一致。"""
     torch = pytest.importorskip("torch")
@@ -177,6 +177,9 @@ def test_previous_state_layout_cache_is_rejected(tmp_path, old_contract):
     elif old_contract == "movement_windows":
         # 布局未变，但旧版本的移动点和历史状态不能用于新的坐标聚合规则。
         payload["cache_signature"]["conversion_version"] = "raw_json_to_compiled_v25_state_skill_availability"
+    elif old_contract == "continuous_movement":
+        # 同版本旧离散窗口缓存没有移动参数签名，必须重编译。
+        payload["cache_signature"].pop("movement_detection")
     else:
         # 即使格式和签名冒用新版，旧技能时间列仍必须明确拒绝。
         payload["skill_feature_names"] = (*payload["skill_feature_names"], "time_seconds")

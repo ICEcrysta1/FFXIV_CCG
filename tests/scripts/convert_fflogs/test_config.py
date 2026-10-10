@@ -18,8 +18,9 @@ def test_convert_fflogs_config_loads_default_values():
     assert config.gcd_detection_defaults.fallback_seconds == pytest.approx(DEFAULT_BASE_GCD)
     assert config.gcd_detection_defaults.histogram_bin_width_ms == 10
     assert config.movement_detection.coordinate_scale == 100.0
-    assert config.movement_detection.minimum_displacement == 0.25
-    assert config.movement_detection.maximum_observation_gap_seconds == 0.75
+    assert config.movement_detection.speed_threshold == pytest.approx(1 / 3)
+    assert config.movement_detection.sample_step_seconds == 0.01
+    assert config.movement_detection.maximum_expansion_per_side_seconds == 0.5
     assert config.movement_detection.merge_gap_gcds == 1.0
     assert config.movement_detection.minimum_window_gcds == 1.0
 
@@ -106,7 +107,8 @@ gcd_detection:
 
 
 @pytest.mark.parametrize("field", [
-    "coordinate_scale", "minimum_displacement", "maximum_observation_gap_seconds",
+    "coordinate_scale", "speed_threshold", "sample_step_seconds",
+    "maximum_expansion_per_side_seconds",
     "merge_gap_gcds", "minimum_window_gcds",
 ])
 @pytest.mark.parametrize("value", [0.0, -1.0, float("nan"), float("inf")])

@@ -1,15 +1,15 @@
-"""从玩家来源和目标资源坐标中提取并聚合移动窗口。"""
+"""从玩家坐标的连续速度曲线提取移动窗口。"""
 
 from __future__ import annotations
 
 import math
 from collections import defaultdict
-from itertools import pairwise
 from statistics import median
 
 from common.contracts import SCENE_EPSILON, SLIDECAST_WINDOW_SECONDS
 
 from ..config import MovementDetectionConfig
+from .movement_curve import sample_bezier_speed, smooth_speed_envelope, threshold_windows
 
 
 def detect_forced_movement_windows(
@@ -20,50 +20,83 @@ def detect_forced_movement_windows(
     movement_detection: MovementDetectionConfig,
     fight_start: float,
     fight_end: float,
+    hardcast_windows: list[tuple[float, float]] | None = None,
 ) -> list[tuple[float, float]]:
-    """先按实测 GCD 合并坐标变化区间，再剔除短于 GCD 减滑步时间的窗口。
+    """连续速度平滑后截取、按 GCD 合并、扣读条、裁回外扩并剔除短窗口。
 
-    不设速度上限，也不按动作是否瞬发排除位移；保留原有 scene context 名称。
-    合并填入的间隙描述移动片段的聚集范围，不保证整段都在持续移动。
+    不设速度上限或观测间隔门槛。合并资格使用外扩前的阈值交点，避免外扩
+    越过原本大于一 GCD 的间隙。裁回只恢复每组合并前的两个外边界。
     """
     if not math.isfinite(actual_base_gcd) or actual_base_gcd <= 0.0:
         raise ValueError("actual_base_gcd must be positive and finite")
+    if not math.isfinite(fight_start) or not math.isfinite(fight_end):
+        raise ValueError("fight bounds must be finite")
     positions = _collect_player_positions(
-        events,
-        source_id=source_id,
-        coordinate_scale=movement_detection.coordinate_scale,
-        fight_start=fight_start,
-        fight_end=fight_end,
+        events, source_id=source_id, coordinate_scale=movement_detection.coordinate_scale,
+        fight_start=fight_start, fight_end=fight_end,
     )
-    candidates: list[tuple[float, float]] = []
-    for previous, current in pairwise(positions):
-        gap = current[0] - previous[0]
-        distance = math.hypot(current[1] - previous[1], current[2] - previous[2])
-        if (
-            0.0
-            < gap
-            <= movement_detection.maximum_observation_gap_seconds + SCENE_EPSILON
-            and distance + SCENE_EPSILON >= movement_detection.minimum_displacement
-        ):
-            candidates.append((previous[0], current[0]))
-
+    if len(positions) < 2:
+        return []
+    origin = positions[0][0]
+    duration = positions[-1][0] - origin
+    times, speed = sample_bezier_speed(
+        positions, sample_step_seconds=movement_detection.sample_step_seconds,
+    )
+    candidates = threshold_windows(
+        times, speed, threshold=movement_detection.speed_threshold, duration=duration,
+    )
+    expanded = threshold_windows(
+        times, smooth_speed_envelope(
+            speed, sample_step_seconds=movement_detection.sample_step_seconds,
+            maximum_expansion_per_side_seconds=movement_detection.maximum_expansion_per_side_seconds,
+        ), threshold=movement_detection.speed_threshold, duration=duration,
+    )
     merge_gap = movement_detection.merge_gap_gcds * actual_base_gcd
     merged: list[tuple[float, float]] = []
     for start, end in candidates:
-        # 绝对时间相减和 GCD 减滑步时间都会有舍入误差，等号边界复用场景容差。
         if merged and start - merged[-1][1] <= merge_gap + SCENE_EPSILON:
             merged[-1] = (merged[-1][0], max(merged[-1][1], end))
         else:
             merged.append((start, end))
     minimum_length = (
-        movement_detection.minimum_window_gcds * actual_base_gcd
-        - SLIDECAST_WINDOW_SECONDS
+        movement_detection.minimum_window_gcds * actual_base_gcd - SLIDECAST_WINDOW_SECONDS
     )
-    return [
-        (start, end)
-        for start, end in merged
-        if end - start + SCENE_EPSILON >= minimum_length
-    ]
+    cuts = sorted((start-origin, end-origin) for start, end in (hardcast_windows or []))
+    result = []
+    radius = movement_detection.maximum_expansion_per_side_seconds
+    for core_start, core_end in merged:
+        relevant = [(start, end) for start, end in expanded if start <= core_end and end >= core_start]
+        if not relevant:
+            continue
+        start = max(0.0, core_start-radius, min(a for a, _ in relevant))
+        end = min(duration, core_end+radius, max(b for _, b in relevant))
+        for left, right in _subtract_windows(start, end, cuts):
+            # 先平滑和截取，再扣除真实读条；最后只裁新增外边缘，保留内部桥接。
+            left, right = max(left, core_start), min(right, core_end)
+            if right-left > SCENE_EPSILON and right-left+SCENE_EPSILON >= minimum_length:
+                result.append((origin+left, origin+right))
+    return result
+
+
+def _subtract_windows(
+    start: float, end: float, cuts: list[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    """从单个窗口扣除有序读条区间，扣除后不重新合并跨越读条的片段。"""
+    result = []
+    cursor = start
+    for left, right in cuts:
+        if right <= cursor:
+            continue
+        if left >= end:
+            break
+        if left > cursor:
+            result.append((cursor, min(left, end)))
+        cursor = max(cursor, right)
+        if cursor >= end:
+            break
+    if cursor < end:
+        result.append((cursor, end))
+    return result
 
 
 def _collect_player_positions(

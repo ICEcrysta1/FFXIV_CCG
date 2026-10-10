@@ -63,11 +63,12 @@ class GcdDetectionConfig:
 
 @dataclass(frozen=True)
 class MovementDetectionConfig:
-    """坐标观测与 GCD 聚合的移动窗口配置；滑步时间使用共享契约。"""
+    """连续速度曲线与 GCD 聚合配置；滑步时间使用共享契约。"""
 
     coordinate_scale: float
-    minimum_displacement: float
-    maximum_observation_gap_seconds: float
+    speed_threshold: float
+    sample_step_seconds: float
+    maximum_expansion_per_side_seconds: float
     merge_gap_gcds: float
     minimum_window_gcds: float
 
