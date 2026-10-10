@@ -1188,6 +1188,69 @@ def test_opener_attention_uses_latest_state_query_and_excludes_padding(monkeypat
     np.testing.assert_allclose(captured["layers"], expected.mean(axis=0, keepdims=True), rtol=1e-6)
 
 
+@pytest.mark.parametrize(("scene_count", "history_count"), [(7, 300), (0, 300), (7, 0), (0, 0)])
+def test_attention_structure_groups_interleaved_history_without_dense_grid(scene_count, history_count):
+    """300 条交错历史也只显示区段边界，当前状态仍单独可辨。"""
+    roles = np.array(
+        [ROLE_SCENE] * scene_count + [ROLE_STATE, ROLE_SKILL] * history_count + [ROLE_STATE],
+    )
+    fig, ax = plt.subplots()
+    try:
+        ax.grid(True)
+        attention_output._draw_attention_structure(ax, roles)
+        section_count = int(scene_count > 0) + int(history_count > 0) + 1
+        assert len(ax.get_xticklabels()) == section_count
+        assert len(ax.get_yticklabels()) == section_count
+        assert len(ax.lines) == 2 * (section_count - 1) + 1
+        assert not any(line.get_visible() for line in (*ax.get_xgridlines(), *ax.get_ygridlines()))
+        labels = [label.get_text() for label in ax.get_xticklabels()]
+        assert labels[-1] == "current\nstate"
+        if scene_count:
+            assert labels[0] == f"scene\n{scene_count} tokens"
+        if history_count:
+            assert f"history: state / skill\n{2 * history_count} tokens" in labels
+    finally:
+        plt.close(fig)
+
+
+def test_standard_attention_removes_padding_on_both_axes_without_changing_weights(monkeypatch, tmp_path):
+    """失效场景和历史 padding 都裁掉，因果 mask、真实权重和 role 分母保持一致。"""
+    roles = torch.tensor([[ROLE_SCENE, ROLE_SCENE, ROLE_STATE, ROLE_SKILL, ROLE_STATE, ROLE_SKILL, ROLE_STATE]])
+    padding = torch.tensor([[False, True, False, False, True, True, False]])
+    blocked = torch.triu(torch.ones((7, 7), dtype=torch.bool), diagonal=1)
+    blocked[6, 0] = True
+    weights = torch.arange(98, dtype=torch.float32).reshape(1, 2, 7, 7) / 100
+    context = SimpleNamespace(
+        dataset=[{"scene_abs_values": [[0.0]] * 2, "history_length": 2}],
+        output_dir=tmp_path, device=torch.device("cpu"), encode_batch=lambda batch: batch,
+        autocast=nullcontext,
+        model=SimpleNamespace(trace=lambda _batch: SimpleNamespace(
+            encoded={"role_ids": roles, "padding_mask": padding, "attention_mask": blocked},
+            attentions=(weights,),
+        )),
+    )
+    captured = {}
+    monkeypatch.setattr(attention_output, "TrainingCollator", lambda: (lambda _samples: {}))
+    monkeypatch.setattr(attention_output, "_plot_attention_matrix_grid",
+                        lambda values, mask, ids, _path: captured.update(layers=values, mask=mask, roles=ids))
+    monkeypatch.setattr(attention_output, "_plot_attention_head_grid",
+                        lambda values, _mask, _ids, _path: captured.update(heads=values))
+    monkeypatch.setattr(attention_output, "_plot_attention_role_blocks",
+                        lambda values, mask, ids, _path: captured.update(
+                            blocks=attention_output._role_block_means([values[0].mean(axis=0)], ids, mask)))
+    attention_output.plot_standard_attention_outputs(context, steps=1)
+    positions = np.array([0, 2, 3, 6])
+    expected = weights[0].numpy()[:, positions, :][:, :, positions]
+    np.testing.assert_array_equal(captured["layers"][0], expected)
+    np.testing.assert_array_equal(captured["heads"], expected)
+    np.testing.assert_array_equal(captured["mask"], blocked.numpy()[np.ix_(positions, positions)])
+    np.testing.assert_array_equal(captured["roles"], [ROLE_SCENE, ROLE_STATE, ROLE_SKILL, ROLE_STATE])
+    role_order = tuple(sorted(analysis_common.ROLE_NAMES))
+    assert captured["blocks"][0, role_order.index(ROLE_STATE), role_order.index(ROLE_SCENE)] == pytest.approx(
+        float(weights[0, :, 2, 0].mean()) / 2,
+    )
+
+
 def test_model_analysis_attention_output_and_main(monkeypatch, tmp_path):
     context = _analysis_context(tmp_path)
     context.output_dir.mkdir(parents=True)

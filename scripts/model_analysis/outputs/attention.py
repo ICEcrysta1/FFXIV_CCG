@@ -10,6 +10,7 @@ import numpy as np
 import torch
 from matplotlib.colors import Normalize
 
+from common.policy.model.input_encoder import ROLE_SCENE
 from training import TrainingCollator
 
 from ..common import (
@@ -123,7 +124,15 @@ def plot_standard_attention_outputs(
     padding = trace.encoded.get("padding_mask")
     if padding is not None:
         padding_values = _single_sample_vector_value(padding, token_count).astype(bool)
-        blocked = blocked | padding_values[:, None] | padding_values[None, :]
+        # 失效 scene 与 batch padding 都不是模型上下文；同步裁去 query/key，
+        # 保留真实顺序与权重，避免灰色空位占据热图并稀释 role 汇总的分母。
+        valid_positions = np.flatnonzero(~padding_values)
+        attention_arrays = tuple(
+            attention[:, valid_positions, :][:, :, valid_positions]
+            for attention in attention_arrays
+        )
+        blocked = blocked[np.ix_(valid_positions, valid_positions)]
+        role_ids = role_ids[valid_positions]
     del batch, trace, padding
     if context.device.type == "cuda":
         torch.cuda.empty_cache()
@@ -259,22 +268,28 @@ def _row_relative_attention(matrix: np.ndarray, blocked: np.ndarray) -> np.ndarr
     return normalized
 
 
-def _role_spans(role_ids: np.ndarray) -> list[tuple[int, int, str]]:
+def _context_spans(role_ids: np.ndarray) -> list[tuple[int, int, str]]:
+    """按场景、交错历史、当前状态分区，不按每次 state/skill 切换分区。"""
     if role_ids.size == 0:
         return []
     spans: list[tuple[int, int, str]] = []
-    start = 0
-    for index in range(1, role_ids.size + 1):
-        if index == role_ids.size or role_ids[index] != role_ids[start]:
-            role_id = int(role_ids[start])
-            spans.append((start, index, ROLE_NAMES.get(role_id, f"role_{role_id}")))
-            start = index
+    non_scene = np.flatnonzero(role_ids != ROLE_SCENE)
+    scene_end = int(non_scene[0]) if non_scene.size else role_ids.size
+    if scene_end:
+        spans.append((0, scene_end, f"scene\n{scene_end} tokens"))
+    if scene_end < role_ids.size:
+        history_end = role_ids.size - 1
+        if scene_end < history_end:
+            history_count = history_end - scene_end
+            spans.append((scene_end, history_end, f"history: state / skill\n{history_count} tokens"))
+        spans.append((history_end, role_ids.size, "current\nstate"))
     return spans
 
 
 def _draw_attention_structure(ax, role_ids: np.ndarray) -> None:
-    """在矩阵上标出 token role 边界和标准因果对角线参考线。"""
-    spans = _role_spans(role_ids)
+    """仅标出大区段边界和因果对角线，避免交错历史形成密集网格。"""
+    spans = _context_spans(role_ids)
+    ax.grid(False, which="both")
     centers = []
     labels = []
     for start, end, label in spans:
@@ -282,10 +297,10 @@ def _draw_attention_structure(ax, role_ids: np.ndarray) -> None:
         labels.append(label)
         if end < role_ids.size:
             boundary = end - 0.5
-            ax.axvline(boundary, color="white", linewidth=0.8, alpha=0.9)
-            ax.axhline(boundary, color="white", linewidth=0.8, alpha=0.9)
+            ax.axvline(boundary, color="white", linewidth=0.6, alpha=0.5)
+            ax.axhline(boundary, color="white", linewidth=0.6, alpha=0.5)
     if centers:
-        ax.set_xticks(centers, labels, rotation=35, ha="right", fontsize=8)
+        ax.set_xticks(centers, labels, fontsize=8)
         ax.set_yticks(centers, labels, fontsize=8)
     # 完全因果布局下对角线即 mask 边界：query 只能读取左上三角。
     diagonal_end = max(role_ids.size - 0.5, 0.5)
@@ -317,16 +332,16 @@ def _plot_attention_matrix_grid(
     for index, matrix in enumerate(matrices):
         ax = axes.flat[index]
         display = np.ma.masked_where(display_mask, matrix)
-        image = ax.imshow(display, cmap=cmap, norm=color_norm, aspect="auto")
+        image = ax.imshow(display, cmap=cmap, norm=color_norm, aspect="equal", interpolation="nearest")
         _draw_attention_structure(ax, role_ids)
         ax.set_title(f"Layer {index + 1} · head mean")
-        ax.set_xlabel("Key position")
-        ax.set_ylabel("Query position")
+        ax.set_xlabel("Key tokens (valid sequence order)")
+        ax.set_ylabel("Query tokens (valid sequence order)")
     hide_empty_tiles(axes, len(matrices))
     assert image is not None
     fig.suptitle(
-        "Full attention matrix by layer "
-        "(gray = blocked by mask; each query row normalized independently)"
+        "Full attention matrix by layer — valid tokens only\n"
+        "Gray = blocked by mask; each query row normalized independently"
     )
     fig.colorbar(
         image,
@@ -354,16 +369,16 @@ def _plot_attention_head_grid(
             blocked,
             _row_relative_attention(matrix, blocked),
         )
-        image = ax.imshow(display, cmap=cmap, norm=color_norm, aspect="auto")
+        image = ax.imshow(display, cmap=cmap, norm=color_norm, aspect="equal", interpolation="nearest")
         _draw_attention_structure(ax, role_ids)
         ax.set_title(f"Last layer · head {index + 1}")
-        ax.set_xlabel("Key position")
-        ax.set_ylabel("Query position")
+        ax.set_xlabel("Key tokens (valid sequence order)")
+        ax.set_ylabel("Query tokens (valid sequence order)")
     hide_empty_tiles(axes, head_count)
     assert image is not None
     fig.suptitle(
-        "Full attention matrix by head "
-        "(gray = blocked by mask; each query row normalized independently)"
+        "Full attention matrix by head — valid tokens only\n"
+        "Gray = blocked by mask; each query row normalized independently"
     )
     fig.colorbar(
         image,
@@ -411,6 +426,7 @@ def _plot_attention_role_blocks(
     image = None
     for index, block in enumerate(blocks):
         ax = axes.flat[index]
+        ax.grid(False, which="both")
         image = ax.imshow(block, cmap=ATTENTION_CMAP_NAME, vmin=0.0, vmax=1.0)
         ax.set_title(f"Layer {index + 1}")
         ax.set_xticks(np.arange(len(labels)), labels, rotation=35, ha="right")
@@ -457,6 +473,7 @@ def _plot_query_attention(
     path: Path,
 ) -> None:
     fig, ax = create_figure((max(10.0, len(context_keys) * 2.0), max(8.0, len(labels) * 0.32)))
+    ax.grid(False, which="both")
     image = ax.imshow(values, cmap=_attention_cmap(), aspect="auto", norm=_attention_color_norm())
     ax.set_xticks(np.arange(len(context_keys)), context_keys, rotation=35, fontsize=8)
     ax.set_yticks(np.arange(len(labels)), labels, fontsize=8)
@@ -473,6 +490,7 @@ def _plot_layer_attention(
     path: Path,
 ) -> None:
     fig, ax = create_figure((max(14.0, len(context_keys) * 0.48), 5.5))
+    ax.grid(False, which="both")
     image = ax.imshow(
         values,
         cmap=_attention_cmap(),
