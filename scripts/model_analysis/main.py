@@ -182,6 +182,7 @@ def main() -> None:
         "skill_feature_dim": context.data_spec.skill_feature_dim,
         "layer_count": len(context.layer_vectors),
         "layer_token_counts": [int(len(values)) for values in context.layer_vectors],
+        "layer_current_state_counts": [int(mask.sum()) for mask in context.layer_current_state_masks],
     }
     if args.loss_landscape:
         loss_landscape_max_samples = (

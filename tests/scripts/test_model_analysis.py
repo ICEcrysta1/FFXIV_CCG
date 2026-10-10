@@ -898,6 +898,58 @@ def test_real_causal_trace_loads_metadata_and_keeps_current_query_under_token_ca
     assert np.isfinite(query_projections[0][0]).all()
 
 
+@pytest.mark.parametrize(("batch_size", "max_tokens"), [(1, 4), (2, 6), (3, 8)])
+def test_analysis_token_budget_covers_late_decisions_and_keeps_metadata_aligned(monkeypatch, tmp_path, batch_size, max_tokens):
+    """前批次即使足以填满总预算，后续决策也必须进入分析并保留对应元数据。"""
+    def collate(samples):
+        return {
+            "sample_ids": torch.tensor([sample["id"] for sample in samples]),
+            "current_state_abs_values": torch.zeros((len(samples), 1)),
+        }
+
+    def trace(batch):
+        size = len(batch["sample_ids"])
+        hidden = batch["sample_ids"].float()[:, None, None].expand(-1, 4, 2).clone()
+        hidden += torch.arange(4)[None, :, None] * 0.01
+        return SimpleNamespace(
+            hidden=hidden, layer_hidden=(hidden,),
+            encoded={
+                "role_ids": torch.tensor([[ROLE_SCENE, ROLE_STATE, ROLE_SKILL, ROLE_STATE]]).expand(size, -1),
+                "padding_mask": torch.zeros((size, 4), dtype=torch.bool),
+                "current_state_positions": torch.full((size,), 3, dtype=torch.long),
+            },
+        )
+
+    model = SimpleNamespace(
+        encoder=SimpleNamespace(layers=(object(),)), trace=trace,
+        score_hidden=lambda _encoded, hidden, _batch: torch.zeros((len(hidden), 2)),
+    )
+    runtime = SimpleNamespace(
+        checkpoint_path=tmp_path / "checkpoint.pt", source_path=tmp_path / "source.json",
+        output_dir=tmp_path, model=model, dataset=[{"id": index} for index in range(4)],
+        data_spec=SimpleNamespace(job_tag="black_mage"), vocab=None, device=torch.device("cpu"),
+        precision="float32", autocast=nullcontext,
+        context_encoder=SimpleNamespace(encode=lambda batch: batch, layout=None),
+    )
+    monkeypatch.setattr(analysis_common, "_load_model_analysis_context", lambda **_kwargs: runtime)
+    monkeypatch.setattr(analysis_common, "TrainingCollator", lambda: collate)
+    monkeypatch.setattr(analysis_common, "build_token_metadata", lambda _samples, *, batch, encoded, **_kwargs: {
+        feature: np.broadcast_to(batch["sample_ids"].numpy()[:, None], encoded["padding_mask"].shape).copy()
+        for feature in analysis_common.ANALYSIS_FEATURES
+    })
+    context = analysis_common.load_analysis_context(
+        checkpoint_path=runtime.checkpoint_path, source_path=runtime.source_path,
+        raw_root=tmp_path, cache_dir=tmp_path, max_history=4, cache_shard_size=1,
+        cache_max_shards=1, output_dir=tmp_path, max_samples=4, max_tokens=max_tokens,
+        batch_size=batch_size, device_name="cpu", precision="float32",
+    )
+    assert len(context.layer_vectors[0]) == max_tokens
+    current = context.layer_current_state_masks[0]
+    assert current.sum() == 4
+    np.testing.assert_array_equal(context.layer_metadata[0]["step_index"][current], np.arange(4))
+    np.testing.assert_allclose(context.layer_vectors[0][current, 0], np.arange(4) + 0.03, atol=1e-6)
+
+
 def test_history_embedding_views_exclude_padding_and_support_empty_history(monkeypatch, tmp_path):
     context = _analysis_context(tmp_path)
     context.output_dir.mkdir(parents=True)
@@ -1361,6 +1413,7 @@ def test_model_analysis_attention_output_and_main(monkeypatch, tmp_path):
         precision="float32",
         dataset=[1, 2, 3],
         layer_vectors=[np.zeros((2, 2))],
+        layer_current_state_masks=[np.array([False, True])],
     )
     output_dir = tmp_path / "main-output"
     output_dir.mkdir(parents=True)
@@ -1426,6 +1479,7 @@ def test_model_analysis_attention_output_and_main(monkeypatch, tmp_path):
     assert '"enabled": true' in metadata
     assert '"resolution": 31' in metadata
     assert '"precision": "float32"' in metadata
+    assert '"layer_current_state_counts": [\n    1\n  ]' in metadata
     assert len(analysis_context_calls) == 1
     assert analysis_context_calls[0]["precision"] == "float32"
     assert len(loss_context_calls) == 1
