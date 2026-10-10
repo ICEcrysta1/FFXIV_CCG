@@ -1,4 +1,11 @@
 convert_fflogs:
+  # 修改移动提取语义或参数后，同步提升 compiled cache 的转换版本。
+  movement_detection:
+    coordinate_scale: 100.0
+    minimum_displacement: 0.25
+    maximum_observation_gap_seconds: 0.75
+    merge_gap_gcds: 1.0
+    minimum_window_gcds: 1.0
   gcd_detection_defaults:
     probe_skill_game_id: 0
     fallback_seconds: 2.5

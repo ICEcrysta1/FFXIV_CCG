@@ -9,8 +9,7 @@ from collections import Counter
 from common.contracts import SCENE_EPSILON, SLIDECAST_WINDOW_SECONDS
 
 from ..config import GcdDetectionConfig
-from ..config.constants import MOVE_DIST_THRESHOLD, MOVEMENT_MERGE_GAP, POTION_BUFF_ID, POTION_SKILL_ID, _round_time
-from ..utils import merge_timestamps_to_windows
+from ..config.constants import MOVE_DIST_THRESHOLD, POTION_BUFF_ID, POTION_SKILL_ID, _round_time
 
 # 开怪预读的 begincast 会被战斗窗口裁掉：实测首个 cast 落在开怪后 0~800ms。
 # 落在该窗口内且缺少 begincast 的硬读条按技能表读条时长回拨请求时刻；
@@ -340,27 +339,6 @@ def annotate_action_movement(actions: list[dict[str, object]]) -> None:
         current["moved"] = moved
         current["forced_move"] = moved and previous_cast_time > SLIDECAST_WINDOW_SECONDS
         current["instant_move"] = moved and previous_cast_time <= SLIDECAST_WINDOW_SECONDS
-
-
-def detect_forced_movement_windows(actions: list[dict[str, object]]) -> list[tuple[float, float]]:
-    """把强制移动动作合并成原始时间窗口。
-
-    当前转换链路把 FFLogs ``cast`` 事件的 timestamp 统一视为动作生效时刻。
-    因此当某个动作被标成 ``forced_move`` 时，真正允许开始滑步的时刻应落在
-    前一个读条动作的生效前 0.5 秒，而不是旧语义里的“起读条时刻 + 读条时长 - 0.5”。
-    """
-    move_timestamps: list[float] = []
-    for index, action in enumerate(actions):
-        if not action.get("forced_move") or index == 0:
-            continue
-        previous = actions[index - 1]
-        prev_cast_time = float(previous.get("actual_cast_seconds", previous["cast_time"]))
-        if prev_cast_time <= SLIDECAST_WINDOW_SECONDS:
-            continue
-        # 在 cast=生效时刻 语义下，滑步开始时刻 = 生效前 0.5s。
-        movement_time = float(previous["timestamp"]) - SLIDECAST_WINDOW_SECONDS
-        move_timestamps.append(movement_time)
-    return merge_timestamps_to_windows(move_timestamps, gap_seconds=MOVEMENT_MERGE_GAP)
 
 
 def detect_gcd_from_logs(

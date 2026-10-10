@@ -32,11 +32,6 @@ POTION_SKILL_ID = 99999
 # 团辅窗口标记技能来源
 RAID_BUFF_WINDOW_MARKER_KEYS = RAID_BUFF_WINDOW_SOURCE_KEYS
 
-# 强制移动窗口合并的最大间隔
-# 滑步修正后每个时间戳代表一次独立的滑步移动（约每 GCD 一次），
-# 不应跨 GCD 合并，仅合并几乎同时发生的检测点。
-MOVEMENT_MERGE_GAP = 0.1
-
 # Boss 停手判定的默认伤害间隔阈值
 DEFAULT_DOWNTIME_GAP_SECONDS = 6.0
 

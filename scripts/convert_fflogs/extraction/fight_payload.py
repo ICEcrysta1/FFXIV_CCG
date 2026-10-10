@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ..config import MovementDetectionConfig
 from ..config.constants import DOWNTIME_BOUNDARY_MARGIN, _round_time
 from ..scene.scene_context import (
     build_forced_movement_context,
@@ -13,7 +14,7 @@ from ..scene.scene_context import (
     resolve_anchor,
 )
 from .downtime import detect_downtime_windows
-from .extraction import detect_forced_movement_windows
+from .movement import detect_forced_movement_windows
 
 
 def build_output_fight_id(report_payload: dict[str, object], report_code: str) -> str:
@@ -45,6 +46,7 @@ def build_fight_payload(
     downtime_gap_seconds: float,
     raid_buff_marker_keys: tuple[str, ...],
     raid_buff_window_duration: float,
+    movement_detection: MovementDetectionConfig,
     downtime_boundary_margin: float = DOWNTIME_BOUNDARY_MARGIN,
     target_count_window_context: dict[str, object] | None = None,
     raw_events: list[dict[str, object]] | None = None,
@@ -69,7 +71,10 @@ def build_fight_payload(
         gap_seconds=downtime_gap_seconds,
         boundary_margin=downtime_boundary_margin,
     )
-    forced_movement_windows = detect_forced_movement_windows(fight_actions)
+    forced_movement_windows = detect_forced_movement_windows(
+        raw_events or [], source_id=source_id, actual_base_gcd=gcd_time,
+        movement_detection=movement_detection, fight_start=fight_start, fight_end=fight_end,
+    )
     targetable_window_context = build_targetable_window_context(
         fight_start,
         fight_end,

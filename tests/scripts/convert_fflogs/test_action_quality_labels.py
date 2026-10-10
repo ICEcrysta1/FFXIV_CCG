@@ -15,6 +15,7 @@ from scripts.convert_fflogs import (
     build_skill_book,
     build_training_samples,
     convert_report_payload,
+    load_convert_fflogs_config,
     load_job_project_config,
 )
 from scripts.convert_fflogs.cache import cache_compile, precompile_raw_training_caches
@@ -200,6 +201,7 @@ def test_label_reaches_real_decision_not_policy_wait(cs_backend, cs_skill_book):
         report_code="quality_demo", source_id=7, job_tag="black_mage", gcd_time=2.5,
         generated_at="2026-09-28T00:00:00Z", downtime_gap_seconds=20.0,
         raid_buff_marker_keys=("amplifier",), raid_buff_window_duration=15.0,
+        movement_detection=load_convert_fflogs_config().movement_detection,
     )
     result = build_training_samples(cs_backend, cs_skill_book, fight)
     real = [sample for sample in result["samples"] if sample["label"]["action_key"] == "fire_iii"]

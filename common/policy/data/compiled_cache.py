@@ -53,7 +53,8 @@ CACHE_FORMAT = "raw_json_compiled_samples_v23_state_skill_availability"
 # v23：所有技能 token 移除绝对时间，按精简后的字段重建完整 history bank。
 # v24：归一化前保留状态原值与差分，窗口与时间尺度只属于模型读取侧。
 # v25：使用共享场景执行视图与同刻事实批次，在请求/效果时冻结技能接受能力。
-DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v25_state_skill_availability"
+# v26：从完整坐标观测提取移动区间，先按实测 GCD 合并，再剔除短于 GCD 减滑步时间的窗口。
+DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v26_gcd_movement_windows"
 # `weights_only=True` 的安全 unpickler 对 protocol 2 支持最稳定；compiled
 # cache 的样本数据只需要普通 mapping 和 tensor，不需要更高协议。
 CACHE_PICKLE_PROTOCOL = 2
