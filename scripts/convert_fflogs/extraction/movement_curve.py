@@ -1,9 +1,8 @@
-"""移动提取内部的连续速度曲线与有限支撑平滑。"""
+"""移动提取内部的连续贝塞尔速度曲线与水平阈值截取。"""
 
 from __future__ import annotations
 
 import math
-from collections import deque
 
 import numpy as np
 
@@ -56,35 +55,6 @@ def sample_bezier_speed(
     speed = np.clip(speed, np.minimum(values[indices], values[indices+1]),
                     np.maximum(values[indices], values[indices+1]))
     return times, speed
-
-
-def smooth_speed_envelope(
-    speed: np.ndarray,
-    *,
-    sample_step_seconds: float,
-    maximum_expansion_per_side_seconds: float,
-) -> np.ndarray:
-    """先局部取最大值再 Hann 平滑，两步的总影响范围不超过外扩上限。"""
-    half = math.floor(maximum_expansion_per_side_seconds / (2 * sample_step_seconds) + 1e-9)
-    if half == 0:
-        return speed.copy()
-    width = 2 * half + 1
-    padded = np.pad(speed, (half, half), mode="edge")
-    maxima = np.empty_like(speed)
-    queue: deque[int] = deque()
-    for index, value in enumerate(padded):
-        while queue and queue[0] <= index - width:
-            queue.popleft()
-        while queue and padded[queue[-1]] <= value:
-            queue.pop()
-        queue.append(index)
-        if index >= width - 1:
-            maxima[index - width + 1] = padded[queue[0]]
-    kernel = np.hanning(width)
-    kernel /= kernel.sum()
-    smooth = np.convolve(np.pad(maxima, (half, half), mode="edge"), kernel, mode="valid")
-    # 数学上包络不低于原值且不超过原峰，仅修正卷积带来的舍入误差。
-    return np.maximum(speed, np.minimum(smooth, np.max(speed)))
 
 
 def threshold_windows(

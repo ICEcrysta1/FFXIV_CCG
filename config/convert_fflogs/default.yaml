@@ -5,8 +5,6 @@ convert_fflogs:
     # 距离单位/秒，沿用实验阈值 0.25 / 0.75；不再按观测间隔剔除坐标。
     speed_threshold: 0.3333333333333333
     sample_step_seconds: 0.01
-    # 局部最大值外扩和 Hann 平滑各使用一半半径，最后裁回新增的两端。
-    maximum_expansion_per_side_seconds: 0.5
     merge_gap_gcds: 1.0
     minimum_window_gcds: 1.0
   gcd_detection_defaults:

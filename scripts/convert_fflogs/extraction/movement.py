@@ -9,7 +9,7 @@ from statistics import median
 from common.contracts import SCENE_EPSILON, SLIDECAST_WINDOW_SECONDS
 
 from ..config import MovementDetectionConfig
-from .movement_curve import sample_bezier_speed, smooth_speed_envelope, threshold_windows
+from .movement_curve import sample_bezier_speed, threshold_windows
 
 
 def detect_forced_movement_windows(
@@ -22,10 +22,10 @@ def detect_forced_movement_windows(
     fight_end: float,
     hardcast_windows: list[tuple[float, float]] | None = None,
 ) -> list[tuple[float, float]]:
-    """连续速度平滑后截取、按 GCD 合并、扣读条、裁回外扩并剔除短窗口。
+    """按贝塞尔连续速度阈值截取、GCD 合并、扣实际读条并剔除短窗口。
 
-    不设速度上限或观测间隔门槛。合并资格使用外扩前的阈值交点，避免外扩
-    越过原本大于一 GCD 的间隙。裁回只恢复每组合并前的两个外边界。
+    不设速度上限或观测间隔门槛。贝塞尔曲线决定阈值交点，间隔不超过
+    实测一 GCD 的候选先合并；扣除硬读条后不重新跨读条合并。
     """
     if not math.isfinite(actual_base_gcd) or actual_base_gcd <= 0.0:
         raise ValueError("actual_base_gcd must be positive and finite")
@@ -45,12 +45,6 @@ def detect_forced_movement_windows(
     candidates = threshold_windows(
         times, speed, threshold=movement_detection.speed_threshold, duration=duration,
     )
-    expanded = threshold_windows(
-        times, smooth_speed_envelope(
-            speed, sample_step_seconds=movement_detection.sample_step_seconds,
-            maximum_expansion_per_side_seconds=movement_detection.maximum_expansion_per_side_seconds,
-        ), threshold=movement_detection.speed_threshold, duration=duration,
-    )
     merge_gap = movement_detection.merge_gap_gcds * actual_base_gcd
     merged: list[tuple[float, float]] = []
     for start, end in candidates:
@@ -63,16 +57,8 @@ def detect_forced_movement_windows(
     )
     cuts = sorted((start-origin, end-origin) for start, end in (hardcast_windows or []))
     result = []
-    radius = movement_detection.maximum_expansion_per_side_seconds
-    for core_start, core_end in merged:
-        relevant = [(start, end) for start, end in expanded if start <= core_end and end >= core_start]
-        if not relevant:
-            continue
-        start = max(0.0, core_start-radius, min(a for a, _ in relevant))
-        end = min(duration, core_end+radius, max(b for _, b in relevant))
+    for start, end in merged:
         for left, right in _subtract_windows(start, end, cuts):
-            # 先平滑和截取，再扣除真实读条；最后只裁新增外边缘，保留内部桥接。
-            left, right = max(left, core_start), min(right, core_end)
             if right-left > SCENE_EPSILON and right-left+SCENE_EPSILON >= minimum_length:
                 result.append((origin+left, origin+right))
     return result

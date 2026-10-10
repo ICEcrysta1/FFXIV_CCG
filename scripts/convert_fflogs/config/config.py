@@ -68,7 +68,6 @@ class MovementDetectionConfig:
     coordinate_scale: float
     speed_threshold: float
     sample_step_seconds: float
-    maximum_expansion_per_side_seconds: float
     merge_gap_gcds: float
     minimum_window_gcds: float
 
@@ -104,6 +103,9 @@ def load_convert_fflogs_config(path: Path | None = None) -> ConvertFflogsConfig:
         raise ValueError(f"{config_path}: default_worker_count is removed; set CONVERT_FFLOGS_WORKERS in .env")
     gcd_defaults = _require_mapping(section, "gcd_detection_defaults", source=str(config_path))
     movement = _require_mapping(section, "movement_detection", source=str(config_path))
+    unknown = movement.keys() - MovementDetectionConfig.__dataclass_fields__.keys()
+    if unknown:
+        raise ValueError(f"{config_path}: movement_detection unknown fields: {sorted(unknown)}")
     missing = MovementDetectionConfig.__dataclass_fields__.keys() - movement.keys()
     if missing:
         raise ValueError(f"{config_path}: movement_detection missing fields: {sorted(missing)}")

@@ -20,7 +20,6 @@ def test_convert_fflogs_config_loads_default_values():
     assert config.movement_detection.coordinate_scale == 100.0
     assert config.movement_detection.speed_threshold == pytest.approx(1 / 3)
     assert config.movement_detection.sample_step_seconds == 0.01
-    assert config.movement_detection.maximum_expansion_per_side_seconds == 0.5
     assert config.movement_detection.merge_gap_gcds == 1.0
     assert config.movement_detection.minimum_window_gcds == 1.0
 
@@ -108,7 +107,6 @@ gcd_detection:
 
 @pytest.mark.parametrize("field", [
     "coordinate_scale", "speed_threshold", "sample_step_seconds",
-    "maximum_expansion_per_side_seconds",
     "merge_gap_gcds", "minimum_window_gcds",
 ])
 @pytest.mark.parametrize("value", [0.0, -1.0, float("nan"), float("inf")])
@@ -120,4 +118,16 @@ def test_movement_detection_rejects_invalid_parameters(tmp_path, field, value):
     path = tmp_path / "default.yaml"
     path.write_text(yaml.safe_dump(payload), encoding="utf-8", newline="\n")
     with pytest.raises(ValueError, match=f"movement_detection.{field}"):
+        load_convert_fflogs_config(path)
+
+
+def test_movement_detection_rejects_removed_expansion_parameter(tmp_path):
+    """无效的旧参数必须报错，禁止静默接受并污染缓存签名。"""
+    from scripts.convert_fflogs.config import CONVERT_DEFAULT_CONFIG_PATH
+
+    payload = yaml.safe_load(CONVERT_DEFAULT_CONFIG_PATH.read_text(encoding="utf-8"))
+    payload["convert_fflogs"]["movement_detection"]["maximum_expansion_per_side_seconds"] = 0.5
+    path = tmp_path / "default.yaml"
+    path.write_text(yaml.safe_dump(payload), encoding="utf-8", newline="\n")
+    with pytest.raises(ValueError, match="movement_detection unknown fields.*maximum_expansion"):
         load_convert_fflogs_config(path)
