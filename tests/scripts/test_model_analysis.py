@@ -1199,47 +1199,6 @@ def test_loss_landscape_rejects_invalid_options(kwargs, message):
         loss_output._validate_options(**options)
 
 
-def test_opener_attention_uses_latest_state_query_and_excludes_padding(monkeypatch, tmp_path):
-    """同类历史状态不能混作 query，逐样本位置和 padding 必须分别处理。"""
-    weights = torch.tensor([
-        [1.0, 0.0, 0.0, 0.0, 0.0],
-        [0.3, 0.7, 0.0, 0.0, 0.0],
-        [0.1, 0.1, 0.8, 0.0, 0.0],
-        [0.6, 0.1, 0.1, 0.2, 0.0],
-        [0.2, 0.1, 0.3, 0.9, 0.4],
-    ]).reshape(1, 1, 5, 5).expand(2, 2, 5, 5)
-    class Model:
-        @staticmethod
-        def trace(_batch):
-            return SimpleNamespace(
-                encoded={
-                    "current_state_positions": torch.tensor([4, 3]),
-                    "role_ids": torch.tensor([[ROLE_SCENE, ROLE_STATE, ROLE_SKILL, ROLE_STATE, ROLE_STATE]] * 2),
-                    "padding_mask": torch.tensor([[False, False, False, True, False], [False, False, False, False, True]]),
-                },
-                hidden=torch.zeros(2, 5, 2), attentions=(weights,),
-            )
-        @staticmethod
-        def score_hidden(_encoded, _hidden, _batch):
-            return torch.tensor([[1.0, 0.0]] * 2)
-    context = SimpleNamespace(
-        model=Model(), data_spec=SimpleNamespace(action_keys=("a", "b")),
-        dataset=[{"label_action_key": "a", "label_index": 0}] * 2,
-        device=torch.device("cpu"), output_dir=tmp_path, autocast=nullcontext,
-        encode_batch=lambda batch: batch,
-    )
-    captured = {}
-    monkeypatch.setattr(attention_output, "TrainingCollator", lambda: (lambda _samples: {}))
-    monkeypatch.setattr(attention_output, "_plot_query_attention",
-                        lambda values, *_args: captured.update(query=values))
-    monkeypatch.setattr(attention_output, "_plot_layer_attention",
-                        lambda values, *_args: captured.update(layers=values))
-    attention_output.plot_opener_attention(context, steps=2, batch_size=2)
-    expected = np.array([[0.4, 1.0, 0.6], [1.0, 0.5, 1.0 / 6.0]])
-    np.testing.assert_allclose(captured["query"], expected, rtol=1e-6)
-    np.testing.assert_allclose(captured["layers"], expected.mean(axis=0, keepdims=True), rtol=1e-6)
-
-
 @pytest.mark.parametrize(("scene_count", "history_count"), [(7, 300), (0, 300), (7, 0), (0, 0)])
 def test_attention_structure_groups_interleaved_history_without_dense_grid(scene_count, history_count):
     """300 条交错历史也只显示区段边界，当前状态仍单独可辨。"""
@@ -1266,7 +1225,7 @@ def test_attention_structure_groups_interleaved_history_without_dense_grid(scene
 
 
 def test_standard_attention_removes_padding_on_both_axes_without_changing_weights(monkeypatch, tmp_path):
-    """失效场景和历史 padding 都裁掉，因果 mask、真实权重和 role 分母保持一致。"""
+    """失效场景和历史 padding 都裁掉，因果 mask、真实权重和 token 顺序保持一致。"""
     roles = torch.tensor([[ROLE_SCENE, ROLE_SCENE, ROLE_STATE, ROLE_SKILL, ROLE_STATE, ROLE_SKILL, ROLE_STATE]])
     padding = torch.tensor([[False, True, False, False, True, True, False]])
     blocked = torch.triu(torch.ones((7, 7), dtype=torch.bool), diagonal=1)
@@ -1287,9 +1246,6 @@ def test_standard_attention_removes_padding_on_both_axes_without_changing_weight
                         lambda values, mask, ids, _path: captured.update(layers=values, mask=mask, roles=ids))
     monkeypatch.setattr(attention_output, "_plot_attention_head_grid",
                         lambda values, _mask, _ids, _path: captured.update(heads=values))
-    monkeypatch.setattr(attention_output, "_plot_attention_role_blocks",
-                        lambda values, mask, ids, _path: captured.update(
-                            blocks=attention_output._role_block_means([values[0].mean(axis=0)], ids, mask)))
     attention_output.plot_standard_attention_outputs(context, steps=1)
     positions = np.array([0, 2, 3, 6])
     expected = weights[0].numpy()[:, positions, :][:, :, positions]
@@ -1297,70 +1253,17 @@ def test_standard_attention_removes_padding_on_both_axes_without_changing_weight
     np.testing.assert_array_equal(captured["heads"], expected)
     np.testing.assert_array_equal(captured["mask"], blocked.numpy()[np.ix_(positions, positions)])
     np.testing.assert_array_equal(captured["roles"], [ROLE_SCENE, ROLE_STATE, ROLE_SKILL, ROLE_STATE])
-    role_order = tuple(sorted(analysis_common.ROLE_NAMES))
-    assert captured["blocks"][0, role_order.index(ROLE_STATE), role_order.index(ROLE_SCENE)] == pytest.approx(
-        float(weights[0, :, 2, 0].mean()) / 2,
-    )
 
 
 def test_model_analysis_attention_output_and_main(monkeypatch, tmp_path):
-    context = _analysis_context(tmp_path)
-    context.output_dir.mkdir(parents=True)
-    samples = [
-        {
-            "action_keys": ["fire_iii", "fire_iv"],
-            "label_action_key": "fire_iii",
-            "label_index": 0,
-        }
-        for _ in range(2)
-    ]
-    context.dataset = samples
-
-    class FakeAttentionModel:
-        @staticmethod
-        def trace(_batch):
-            encoded = {
-                "current_state_positions": torch.tensor([2, 2]),
-                "role_ids": torch.tensor([[ROLE_SCENE, ROLE_SKILL, ROLE_STATE]] * 2),
-                "padding_mask": torch.zeros((2, 3), dtype=torch.bool),
-            }
-            attention = torch.ones((2, 2, 3, 3), dtype=torch.float32)
-            return SimpleNamespace(
-                encoded=encoded,
-                hidden=torch.zeros((2, 3, 2)),
-                attentions=[attention, attention * 2],
-            )
-
-        @staticmethod
-        def score_hidden(_encoded, _hidden, _batch):
-            return torch.tensor([[2.0, 1.0], [1.0, 2.0]])
-
-    context.model = FakeAttentionModel()
-    monkeypatch.setattr(attention_output, "TrainingCollator", lambda: (lambda batch: {}))
-    query_path, layer_path = attention_output.plot_opener_attention(
-        context, steps=2, batch_size=1
-    )
-    assert query_path.is_file()
-    assert layer_path.is_file()
     color_norm = attention_output._attention_color_norm()
     assert isinstance(color_norm, Normalize)
     assert float(color_norm(0.25)) == pytest.approx(0.25)
-    query_relative = attention_output._normalize_query_attention(
-        np.array([[0.1, 0.3, 0.6], [0.01, 0.02, 0.03]], dtype=np.float32),
-    )
-    np.testing.assert_allclose(
-        query_relative,
-        [[1 / 6, 0.5, 1.0], [1 / 3, 2 / 3, 1.0]],
-    )
     row_relative = attention_output._row_relative_attention(
         np.array([[0.1, 0.3, 0.6], [0.01, 0.02, 0.03]], dtype=np.float32),
         np.array([[False, False, False], [False, True, False]]),
     )
     np.testing.assert_allclose(row_relative, [[1 / 6, 0.5, 1.0], [1 / 3, 0.0, 1.0]])
-    with pytest.raises(ValueError, match="steps"):
-        attention_output.plot_opener_attention(context, steps=0)
-    with pytest.raises(ValueError, match="batch size"):
-        attention_output.plot_opener_attention(context, batch_size=0)
 
     standard_context = _analysis_context(tmp_path / "standard")
     standard_context.output_dir.mkdir(parents=True)
@@ -1374,11 +1277,11 @@ def test_model_analysis_attention_output_and_main(monkeypatch, tmp_path):
     class StandardFakeAttentionModel:
         @staticmethod
         def trace(_batch):
-            role_ids = torch.tensor([[0, 1, 1, 2, 2]], dtype=torch.int64)
-            attention_mask = torch.zeros((5, 5), dtype=torch.bool)
+            role_ids = torch.tensor([[ROLE_SCENE, ROLE_STATE, ROLE_SKILL, ROLE_STATE, ROLE_SKILL, ROLE_STATE]])
+            attention_mask = torch.zeros((6, 6), dtype=torch.bool)
             attention_mask[2, 0] = True
-            padding_mask = torch.zeros((1, 5), dtype=torch.bool)
-            attention = torch.ones((1, 2, 5, 5), dtype=torch.float32) / 5.0
+            padding_mask = torch.zeros((1, 6), dtype=torch.bool)
+            attention = torch.ones((1, 2, 6, 6), dtype=torch.float32) / 6.0
             return SimpleNamespace(
                 encoded={
                     "attention_mask": attention_mask,
@@ -1389,12 +1292,19 @@ def test_model_analysis_attention_output_and_main(monkeypatch, tmp_path):
             )
 
     standard_context.model = StandardFakeAttentionModel()
+    monkeypatch.setattr(attention_output, "TrainingCollator", lambda: (lambda _samples: {}))
+    with pytest.raises(ValueError, match="steps"):
+        attention_output.plot_standard_attention_outputs(standard_context, steps=0)
     standard_paths = attention_output.plot_standard_attention_outputs(
         standard_context,
         steps=1,
     )
-    assert len(standard_paths) == 3
+    assert [path.name for path in standard_paths] == [
+        "08_attention_matrix_by_layer.png",
+        "09_attention_matrix_last_layer_heads.png",
+    ]
     assert all(path.is_file() for path in standard_paths)
+    assert set(standard_context.output_dir.iterdir()) == set(standard_paths)
 
     import scripts.model_analysis.main as analysis_main
 
@@ -1445,11 +1355,10 @@ def test_model_analysis_attention_output_and_main(monkeypatch, tmp_path):
     monkeypatch.setattr(analysis_main, "configure_matplotlib", lambda: None)
     monkeypatch.setattr(analysis_main, "plot_hidden_statistics", lambda _context: [tmp_path / "hidden.png"] * 2)
     monkeypatch.setattr(analysis_main, "plot_layer_pca", lambda _context: [tmp_path / "pca.png"])
-    monkeypatch.setattr(analysis_main, "plot_opener_attention", lambda _context, **kwargs: (tmp_path / "a.png", tmp_path / "b.png"))
     monkeypatch.setattr(
         analysis_main,
         "plot_standard_attention_outputs",
-        lambda _context, **kwargs: (tmp_path / "matrix.png", tmp_path / "heads.png", tmp_path / "blocks.png"),
+        lambda _context, **kwargs: (tmp_path / "matrix.png", tmp_path / "heads.png"),
     )
     monkeypatch.setattr(analysis_main, "plot_skill_embedding", lambda _context: tmp_path / "skill.png")
     monkeypatch.setattr(analysis_main, "plot_history_embeddings", lambda _context, **kwargs: (

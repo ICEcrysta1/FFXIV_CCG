@@ -1,4 +1,4 @@
-"""开场最新状态 query 与完整因果上下文注意力图。"""
+"""完整因果上下文的逐层与逐 head 注意力矩阵。"""
 
 from __future__ import annotations
 
@@ -14,87 +14,19 @@ from common.policy.model.input_encoder import ROLE_SCENE
 from training import TrainingCollator
 
 from ..common import (
-    ATTENTION_CMAP_NAME,
     HEATMAP_CELL_SIZE,
     AnalysisContext,
-    ROLE_NAMES,
-    create_figure,
     create_grid_figure,
     hide_empty_tiles,
     save_figure,
 )
 
 
-def plot_opener_attention(
-    context: AnalysisContext,
-    *,
-    steps: int = 28,
-    batch_size: int = 16,
-) -> tuple[Path, Path]:
-    """绘制最新状态 query 对场景、状态与技能三类 key 的注意力质量。"""
-    if steps <= 0:
-        raise ValueError("attention steps must be positive")
-    if batch_size <= 0:
-        raise ValueError("attention batch size must be positive")
-    sample_count = min(steps, len(context.dataset))
-    if sample_count == 0:
-        raise ValueError("dataset is empty, cannot plot opener attention")
-    samples = [context.dataset[index] for index in range(sample_count)]
-    action_keys = context.data_spec.action_keys
-    context_keys = tuple(ROLE_NAMES[role] for role in sorted(ROLE_NAMES))
-    collator = TrainingCollator()
-    layer_rows: list[list[np.ndarray]] | None = None
-    labels: list[str] = []
-    with torch.no_grad():
-        for start in range(0, sample_count, batch_size):
-            sample_batch = samples[start : start + batch_size]
-            batch = context.encode_batch(collator(sample_batch))
-            with context.autocast():
-                trace = context.model.trace(batch)
-                encoded = trace.encoded
-                logits = context.model.score_hidden(encoded, trace.hidden, batch)
-            positions = encoded["current_state_positions"]
-            valid = ~encoded["padding_mask"]
-            roles = encoded["role_ids"]
-            if layer_rows is None:
-                layer_rows = [[] for _ in trace.attentions]
-            for layer_index, attention in enumerate(trace.attentions):
-                # 只读最新状态 query；按真实 key 角色汇总所有 head 的注意力质量。
-                query_attention = attention[
-                    torch.arange(attention.shape[0], device=attention.device), :, positions, :
-                ].mean(dim=1)
-                mass = torch.stack([
-                    (query_attention * ((roles == role) & valid)).sum(dim=-1)
-                    for role in sorted(ROLE_NAMES)
-                ], dim=-1)
-                layer_rows[layer_index].append(mass.detach().float().cpu().numpy())
-            predictions = logits.argmax(dim=-1).detach().cpu().tolist()
-            for row, sample in enumerate(sample_batch):
-                labels.append(
-                    f"{start + row + 1}: {sample['label_action_key']} / pred={action_keys[predictions[row]]}"
-                )
-            del batch, trace, encoded, logits
-            if context.device.type == "cuda":
-                torch.cuda.empty_cache()
-    if not layer_rows:
-        raise ValueError("model trace did not return attention weights")
-    layer_values = [np.concatenate(rows, axis=0) for rows in layer_rows]
-    query_focus = _normalize_query_attention(layer_values[-1])
-    layer_focus = np.stack([
-        _normalize_query_attention(values).mean(axis=0) for values in layer_values
-    ])
-    query_path = context.output_dir / "06_opener_attention_context.png"
-    layer_path = context.output_dir / "07_opener_attention_by_layer.png"
-    _plot_query_attention(query_focus, context_keys, labels, query_path)
-    _plot_layer_attention(layer_focus, context_keys, layer_path)
-    return query_path, layer_path
-
-
 def plot_standard_attention_outputs(
     context: AnalysisContext,
     *,
     steps: int = 28,
-) -> tuple[Path, Path, Path]:
+) -> tuple[Path, Path]:
     """绘制完整 attention 矩阵，保留 query/key、mask 和 head 维度。"""
     if steps <= 0:
         raise ValueError("attention steps must be positive")
@@ -125,7 +57,7 @@ def plot_standard_attention_outputs(
     if padding is not None:
         padding_values = _single_sample_vector_value(padding, token_count).astype(bool)
         # 失效 scene 与 batch padding 都不是模型上下文；同步裁去 query/key，
-        # 保留真实顺序与权重，避免灰色空位占据热图并稀释 role 汇总的分母。
+        # 保留真实顺序与权重，避免灰色空位占据热图。
         valid_positions = np.flatnonzero(~padding_values)
         attention_arrays = tuple(
             attention[:, valid_positions, :][:, :, valid_positions]
@@ -139,11 +71,9 @@ def plot_standard_attention_outputs(
 
     matrix_path = context.output_dir / "08_attention_matrix_by_layer.png"
     heads_path = context.output_dir / "09_attention_matrix_last_layer_heads.png"
-    blocks_path = context.output_dir / "10_attention_role_block_summary.png"
     _plot_attention_matrix_grid(attention_arrays, blocked, role_ids, matrix_path)
     _plot_attention_head_grid(attention_arrays[-1], blocked, role_ids, heads_path)
-    _plot_attention_role_blocks(attention_arrays, blocked, role_ids, blocks_path)
-    return matrix_path, heads_path, blocks_path
+    return matrix_path, heads_path
 
 
 def _sample_token_count(sample: object) -> int:
@@ -386,121 +316,4 @@ def _plot_attention_head_grid(
         label="row-relative attention (row maximum = 1.0)",
         shrink=0.82,
     )
-    save_figure(fig, path)
-
-
-def _role_block_means(
-    matrices: list[np.ndarray],
-    role_ids: np.ndarray,
-    blocked: np.ndarray,
-) -> np.ndarray:
-    role_order = tuple(sorted(ROLE_NAMES))
-    result = np.zeros((len(matrices), len(role_order), len(role_order)), dtype=np.float32)
-    valid = ~blocked
-    for layer_index, matrix in enumerate(matrices):
-        for query_index, query_role in enumerate(role_order):
-            query_positions = np.flatnonzero(role_ids == query_role)
-            for key_index, key_role in enumerate(role_order):
-                key_positions = np.flatnonzero(role_ids == key_role)
-                if query_positions.size == 0 or key_positions.size == 0:
-                    continue
-                values = matrix[np.ix_(query_positions, key_positions)]
-                allowed = valid[np.ix_(query_positions, key_positions)]
-                result[layer_index, query_index, key_index] = float(
-                    values[allowed].sum() / query_positions.size
-                )
-    return result
-
-
-def _plot_attention_role_blocks(
-    attentions: tuple[np.ndarray, ...],
-    blocked: np.ndarray,
-    role_ids: np.ndarray,
-    path: Path,
-) -> None:
-    matrices = [attention.mean(axis=0) for attention in attentions]
-    blocks = _role_block_means(matrices, role_ids, blocked)
-    role_order = tuple(sorted(ROLE_NAMES))
-    labels = [ROLE_NAMES[role] for role in role_order]
-    fig, axes = create_grid_figure(len(matrices), cell_size=HEATMAP_CELL_SIZE)
-    image = None
-    for index, block in enumerate(blocks):
-        ax = axes.flat[index]
-        ax.grid(False, which="both")
-        image = ax.imshow(block, cmap=ATTENTION_CMAP_NAME, vmin=0.0, vmax=1.0)
-        ax.set_title(f"Layer {index + 1}")
-        ax.set_xticks(np.arange(len(labels)), labels, rotation=35, ha="right")
-        ax.set_yticks(np.arange(len(labels)), labels)
-        ax.set_xlabel("Key role")
-        ax.set_ylabel("Query role")
-        for query_index in range(block.shape[0]):
-            for key_index in range(block.shape[1]):
-                ax.text(
-                    key_index,
-                    query_index,
-                    f"{block[query_index, key_index]:.2f}",
-                    ha="center",
-                    va="center",
-                    color="white" if block[query_index, key_index] < 0.5 else "black",
-                    fontsize=8,
-                )
-    hide_empty_tiles(axes, len(matrices))
-    assert image is not None
-    fig.suptitle("Mean attention mass between token roles")
-    fig.colorbar(image, ax=list(axes.flat), label="mean attention mass", shrink=0.82)
-    save_figure(fig, path)
-
-
-def _normalize_query_attention(values: np.ndarray) -> np.ndarray:
-    """按每个开场决策行的上下文最大注意力归一化到 0~1。"""
-    if values.ndim != 2 or values.shape[1] == 0:
-        raise ValueError("current-state query attention must have shape [sample, context role]")
-    row_maximum = values.max(axis=1, keepdims=True)
-    normalized = np.zeros_like(values, dtype=np.float32)
-    np.divide(
-        values,
-        row_maximum,
-        out=normalized,
-        where=row_maximum > np.finfo(np.float32).eps,
-    )
-    return normalized
-
-
-def _plot_query_attention(
-    values: np.ndarray,
-    context_keys: tuple[str, ...],
-    labels: list[str],
-    path: Path,
-) -> None:
-    fig, ax = create_figure((max(10.0, len(context_keys) * 2.0), max(8.0, len(labels) * 0.32)))
-    ax.grid(False, which="both")
-    image = ax.imshow(values, cmap=_attention_cmap(), aspect="auto", norm=_attention_color_norm())
-    ax.set_xticks(np.arange(len(context_keys)), context_keys, rotation=35, fontsize=8)
-    ax.set_yticks(np.arange(len(labels)), labels, fontsize=8)
-    ax.set_xlabel("Context key role (current-state query; each row normalized to max=1.0)")
-    ax.set_ylabel("Opening decision step / recorded label / model top-1")
-    ax.set_title("Opener current-state query attention — final Transformer layer")
-    fig.colorbar(image, ax=ax, label="row-relative attention mass (row maximum = 1.0)", pad=0.04)
-    save_figure(fig, path)
-
-
-def _plot_layer_attention(
-    values: np.ndarray,
-    context_keys: tuple[str, ...],
-    path: Path,
-) -> None:
-    fig, ax = create_figure((max(14.0, len(context_keys) * 0.48), 5.5))
-    ax.grid(False, which="both")
-    image = ax.imshow(
-        values,
-        cmap=_attention_cmap(),
-        aspect="auto",
-        norm=_attention_color_norm(),
-    )
-    ax.set_xticks(np.arange(len(context_keys)), context_keys, rotation=90, fontsize=8)
-    ax.set_yticks(np.arange(values.shape[0]), [f"Layer {index + 1}" for index in range(values.shape[0])])
-    ax.set_xlabel("Context key role")
-    ax.set_ylabel("Transformer layer")
-    ax.set_title("Mean row-relative current-state query attention by Transformer layer")
-    fig.colorbar(image, ax=ax, label="row-relative attention (row maximum = 1.0)")
     save_figure(fig, path)
