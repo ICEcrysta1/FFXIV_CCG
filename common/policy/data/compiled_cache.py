@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from collections import OrderedDict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 from common.dataset_layout import map_dataset_output_path
@@ -17,6 +18,8 @@ from .spec import DataSpec
 from .action_space import ActionSpace
 from .skill_vocab import SkillVocab
 from .context_fields import CURRENT_STATE_RAW_FIELDS, HISTORY_BANK_FIELDS, HISTORY_BANK_METADATA_NAMES, STATE_BANK_FIELDS, tensor_dimensions
+
+logger = logging.getLogger(__name__)
 
 # v15：样本只保存配置无关的动作质量等级代码 1/2/3；旧权重缓存必须重编译。
 # v14：样本新增排名区间、标注状态和配置映射后的数值等级权重；旧缓存必须重编译。
@@ -39,7 +42,7 @@ CACHE_FORMAT = "raw_json_compiled_samples_v23_state_skill_availability"
 # v9：请求时刻改由 `cast − 实际读条时长` 解析（消除服务器提前结算偏差），
 # 场景事实只注入 Boss 可选中/目标数/团辅，移动与停手标量由输出层改写，
 # policy 动作改走 record_policy_action。旧缓存的时序与场景语义不可复用。
-# 调整动作质量标签的准入语义时，手动提升此版本以重编译旧缓存；
+# YAML 标签准入变化由转换配置依赖检测触发重编译；代码转换语义变化仍需升级版本。
 # 模型等级权重只在损失计算时映射，修改权重或注释无需重编译。
 # v16：移除编译时模型等级权重依赖，输出稳定等级代码；旧结果不能复用。
 # v15：数值权重和来源档位进入 compiled 样本；旧 v14 转换结果不能复用。
@@ -53,7 +56,8 @@ CACHE_FORMAT = "raw_json_compiled_samples_v23_state_skill_availability"
 # v23：所有技能 token 移除绝对时间，按精简后的字段重建完整 history bank。
 # v24：归一化前保留状态原值与差分，窗口与时间尺度只属于模型读取侧。
 # v25：使用共享场景执行视图与同刻事实批次，在请求/效果时冻结技能接受能力。
-DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v25_state_skill_availability"
+# v26：从完整坐标观测提取移动区间，先按实测 GCD 合并，再剔除短于 GCD 减滑步时间的窗口。
+DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v26_gcd_movement_windows"
 # `weights_only=True` 的安全 unpickler 对 protocol 2 支持最稳定；compiled
 # cache 的样本数据只需要普通 mapping 和 tensor，不需要更高协议。
 CACHE_PICKLE_PROTOCOL = 2
@@ -398,13 +402,26 @@ def load_compiled_cache_for_source(
     expected_action_space: ActionSpace,
     shard_cache: CompiledShardCache,
     expected_skill_vocab: SkillVocab | None = None,
+    expected_config: dict[str, object] | None = None,
 ) -> CompiledCacheReader | None:
     """只读取当前目录布局和格式；旧产物进入正常重编译路径。"""
     return load_compiled_cache(
         cache_path_for_source(cache_dir, source_path), source_path, signature=signature,
         expected_action_space=expected_action_space, shard_cache=shard_cache,
-        expected_skill_vocab=expected_skill_vocab,
+        expected_skill_vocab=expected_skill_vocab, expected_config=expected_config,
     )
+
+
+def changed_config_dependencies(
+    saved: object, current: Mapping[str, object],
+) -> tuple[str, ...]:
+    """统一比较缓存签名和生效配置；有序语义由调用方投影成列表。"""
+    if not isinstance(saved, Mapping) or any(not isinstance(name, str) for name in saved):
+        return tuple(sorted(current))
+    return tuple(sorted(
+        name for name in saved.keys() | current.keys()
+        if name not in saved or name not in current or saved[name] != current[name]
+    ))
 
 
 def build_cache_signature(
@@ -437,6 +454,7 @@ def load_compiled_cache(
     expected_action_space: ActionSpace,
     shard_cache: CompiledShardCache,
     expected_skill_vocab: SkillVocab | None = None,
+    expected_config: dict[str, object] | None = None,
 ) -> CompiledCacheReader | None:
     """按 raw 签名及调用方的动作、完整技能词表校验 manifest，不读取 YAML。"""
     del source_path
@@ -454,8 +472,14 @@ def load_compiled_cache(
         return None
     if not isinstance(payload, dict) or payload.get("cache_format") != CACHE_FORMAT:
         return None
-    if payload.get("cache_signature") != signature:
+    if changed_config_dependencies(payload.get("cache_signature"), signature):
         return None
+    # 只比较调用方声明的配置内容，公共层不定位或加载任何业务 YAML。
+    if expected_config is not None:
+        changed = changed_config_dependencies(payload.get("config_dependencies"), expected_config)
+        if changed:
+            logger.info("缓存配置变化或缺少记录，需要重建 %s: %s", cache_path, ", ".join(changed))
+            return None
     job_tag = payload.get("job_tag")
     if not isinstance(job_tag, str) or not job_tag:
         return None

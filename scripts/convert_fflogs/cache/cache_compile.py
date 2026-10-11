@@ -34,6 +34,7 @@ from ..source.source_reader import TrainingSourceReader
 from ..training.history_bank import build_history_bank
 from ..training.quality_supervision import source_ranking
 from ..training.sample_builder import TrainingSampleBuilder
+from .cache_config import build_conversion_config_dependencies
 from .cache_load import RAW_CONVERSION_VERSION, _load_cache
 from .cache_writer import write_compiled_cache_stream
 
@@ -174,6 +175,9 @@ def _compile_training_path_groups(
         raise ValueError("compiled cache directory is required for training selection")
     action_space = ActionSpace.from_job_tag(job_tag)
     skill_vocab = SkillVocab.build_from_job_tag(job_tag)
+    config_dependencies = build_conversion_config_dependencies(
+        job_tag, downtime_gap_seconds=downtime_gap_seconds,
+    )
     shard_cache = CompiledShardCache(max_shards)
     states = [
         {
@@ -185,6 +189,7 @@ def _compile_training_path_groups(
                     expected_skill_vocab=skill_vocab,
                     int_dtype=int_dtype, float_dtype=float_dtype,
                     cache_dir=cache_dir, shard_size=shard_size, shard_cache=shard_cache,
+                    expected_config=config_dependencies,
                 )
             },
         }
@@ -228,6 +233,7 @@ def _compile_training_path_groups(
             shard_size=shard_size,
             max_workers=max_workers,
             max_shards=max_shards,
+            config_dependencies=config_dependencies,
         )
         for compiled_path in compiled_paths:
             state = group_by_path.get(Path(compiled_path).resolve())
@@ -280,14 +286,23 @@ def precompile_raw_training_caches(
     max_workers: int = 1,
     max_shards: int = DEFAULT_CACHE_MAX_SHARDS,
     engine: InProcessEngine | None = None,
+    config_dependencies: dict[str, object] | None = None,
 ) -> list[Path]:
-    """默认按当前配置编译；模型调用方可指定保存的动作契约来复用缓存。"""
+    """转换检查当前配置；完整模型契约读取沿用原缓存，缺失时才加载转换配置。"""
     if cache_dir is None or not raw_paths:
         return []
     if max_workers < 1:
         raise ValueError("compiled cache workers must be >= 1")
     if engine is not None and engine.job_tag != job_tag:
         raise ValueError("cache compilation job must match the shared engine")
+
+    if config_dependencies is None and (
+        expected_action_space is None or expected_skill_vocab is None
+    ):
+        config_dependencies = build_conversion_config_dependencies(
+            job_tag, source=source, encounter=encounter,
+            downtime_gap_seconds=downtime_gap_seconds,
+        )
 
     conversion_action_space = None
     if expected_action_space is None:
@@ -313,6 +328,7 @@ def precompile_raw_training_caches(
             float_dtype=float_dtype,
             shard_size=shard_size,
             shard_cache=shard_cache,
+            expected_config=config_dependencies,
         )
         if cached is not None and cached.num_samples > 0 and cached.job_tag == job_tag:
             valid_paths.append(source_path)
@@ -335,6 +351,12 @@ def precompile_raw_training_caches(
         conversion_vocab = SkillVocab.build_from_job_tag(job_tag)
     expected_skill_vocab.assert_matches(tuple(conversion_vocab), context="cache compilation")
 
+    if config_dependencies is None:
+        config_dependencies = build_conversion_config_dependencies(
+            job_tag, source=source, encounter=encounter,
+            downtime_gap_seconds=downtime_gap_seconds,
+        )
+
     # 在启动工作线程前建立公共目录，避免并发首次创建改变 Windows 路径解析结果。
     cache_dir.mkdir(parents=True, exist_ok=True)
     worker_count = min(int(max_workers), len(missing))
@@ -355,6 +377,7 @@ def precompile_raw_training_caches(
             normalizer_contract,
             int(shard_size),
             tuple(expected_skill_vocab),
+            config_dependencies,
         )
         for source_path in missing
     )
@@ -419,6 +442,7 @@ def _compile_raw_source_worker(task, *, engine: InProcessEngine) -> tuple[str, i
         normalizer_contract,
         shard_size,
         vocab_entries,
+        config_dependencies,
     ) = task
     source_path = Path(source_path)
     int_dtype = _dtype_from_name(int_dtype_name)
@@ -479,6 +503,7 @@ def _compile_raw_source_worker(task, *, engine: InProcessEngine) -> tuple[str, i
         cache_path_for_source(Path(cache_dir), source_path),
         source_path,
         signature=signature,
+        config_dependencies=config_dependencies,
         reader=reader,
         sample_batches=sample_batches(),
         num_samples=reader.num_samples,

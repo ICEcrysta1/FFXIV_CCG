@@ -61,6 +61,7 @@ def _load_cache(
     shard_size: int,
     shard_cache: CompiledShardCache,
     expected_skill_vocab: SkillVocab | None = None,
+    expected_config: dict[str, object] | None = None,
 ):
     signature = build_cache_signature(
         source_path,
@@ -77,4 +78,5 @@ def _load_cache(
         expected_action_space=expected_action_space,
         expected_skill_vocab=expected_skill_vocab,
         shard_cache=shard_cache,
+        expected_config=expected_config,
     )

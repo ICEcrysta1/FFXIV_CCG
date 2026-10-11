@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from common.contracts import SLIDECAST_WINDOW_SECONDS
-from scripts.convert_fflogs import build_fight_payload, extract_supported_actions
+from scripts.convert_fflogs import build_fight_payload, extract_supported_actions, load_convert_fflogs_config
 from tests.helpers import DEFAULT_BASE_GCD
 
 
@@ -202,6 +202,7 @@ def test_fight_payload_translates_all_requests_to_earliest_zero():
         downtime_gap_seconds=30.0,
         raid_buff_marker_keys=("raid_marker",),
         raid_buff_window_duration=20.0,
+        movement_detection=load_convert_fflogs_config().movement_detection,
     )
 
     normalized = [action["request_time_offset"] for action in payload["actions"]]

@@ -1,4 +1,4 @@
-"""通用工具函数 —— 静态配置、时间合并、路径消毒。"""
+"""FFLogs 转换使用的职业静态配置和技能表。"""
 
 from __future__ import annotations
 
@@ -22,28 +22,3 @@ def load_job_project_config(job_tag: str):
 def build_skill_book(project_config):
     """从项目配置构建技能索引（静态数据，系统技能 + 职业技能合并）。"""
     return SkillBook.from_project_config(project_config)
-
-
-def merge_timestamps_to_windows(
-    timestamps: list[float],
-    *,
-    gap_seconds: float,
-) -> list[tuple[float, float]]:
-    """把离得很近的一组时间点合并成窗口。"""
-    if not timestamps:
-        return []
-
-    ordered = sorted(timestamps)
-    windows: list[tuple[float, float]] = []
-    current_start = ordered[0]
-    current_end = ordered[0]
-
-    for timestamp in ordered[1:]:
-        if timestamp - current_end <= gap_seconds:
-            current_end = timestamp
-        else:
-            windows.append((current_start, current_end))
-            current_start = timestamp
-            current_end = timestamp
-    windows.append((current_start, current_end))
-    return windows

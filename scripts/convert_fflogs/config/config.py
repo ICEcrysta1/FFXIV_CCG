@@ -1,7 +1,8 @@
-"""convert_fflogs 的职业和 GCD 检测配置。"""
+"""convert_fflogs 的职业、GCD 和移动窗口检测配置。"""
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -61,10 +62,28 @@ class GcdDetectionConfig:
 
 
 @dataclass(frozen=True)
+class MovementDetectionConfig:
+    """连续速度曲线与 GCD 聚合配置；滑步时间使用共享契约。"""
+
+    coordinate_scale: float
+    speed_threshold: float
+    sample_step_seconds: float
+    merge_gap_gcds: float
+    minimum_window_gcds: float
+
+    def __post_init__(self) -> None:
+        for name in self.__dataclass_fields__:
+            value = getattr(self, name)
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(f"movement_detection.{name} must be positive and finite")
+
+
+@dataclass(frozen=True)
 class ConvertFflogsConfig:
     """convert_fflogs 全局配置。"""
 
     gcd_detection_defaults: GcdDetectionConfig
+    movement_detection: MovementDetectionConfig
 
 
 @dataclass(frozen=True)
@@ -73,6 +92,7 @@ class ConvertFflogsJobConfig:
 
     job_tag: str
     gcd_detection: GcdDetectionConfig
+    movement_detection: MovementDetectionConfig
 
 
 def load_convert_fflogs_config(path: Path | None = None) -> ConvertFflogsConfig:
@@ -82,10 +102,20 @@ def load_convert_fflogs_config(path: Path | None = None) -> ConvertFflogsConfig:
     if "default_worker_count" in section:
         raise ValueError(f"{config_path}: default_worker_count is removed; set CONVERT_FFLOGS_WORKERS in .env")
     gcd_defaults = _require_mapping(section, "gcd_detection_defaults", source=str(config_path))
+    movement = _require_mapping(section, "movement_detection", source=str(config_path))
+    unknown = movement.keys() - MovementDetectionConfig.__dataclass_fields__.keys()
+    if unknown:
+        raise ValueError(f"{config_path}: movement_detection unknown fields: {sorted(unknown)}")
+    missing = MovementDetectionConfig.__dataclass_fields__.keys() - movement.keys()
+    if missing:
+        raise ValueError(f"{config_path}: movement_detection missing fields: {sorted(missing)}")
     return ConvertFflogsConfig(
         gcd_detection_defaults=_build_gcd_detection_config(
             gcd_defaults,
             source=str(config_path),
+        ),
+        movement_detection=MovementDetectionConfig(
+            **{name: float(movement[name]) for name in MovementDetectionConfig.__dataclass_fields__},
         ),
     )
 
@@ -122,6 +152,7 @@ def load_convert_fflogs_job_config(
     return ConvertFflogsJobConfig(
         job_tag=job_tag,
         gcd_detection=gcd_detection,
+        movement_detection=default_config.movement_detection,
     )
 
 

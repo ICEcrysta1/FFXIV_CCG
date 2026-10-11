@@ -226,6 +226,7 @@ def write_test_compiled_cache(
         cache_path,
         source_path,
         signature=signature,
+        config_dependencies={},
         reader=reader,
         sample_batches=(
             [builder.build(reader, index) for index in range(start, min(start + shard_size, reader.num_samples))]

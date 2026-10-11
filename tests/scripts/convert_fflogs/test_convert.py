@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from scripts.convert_fflogs import (
     load_job_project_config,
+    load_convert_fflogs_config,
     GcdDetectionConfig,
     annotate_action_movement,
     build_fight_payload,
@@ -15,7 +16,7 @@ from scripts.convert_fflogs import (
     build_target_count_window_context,
     build_target_count_window_token,
 )
-from tests.helpers import DEFAULT_BASE_GCD, forced_movement_window_token, raid_buff_window_token, targetable_window_token
+from tests.helpers import DEFAULT_BASE_GCD, raid_buff_window_token, targetable_window_token
 
 
 def test_extract_supported_actions_resolves_action_keys_and_potion(cs_backend, cs_skill_book):
@@ -114,6 +115,7 @@ def test_build_fight_payload_uses_new_scene_context_shell(cs_backend, cs_skill_b
         downtime_gap_seconds=6.0,
         raid_buff_marker_keys=("amplifier",),
         raid_buff_window_duration=20.0,
+        movement_detection=load_convert_fflogs_config().movement_detection,
     )
 
     assert payload["job_tag"] == "black_mage"
@@ -124,10 +126,8 @@ def test_build_fight_payload_uses_new_scene_context_shell(cs_backend, cs_skill_b
         "raid_buff_window_context",
         "target_count_window_context",
     }
-    # 在 cast=生效时刻 语义下，滑步起点 = prev_timestamp - 0.5 = 100-0.5 = 99.5，offset=-0.5
-    assert payload["scene_context"]["forced_movement_context"]["tokens"] == [
-        forced_movement_window_token(-0.5, -0.5)
-    ]
+    # 没有原始坐标观测时，不再从动作移动标记生成零时长场景 token。
+    assert payload["scene_context"]["forced_movement_context"]["tokens"] == []
     assert payload["scene_context"]["raid_buff_window_context"]["tokens"] == [
         raid_buff_window_token(4.0, 24.0)
     ]
