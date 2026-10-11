@@ -1,5 +1,5 @@
 convert_fflogs:
-  # 移动参数只用于转换；调整后需手动清理旧 compiled cache，不改变 API 版本。
+  # 转换入口比较缓存 PT 内的配置 map，内容变化后自动重建，不改变 API 版本。
   movement_detection:
     coordinate_scale: 100.0
     # 距离单位/秒，沿用实验阈值 0.25 / 0.75；不再按观测间隔剔除坐标。

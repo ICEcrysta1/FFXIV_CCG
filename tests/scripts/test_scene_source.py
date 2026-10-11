@@ -113,6 +113,7 @@ def scene_cache(tmp_path):
         actions = _scene_data_spec()
         payload = {
             "cache_format": CACHE_FORMAT, "cache_signature": signature,
+            "source_path": str(source.resolve()),
             "schema": _scene_schema(), "job_tag": "black_mage", "num_samples": 1,
             "num_actions": actions["num_actions"], "skill_feature_names": ["potency"],
             "action_keys": actions["action_keys"], "action_to_vocab_id": actions["action_to_vocab_id"],
@@ -541,3 +542,85 @@ def test_model_cache_rejects_inactive_row_drift_before_recompiling(scene_cache, 
             int_dtype=torch.int32, float_dtype=torch.float32,
         )
     assert before == {p: p.read_bytes() for p in cache_dir.rglob("*.pt")}
+
+
+@pytest.mark.parametrize("saved", [None, {"movement": {"speed": 0.5}}])
+def test_compiled_cache_compares_caller_config_map_without_reading_yaml(scene_cache, saved):
+    from common.policy.data.compiled_cache import CompiledShardCache, load_compiled_cache
+
+    _, cache_dir, create = scene_cache
+    source = create("FRU/90-100/config.json.br")
+    artifact = cache_path_for_source(cache_dir, source)
+    payload = safe_torch_load(artifact, safe_globals=(TrainingSchema, StateFeatureGroup))
+    if saved is not None:
+        payload["config_dependencies"] = saved
+    else:
+        payload.pop("config_dependencies", None)
+    torch.save(payload, artifact)
+    args = dict(signature=payload["cache_signature"], expected_action_space=ActionSpace.from_job_tag("black_mage"),
+                shard_cache=CompiledShardCache(1))
+    assert load_compiled_cache(artifact, source, **args) is not None
+    current = {"movement": {"speed": 0.5}}
+    matched = load_compiled_cache(artifact, source, expected_config=current, **args)
+    assert (matched is not None) == (saved is not None)
+    assert load_compiled_cache(artifact, source, expected_config={"movement": {"speed": 0.6}}, **args) is None
+
+
+def test_conversion_quota_rejects_stale_config_before_counting_cached_sources(scene_cache, monkeypatch):
+    from common.policy.data.source_selection import RawTrainingPathGroup
+    from scripts.convert_fflogs.cache import cache_compile
+
+    root, cache_dir, create = scene_cache
+    stale = create("FRU/90-100/stale.json.br")
+    current = create("FRU/90-100/current.json.br")
+    expected = {"movement": {"speed": 0.5}}
+    for source, speed in ((stale, 0.6), (current, 0.5)):
+        artifact = cache_path_for_source(cache_dir, source)
+        payload = safe_torch_load(artifact, safe_globals=(TrainingSchema, StateFeatureGroup))
+        payload["config_dependencies"] = {"movement": {"speed": speed}}
+        torch.save(payload, artifact)
+    groups = (RawTrainingPathGroup("FRU", 1, (stale, current)),)
+    monkeypatch.setattr(cache_compile, "select_training_raw_path_groups", lambda *_a: groups)
+    monkeypatch.setattr(cache_compile, "build_conversion_config_dependencies", lambda *_a, **_kw: expected)
+    monkeypatch.setattr(cache_compile, "precompile_raw_training_caches", lambda *_a, **_kw: pytest.fail("同组有效缓存已满足配额"))
+    assert cache_compile.prepare_training_caches(
+        root, max_files=1, job_tag="black_mage", int_dtype=torch.int32, float_dtype=torch.float32,
+        cache_dir=cache_dir, shard_size=768,
+    ) == [current]
+
+
+def test_conversion_rebuilds_legacy_and_changed_maps_but_reuses_comment_changes(scene_cache, tmp_path, monkeypatch):
+    from common.yaml_config import load_yaml_mapping
+    from scripts.convert_fflogs.cache import cache_compile
+
+    _, cache_dir, create = scene_cache
+    source = create("FRU/90-100/rebuild.json.br")
+    artifact = cache_path_for_source(cache_dir, source)
+    config_path = tmp_path / "conversion.yaml"
+    config_path.write_text("movement: {speed: 0.5, gap: 1}\n", encoding="utf-8", newline="\n")
+    monkeypatch.setattr(cache_compile, "build_conversion_config_dependencies",
+                        lambda *_a, **_kw: load_yaml_mapping(config_path))
+    compiled = []
+
+    def compile_worker(task, *, engine):
+        assert engine.job_tag == "black_mage"
+        payload = safe_torch_load(artifact, safe_globals=(TrainingSchema, StateFeatureGroup))
+        payload["config_dependencies"] = task[-1]
+        torch.save(payload, artifact)
+        compiled.append(task[0])
+        return str(task[0]), 1, 1
+
+    monkeypatch.setattr(cache_compile, "_compile_raw_source_worker", compile_worker)
+    args = dict(job_tag="black_mage", normalizer=Normalizer(), int_dtype=torch.int32,
+                float_dtype=torch.float32, cache_dir=cache_dir, shard_size=768,
+                engine=SimpleNamespace(job_tag="black_mage", capacity=1))
+    assert cache_compile.precompile_raw_training_caches([source], **args) == [source]
+    assert compiled == [source]
+    config_path.write_text("# 新注释\nmovement: {gap: 1, speed: 0.5}\n", encoding="utf-8", newline="\n")
+    assert cache_compile.precompile_raw_training_caches([source], **args) == [source]
+    assert compiled == [source]
+    config_path.write_text("movement: {speed: 0.6, gap: 1}\n", encoding="utf-8", newline="\n")
+    assert cache_compile.precompile_raw_training_caches([source], **args) == [source]
+    assert compiled == [source, source]
+    payload = safe_torch_load(artifact, safe_globals=(TrainingSchema, StateFeatureGroup))
+    assert payload["config_dependencies"] == {"movement": {"speed": 0.6, "gap": 1}}

@@ -402,6 +402,15 @@ def test_raw_cache_compiler_only_writes_compiled_cache(
     manifest = cache_path_for_source(cache_dir, raw_path)
     assert manifest.parent == cache_dir / "FRU" / "00-10"
     assert manifest.is_file()
+    from common.torch_serialization import safe_torch_load
+    from scripts.convert_fflogs.cache.cache_config import build_conversion_config_dependencies
+    from scripts.convert_fflogs.config.constants import DEFAULT_DOWNTIME_GAP_SECONDS
+    from common.policy.data.schema import SceneWindowSchema, StateFeatureGroup, TrainingSchema
+    stored = safe_torch_load(manifest, safe_globals=(SceneWindowSchema, StateFeatureGroup, TrainingSchema))
+    assert stored["config_dependencies"] == build_conversion_config_dependencies(
+        "black_mage", downtime_gap_seconds=DEFAULT_DOWNTIME_GAP_SECONDS,
+    )
+    assert isinstance(stored["config_dependencies"]["convert_fflogs.movement_detection"], dict)
     assert list(manifest.parent.glob("*.shard-*.pt"))
     assert not list(cache_dir.glob("*.compiled.pt"))
     monkeypatch.setattr(

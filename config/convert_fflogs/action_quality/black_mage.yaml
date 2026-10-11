@@ -3,7 +3,7 @@
 # 仍须有标准严重程度、当前角色的成功施法、唯一且精确的原始事件引用。
 # false 的标签继续保留在评估 JSON 中；没有标签不等于动作正确。
 # 此文件不定义严重程度权重，也不计算 PPG；标签仅作目标监督元数据。
-# 调整标签准入语义后，手动提升 compiled cache 的 DEFAULT_CONVERSION_VERSION；仅修改注释无需重编译。
+# 调整标签准入后，转换入口比较缓存 PT 内的配置 map 并自动重建；仅修改注释无需重编译。
 job: black_mage
 
 action_quality:

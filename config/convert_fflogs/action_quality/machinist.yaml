@@ -2,7 +2,7 @@
 # 当前机工提取器只输出职业窗口和量谱观察值，尚无逐技能严重程度归因。
 # false 的标签仍保留在评估 JSON 中；没有标签不等于动作正确。
 # 此文件不定义严重程度权重，也不计算 PPG；未列出的新建议默认不进入技能标签。
-# 调整准入语义时手动提升 compiled cache 的 DEFAULT_CONVERSION_VERSION；仅改注释无需重编译。
+# 调整标签准入后，转换入口比较缓存 PT 内的配置 map 并自动重建；仅修改注释无需重编译。
 job: machinist
 
 action_quality:

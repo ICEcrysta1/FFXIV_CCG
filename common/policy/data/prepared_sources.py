@@ -45,6 +45,7 @@ def cached_candidates_for_group(
     shard_size: int,
     shard_cache: CompiledShardCache,
     expected_skill_vocab: SkillVocab | None = None,
+    expected_config: dict[str, object] | None = None,
 ) -> list[Path]:
     """按候选顺序找足本组配额；只有签名和职业均匹配的 PT 才计数。"""
     cached_paths: list[Path] = []
@@ -62,7 +63,7 @@ def cached_candidates_for_group(
         cached = load_compiled_cache_for_source(
             cache_dir, source, signature=signature, shard_cache=shard_cache,
             expected_action_space=expected_action_space,
-            expected_skill_vocab=expected_skill_vocab,
+            expected_skill_vocab=expected_skill_vocab, expected_config=expected_config,
         )
         if cached is not None and cached.num_samples > 0 and cached.job_tag == job_tag:
             cached_paths.append(source)
