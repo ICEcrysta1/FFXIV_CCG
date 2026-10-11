@@ -624,3 +624,46 @@ def test_conversion_rebuilds_legacy_and_changed_maps_but_reuses_comment_changes(
     assert compiled == [source, source]
     payload = safe_torch_load(artifact, safe_globals=(TrainingSchema, StateFeatureGroup))
     assert payload["config_dependencies"] == {"movement": {"speed": 0.6, "gap": 1}}
+
+
+def test_conversion_inventory_only_reloads_changed_and_new_caches(scene_cache, monkeypatch):
+    """预检复用真实 PT 的校验结果，变更 raw/manifest/分片后恢复正式校验。"""
+    from scripts.convert_fflogs.cache import cache_compile, cache_load
+
+    _, cache_dir, create = scene_cache
+    sources = [create(f"FRU/90-100/{name}.json.br") for name in ("a", "b", "c", "d")]
+    actions = ActionSpace.from_job_tag("black_mage")
+    vocab = SkillVocab.build_from_job_tag("black_mage")
+    precision = load_precision_config()
+    args = dict(job_tag="black_mage", normalizer=Normalizer(), cache_dir=cache_dir, shard_size=768,
+                int_dtype=precision.resolve_int_dtype(), float_dtype=precision.resolve_float_dtype(),
+                expected_action_space=actions, expected_skill_vocab=vocab,
+                engine=SimpleNamespace(job_tag="black_mage", capacity=2))
+    assert cache_compile.precompile_raw_training_caches(sources, **args) == sources
+    original_load = cache_load._load_cache
+    reads, compiled = [], []
+
+    def load(source, **kwargs):
+        reads.append(source)
+        return original_load(source, **kwargs)
+
+    monkeypatch.setattr(cache_load, "_load_cache", load)
+    assert cache_compile.precompile_raw_training_caches(sources, **args) == sources
+    assert reads == []
+
+    atomic_write_json(sources[1], {"changed": True})
+    manifest = cache_path_for_source(cache_dir, sources[2])
+    manifest.write_bytes(b"broken")
+    shard = cache_path_for_source(cache_dir, sources[3]).with_suffix(".shard.pt")
+    shard.unlink()
+    new = create("FRU/90-100/z-new.json.br", invalid="missing")
+    expected = {sources[1], sources[2], sources[3], new}
+
+    def compile_worker(task, *, engine):
+        compiled.append(Path(task[0]))
+        return str(task[0]), 1, 1
+
+    monkeypatch.setattr(cache_compile, "_compile_raw_source_worker", compile_worker)
+    assert cache_compile.precompile_raw_training_caches([*sources, new], **args) == [*sources, new]
+    assert set(compiled) == expected
+    assert set(reads) == expected

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from scripts.common.json_io import read_json
+from scripts.common.json_io import atomic_write_json
 from scripts.fflogs_scraper import FFLogsV2Client
 from scripts.fflogs_scraper.contracts.rankings import HistoricalReport
 from scripts.fflogs_scraper.download import batch, single
@@ -385,6 +386,7 @@ def test_existing_valid_inventory_fills_quota_without_querying_reports(monkeypat
             pytest.fail("本地配额已满时不应请求历史候选")
 
     monkeypatch.setattr(client, "get_report_fights", lambda *args, **kwargs: pytest.fail("不应重新下载"))
+    monkeypatch.setattr(batch, "read_json", lambda *_args: pytest.fail("索引命中不应解压旧报告"))
     second = batch._stratified_batch_download(
         client, UnexpectedReports(), {"90-100": 1}, tmp_path, "events-only",
     )
@@ -410,6 +412,39 @@ def test_percentile_drift_does_not_download_same_report_into_another_bucket(
     assert second["counts"] == {"30-40": 1, "40-50": 1}
     assert second["existing"] == 1 and second["success"] == 1
     assert [read_json(path)["report_code"] for path in (tmp_path / "40-50").glob("*.json.br")] == ["OTHER"]
+
+
+def test_inventory_revalidates_changed_reports_and_only_fills_missing(monkeypatch, tmp_path, analysis_meta):
+    client = FFLogsV2Client("id", "secret", server_region="CN")
+    _stub_report_download(monkeypatch, client, analysis_meta)
+    records = [_record(code, 95) for code in ("FIRST", "STALE", "LAST")]
+    batch._stratified_batch_download(client, records, {"90-100": 3}, tmp_path, "events-only")
+    stale = tmp_path / "90-100" / batch._build_batch_output_filename("STALE", 33, "Player")
+    payload = read_json(stale)
+    payload["events_complete"] = False
+    atomic_write_json(stale, payload)
+    reads, requested = [], []
+    original_read, original_metadata = batch.read_json, client.get_report_fights
+
+    def read(path):
+        reads.append(Path(path))
+        return original_read(path)
+
+    def metadata(code, **kwargs):
+        requested.append(code)
+        return original_metadata(code, **kwargs)
+
+    monkeypatch.setattr(batch, "read_json", read)
+    monkeypatch.setattr(client, "get_report_fights", metadata)
+    result = batch._stratified_batch_download(
+        client, [*records, _record("NEW", 95)], {"90-100": 4}, tmp_path, "events-only",
+    )
+    assert result["existing"] == 2 and result["success"] == 2
+    assert result["counts"] == {"90-100": 4}
+    assert requested == ["STALE", "NEW"]
+    assert {path.name for path in reads} == {
+        batch._build_batch_output_filename(code, 33, "Player") for code in ("STALE", "NEW")
+    }
 
 
 def test_validation_download_is_flat_and_rejects_wrong_report_region(monkeypatch, tmp_path, analysis_meta):

@@ -13,6 +13,9 @@ function bootstrap(analyzerRoot, nodeModules) {
   // Lingui 从工作目录发现上游配置；只影响独立子进程。
   process.chdir(analyzerRoot);
   process.env.NODE_ENV = 'development';
+  // Lingui 的 TS 配置会经 jiti 编译；禁用共享磁盘缓存，避免权限问题或并发写入使整份标注失败。
+  // 需在任何上游依赖加载前设置，jiti 会在首次 require 时读取环境变量。
+  process.env.JITI_CACHE = 'false';
   process.env.NODE_PATH = [path.join(analyzerRoot, 'src'), ...paths].join(path.delimiter);
   Module._initPaths();
   Symbol.metadata ??= Symbol.for('Symbol.metadata');
