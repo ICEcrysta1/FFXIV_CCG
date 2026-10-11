@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import math
 import pickle
+from collections.abc import Callable
 from pathlib import Path
 
 from common.torch_serialization import safe_torch_load
@@ -46,12 +47,17 @@ def cached_candidates_for_group(
     shard_cache: CompiledShardCache,
     expected_skill_vocab: SkillVocab | None = None,
     expected_config: dict[str, object] | None = None,
+    cache_validator: Callable[[Path], bool] | None = None,
 ) -> list[Path]:
     """按候选顺序找足本组配额；只有签名和职业均匹配的 PT 才计数。"""
     cached_paths: list[Path] = []
     for source in group.candidates:
         if len(cached_paths) >= group.target_count:
             break
+        if cache_validator is not None:
+            if cache_validator(source):
+                cached_paths.append(source)
+            continue
         signature = build_cache_signature(
             source,
             int_dtype=int_dtype,

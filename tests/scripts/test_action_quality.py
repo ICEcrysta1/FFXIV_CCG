@@ -127,6 +127,135 @@ def test_dirty_analyzer_does_not_reuse_old_annotation(bridge_config, monkeypatch
     assert runner.analyzer_commit(bridge_config) is None
 
 
+def test_cli_inventory_only_queues_stale_and_new_files(raw_file, bridge_config, monkeypatch, caplog):
+    """全部预检完成后才启动分析；未变化的产物不再解压比对。"""
+    fake_process(monkeypatch)
+    sources = [raw_file, raw_file.with_name("b.json.br"), raw_file.with_name("z.json.br")]
+    for source in sources:
+        source.write_bytes(raw_file.read_bytes())
+        runner.annotate_file(source, config=bridge_config)
+    monkeypatch.setattr(cli, "load_bridge_config", lambda: bridge_config)
+    monkeypatch.setattr(cli, "analyzer_commit", lambda _config: "test-commit")
+    monkeypatch.setattr(sys, "argv", ["action_quality", str(raw_file.parent)])
+    assert cli.main() == 0
+
+    changed = read_json(sources[1])
+    changed["ranking"]["percentile"] = 4.0
+    atomic_write_json(sources[1], changed)
+    new = raw_file.with_name("zz-new.json.br")
+    new.write_bytes(raw_file.read_bytes())
+    expected = {sources[1], new}
+    prechecked, analyzed = set(), []
+    original_check, original_annotate = cli.annotation_is_current, cli.annotate_file
+
+    def check(source, destination, **kwargs):
+        assert source in expected, "未变化的旧文件应直接使用索引"
+        prechecked.add(source)
+        return original_check(source, destination, **kwargs)
+
+    def annotate(source, **kwargs):
+        assert sources[1] in prechecked, "执行前应完成已有产物的完整预检；缺失产物直接进入队列"
+        analyzed.append(source)
+        return original_annotate(source, **kwargs)
+
+    monkeypatch.setattr(cli, "annotation_is_current", check)
+    monkeypatch.setattr(cli, "annotate_file", annotate)
+    with caplog.at_level("INFO"):
+        assert cli.main() == 0
+    assert set(analyzed) == expected
+    assert "已有有效=2 待标注=2" in caplog.text
+    monkeypatch.setattr(cli, "annotation_is_current", lambda *_a, **_kw: pytest.fail("全部索引命中"))
+    monkeypatch.setattr(cli, "annotate_file", lambda *_a, **_kw: pytest.fail("没有待标注文件"))
+    assert cli.main() == 0
+
+
+@pytest.mark.parametrize("layout", ["canonical", "pretty", "reordered"])
+def test_annotation_reuse_preserves_semantics_for_json_layouts(raw_file, bridge_config, monkeypatch, layout):
+    import brotli
+
+    fake_process(monkeypatch)
+    output = runner.annotate_file(raw_file, config=bridge_config)
+    payload = read_json(output)
+    if layout == "pretty":
+        output.write_bytes(brotli.compress(json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")))
+    elif layout == "reordered":
+        atomic_write_json(output, dict(reversed(list(payload.items()))))
+    else:
+        original_loads = runner.json.loads
+        decoded_event_lists = []
+
+        def loads(content, *args, **kwargs):
+            value = original_loads(content, *args, **kwargs)
+            if isinstance(value, dict) and "events" in value:
+                decoded_event_lists.append(value["events"])
+            return value
+
+        monkeypatch.setattr(runner.json, "loads", loads)
+    assert runner.annotation_is_current(raw_file, output, commit="test-commit")
+    if layout == "canonical":
+        assert len(decoded_event_lists) == 1, "规范产物不得再创建第二份事件对象"
+    payload["events"][0]["timestamp"] += 1
+    atomic_write_json(output, payload)
+    assert not runner.annotation_is_current(raw_file, output, commit="test-commit")
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_scan_bounds_workers_saves_progress_and_resumes(raw_file, bridge_config, monkeypatch, cancel):
+    from concurrent.futures import ThreadPoolExecutor
+    from scripts.action_quality import scan
+
+    fake_process(monkeypatch)
+    pairs = []
+    for index in range(36):
+        source = raw_file.with_name(f"scan-{index:02d}.json.br")
+        source.write_bytes(raw_file.read_bytes())
+        pairs.append((source, runner.annotate_file(source, config=bridge_config)))
+    index_path = pairs[0][1].parent / ".annotation-inventory.json"
+    stop, first_workers = Event(), Barrier(2, timeout=5)
+    checked, in_flight = [], []
+    first_pass = True
+
+    def validator(source, destination, **kwargs):
+        checked.append(source)
+        position = int(source.name.removeprefix("scan-").removesuffix(".json.br"))
+        if first_pass and position < 2:
+            first_workers.wait()
+        if first_pass and position == 29:
+            assert len(json.loads(index_path.read_text(encoding="utf-8"))["entries"]) >= 25
+            if cancel:
+                stop.set()
+        return runner.annotation_is_current(source, destination, **kwargs)
+
+    original_wait = scan.wait
+
+    def wait(futures, **kwargs):
+        in_flight.append(len(futures))
+        return original_wait(futures, **kwargs)
+
+    monkeypatch.setattr(scan, "ProcessPoolExecutor",
+                        lambda *, max_workers, initializer: ThreadPoolExecutor(max_workers=max_workers))
+    monkeypatch.setattr(scan, "wait", wait)
+    inventory = scan.AnnotationInventory(commit="test-commit", validator=validator)
+    pending, skipped = inventory.partition(pairs, max_workers=2, stop=stop)
+    assert max(in_flight) == 2
+    saved = json.loads(index_path.read_text(encoding="utf-8"))["entries"]
+    assert len(saved) == skipped
+    if cancel:
+        assert stop.is_set() and 25 <= skipped < len(pairs)
+        assert len(pending) == len(pairs) - skipped
+    else:
+        assert skipped == len(pairs) and not pending
+
+    first_pass = False
+    checked.clear()
+    resumed = scan.AnnotationInventory(commit="test-commit", validator=validator)
+    pending, resumed_count = resumed.partition(pairs, max_workers=2, stop=Event())
+    assert resumed_count == len(pairs) and not pending
+    assert {str(source) for source in checked} == {
+        str(source) for source, destination in pairs if str(destination) not in saved
+    }
+
+
 def test_cli_force_and_bounded_parallel_workers(raw_file, bridge_config, monkeypatch):
     second = raw_file.with_name("second.json.br")
     second.write_bytes(raw_file.read_bytes())
@@ -330,6 +459,41 @@ def test_node_runtime_contracts():
         capture_output=True, text=True, encoding="utf-8", timeout=15, check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_node_bootstrap_loads_lingui_without_writing_shared_jiti_cache(monkeypatch):
+    settings = config.load_bridge_config()
+    if (shutil.which(settings.node) is None or not settings.node_modules.is_dir()
+            or not (settings.analyzer_root / "src/data/JOBS.ts").is_file()):
+        pytest.skip("requires installed Node and analyzer dependencies")
+    monkeypatch.setenv("JITI_CACHE", "true")
+    script = r"""
+const fs = require('fs');
+const path = require('path');
+const request = JSON.parse(fs.readFileSync(0, 'utf8'));
+const blocked = path.join(require('os').tmpdir(), 'node-jiti');
+const write = fs.writeFileSync;
+fs.writeFileSync = function(filename, ...args) {
+  if (typeof filename === 'string' && path.resolve(filename).startsWith(blocked + path.sep)) {
+    const error = new Error('shared jiti cache is not writable');
+    error.code = 'EPERM';
+    throw error;
+  }
+  return write.call(this, filename, ...args);
+};
+require(request.bootstrap).bootstrap(request.analyzer_root, request.node_modules);
+const {JOBS} = require(path.join(request.analyzer_root, 'src/data/JOBS.ts'));
+process.stdout.write(JSON.stringify({cache: process.env.JITI_CACHE, jobs: Object.keys(JOBS).length}));
+"""
+    result = subprocess.run(
+        [settings.node, "-e", script], input=json.dumps({
+            "bootstrap": str(runner.RUNTIME.with_name("bootstrap.cjs")),
+            "analyzer_root": str(settings.analyzer_root), "node_modules": str(settings.node_modules),
+        }), capture_output=True, text=True, encoding="utf-8", timeout=30, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    loaded = json.loads(result.stdout)
+    assert loaded["cache"] == "false" and loaded["jobs"] > 0
 
 
 @pytest.fixture

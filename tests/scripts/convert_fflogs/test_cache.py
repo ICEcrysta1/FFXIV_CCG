@@ -531,9 +531,11 @@ def test_parallel_cache_compile_bounds_tasks_shares_engine_and_continues_after_f
 
 
 def test_valid_cache_does_not_start_engine(tmp_path, monkeypatch):
+    from scripts.convert_fflogs.cache import cache_load
+
     source = tmp_path / "fight.json.br"
-    monkeypatch.setattr(cache_compile_module, "_load_cache", lambda *_args, **_kwargs:
-                        SimpleNamespace(num_samples=3, job_tag="black_mage"))
+    monkeypatch.setattr(cache_load, "_load_cache", lambda *_args, **_kwargs:
+                        SimpleNamespace(num_samples=3, job_tag="black_mage", shard_paths=()))
 
     def unexpected_engine(*_args, **_kwargs):
         pytest.fail("有效缓存不应启动引擎")

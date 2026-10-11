@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import nullcontext
 from dataclasses import replace
@@ -35,7 +36,7 @@ from ..training.history_bank import build_history_bank
 from ..training.quality_supervision import source_ranking
 from ..training.sample_builder import TrainingSampleBuilder
 from .cache_config import build_conversion_config_dependencies
-from .cache_load import RAW_CONVERSION_VERSION, _load_cache
+from .cache_load import RAW_CONVERSION_VERSION, ConversionCacheInventory
 from .cache_writer import write_compiled_cache_stream
 
 logger = logging.getLogger(__name__)
@@ -179,6 +180,12 @@ def _compile_training_path_groups(
         job_tag, downtime_gap_seconds=downtime_gap_seconds,
     )
     shard_cache = CompiledShardCache(max_shards)
+    inventory = ConversionCacheInventory(
+        job_tag=job_tag, cache_dir=cache_dir, normalizer=normalizer,
+        expected_action_space=action_space, expected_skill_vocab=skill_vocab,
+        int_dtype=int_dtype, float_dtype=float_dtype, shard_size=shard_size,
+        shard_cache=shard_cache, expected_config=config_dependencies,
+    )
     states = [
         {
             "group": group,
@@ -190,16 +197,23 @@ def _compile_training_path_groups(
                     int_dtype=int_dtype, float_dtype=float_dtype,
                     cache_dir=cache_dir, shard_size=shard_size, shard_cache=shard_cache,
                     expected_config=config_dependencies,
+                    cache_validator=inventory.is_current,
                 )
             },
         }
         for group in groups
     ]
+    inventory.save()
     for state in states:
-        state["pending"] = [
+        state["pending"] = deque(
             path for path in state["group"].candidates
             if path.resolve() not in state["valid"]
-        ]
+        )
+    logger.info(
+        "转换预检完成: 已有有效=%d 待补=%d",
+        sum(len(state["valid"]) for state in states),
+        sum(max(0, state["group"].target_count - len(state["valid"])) for state in states),
+    )
     group_by_path = {
         path.resolve(): state
         for state in states
@@ -212,7 +226,7 @@ def _compile_training_path_groups(
             group = state["group"]
             needed = group.target_count - len(state["valid"])
             while needed > 0 and state["pending"]:
-                candidate = state["pending"].pop(0)
+                candidate = state["pending"].popleft()
                 if candidate.resolve() not in state["valid"]:
                     round_paths.append(candidate)
                     needed -= 1
@@ -315,25 +329,21 @@ def precompile_raw_training_caches(
     normalizer.ensure_job_resources(job_tag)
     cache_dir = Path(cache_dir).resolve()
     shard_cache = CompiledShardCache(max_shards)
+    inventory = ConversionCacheInventory(
+        job_tag=job_tag, cache_dir=cache_dir, normalizer=normalizer,
+        expected_action_space=expected_action_space, expected_skill_vocab=expected_skill_vocab,
+        int_dtype=int_dtype, float_dtype=float_dtype, shard_size=shard_size,
+        shard_cache=shard_cache, expected_config=config_dependencies,
+    )
     valid_paths: list[Path] = []
     missing: list[Path] = []
     for source_path in dict.fromkeys(Path(path).resolve() for path in raw_paths):
-        cached = _load_cache(
-            source_path,
-            cache_dir=cache_dir,
-            normalizer=normalizer,
-            expected_action_space=expected_action_space,
-            expected_skill_vocab=expected_skill_vocab,
-            int_dtype=int_dtype,
-            float_dtype=float_dtype,
-            shard_size=shard_size,
-            shard_cache=shard_cache,
-            expected_config=config_dependencies,
-        )
-        if cached is not None and cached.num_samples > 0 and cached.job_tag == job_tag:
+        if inventory.is_current(source_path):
             valid_paths.append(source_path)
         else:
             missing.append(source_path)
+    inventory.save()
+    logger.info("转换预检完成: 总数=%d 已有有效=%d 待转换=%d", len(valid_paths) + len(missing), len(valid_paths), len(missing))
 
     if not missing:
         return sorted(set(valid_paths), key=lambda path: str(path).casefold())
@@ -398,7 +408,10 @@ def precompile_raw_training_caches(
                 for future in completed:
                     source_path = future_sources.pop(future)
                     try:
-                        results.append(future.result())
+                        result = future.result()
+                        results.append(result)
+                        if result[1] > 0:
+                            inventory.is_current(source_path)
                     except Exception as exc:
                         failed_count += 1
                         _log_compile_failure(source_path, exc)
@@ -413,6 +426,8 @@ def precompile_raw_training_caches(
             "本轮 raw JSON 缓存编译跳过 %d 个失败文件，继续处理其余文件",
             failed_count,
         )
+
+    inventory.save()
 
     for source_path, sample_count, shard_count in sorted(results):
         path = Path(source_path)

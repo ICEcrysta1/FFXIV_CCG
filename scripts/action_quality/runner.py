@@ -12,7 +12,7 @@ from pathlib import Path
 from threading import Event
 
 from common.dataset_layout import map_dataset_output_path
-from scripts.common.json_io import atomic_write_json, read_json, read_json_bytes
+from scripts.common.json_io import atomic_write_json, read_json_bytes
 
 from .config import BridgeConfig
 
@@ -95,12 +95,25 @@ def annotation_is_current(source: Path, output: Path, *, commit: str | None) -> 
     if commit is None or not output.is_file():
         return False
     try:
-        raw = read_json(source)
-        annotated = read_json(output)
-        if not isinstance(raw, dict) or not isinstance(annotated, dict):
+        raw_bytes = read_json_bytes(source)
+        annotated_bytes = read_json_bytes(output).rstrip()
+        raw = json.loads(raw_bytes)
+        if not isinstance(raw, dict) or "analysis" in raw:
             return False
-        analysis = annotated.pop("analysis", None)
-        if not isinstance(analysis, dict) or annotated != raw:
+        # 正式 writer 仅在 raw 对象末尾追加 analysis；字节前缀相同即可证明
+        # 全部原始字段一致，避免再创建一整份事件对象并逐字段比较。
+        prefix = raw_bytes.rstrip()[:-1] + b',"analysis":'
+        if annotated_bytes.startswith(prefix) and annotated_bytes.endswith(b"}"):
+            analysis = json.loads(annotated_bytes[len(prefix):-1])
+        else:
+            # 非规范排版、字段重排及旧产物仍沿用原有语义相等校验。
+            annotated = json.loads(annotated_bytes)
+            if not isinstance(annotated, dict):
+                return False
+            analysis = annotated.pop("analysis", None)
+            if annotated != raw:
+                return False
+        if not isinstance(analysis, dict):
             return False
         if any(not isinstance(analysis.get(key), dict) for key in ("source", "actor", "engine", "time_basis")):
             return False

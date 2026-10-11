@@ -14,6 +14,7 @@ from common.policy.config import (
     resolve_policy_model_job_tag,
 )
 from common.project_config import resolve_project_path
+from scripts.common.file_inventory import FileInventory
 from scripts.common.json_io import atomic_write_json, read_json
 
 from ..api.client import FFLogsV2Client
@@ -181,6 +182,7 @@ def _download_report(
 def _existing_local_inventory(
     output_dir: Path, quotas: dict[str, int], *, mode: str, metric: str,
     server_region: str | None, bucket_directories: bool,
+    inventory: FileInventory,
 ) -> tuple[dict[str, int], set[tuple[str, int, str]]]:
     """只把身份、地区、分档及下载完整性可信的本地文件计入配额。"""
     counts = dict.fromkeys(quotas, 0)
@@ -188,46 +190,57 @@ def _existing_local_inventory(
     for bucket in quotas:
         directory = percentile_directory(output_dir, bucket) if bucket_directories else output_dir
         for path in sorted(directory.glob("*.json.br")):
-            try:
-                payload = read_json(path)
-                if not isinstance(payload, dict):
-                    continue
-                ranking = payload.get("ranking")
-                code = payload.get("report_code")
-                fight_id = payload.get("fight_id")
-                name = payload.get("player_name")
-                if (payload.get("download_schema_version") != DOWNLOAD_SCHEMA_VERSION
-                        or not isinstance(ranking, dict)
-                        or ranking.get("percentile_bucket") != bucket
-                        or ranking.get("metric") != metric
-                        or (server_region is not None and (
-                            ranking.get("server_region") != server_region
-                            or payload.get("report_region") != server_region))
-                        or not isinstance(code, str) or not code
-                        or type(fight_id) is not int or fight_id < 1
-                        or not isinstance(name, str) or _is_anonymous_name(name)
-                        or type(payload.get("source_id")) is not int
-                        or payload["source_id"] < 1):
-                    continue
-                if mode == "damage-only":
-                    if not isinstance(payload.get("damage_table"), dict):
-                        continue
-                else:
-                    events = payload.get("events")
-                    if (payload.get("events_complete") is not True
-                            or payload.get("event_scope") != "fight"
-                            or not isinstance(events, list)
-                            or payload.get("event_count") != len(events)):
-                        continue
-                key = (code, fight_id, name)
-                if key in seen:
-                    logger.warning("本地已有跨档重复报告，忽略额外副本：%s", path)
-                    continue
-                seen.add(key)
-                counts[bucket] = min(quotas[bucket], counts[bucket] + 1)
-            except (OSError, ValueError, TypeError) as error:
-                logger.warning("跳过无法复用的本地报告 %s: %s", path, error)
+            identity = _indexed_download_identity(
+                inventory, path, bucket=bucket, mode=mode, metric=metric, server_region=server_region,
+            )
+            if identity is None:
+                continue
+            key = tuple(identity)
+            if key in seen:
+                logger.warning("本地已有跨档重复报告，忽略额外副本：%s", path)
+                continue
+            seen.add(key)
+            counts[bucket] = min(quotas[bucket], counts[bucket] + 1)
     return counts, seen
+
+
+def _indexed_download_identity(inventory, path, *, bucket, mode, metric, server_region):
+    """缓存正式完整性校验后的报告身份，跨档去重仍由调用方统一完成。"""
+    def validate():
+        try:
+            payload = read_json(path)
+            if not isinstance(payload, dict):
+                return None, ()
+            ranking = payload.get("ranking")
+            code, fight_id, name = (payload.get(key) for key in ("report_code", "fight_id", "player_name"))
+            if (payload.get("download_schema_version") != DOWNLOAD_SCHEMA_VERSION
+                    or not isinstance(ranking, dict)
+                    or ranking.get("percentile_bucket") != bucket
+                    or ranking.get("metric") != metric
+                    or (server_region is not None and (
+                        ranking.get("server_region") != server_region
+                        or payload.get("report_region") != server_region))
+                    or not isinstance(code, str) or not code
+                    or type(fight_id) is not int or fight_id < 1
+                    or not isinstance(name, str) or _is_anonymous_name(name)
+                    or type(payload.get("source_id")) is not int or payload["source_id"] < 1):
+                return None, ()
+            if mode == "damage-only":
+                complete = isinstance(payload.get("damage_table"), dict)
+            else:
+                events = payload.get("events")
+                complete = (payload.get("events_complete") is True and payload.get("event_scope") == "fight"
+                            and isinstance(events, list) and payload.get("event_count") == len(events))
+            return ([code, fight_id, name] if complete else None), ()
+        except (OSError, ValueError, TypeError) as error:
+            logger.warning("跳过无法复用的本地报告 %s: %s", path, error)
+            return None, ()
+
+    return inventory.check(
+        path, context={"validator": 1, "schema": DOWNLOAD_SCHEMA_VERSION, "bucket": bucket,
+                       "mode": mode, "metric": metric, "region": server_region},
+        paths=[path], validate=validate,
+    )
 
 
 def _stratified_batch_download(
@@ -235,6 +248,15 @@ def _stratified_batch_download(
     bucket_directories=True,
 ):
     """分档下载；失败不占配额，不挪用其他区间填补缺额。"""
+    with FileInventory(Path(output_dir) / ".download-inventory.json") as inventory:
+        return _download_missing_reports(
+            client, reports, quotas, output_dir, mode, metric,
+            bucket_directories=bucket_directories, inventory=inventory,
+        )
+
+
+def _download_missing_reports(client, reports, quotas, output_dir, mode, metric, *, bucket_directories, inventory):
+    """先汇总本地清单，再从远端候选中只补缺额。"""
     statistics = {"success": 0, "existing": 0, "failed": 0, "anonymous": 0}
     output_dir = Path(output_dir)
     for bucket in quotas:
@@ -244,8 +266,11 @@ def _stratified_batch_download(
     counts, seen = _existing_local_inventory(
         output_dir, quotas, mode=mode, metric=metric,
         server_region=client.server_region, bucket_directories=bucket_directories,
+        inventory=inventory,
     )
+    inventory.save()
     statistics["existing"] = sum(counts.values())
+    logger.info("下载预检: 已有有效=%d 待补=%d", statistics["existing"], sum(quotas.values()) - statistics["existing"])
     if all(counts[bucket] >= quota for bucket, quota in quotas.items()):
         reports = ()
     for record in reports:
@@ -270,6 +295,11 @@ def _stratified_batch_download(
             statistics[status] += 1
             if status in ("success", "existing"):
                 counts[bucket] += 1
+                directory = percentile_directory(output_dir, bucket) if bucket_directories else output_dir
+                _indexed_download_identity(
+                    inventory, directory / _build_batch_output_filename(record.code, record.fight_id, record.player_name),
+                    bucket=bucket, mode=mode, metric=metric, server_region=client.server_region,
+                )
         except Exception as error:  # noqa: BLE001 -- 单份失败后继续同档补位
             statistics["failed"] += 1
             logger.warning("  下载失败，继续同档补位: %s", error)

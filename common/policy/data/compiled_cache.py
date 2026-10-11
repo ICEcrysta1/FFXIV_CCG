@@ -257,6 +257,11 @@ class CompiledCacheReader:
         return self._shard_size
 
     @property
+    def shard_paths(self) -> tuple[Path, ...]:
+        """返回 manifest 引用的分片，供调用方监测文件失效。"""
+        return self._shard_paths
+
+    @property
     def skill_feature_names(self) -> tuple[str, ...]:
         return self._skill_feature_names
 

@@ -13,6 +13,7 @@ from scripts.common.json_io import is_json_file
 
 from .config import default_raw_root, load_bridge_config
 from .runner import analyzer_commit, annotation_is_current, annotate_file, output_path_for_source
+from .scan import AnnotationInventory
 
 logger = logging.getLogger(__name__)
 
@@ -52,13 +53,12 @@ def main() -> int:
         logger.warning("无法确认分析器 commit，本次不跳过已有标注")
 
     stop = Event()
+    inventory = AnnotationInventory(commit=commit, validator=annotation_is_current)
 
-    def process(source: Path, destination: Path):
+    def process(source: Path):
         try:
             if stop.is_set():
                 raise CancelledError("标注已取消")
-            if not args.force and annotation_is_current(source, destination, commit=commit):
-                return "skipped", destination, None
             output = annotate_file(
                 source, config=config, output_root=args.output_root,
                 source_root=args.source_root, stop=stop,
@@ -74,14 +74,20 @@ def main() -> int:
         # 重复 Ctrl+C 只设置取消状态，不打断子进程回收和线程退出。
         stop.set()
 
-    executor = ThreadPoolExecutor(max_workers=min(config.max_workers, len(selected)))
+    executor = None
     try:
         signals = [signal.SIGINT, signal.SIGTERM]
         if hasattr(signal, "SIGBREAK"):
             signals.append(signal.SIGBREAK)
         for signum in signals:
             previous_handlers[signum] = signal.signal(signum, cancel)
-        remaining = iter(zip(selected, destinations, strict=True))
+        logger.info("标注预检: 扫描 %d 份文件", len(selected))
+        pending, counts["skipped"] = inventory.partition(
+            list(zip(selected, destinations, strict=True)), max_workers=config.max_workers, stop=stop,
+        )
+        logger.info("标注预检完成: 已有有效=%d 待标注=%d", counts["skipped"], len(pending))
+        executor = ThreadPoolExecutor(max_workers=min(config.max_workers, max(1, len(pending)))) if pending else None
+        remaining = iter(pending)
         futures = {}
         index = 0
         while not stop.is_set():
@@ -90,8 +96,8 @@ def main() -> int:
                 item = next(remaining, None)
                 if item is None:
                     break
-                source, destination = item
-                futures[executor.submit(process, source, destination)] = source
+                source, _destination = item
+                futures[executor.submit(process, source)] = source
             if not futures:
                 break
             completed, _ = wait(futures, timeout=0.2, return_when=FIRST_COMPLETED)
@@ -103,15 +109,18 @@ def main() -> int:
                 if error is not None:
                     logger.error("分析失败 %s: %s", source, error)
                 else:
-                    logger.info("%d/%d %s: %s", index, len(selected), "跳过" if status == "skipped" else "已保存", output)
+                    inventory.is_current(source, output)
+                    logger.info("%d/%d 已保存: %s", index, len(pending), output)
     except (KeyboardInterrupt, CancelledError):
         stop.set()
     finally:
         cancelled = stop.is_set()
         stop.set()
         try:
-            executor.shutdown(wait=True, cancel_futures=True)
+            if executor is not None:
+                executor.shutdown(wait=True, cancel_futures=True)
         finally:
+            inventory.save()
             for signum, handler in previous_handlers.items():
                 signal.signal(signum, handler)
     if cancelled:
