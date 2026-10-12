@@ -31,6 +31,24 @@ def test_bc_optimizer_defaults_preserve_adamw(tmp_path):
     assert loaded.optimizer.name == "adamw"
     assert loaded.learning_rate == 1e-4
     assert loaded.weight_decay == 0.01
+    assert direct.fp32_gradients is loaded.fp32_gradients is False
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_bc_fp32_gradients_preserves_forward_precision(tmp_path, enabled):
+    loaded = load_run_config(
+        _write_config(tmp_path, {"precision": "bf16", "training": {"fp32_gradients": enabled}})
+    )
+
+    assert loaded.fp32_gradients is enabled
+    assert loaded.precision == "bf16"
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, 0.0, 1.0, "true", "false", [], {}])
+def test_bc_fp32_gradients_rejects_non_boolean_yaml(tmp_path, value):
+    path = _write_config(tmp_path, {"training": {"fp32_gradients": value}})
+    with pytest.raises(ValueError, match="training.fp32_gradients must be a boolean"):
+        load_run_config(path)
 
 
 def test_bc_optimizer_reads_explicit_muon_parameters(tmp_path):
@@ -142,9 +160,11 @@ def test_bc_optimizer_does_not_change_grpo_configuration(tmp_path):
     previous_run = load_grpo_run_config(path)
 
     payload["training"]["optimizer"] = {"name": "muon"}
+    payload["training"]["fp32_gradients"] = True
     _write_config(tmp_path, payload)
 
     assert load_run_config(path).optimizer.name == "muon"
+    assert load_run_config(path).fp32_gradients is True
     assert load_grpo_config(path) == previous_grpo
     assert load_grpo_run_config(path) == previous_run
     assert previous_grpo.learning_rate == 3e-6

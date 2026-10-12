@@ -1518,7 +1518,12 @@ def test_run_training_rejects_missing_model_variant_before_loading_data(
 
 
 @pytest.mark.parametrize("saved_scheduler_step", (None, 7))
-def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, caplog, saved_scheduler_step):
+@pytest.mark.parametrize(("precision", "fp32_gradients"), [
+    ("float32", False), ("bf16", False), ("bf16", True),
+])
+def test_run_training_orchestrates_checkpoint_saving(
+    tmp_path, monkeypatch, caplog, saved_scheduler_step, precision, fp32_gradients,
+):
     caplog.set_level(logging.INFO)
     schema = TrainingSchema(
         serialization_format="test",
@@ -1586,6 +1591,9 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
 
     def fake_train_epoch(*args, **kwargs):
         assert kwargs["tensorboard_monitor"] is not None
+        expected_dtype = torch.float32 if fp32_gradients else model_dtype(precision)
+        assert all(parameter.dtype == expected_dtype for parameter in args[0].parameters())
+        assert ("master_weights" in args[2].state_dict()) == (expected_dtype != torch.float32)
         calls["train_step_offsets"].append(kwargs["global_step_offset"])
         return {
             "loss": 1.0,
@@ -1657,6 +1665,8 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
         job_tag="black_mage",
         model_variant="artzip",
         max_epochs=2,
+        precision=precision,
+        fp32_gradients=fp32_gradients,
         tensorboard=TensorBoardConfig(enabled=True, log_every_steps=1),
         model=ModelConfig(d_model=8, n_layers=1, n_heads=2, ff_dim=16),
     )
@@ -1707,7 +1717,10 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
         vocab_size=4,
         repetition=config.repetition,
     )
-    resume_optimizer = torch.optim.AdamW(resume_model.parameters(), lr=0.01)
+    resume_model.to(dtype=torch.float32 if fp32_gradients else model_dtype(precision))
+    resume_optimizer = training_loop_impl.build_optimizer(
+        resume_model, config.optimizer, learning_rate=0.01, weight_decay=config.weight_decay,
+    )
     resume_scheduler = torch.optim.lr_scheduler.LambdaLR(resume_optimizer, lambda _: 1.0)
     resume_scheduler_state = resume_scheduler.state_dict()
     # 保存的历史 batch 数与当前 loader 长度不同，用于验证续训不会倒退日志步号。
@@ -1730,7 +1743,10 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
         "model_variant": "artzip",
         "input_contract": resume_input_contract.to_dict(),
         "training_precision": config.precision,
-        "run_config": {"max_files": None, "validation_files": config.validation_files},
+        "run_config": {
+            "max_files": None, "validation_files": config.validation_files,
+            "fp32_gradients": fp32_gradients,
+        },
         "metrics": {
             "loss": 1.0,
             "cross_entropy_loss": 1.0,
@@ -1775,7 +1791,7 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
     forced_checkpoint = tmp_path / "epoch_001_val_ppg_500.00.pt"
     forced_payload = {
         **resume_payload,
-        "run_config": {"max_files": 1280},
+        "run_config": {"max_files": 1280, "fp32_gradients": fp32_gradients},
         "best_key": (999.0, 999.0, 999.0, 0.0),
         "best_val_metrics": {
             **resume_payload["metrics"],

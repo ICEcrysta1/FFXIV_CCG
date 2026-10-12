@@ -168,7 +168,8 @@ def run_training(
         repetition=config.repetition,
     ).to(
         device=device,
-        dtype=model_dtype(config.precision),
+        # FP32 叶子参数直接累积 FP32 梯度，前向计算精度仍由 autocast 控制。
+        dtype=torch.float32 if config.fp32_gradients else model_dtype(config.precision),
     )
     if config.activation_checkpoint_ffn:
         model.enable_activation_checkpoint_ffn()
@@ -186,7 +187,7 @@ def run_training(
     if callable(set_runtime_debug):
         set_runtime_debug(debug_recorder)
     logger.info(
-        "模型: job=%s model_variant=%s actions=%d state=%d scene=%d skill_features=%d layers=%d d_model=%d activation=%s ff_dim=%d precision=%s ffn_checkpoint=%s attention_checkpoint=%s device=%s",
+        "模型: job=%s model_variant=%s actions=%d state=%d scene=%d skill_features=%d layers=%d d_model=%d activation=%s ff_dim=%d precision=%s parameter_gradient_dtype=%s ffn_checkpoint=%s attention_checkpoint=%s device=%s",
         data_spec.job_tag,
         config.model_variant,
         data_spec.num_actions,
@@ -198,6 +199,7 @@ def run_training(
         config.model.transformer_activation,
         config.model.ff_dim,
         config.precision,
+        next(model.parameters()).dtype,
         config.activation_checkpoint_ffn,
         config.activation_checkpoint_attention,
         device,
@@ -507,7 +509,8 @@ def train_epoch(
                 with _debug_stage(runtime_debug, "context_encoding"):
                     batch = context_encoder.encode(batch)
             if tensorboard_monitor is not None:
-                tensorboard_monitor.log_graph(batch)
+                with autocast_context(device, precision):
+                    tensorboard_monitor.log_graph(batch)
             with _debug_stage(runtime_debug, "forward"):
                 with autocast_context(device, precision):
                     output = model(batch)

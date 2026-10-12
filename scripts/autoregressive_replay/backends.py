@@ -165,7 +165,19 @@ class PyTorchPolicyBackend(_MeasuredBackend):
         vocab_size = int(embedding.shape[0])
         self.input_contract.assert_matches_embedding(vocab_size)
         checkpoint_precision = str(checkpoint.get("training_precision", "float32"))
-        requested_precision = precision or checkpoint_precision
+        requested_precision = checkpoint_precision if precision is None else precision
+        parameter_dtype = model_dtype(requested_precision)
+        # 默认回放恢复训练时的参数与计算精度；显式精度仍表示部署目标的权重量化。
+        if "training_parameter_precision" in checkpoint:
+            parameter_precision = checkpoint["training_parameter_precision"]
+            if not isinstance(parameter_precision, str):
+                raise ValueError("checkpoint training_parameter_precision must be a supported precision string")
+            try:
+                saved_parameter_dtype = model_dtype(parameter_precision)
+            except ValueError as exc:
+                raise ValueError(f"unsupported checkpoint training_parameter_precision: {parameter_precision!r}") from exc
+            if precision is None:
+                parameter_dtype = saved_parameter_dtype
         if requested_precision in {"bf16", "float16"} and self.input_device.type != "cuda":
             raise ValueError(
                 f"PyTorch replay precision {requested_precision} requires CUDA; "
@@ -183,7 +195,7 @@ class PyTorchPolicyBackend(_MeasuredBackend):
         self.model.load_state_dict(checkpoint["model_state_dict"], strict=True)
         self.model.to(
             device=self.input_device,
-            dtype=model_dtype(self.precision),
+            dtype=parameter_dtype,
         )
         self.model.eval()
         self._bf16_float_compute = False

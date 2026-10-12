@@ -588,13 +588,47 @@ def test_model_analysis_common_helpers_and_context_loading(monkeypatch, tmp_path
 
 
 @pytest.mark.parametrize("reordered_schema", [False, True])
-def test_analysis_restores_saved_input_contract_without_current_yaml(monkeypatch, tmp_path, reordered_schema):
+@pytest.mark.parametrize("precision,metadata,expected_dtype", [
+    ("float32", {}, torch.float32),
+    ("bf16", {}, torch.bfloat16),
+    ("bf16", {"training_precision": "bf16", "training_parameter_precision": "float32"}, torch.float32),
+    ("bf16", {"training_parameter_precision": "float32"}, torch.float32),
+    ("float32", {"training_precision": "bf16", "training_parameter_precision": "float32"}, torch.float32),
+    ("float32", {"training_precision": "bf16", "training_parameter_precision": "bf16"}, torch.float32),
+    ("bf16", {"training_precision": "float32", "training_parameter_precision": "float32"}, torch.bfloat16),
+])
+def test_analysis_restores_saved_input_contract_without_current_yaml(
+    monkeypatch, tmp_path, reordered_schema, precision, metadata, expected_dtype,
+):
     from dataclasses import asdict, replace
+    from scripts.onnx_export.contracts.contract import CapacityContract, TENSOR_INPUT_NAMES, make_inputs
     from tests.scripts.onnx_export.test_exporter import _write_small_checkpoint
 
     checkpoint = tmp_path / "model.pt"
     spec, saved = _write_small_checkpoint(checkpoint)
+    payload = safe_torch_load(checkpoint)
+    payload.update(metadata)
+    torch.save(payload, checkpoint)
     seen = {}
+
+    if precision == "bf16":
+        # 真实 CPU BF16 前向验证两种精度，只替换生产路径的 CUDA 设备要求。
+        monkeypatch.setattr(analysis_common, "_resolve_device", lambda _name: torch.device("cuda"))
+        original_to = torch.nn.Module.to
+
+        def to_cpu(module, *, device, **kwargs):
+            assert device.type == "cuda"
+            return original_to(module, device="cpu", **kwargs)
+
+        monkeypatch.setattr(analysis_common.CausalPolicyModel, "to", to_cpu)
+        monkeypatch.setattr(analysis_common.ContextEncoder, "to", to_cpu)
+
+        def cpu_autocast(device, compute_precision):
+            assert device.type == "cuda"
+            seen["compute_precision"] = compute_precision
+            return torch.autocast(device_type="cpu", dtype=torch.bfloat16)
+
+        monkeypatch.setattr(analysis_common, "autocast_context", cpu_autocast)
 
     class Dataset:
         def __init__(self, sources, **kwargs):
@@ -623,7 +657,7 @@ def test_analysis_restores_saved_input_contract_without_current_yaml(monkeypatch
     monkeypatch.setattr(SkillVocab, "build_from_job_tag", lambda *_a, **_kw: pytest.fail("分析不得重建当前技能词表"))
     kwargs = dict(checkpoint_path=checkpoint, source_path=None, raw_root=tmp_path,
                   cache_dir=tmp_path / ".cache", max_history=4, cache_shard_size=512,
-                  cache_max_shards=2, output_dir=tmp_path / "analysis", device_name="cpu", precision="float32")
+                  cache_max_shards=2, output_dir=tmp_path / "analysis", device_name="cpu", precision=precision)
     if reordered_schema:
         with pytest.raises(ValueError, match="training state feature keys mismatch"):
             analysis_common.load_loss_landscape_context(**kwargs)
@@ -637,6 +671,46 @@ def test_analysis_restores_saved_input_contract_without_current_yaml(monkeypatch
     assert seen["source"]["normalizer"] is normalizer
     assert seen["source"]["expected_skill_vocab"] is seen["dataset"]["skill_vocab"]
     assert context.model.input_encoder.skill_embed.weight.shape[0] == 8
+    assert context.precision == precision
+    assert all(parameter.dtype == expected_dtype for parameter in context.model.parameters())
+    for name, parameter in context.model.named_parameters():
+        torch.testing.assert_close(parameter, payload["model_state_dict"][name].to(expected_dtype), rtol=0, atol=0)
+    inputs = make_inputs(
+        spec, CapacityContract(3, 4), vocab_size=8, scene_valid=1, history_valid=1,
+        dtype=torch.float32, seed=7,
+    )
+    forward_dtypes = []
+    hook = context.model.encoder.layers[0].linear1.register_forward_hook(
+        lambda _module, _inputs, output: forward_dtypes.append(output.dtype)
+    )
+    with torch.no_grad(), context.autocast():
+        logits = context.model(dict(zip(TENSOR_INPUT_NAMES, inputs, strict=True)))["logits"]
+    hook.remove()
+    assert forward_dtypes == [torch.bfloat16 if precision == "bf16" else torch.float32]
+    assert logits.dtype == torch.float32 and torch.isfinite(logits).all()
+    if precision == "bf16":
+        assert seen["compute_precision"] == "bf16"
+
+
+@pytest.mark.parametrize("parameter_precision", [None, True, 0, "float64", "bfloat16", []])
+def test_analysis_rejects_invalid_saved_parameter_precision(monkeypatch, tmp_path, parameter_precision):
+    from tests.scripts.onnx_export.test_exporter import _write_small_checkpoint
+
+    checkpoint = tmp_path / "model.pt"
+    _write_small_checkpoint(checkpoint)
+    payload = safe_torch_load(checkpoint)
+    payload["training_parameter_precision"] = parameter_precision
+    torch.save(payload, checkpoint)
+    monkeypatch.setattr(analysis_common, "_resolve_analysis_source", lambda *_args, **_kwargs: pytest.fail(
+        "参数精度元数据损坏时应先拒绝 checkpoint，不加载分析数据"
+    ))
+
+    with pytest.raises(ValueError, match="training_parameter_precision"):
+        analysis_common.load_loss_landscape_context(
+            checkpoint_path=checkpoint, source_path=None, raw_root=tmp_path,
+            cache_dir=tmp_path / ".cache", max_history=4, cache_shard_size=512,
+            cache_max_shards=2, output_dir=tmp_path / "analysis", device_name="cpu", precision="float32",
+        )
 
 
 def test_model_analysis_retries_after_compiling_missing_cache(monkeypatch, tmp_path):

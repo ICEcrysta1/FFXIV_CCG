@@ -148,9 +148,15 @@ class TensorBoardMonitor:
         ]
         devices = sorted({tensor.device.index for tensor in inputs.values() if tensor.is_cuda})
         parameter = next(self.model.parameters(), None)
+        # FP32 参数训练可在外层使用 BF16 autocast，图追踪必须沿用计算精度。
+        autocast_dtype = (
+            torch.get_autocast_dtype(parameter.device.type)
+            if parameter is not None and torch.is_autocast_enabled(parameter.device.type)
+            else parameter.dtype if parameter is not None else None
+        )
         autocast = (
-            torch.autocast(device_type=parameter.device.type, dtype=parameter.dtype, cache_enabled=False)
-            if parameter is not None and parameter.dtype in (torch.float16, torch.bfloat16)
+            torch.autocast(device_type=parameter.device.type, dtype=autocast_dtype, cache_enabled=False)
+            if parameter is not None and autocast_dtype in (torch.float16, torch.bfloat16)
             else nullcontext()
         )
         try:

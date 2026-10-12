@@ -104,7 +104,7 @@ class ModelAnalysisContext:
         return self.context_encoder.encode(move_batch(batch, self.device))
 
     def autocast(self):
-        """统一模型前向精度；所有输出都以模型 YAML 的 precision 为权威。"""
+        """按模型 YAML 的 precision 控制前向计算。"""
         return autocast_context(self.device, self.precision)
 
 
@@ -335,7 +335,7 @@ def _load_model_analysis_context(
     device_name: str,
     precision: str,
 ) -> ModelAnalysisContext:
-    """统一加载分析模型和 dataset；模型 dtype 与 autocast 共用同一 precision。"""
+    """同训练计算精度时恢复参数精度；覆盖计算精度时同步转换参数。"""
     checkpoint_path = Path(checkpoint_path)
     device = _resolve_device(device_name)
     if precision != "float32" and device.type != "cuda":
@@ -346,6 +346,18 @@ def _load_model_analysis_context(
     data_spec = DataSpec.from_dict(checkpoint["data_spec"])
     input_contract = ModelInputContract.from_checkpoint(checkpoint)
     input_contract.assert_matches_data_spec(data_spec)
+    parameter_dtype = model_dtype(precision)
+    if "training_parameter_precision" in checkpoint:
+        parameter_precision = checkpoint["training_parameter_precision"]
+        if not isinstance(parameter_precision, str):
+            raise ValueError("checkpoint training_parameter_precision must be a supported precision string")
+        try:
+            saved_parameter_dtype = model_dtype(parameter_precision)
+        except ValueError as exc:
+            raise ValueError(f"unsupported checkpoint training_parameter_precision: {parameter_precision!r}") from exc
+        # YAML 改变计算精度时保留原转换行为，包括历史 FP32 损失地形分析。
+        if checkpoint.get("training_precision", precision) == precision:
+            parameter_dtype = saved_parameter_dtype
     job_tag = resolve_project_job_tag(project_root=PROJECT_ROOT)
     if job_tag != data_spec.job_tag:
         raise ValueError(
@@ -371,7 +383,7 @@ def _load_model_analysis_context(
         vocab_size=vocab.size(),
         repetition=repetition_config,
     )
-    model.to(device=device, dtype=model_dtype(precision))
+    model.to(device=device, dtype=parameter_dtype)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
     del checkpoint

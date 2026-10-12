@@ -32,6 +32,80 @@ _FAKE_GCD_SKILL = SimpleNamespace(key="fire", kind=SimpleNamespace(value="gcd"))
 _FAKE_OGCD_SKILL = SimpleNamespace(key="ogcd_wait", kind=SimpleNamespace(value="ogcd"))
 
 
+@pytest.mark.parametrize("metadata,precision,expected_dtype", [
+    ({"training_parameter_precision": "float32"}, None, torch.float32),
+    ({"training_parameter_precision": "float32"}, "bf16", torch.bfloat16),
+    ({}, None, torch.bfloat16),
+])
+def test_backend_restores_parameter_precision_without_changing_bf16_compute(
+    tmp_path, monkeypatch, metadata, precision, expected_dtype,
+):
+    """真实 CPU 前向覆盖训练精度恢复；仅将后端的 CUDA 设备要求替换为 CPU 执行。"""
+    from scripts.autoregressive_replay import backends as backend_module
+    from scripts.onnx_export.contracts.contract import CapacityContract, TENSOR_INPUT_NAMES, make_inputs
+    from tests.scripts.onnx_export.test_exporter import _write_small_checkpoint
+
+    checkpoint = tmp_path / "model.pt"
+    spec, _ = _write_small_checkpoint(checkpoint)
+    saved = torch.load(checkpoint, weights_only=True)
+    saved.update(training_precision="bf16", **metadata)
+    torch.save(saved, checkpoint)
+    original_to = backend_module.CausalPolicyModel.to
+    monkeypatch.setattr(backend_module, "_resolve_torch_device", lambda _name: torch.device("cuda"))
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
+    monkeypatch.setattr(backend_module.PyTorchPolicyBackend, "_synchronize", lambda _self: None)
+
+    def to_cpu(model, *, device, dtype):
+        assert device.type == "cuda"
+        return original_to(model, device="cpu", dtype=dtype)
+
+    monkeypatch.setattr(backend_module.CausalPolicyModel, "to", to_cpu)
+    contexts = []
+
+    def cpu_autocast(device, compute_precision):
+        contexts.append((device.type, compute_precision))
+        return torch.autocast(device_type="cpu", dtype=model_dtype(compute_precision))
+
+    monkeypatch.setattr(backend_module, "autocast_context", cpu_autocast)
+    backend = backend_module.PyTorchPolicyBackend(
+        checkpoint, device="cuda", use_kv_cache=False, precision=precision,
+    )
+    assert backend.precision == "bf16"
+    assert all(parameter.dtype == expected_dtype for parameter in backend.model.parameters())
+    for name, parameter in backend.model.named_parameters():
+        torch.testing.assert_close(parameter, saved["model_state_dict"][name].to(expected_dtype), rtol=0, atol=0)
+    assert any(
+        not torch.equal(value, value.bfloat16().float())
+        for value in saved["model_state_dict"].values() if value.is_floating_point()
+    )
+    inputs = make_inputs(
+        spec, CapacityContract(3, 4), vocab_size=8, scene_valid=1, history_valid=1,
+        dtype=torch.float32, seed=7,
+    )
+    batch = dict(zip(TENSOR_INPUT_NAMES, inputs, strict=True))
+    logits = backend.raw_logits(batch, spec.action_keys)
+    assert contexts == [("cuda", "bf16")]
+    assert logits.dtype == torch.float32 and torch.isfinite(logits).all()
+
+
+@pytest.mark.parametrize("parameter_precision", [None, True, 0, "float64", "bfloat16", []])
+@pytest.mark.parametrize("precision", [None, "float32"])
+def test_backend_rejects_invalid_saved_parameter_precision_even_with_explicit_override(
+    tmp_path, parameter_precision, precision,
+):
+    """显式部署精度也不能掩盖 checkpoint 中损坏的参数精度元数据。"""
+    from scripts.autoregressive_replay.backends import PyTorchPolicyBackend
+    from tests.scripts.onnx_export.test_exporter import _write_small_checkpoint
+
+    checkpoint = tmp_path / "model.pt"
+    _write_small_checkpoint(checkpoint)
+    saved = torch.load(checkpoint, weights_only=True)
+    saved["training_parameter_precision"] = parameter_precision
+    torch.save(saved, checkpoint)
+    with pytest.raises(ValueError, match="training_parameter_precision"):
+        PyTorchPolicyBackend(checkpoint, device="cpu", use_kv_cache=False, precision=precision)
+
+
 @pytest.mark.parametrize("scene_mode,initial_time", [("cache", None), ("none", None), ("cache", 0.0)])
 def test_default_precast_replay_accepts_negative_scene_facts(tmp_path, scene_mode, initial_time):
     """真实会话、场景同步和预读首个技能贯通，不需要训练或模型推理。"""
