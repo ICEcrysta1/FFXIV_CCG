@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-
 import torch
 from torch.utils.checkpoint import checkpoint
 
@@ -17,20 +15,6 @@ from .attention_utils import (
     split_heads,
 )
 from .attention_variants import run_head_attention
-
-
-@contextmanager
-def _skip_layer_activation_checkpoints(layers):
-    """整段或整块重算时，避免重复嵌套层内 checkpoint。"""
-    layers = tuple(layers)
-    previous = tuple(layer._skip_activation_checkpoint for layer in layers)
-    for layer in layers:
-        layer._skip_activation_checkpoint = True
-    try:
-        yield
-    finally:
-        for layer, was_skipped in zip(layers, previous):
-            layer._skip_activation_checkpoint = was_skipped
 
 
 def run_causal_layer(
@@ -48,12 +32,14 @@ def run_causal_layer(
     initial_tokens: torch.Tensor | None = None,
     layer_index: int = 0,
     sources: list[torch.Tensor] | None = None,
-    query_index: int = 0,
     collect_attention: bool = False,
     force_explicit_mask: bool = False,
     segment_mask=None,
 ):
-    """编码完整序列或新增因果后缀，返回 hidden、本层新增 K/V 与注意力。"""
+    """编码完整序列或新增因果后缀，返回 hidden、本层新增 K/V 与注意力。
+
+    Full AttnRes 的 hidden 已由调用方或上一层聚合，本层追加两个子层源。
+    """
     if residual_mix is not None:
         if attention_residual is not None:
             raise ValueError("learned residual mixing and Full AttnRes are mutually exclusive")
@@ -64,7 +50,6 @@ def run_causal_layer(
     if attention_residual is not None:
         if not layer.norm_first or sources is None:
             raise ValueError("Full AttnRes requires Pre-LN layers and a source list")
-        hidden = attention_residual(sources, query_index)
 
     def attend(attention_hidden):
         attention_input = layer.norm1(attention_hidden) if layer.norm_first else attention_hidden
@@ -109,8 +94,13 @@ def run_causal_layer(
         and not collect_attention
     ):
         def attention_block(block_hidden):
-            with _skip_layer_activation_checkpoints((layer,)):
+            # 整块重算已覆盖 SDPA，不再嵌套它自己的 checkpoint。
+            was_skipped = layer._skip_activation_checkpoint
+            layer._skip_activation_checkpoint = True
+            try:
                 return attend(block_hidden)[:3]
+            finally:
+                layer._skip_activation_checkpoint = was_skipped
 
         attended, key, value = checkpoint(attention_block, hidden, use_reentrant=False)
         weights = None
@@ -119,8 +109,9 @@ def run_causal_layer(
 
     if attention_residual is not None:
         sources.append(layer.dropout1(attended))
-        sources.append(layer._ff_block(layer.norm2(attention_residual(sources, query_index + 1))))
-        hidden = attention_residual(sources, query_index + 2)
+        sources.append(layer._ff_block(layer.norm2(attention_residual(sources, 2 * layer_index + 1))))
+        # 此聚合同时是下一层 attention 的输入，层边界不再重复计算同一个 query。
+        hidden = attention_residual(sources, 2 * layer_index + 2)
     else:
         hidden = finish_layer(layer, hidden, attended)
     return hidden, key, value, weights
@@ -157,59 +148,28 @@ def run_causal_encoder(
     residual = getattr(encoder, "attention_residual", None)
     residual_mix = getattr(encoder, "residual_mix", None)
 
-    def run_path(path_tokens, path_valid):
-        hidden = path_tokens
-        sources = [path_tokens] if residual is not None else None
-        layer_hidden, attentions = [], []
-        for index, layer in enumerate(encoder.layers):
-            hidden, _, _, attention = run_causal_layer(
-                layer,
-                hidden,
-                key_valid=path_valid,
-                position_ids=position_ids,
-                rotary_position_encoding=rotary,
-                attention_residual=residual,
-                residual_mix=residual_mix,
-                initial_tokens=path_tokens,
-                layer_index=index,
-                sources=sources,
-                query_index=2 * index,
-                collect_attention=collect_attention,
-                force_explicit_mask=force_explicit_mask,
-                segment_mask=mask,
-            )
-            if collect_attention:
-                layer_hidden.append(hidden)
-                attentions.append(attention)
-        return hidden, tuple(layer_hidden), tuple(attentions)
-
-    flags = tuple(
-        (layer.activation_checkpoint_ffn, layer.activation_checkpoint_attention)
-        for layer in encoder.layers
-    )
-    checkpoint_residual = (
-        residual is not None
-        and not collect_attention
-        and encoder.training
-        and torch.is_grad_enabled()
-        and bool(flags)
-        and any(flags[0])
-        and all(flag == flags[0] for flag in flags)
-    )
-    if checkpoint_residual:
-        hidden = checkpoint(
-            lambda path_tokens, path_valid: run_path(path_tokens, path_valid)[0],
-            tokens,
-            valid,
-            use_reentrant=False,
-            context_fn=lambda: (
-                _skip_layer_activation_checkpoints(encoder.layers),
-                _skip_layer_activation_checkpoints(encoder.layers),
-            ),
+    sources = [tokens] if residual is not None else None
+    hidden = residual(sources, 0) if residual is not None else tokens
+    layer_hidden, attentions = [], []
+    for index, layer in enumerate(encoder.layers):
+        hidden, _, _, attention = run_causal_layer(
+            layer,
+            hidden,
+            key_valid=valid,
+            position_ids=position_ids,
+            rotary_position_encoding=rotary,
+            attention_residual=residual,
+            residual_mix=residual_mix,
+            initial_tokens=tokens,
+            layer_index=index,
+            sources=sources,
+            collect_attention=collect_attention,
+            force_explicit_mask=force_explicit_mask,
+            segment_mask=mask,
         )
-        layer_hidden, attentions = (), ()
-    else:
-        hidden, layer_hidden, attentions = run_path(tokens, valid)
+        if collect_attention:
+            layer_hidden.append(hidden)
+            attentions.append(attention)
     if encoder.norm is not None:
         hidden = encoder.norm(hidden)
-    return hidden, layer_hidden, attentions
+    return hidden, tuple(layer_hidden), tuple(attentions)

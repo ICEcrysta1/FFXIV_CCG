@@ -51,6 +51,8 @@ def encode_with_kv_cache(encoder, encoded, cache=None):
     hidden = tokens[:, prefix_length:]
     initial_tokens = hidden
     sources = [hidden] if residual is not None else None
+    if residual is not None:
+        hidden = residual(sources, 0)
     valid = encoded["valid"]
     mask = build_segment_mask(
         valid, query_count=1, key_count=valid.shape[1],
@@ -63,7 +65,7 @@ def encode_with_kv_cache(encoder, encoded, cache=None):
             rotary_position_encoding=rotary,
             existing_key=cache.key_cache[index], existing_value=cache.value_cache[index],
             existing_length=prefix_length,
-            attention_residual=residual, sources=sources, query_index=2 * index,
+            attention_residual=residual, sources=sources,
             residual_mix=residual_mix, initial_tokens=initial_tokens, layer_index=index,
             segment_mask=mask,
         )
@@ -108,6 +110,8 @@ def _build_prefix_cache(
     hidden = prefix_tokens
     residual_mix = getattr(encoder, "residual_mix", None)
     sources = [prefix_tokens] if attention_residual is not None else None
+    if attention_residual is not None and hidden.shape[1] > 0:
+        hidden = attention_residual(sources, 0)
     key_cache: list[torch.Tensor] = []
     value_cache: list[torch.Tensor] = []
 
@@ -131,7 +135,6 @@ def _build_prefix_cache(
             initial_tokens=prefix_tokens,
             layer_index=layer_index,
             sources=sources,
-            query_index=2 * layer_index,
         )
         key_cache.append(key)
         value_cache.append(value)
@@ -170,6 +173,8 @@ def _append_prefix(
     hidden = new_tokens
     residual_mix = getattr(encoder, "residual_mix", None)
     sources = [new_tokens] if attention_residual is not None else None
+    if attention_residual is not None:
+        hidden = attention_residual(sources, 0)
     key_cache = list(cache.key_cache)
     value_cache = list(cache.value_cache)
 
@@ -188,7 +193,6 @@ def _append_prefix(
             initial_tokens=new_tokens,
             layer_index=layer_index,
             sources=sources,
-            query_index=2 * layer_index,
         )
         key_cache[layer_index] = torch.cat(
             (key_cache[layer_index], new_key),
