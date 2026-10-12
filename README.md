@@ -35,7 +35,9 @@
 
 ## 🚀 通过命令快速开始
 
-请见下文快速启动安装和使用示例。有关FLogs 数据下载、行为克隆预训练、GRPO 后训练、ONNX 导出、模型分析与自回归回放的详细命令参数请参阅我们完整的 [说明文档](./docs/命令行使用说明.md)。
+本节命令面向 Windows PowerShell。先安装 Python 3.12+、.NET 10 SDK、Git 和支持 CUDA 13.x 的 NVIDIA 驱动；`setup.ps1` 会安装项目专用 Node 22、pnpm 10 和 Python 依赖。详细参数见 [命令行使用说明](./docs/命令行使用说明.md)。
+
+计划以 `0.2.0-rc.1` 作为转向 Linux/WSL 开发前的最后一个 Windows 候选版。当前安装脚本和菜单仍面向 Windows，Linux/WSL 的安装与运行流程将在迁移后单独提供；实际发布状态以仓库标签和 Releases 为准。
 
 ```pwsh
 # 1) 一键准备环境：创建根目录 .venv 和项目本地 .node，安装 Python GPU 与 Node 依赖
@@ -44,15 +46,31 @@
 # Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 # .\setup.ps1
 
-# 2) 按 setup.ps1 输出和 .env.example 的说明准备环境变量
+# 2) 按 .env.example 配置职业、模型变体、FFLogs 凭证及本机参数
 if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 
 # 3) 构建 Python.NET 可加载的状态机程序集、依赖和运行时配置
 dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj --configuration Debug
 
-# 4) 启动工具菜单：输入 1～9 执行对应工具，10 退出
+# 4) 验证配置与 Python.NET 状态机链路
+.\.venv\Scripts\python.exe main.py validate --job-tag black_mage
+.\.venv\Scripts\python.exe main.py smoke --job-tag black_mage
+
+# 5) 启动工具菜单：输入 1～9 执行对应工具，10 退出
 .\ffxiv_ccg.ps1
 ```
+
+首次训练按以下顺序准备数据；重复运行下载、标注和转换会复用经校验仍有效的产物：
+
+| 顺序 | 菜单 | 产物与用途 |
+|---|---|---|
+| 1 | FFLogs 数据下载 | 国服分档训练日志与北美高分验证日志，保存为 `raw/**/*.json.br` |
+| 2 | XIVanalysis 数据标记 | 从 raw 生成 annotated，保留训练分档与 `VAL/<副本>/` 层级 |
+| 3 | 训练文件转换 | 按 `training.max_files` 和独立的 `training.validation_files` 准备完整 compiled cache |
+| 4 | BC 预训练 / 恢复训练 | 只读取已有有效缓存，缺失或过期时提示先转换 |
+| 5 | GRPO / ONNX 导出 / 分析 / 回放 | 使用与当前输入契约兼容的 checkpoint；ONNX 导出菜单包含正式发布门禁 |
+
+训练配额和验证配额互不借用；验证副本不足时只在同副本内补位。下载器的 `validation_ratio` 决定准备多少验证日志，训练 YAML 的 `validation_files` 决定实际消费多少份，两者独立配置。算法、数据语义和训练参数以 YAML 为准，根目录 `.env` 管理本机配置；BC 与 GRPO 的优化器分别由 `optimizer.yaml` 的 `optimizers.bc` / `optimizers.grpo` 配置。
 
 菜单中的 BC 训练与恢复训练按 `training.yaml` 顶部的 `training.tensorboard.enabled` 决定是否自动打开 TensorBoard；GRPO 按 `grpo.yaml` 顶部的 `grpo.tensorboard.enabled` 独立决定。服务就绪后会打开本机浏览器，端口由 `.env` 的 `TENSORBOARD_PORT` 指定。由 `ffxiv_ccg.ps1` 启动的 Web 服务会在训练入口结束或中断后关闭；手动启动的后台服务仍需手动管理。若该端口上的旧服务读取其他模型的事件目录，启动器会报错并提示关闭旧服务或换端口。
 
@@ -72,6 +90,8 @@ dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj --configuration Debug
 训练、转换和回放通过 Python.NET 在当前 Python 进程内调用 C# 状态机。PythonBridge 构建会生成 CoreCLR 运行时配置，并将 FightEngine 与 YAML 依赖复制到同一输出目录；观测树由桥接程序集直接映射为 Python 原生字典和列表，不经过 JSON 文本。
 
 本项目只支持 NVIDIA CUDA 环境，训练、导出和自回归不提供 CPU 支持。
+
+升级输入或状态机契约后，旧缓存需通过转换入口重建，旧 checkpoint 和 ONNX 包需按新契约重新训练与导出。单独生成 `model.onnx` 不代表部署验收完成：正式流程要求同一部署包通过空场景 128 GCD、真实场景至少 100 次执行动作的 PT/ORT parity，并校验契约、文件和证据指纹。只有当前加载器校验通过且状态为 `release_validated` 的包可用于正式部署；旧包内的同名状态不能替代当前版本验收。详见 [ONNX 导出与发布门禁](./docs/命令行使用说明.md#7-onnx-导出与发布门禁)。
 
 ---
 
