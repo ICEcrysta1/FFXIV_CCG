@@ -1088,7 +1088,7 @@ def test_training_helpers_and_epoch_metrics(tmp_path, monkeypatch):
     assert train_metrics["top1_accuracy"] == pytest.approx(1.0)
     assert validation_metrics["top3_accuracy"] == pytest.approx(1.0)
     assert any(
-        tag == "train/step/loss" and step == 7
+        tag == "训练/记录区间/总损失" and step == 7
         for tag, _value, step in tensorboard_writer.values
     )
 
@@ -1682,7 +1682,7 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
     assert tensorboard_output_dirs == [config.output_dir]
     assert tensorboard_writer.closed
     assert any(
-        tag == "validation/val_ppg" and step == 1
+        tag == "验证/真实副本每GCD平均威力（val_ppg）" and step == 1
         for tag, _value, step in tensorboard_writer.values
     )
     assert calls["model_args"][2] == dataset.skill_vocab.size()
@@ -1931,8 +1931,8 @@ def test_run_training_closes_tensorboard_writer_when_monitoring_or_validation_ra
 
     assert writer.closed
     assert len(writer.hparams) == 1
-    assert writer.hparams[0][1]["validation/loss"] == pytest.approx(1.0)
-    assert writer.hparams[0][1]["train/epoch/loss"] == pytest.approx(1.0)
+    assert writer.hparams[0][1]["验证/总损失"] == pytest.approx(1.0)
+    assert writer.hparams[0][1]["训练/每轮/总损失"] == pytest.approx(1.0)
     assert writer.hparams[0][2]["global_step"] == 1
 
 

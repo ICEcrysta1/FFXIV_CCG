@@ -47,10 +47,10 @@ def test_step_scalars_average_all_samples_in_interval_and_flush_partial_interval
         model, _batches(3, 1, 2), optimizer, scheduler, torch.device("cpu"),
         tensorboard_writer=writer, tensorboard_log_every_steps=2, global_step_offset=8,
     )
-    losses = [(value, step) for tag, value, step in writer.values if tag == "train/step/loss"]
+    losses = [(value, step) for tag, value, step in writer.values if tag == "训练/记录区间/总损失"]
     assert [value for value, _ in losses] == pytest.approx([2.5, 2.0])
     assert [step for _, step in losses] == [10, 11]
-    accuracies = [value for tag, value, _ in writer.values if tag == "train/step/top1_accuracy"]
+    accuracies = [value for tag, value, _ in writer.values if tag == "训练/记录区间/Top-1准确率"]
     assert accuracies == pytest.approx([0.625, 0.5])
 
 
@@ -63,7 +63,7 @@ def test_step_learning_rate_is_the_rate_used_for_updates():
         model, _batches(3, 1), optimizer, scheduler, torch.device("cpu"),
         tensorboard_writer=writer, tensorboard_log_every_steps=2,
     )
-    rates = [value for tag, value, _ in writer.values if tag == "train/step/learning_rate"]
+    rates = [value for tag, value, _ in writer.values if tag == "训练/记录区间/本次更新学习率"]
     assert rates == pytest.approx([(0.2 * 3 + 0.1) / 4])
     assert optimizer.param_groups[0]["lr"] == pytest.approx(0.05)
 

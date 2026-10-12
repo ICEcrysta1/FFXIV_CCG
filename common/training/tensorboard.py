@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from .tensorboard_labels import tensorboard_tag
+
 _ACTIVE_WRITER_CLOSE_CALLBACKS: dict[int, Callable[[], None]] = {}
 
 
@@ -146,7 +148,7 @@ def write_scalar_metrics(
         except (TypeError, ValueError, OverflowError):
             continue
         if math.isfinite(scalar):
-            writer.add_scalar(f"{prefix}/{name}", scalar, global_step)
+            writer.add_scalar(tensorboard_tag(f"{prefix}/{name}"), scalar, global_step)
 
 
 def close_tensorboard_writer(writer) -> None:

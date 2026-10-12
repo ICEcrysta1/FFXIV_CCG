@@ -413,4 +413,4 @@ def test_write_scalar_metrics_skips_non_finite_and_non_numeric_values():
         global_step=120,
     )
 
-    assert writer.values == [("validation/loss", 0.25, 120)]
+    assert writer.values == [("验证/总损失", 0.25, 120)]

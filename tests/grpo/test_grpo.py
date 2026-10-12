@@ -1116,7 +1116,7 @@ def test_grpo_update_logs_optimizer_metrics_to_tensorboard(monkeypatch):
         global_step_offset=5,
     )
 
-    assert any(tag == "grpo/update/loss" and step == 6 for tag, _value, step in writer.values)
+    assert any(tag == "GRPO/优化更新/总损失" and step == 6 for tag, _value, step in writer.values)
 
 
 def test_grpo_tensorboard_interval_uses_sample_weights_and_applied_learning_rate(monkeypatch):
@@ -1154,10 +1154,10 @@ def test_grpo_tensorboard_interval_uses_sample_weights_and_applied_learning_rate
         global_step_offset=4,
     )
 
-    assert writer.values[("grpo/update/loss", 6)] == pytest.approx(5.0 / 3.0)
-    assert writer.values[("grpo/update/learning_rate", 6)] == pytest.approx(0.25 / 3.0)
-    assert writer.values[("grpo/update/next_learning_rate", 6)] == pytest.approx(0.025)
-    assert ("grpo/update/grad_norm", 6) in writer.values
+    assert writer.values[("GRPO/优化更新/总损失", 6)] == pytest.approx(5.0 / 3.0)
+    assert writer.values[("GRPO/优化更新/本次更新学习率", 6)] == pytest.approx(0.25 / 3.0)
+    assert writer.values[("GRPO/优化更新/下次更新学习率", 6)] == pytest.approx(0.025)
+    assert ("GRPO/优化更新/裁剪前梯度范数", 6) in writer.values
 
 
 def test_grpo_monitor_reads_existing_forward_and_live_gradients():

@@ -13,6 +13,8 @@ from dataclasses import asdict, is_dataclass
 import torch
 from torch import nn
 
+from .tensorboard_labels import tensorboard_tag
+
 logger = logging.getLogger(__name__)
 
 
@@ -80,13 +82,13 @@ class TensorBoardMonitor:
             return
         if self._supports("add_text"):
             self.writer.add_text(
-                "run/configuration",
+                tensorboard_tag("run/configuration"),
                 "```json\n" + json.dumps(self._run_config, ensure_ascii=False, indent=2, default=str) + "\n```",
                 initial_step,
             )
-            self.writer.add_text("run/model", "```text\n" + str(model) + "\n```", initial_step)
+            self.writer.add_text(tensorboard_tag("run/model"), "```text\n" + str(model) + "\n```", initial_step)
             self.writer.add_text(
-                "run/metric_semantics",
+                tensorboard_tag("run/metric_semantics"),
                 "步号为累计优化器更新次数；训练曲线为记录区间的样本加权均值。"
                 "learning_rate 是区间内更新实际使用的值。验证混淆矩阵覆盖全部有效验证样本，"
                 "拒绝的非有限输出或无效标签由 diagnostic_rejected_samples 单独计数。"
@@ -96,18 +98,20 @@ class TensorBoardMonitor:
             )
         if self._supports("add_custom_scalars"):
             grpo = self._run_config["run"].get("stage") == "grpo"
+            panels = ({
+                "损失": ["grpo/update/loss", "grpo/update/policy_loss", "grpo/update/kl"],
+                "回放PPG": ["grpo/iteration/greedy_ppg_before", "grpo/iteration/greedy_ppg_after"],
+                "学习率": ["grpo/update/learning_rate", "grpo/update/next_learning_rate"],
+            } if grpo else {
+                "损失": ["train/step/loss", "train/epoch/loss", "validation/loss"],
+                "准确率": ["train/step/top1_accuracy", "validation/top1_accuracy", "validation/top3_accuracy"],
+                "回放PPG": ["validation/val_ppg", "validation/none_ppg"],
+                "学习率": ["train/step/learning_rate"],
+            })
             self.writer.add_custom_scalars({
-                "Training": {
-                    **({
-                        "Loss": ["Multiline", ["grpo/update/loss", "grpo/update/policy_loss", "grpo/update/kl"]],
-                        "Replay PPG": ["Multiline", ["grpo/iteration/greedy_ppg_before", "grpo/iteration/greedy_ppg_after"]],
-                        "Learning rate": ["Multiline", ["grpo/update/learning_rate", "grpo/update/next_learning_rate"]],
-                    } if grpo else {
-                        "Loss": ["Multiline", ["train/step/loss", "train/epoch/loss", "validation/loss"]],
-                        "Accuracy": ["Multiline", ["train/step/top1_accuracy", "validation/top1_accuracy", "validation/top3_accuracy"]],
-                        "Replay PPG": ["Multiline", ["validation/val_ppg", "validation/none_ppg"]],
-                        "Learning rate": ["Multiline", ["train/step/learning_rate"]],
-                    }),
+                "GRPO训练" if grpo else "行为克隆训练": {
+                    title: ["Multiline", [tensorboard_tag(tag) for tag in tags]]
+                    for title, tags in panels.items()
                 },
             })
         self._log_embeddings(global_step=initial_step)
@@ -162,7 +166,7 @@ class TensorBoardMonitor:
             # 可视化失败不应终止一次训练，但必须向日志和面板报告。
             logger.warning("TensorBoard 模型图写入失败：%s", exc)
             if self._supports("add_text"):
-                self.writer.add_text("diagnostics/graph_error", str(exc), 0)
+                self.writer.add_text(tensorboard_tag("diagnostics/graph_error"), str(exc), 0)
         finally:
             for module, name, value in saved:
                 setattr(module, name, value)
@@ -181,10 +185,10 @@ class TensorBoardMonitor:
         finite = torch.isfinite(values)
         invalid = int((~finite).sum())
         if invalid and self._supports("add_scalar"):
-            self.writer.add_scalar(f"diagnostics/nonfinite_samples/{tag}", invalid, global_step)
+            self.writer.add_scalar(tensorboard_tag(f"diagnostics/nonfinite_samples/{tag}"), invalid, global_step)
         values = values[finite]
         if values.numel():
-            self.writer.add_histogram(tag, values, global_step, bins=64)
+            self.writer.add_histogram(tensorboard_tag(tag), values, global_step, bins=64)
 
     def log_gradients(self, global_step: int, grad_norm=None) -> None:
         if not self.should_log_histograms(global_step):
@@ -192,7 +196,7 @@ class TensorBoardMonitor:
         if grad_norm is not None and self._supports("add_scalar"):
             norm = float(torch.as_tensor(grad_norm).detach().cpu())
             if math.isfinite(norm):
-                self.writer.add_scalar("train/grad_norm", norm, global_step)
+                self.writer.add_scalar(tensorboard_tag("train/grad_norm"), norm, global_step)
         for name, parameter in self.model.named_parameters():
             if parameter.grad is not None:
                 self._histogram(f"gradients/{name}", parameter.grad, global_step)
@@ -227,7 +231,7 @@ class TensorBoardMonitor:
         action_rows = tuple(getattr(data_spec, "action_to_vocab_id", ()))
         is_gcd = tuple(getattr(data_spec, "action_is_gcd", ()))
         actions = {row: (key, "gcd" if gcd else "ogcd") for row, key, gcd in zip(action_rows, self.action_keys, is_gcd)}
-        header = ["action_key", "raw_skill_id", "vocab_id", "kind"]
+        header = ["技能标识", "原始技能ID", "词表ID", "技能类型"]
         if embedding is not None and embedding.weight.shape[0] > 1:
             rows = range(1, embedding.weight.shape[0])
             metadata = []
@@ -237,7 +241,7 @@ class TensorBoardMonitor:
                 metadata.append([_metadata_cell(cell) for cell in (key, raw_id, row, kind)])
             self.writer.add_embedding(
                 embedding.weight.detach()[1:].float().cpu(), metadata=metadata,
-                metadata_header=header, tag="embeddings/input_skills", global_step=global_step,
+                metadata_header=header, tag=tensorboard_tag("embeddings/input_skills"), global_step=global_step,
             )
         output_head = getattr(self.model, "output_head", None)
         if output_head is not None and len(self.action_keys) == output_head.weight.shape[0]:
@@ -247,7 +251,7 @@ class TensorBoardMonitor:
             ]
             self.writer.add_embedding(
                 output_head.weight.detach().float().cpu(), metadata=metadata,
-                metadata_header=header, tag="embeddings/output_actions", global_step=global_step,
+                metadata_header=header, tag=tensorboard_tag("embeddings/output_actions"), global_step=global_step,
             )
 
     def log_epoch(self, *, global_step: int) -> None:
@@ -301,9 +305,9 @@ class TensorBoardMonitor:
         if not self.enabled:
             return
         if self._supports("add_scalar"):
-            self.writer.add_scalar("validation/diagnostic_samples", self._validation_seen, global_step)
-            self.writer.add_scalar("validation/diagnostic_rejected_samples", self._validation_rejected, global_step)
-            self.writer.add_scalar("validation/pr_sample_count", self._pr_labels.numel(), global_step)
+            self.writer.add_scalar(tensorboard_tag("validation/diagnostic_samples"), self._validation_seen, global_step)
+            self.writer.add_scalar(tensorboard_tag("validation/diagnostic_rejected_samples"), self._validation_rejected, global_step)
+            self.writer.add_scalar(tensorboard_tag("validation/pr_sample_count"), self._pr_labels.numel(), global_step)
         if not self._validation_seen:
             return
         support = self._confusion.sum(dim=1)
@@ -312,30 +316,37 @@ class TensorBoardMonitor:
         if self._supports("add_scalar"):
             for index, key in enumerate(self.action_keys):
                 for name, values in (("support", support), ("recall", recall), ("precision", precision)):
-                    self.writer.add_scalar(f"validation/actions/{key}/{name}", float(values[index]), global_step)
+                    self.writer.add_scalar(tensorboard_tag(f"validation/actions/{key}/{name}"), float(values[index]), global_step)
         if self._supports("add_text"):
-            rows = ["| true / predicted | " + " | ".join(self.action_keys) + " |", "|---|" + "---|" * len(self.action_keys)]
+            rows = ["| 真实动作 / 预测动作 | " + " | ".join(self.action_keys) + " |", "|---|" + "---|" * len(self.action_keys)]
             rows.extend("| " + key + " | " + " | ".join(map(str, row.tolist())) + " |" for key, row in zip(self.action_keys, self._confusion))
-            self.writer.add_text("validation/confusion_counts", "\n".join(rows), global_step)
+            self.writer.add_text(tensorboard_tag("validation/confusion_counts"), "\n".join(rows), global_step)
         if self._supports("add_figure"):
+            from matplotlib import font_manager
             from matplotlib.figure import Figure
 
+            # 仅为本图选择中文字体，不修改训练进程的全局绘图设置。
+            available_fonts = {font.name for font in font_manager.fontManager.ttflist}
+            family = next((name for name in (
+                "Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "WenQuanYi Micro Hei",
+            ) if name in available_fonts), "sans-serif")
+            font = font_manager.FontProperties(family=family)
             figure = Figure(figsize=(max(6, len(self.action_keys) * 0.32), max(5, len(self.action_keys) * 0.30)))
             axis = figure.subplots()
             image = axis.imshow(self._confusion.float() / support.clamp_min(1).unsqueeze(1), vmin=0, vmax=1, cmap="Blues")
             axis.set_xticks(range(len(self.action_keys)), self.action_keys, rotation=90, fontsize=7)
             axis.set_yticks(range(len(self.action_keys)), self.action_keys, fontsize=7)
-            axis.set_xlabel("Predicted action")
-            axis.set_ylabel("True action")
-            axis.set_title("Validation confusion (row normalized)")
+            axis.set_xlabel("预测动作", fontproperties=font)
+            axis.set_ylabel("真实动作", fontproperties=font)
+            axis.set_title("验证动作混淆矩阵（按真实动作归一化）", fontproperties=font)
             figure.colorbar(image, ax=axis)
             figure.tight_layout()
-            self.writer.add_figure("validation/confusion_matrix", figure, global_step, close=True)
+            self.writer.add_figure(tensorboard_tag("validation/confusion_matrix"), figure, global_step, close=True)
         if self.config.pr_curves and self._supports("add_pr_curve"):
             for index, key in enumerate(self.action_keys):
                 targets = self._pr_labels == index
                 if targets.any() and not targets.all():
-                    self.writer.add_pr_curve(f"validation/actions/{key}", targets, self._pr_probs[:, index], global_step)
+                    self.writer.add_pr_curve(tensorboard_tag(f"validation/actions/{key}"), targets, self._pr_probs[:, index], global_step)
 
     def finish(self, metrics: Mapping, *, global_step: int) -> None:
         """只结束一次 HParams session，沿用当前 run，避免额外生成伪 run。"""
@@ -349,6 +360,6 @@ class TensorBoardMonitor:
             except (TypeError, ValueError, OverflowError):
                 continue
             if math.isfinite(scalar):
-                finite_metrics[name] = scalar
+                finite_metrics[tensorboard_tag(name)] = scalar
         if finite_metrics:
             self.writer.add_hparams(_hparams(self._run_config), finite_metrics, run_name=".", global_step=global_step)

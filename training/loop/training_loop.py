@@ -370,7 +370,9 @@ def run_training(
                     prefix="validation",
                     global_step=epoch_step,
                 )
-                tensorboard_writer.add_scalar("epoch/index", epoch, epoch_step)
+                write_scalar_metrics(
+                    tensorboard_writer, {"index": epoch}, prefix="epoch", global_step=epoch_step,
+                )
                 tensorboard_monitor.log_epoch(global_step=epoch_step)
             last_val_metrics = val_metrics
             logger.info(
