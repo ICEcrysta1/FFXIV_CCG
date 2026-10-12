@@ -76,6 +76,8 @@ class RunConfig:
     validation_files: int = 100
     seed: int = 42
     precision: str = "float32"
+    # BC 以 FP32 参数累积梯度，前向仍按 precision 使用 autocast。
+    fp32_gradients: bool = False
     activation_checkpoint_ffn: bool = False
     activation_checkpoint_attention: bool = False
     activation_checkpoint_attention_block: bool = False
@@ -124,6 +126,9 @@ def load_run_config(path: Path) -> RunConfig:
         raise ValueError("model and training config sections must be mappings")
     if "compiled_cache_workers" in training_raw:
         raise ValueError("training.compiled_cache_workers is removed; set CONVERT_FFLOGS_WORKERS in .env")
+    fp32_gradients = training_raw.get("fp32_gradients", RunConfig.fp32_gradients)
+    if not isinstance(fp32_gradients, bool):
+        raise ValueError("training.fp32_gradients must be a boolean")
     model = _ModelConfig.from_mapping(model_raw)
 
     num_workers = int(training_raw.get("num_workers", 0))
@@ -264,6 +269,7 @@ def load_run_config(path: Path) -> RunConfig:
         precision=_normalize_training_precision(
             raw.get("precision", training_raw.get("precision", "float32"))
         ),
+        fp32_gradients=fp32_gradients,
         activation_checkpoint_ffn=bool(
             training_raw.get("activation_checkpoint_ffn", False)
         ),

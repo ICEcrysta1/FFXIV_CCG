@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 
-from tests.training._causal_fixtures import make_state_groups
-
 from dataclasses import asdict, replace
 from types import SimpleNamespace
 
 import pytest
+import torch
 
 from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, ModelInputContract, Normalizer, SkillVocab
 from common.policy.data.schema import TrainingSchema
+from common.torch_serialization import safe_torch_load
 from common.training.optimizer_config import OptimizerConfig
+from tests.training._causal_fixtures import make_state_groups
 from training.config import RunConfig
-from training.loop.checkpoint import _validate_resume_checkpoint
+from training.loop.checkpoint import _save_checkpoint, _validate_resume_checkpoint
 
 
 @pytest.fixture
@@ -289,3 +290,79 @@ def test_optimizer_metadata_must_explicitly_describe_supported_optimizer(
 
     with pytest.raises(ValueError, match="run_config.optimizer"):
         _validate(resume_context, force=True)
+
+
+@pytest.mark.parametrize("saved,current", [(False, True), (True, False)])
+@pytest.mark.parametrize("force", [False, True])
+def test_gradient_precision_switch_requires_new_training(resume_context, saved, current, force):
+    """数据规模豁免不能绕过参数与梯度精度的训练模式切换。"""
+    resume_context.checkpoint["run_config"]["fp32_gradients"] = saved
+    resume_context.checkpoint["run_config"]["max_files"] = 10
+    resume_context.config = replace(resume_context.config, fp32_gradients=current)
+
+    with pytest.raises(ValueError, match="fp32_gradients mismatch.*新训练"):
+        _validate(resume_context, force=force)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_matching_gradient_precision_remains_resumable(resume_context, enabled):
+    resume_context.checkpoint["run_config"]["fp32_gradients"] = enabled
+    resume_context.config = replace(resume_context.config, fp32_gradients=enabled)
+
+    assert _validate(resume_context) == 1
+
+
+@pytest.mark.parametrize("current", [False, True])
+def test_missing_gradient_precision_flag_preserves_legacy_mode(resume_context, current):
+    resume_context.checkpoint["run_config"].pop("fp32_gradients")
+    resume_context.config = replace(resume_context.config, fp32_gradients=current)
+
+    if current:
+        with pytest.raises(ValueError, match="fp32_gradients mismatch.*新训练"):
+            _validate(resume_context, force=True)
+    else:
+        assert _validate(resume_context) == 1
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, "true", "false", [], {}])
+def test_resume_rejects_non_boolean_gradient_precision(resume_context, value):
+    resume_context.checkpoint["run_config"]["fp32_gradients"] = value
+
+    with pytest.raises(ValueError, match="run_config.fp32_gradients must be a boolean"):
+        _validate(resume_context, force=True)
+
+
+@pytest.mark.parametrize("value", [None, 0, "invalid", []])
+def test_resume_rejects_non_mapping_run_configuration(resume_context, value):
+    resume_context.checkpoint["run_config"] = value
+
+    with pytest.raises(ValueError, match="run_config must be a mapping"):
+        _validate(resume_context, force=True)
+
+
+@pytest.mark.parametrize("precision", ["float32", "bf16", "float16"])
+@pytest.mark.parametrize("enabled", [False, True])
+def test_checkpoint_records_forward_and_parameter_precision(
+    resume_context, tmp_path, monkeypatch, precision, enabled,
+):
+    """保存的前向精度、参数精度与梯度模式分别描述实际训练契约。"""
+    config = replace(resume_context.config, precision=precision, fp32_gradients=enabled)
+    parameter_precision = "float32" if enabled else precision
+    dtype = {"float32": torch.float32, "bf16": torch.bfloat16, "float16": torch.float16}[
+        parameter_precision
+    ]
+    model = torch.nn.Linear(1, 1, dtype=dtype)
+    optimizer = torch.optim.AdamW(model.parameters())
+    monkeypatch.setattr("training.loop.checkpoint._capture_rng_state", dict)
+    path = tmp_path / "checkpoint.pt"
+
+    _save_checkpoint(
+        path, model, optimizer, 1, config, resume_context.data_spec, {},
+        input_contract=resume_context.input_contract,
+    )
+    saved = safe_torch_load(path)
+
+    assert saved["training_precision"] == precision
+    assert saved["training_parameter_precision"] == parameter_precision
+    assert saved["run_config"]["fp32_gradients"] is enabled
+    assert saved["model_state_dict"]["weight"].dtype == dtype

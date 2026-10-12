@@ -279,17 +279,19 @@ def test_muon_fails_clearly_without_native_support(monkeypatch):
 
 
 @pytest.mark.parametrize("name", ["adamw", "muon"])
-@pytest.mark.parametrize("precision", ["float32", "bf16"])
+@pytest.mark.parametrize(("precision", "fp32_gradients"), [
+    ("float32", False), ("bf16", False), ("bf16", True),
+])
 @pytest.mark.parametrize("full_attention_residuals", [False, True])
 def test_train_epoch_updates_both_parameter_groups_with_real_gradients(
-    name, precision, full_attention_residuals,
+    name, precision, fp32_gradients, full_attention_residuals,
 ):
     from training.loop.training_loop import train_epoch
 
     if precision == "bf16" and not torch.cuda.is_available():
         pytest.skip("需要 CUDA 验证正式 BF16 训练路径")
     device = torch.device("cuda" if precision == "bf16" else "cpu")
-    dtype = torch.bfloat16 if precision == "bf16" else torch.float32
+    dtype = torch.bfloat16 if precision == "bf16" and not fp32_gradients else torch.float32
     torch.manual_seed(73)
     model = _model(dtype=dtype, full_attention_residuals=full_attention_residuals).to(device)
     # 关闭衰减，确保检查到的权重变化确实来自前后向梯度。
@@ -319,7 +321,33 @@ def test_train_epoch_updates_both_parameter_groups_with_real_gradients(
     if not full_attention_residuals:
         matrices += (model.encoder.residual_mix.r, model.encoder.residual_mix.a)
     before = [parameter.detach().clone() for parameter in matrices]
-    metrics = train_epoch(model, [batch], optimizer, scheduler, device, precision)
+    forward_dtypes = []
+    hook = model.encoder.layers[0].linear1.register_forward_hook(
+        lambda _module, _inputs, output: forward_dtypes.append(output.dtype)
+    )
+
+    class Monitor:
+        def log_graph(self, batch):
+            assert torch.is_autocast_enabled(device.type) == (precision == "bf16")
+
+        def log_gradients(self, global_step, grad_norm=None):
+            assert grad_norm.dtype == dtype
+            assert all(parameter.grad.dtype == dtype for parameter in model.parameters()
+                       if parameter.grad is not None)
+            norms = [parameter.grad.float().norm() for parameter in model.parameters()
+                     if parameter.grad is not None]
+            # 旧 BF16 路径的范数及缩放系数有舍入误差；FP32 路径用更严格阈值。
+            tolerance = 0.01 if dtype == torch.bfloat16 else 0.0001
+            assert torch.stack(norms).norm() <= 1.0 + tolerance
+
+        def log_step(self, *args, **kwargs):
+            pass
+
+    metrics = train_epoch(
+        model, [batch], optimizer, scheduler, device, precision, tensorboard_monitor=Monitor(),
+    )
+    hook.remove()
+    assert forward_dtypes == [torch.bfloat16 if precision == "bf16" else torch.float32]
     assert metrics and all(math.isfinite(value) for value in metrics.values())
     assert metrics["cross_entropy_loss"] > 0
     for original, parameter in zip(before, matrices, strict=True):
@@ -327,9 +355,15 @@ def test_train_epoch_updates_both_parameter_groups_with_real_gradients(
         assert torch.isfinite(parameter.grad).all()
         assert not torch.equal(original, parameter)
     assert scheduler.get_last_lr() == [0.02 * 0.8] * (2 if name == "muon" else 1)
-    if precision == "bf16":
+    if precision == "bf16" and not fp32_gradients:
         assert all(parameter.dtype == torch.bfloat16 for parameter in model.parameters())
         assert optimizer.state_dict()["format"] == "fp32_master_v1"
+    else:
+        assert all(parameter.dtype == torch.float32 for parameter in model.parameters())
+        assert "master_weights" not in optimizer.state_dict()
+        assert {id(parameter) for group in optimizer.param_groups for parameter in group["params"]} == {
+            id(parameter) for parameter in model.parameters()
+        }
 
 
 @pytest.mark.parametrize("name", ["adamw", "muon"])

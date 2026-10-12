@@ -14,7 +14,7 @@ from tests.training._causal_fixtures import make_batch, make_data_spec
 
 @pytest.mark.parametrize(
     ("device", "dtype"),
-    [("cpu", torch.float32), ("cuda", torch.bfloat16)],
+    [("cpu", torch.float32), ("cuda", torch.bfloat16), ("cuda", torch.float32)],
 )
 def test_real_graph_preserves_repetition_rng_and_runtime_state(
     tmp_path, monkeypatch, device, dtype,
@@ -45,7 +45,7 @@ def test_real_graph_preserves_repetition_rng_and_runtime_state(
     }
     model.eval()
     with torch.no_grad(), torch.autocast(
-        device_type=device, dtype=dtype, enabled=device == "cuda", cache_enabled=False,
+        device_type=device, dtype=torch.bfloat16, enabled=device == "cuda", cache_enabled=False,
     ):
         expected_logits = model(batch)["logits"].detach().clone()
         unpenalized = model({**batch, "repetition_penalty_mask": torch.zeros_like(batch["repetition_penalty_mask"])})["logits"]
@@ -84,8 +84,9 @@ def test_real_graph_preserves_repetition_rng_and_runtime_state(
             return actual_add_graph(graph_model, inputs, *args, **kwargs)
 
         monkeypatch.setattr(writer, "add_graph", capture_graph)
-        monitor.log_graph(batch)
-        monitor.log_graph(batch)
+        with torch.autocast(device_type=device, dtype=torch.bfloat16, enabled=device == "cuda"):
+            monitor.log_graph(batch)
+            monitor.log_graph(batch)
 
     assert len(captured_logits) == 1
     torch.testing.assert_close(captured_logits[0], expected_logits)

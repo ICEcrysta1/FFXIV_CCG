@@ -269,6 +269,19 @@ def _validate_resume_checkpoint(
     # 优化器不属于数据规模豁免范围，必须在恢复任何优化器状态前独立校验。
     _validate_resume_optimizer(checkpoint, config)
 
+    checkpoint_run_config = checkpoint.get("run_config", {})
+    if not isinstance(checkpoint_run_config, Mapping):
+        raise ValueError("resume checkpoint run_config must be a mapping")
+    saved_fp32_gradients = checkpoint_run_config.get("fp32_gradients", False)
+    if not isinstance(saved_fp32_gradients, bool):
+        raise ValueError("resume checkpoint run_config.fp32_gradients must be a boolean")
+    if saved_fp32_gradients != config.fp32_gradients:
+        raise ValueError(
+            "resume checkpoint fp32_gradients mismatch: "
+            f"checkpoint={saved_fp32_gradients!r} != current={config.fp32_gradients!r}; "
+            "梯度精度变更需要开始新训练，不能使用 --resume。"
+        )
+
     # 只有 checkpoint 明确记录 null 才表示不限量；缺失字段的旧 checkpoint
     # 无法推断历史数据规模，必须按不匹配处理。
     checkpoint_max_files = _checkpoint_max_files(checkpoint)
@@ -431,6 +444,7 @@ def _save_checkpoint(
         "model_variant": model_variant,
         "input_contract": input_contract.to_dict(),
         "training_precision": config.precision,
+        "training_parameter_precision": "float32" if config.fp32_gradients else config.precision,
         "run_config": asdict(config),
         "metrics": metrics,
         "rng_state": _capture_rng_state(),

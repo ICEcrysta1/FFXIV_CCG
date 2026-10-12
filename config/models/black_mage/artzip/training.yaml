@@ -46,6 +46,9 @@ training:
   # 数据采样、历史增强和模型初始化使用的随机种子。
   seed: 42
 
+  # BC 使用 FP32 参数与梯度，前向仍按模型 precision 执行；切换后需开始新训练。
+  fp32_gradients: true
+
   # 训练时释放 FFN 中间激活，并在反向传播时重算；验证和推理不启用。
   activation_checkpoint_ffn: false
 
