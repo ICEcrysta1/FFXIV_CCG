@@ -8,11 +8,21 @@ training:
   # ------------------------------
 
   # 只控制 BC 预训练；事件写入 output_dir 父目录/<model_variant>_tensorboard/<run_name>-<timestamp>/。
-  # 按 batch 记录训练指标，验证 PPG 按轮记录。
+  # 按记录区间写样本加权训练指标，验证 PPG 按轮记录。
   tensorboard:
     enabled: true
     log_every_steps: 50
     flush_secs: 30
+    # 首个真实编码样本的模型结构图；只追踪一次，不改变训练 RNG/模式。
+    graph: true
+    # 权重、未缩放梯度与输出分布；首步和每轮末也会记录权重。
+    histogram_every_steps: 500
+    max_histogram_values: 4096
+    # 输入技能 embedding 与独立输出头，排除 padding，初始和每 N 轮保存。
+    embedding_every_epochs: 1
+    # 验证混淆矩阵覆盖全部样本；PR 曲线采用有界确定性采样。
+    pr_curves: true
+    pr_curve_max_samples: 4096
 
   # ------------------------------
   # 训练运行参数

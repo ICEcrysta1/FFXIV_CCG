@@ -14,7 +14,7 @@ import pytest
 import torch
 
 from common.policy.config import resolve_policy_grpo_dir
-from common.policy.data import ActionSpace, SkillVocab
+from common.policy.data import ActionSpace, DataSpec, SkillVocab
 from common.policy.model import repetition as repetition_module
 from grpo.config import GrpoConfig, GrpoRunConfig, load_grpo_config
 from grpo.storage import GrpoRolloutStore
@@ -293,6 +293,45 @@ def test_collate_grpo_decisions_preserves_all_empty_sequences():
     assert batch["scene_mask"].shape == (2, 0)
 
 
+def test_grpo_loss_diagnostics_reuse_forward_and_exclude_illegal_actions():
+    class ToyPolicy(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.logits = torch.nn.Parameter(torch.tensor([0.5, 100.0, -0.5]))
+            self.forward_count = 0
+
+        def forward(self, batch):
+            self.forward_count += 1
+            return {"logits": self.logits.unsqueeze(0)}
+
+    policy = ToyPolicy()
+    batch = collate_grpo_decisions((
+        _decision(history_length=0, scene_length=0, action_index=0),
+    ))
+    batch["action_legal_mask"] = torch.tensor([[True, False, True]])
+    diagnostics = {}
+    loss, _metrics = compute_grpo_loss(
+        policy,
+        batch,
+        action_indices=torch.tensor([0]),
+        old_logprobs=torch.tensor([-0.5]),
+        advantages=torch.ones(1),
+        grpo=GrpoConfig(),
+        repetition=SimpleNamespace(enabled=False),
+        device=torch.device("cpu"),
+        precision="float32",
+        diagnostics=diagnostics,
+    )
+
+    assert policy.forward_count == 1
+    assert diagnostics["policy/legal_logits"].tolist() == [0.5, -0.5]
+    assert diagnostics["policy/legal_probabilities"].sum() == pytest.approx(1.0)
+    assert diagnostics["rollout/action_index"].tolist() == [0]
+    assert all(not value.requires_grad for value in diagnostics.values())
+    loss.backward()
+    assert torch.isfinite(policy.logits.grad).all()
+
+
 def test_grpo_config_rejects_nonpositive_time_horizon():
     with pytest.raises(ValueError, match="max_duration_seconds must be > 0"):
         GrpoConfig(max_duration_seconds=0.0)
@@ -341,6 +380,8 @@ def _run_grpo_with_backend(
     checkpoint_payload,
     run_output_dir: Path | None = None,
     capture_output: dict[str, object] | None = None,
+    run_to_completion: bool = False,
+    tensorboard_writer=None,
 ):
     """在只跑到 setup 阶段的环境里执行 run_grpo_training，返回输出目录。"""
     scene_path = tmp_path / "scene.json"
@@ -363,17 +404,8 @@ def _run_grpo_with_backend(
     class FakeBackend:
         def __init__(self):
             self.model = FakeModel()
-            self.data_spec = SimpleNamespace(
-                job_tag="black_mage",
-                num_actions=1,
-                action_keys=("fire",),
-                action_to_vocab_id=(1,),
-                action_is_gcd=(True,),
-            )
-            self.input_contract = SimpleNamespace(
-                create_normalizer=lambda: object(),
-                create_skill_vocab=lambda: SkillVocab.from_entries([(152, 1)]),
-            )
+            self.input_contract = _rollout_contract()
+            self.data_spec = DataSpec.from_dict(self.input_contract.data_spec)
             self.repetition = SimpleNamespace()
             self.checkpoint = checkpoint_payload
 
@@ -390,7 +422,7 @@ def _run_grpo_with_backend(
     monkeypatch.setattr(
         "grpo.trainer.create_tensorboard_writer",
         lambda _tensorboard_config, output_dir, **_kwargs: (
-            captured.update(tensorboard_output_dir=Path(output_dir)) or None
+            captured.update(tensorboard_output_dir=Path(output_dir)) or tensorboard_writer
         ),
     )
     monkeypatch.setattr(
@@ -408,13 +440,8 @@ def _run_grpo_with_backend(
             (_decision(history_length=0, scene_length=0, action_index=0),),
         ),
     )
-    monkeypatch.setattr(
-        "grpo.trainer.compute_baseline_relative_advantages",
-        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("stop after setup")),
-    )
-
-    with pytest.raises(RuntimeError, match="stop after setup"):
-        run_grpo_training(
+    def run():
+        return run_grpo_training(
             config,
             grpo=GrpoConfig(group_size=2, max_iterations=1),
             checkpoint_path=checkpoint_path,
@@ -422,11 +449,108 @@ def _run_grpo_with_backend(
             output_dir=run_output_dir,
             device_name="cpu",
         )
+
+    if run_to_completion:
+        def fake_update(*_args, **kwargs):
+            captured["update_monitor"] = kwargs.get("tensorboard_monitor")
+            return {
+                **{name: 0.25 for name in (
+                    "loss", "policy_loss", "kl", "entropy", "clip_fraction", "mean_ratio",
+                )},
+                "optimizer_updates": 2.0,
+            }
+
+        monkeypatch.setattr("grpo.trainer._update_policy", fake_update)
+        monkeypatch.setattr("grpo.trainer._save_grpo_checkpoint", lambda *_a, **_k: None)
+        captured["result"] = run()
+    else:
+        monkeypatch.setattr(
+            "grpo.trainer.compute_baseline_relative_advantages",
+            lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("stop after setup")),
+        )
+        with pytest.raises(RuntimeError, match="stop after setup"):
+            run()
     assert prepared_actions
-    assert all(space == ActionSpace(("fire",), (1,), (True,)) for space in prepared_actions)
+    expected_actions = ActionSpace.from_data_spec(DataSpec.from_dict(_rollout_contract().data_spec))
+    assert all(space == expected_actions for space in prepared_actions)
     if capture_output is not None:
         capture_output.update(captured)
     return captured["replay_config"].output_path.parent
+
+
+@pytest.mark.parametrize("finish_failure", [False, True])
+def test_grpo_run_monitors_rollouts_and_closes_writer_after_finish(monkeypatch, tmp_path, finish_failure):
+    config = GrpoRunConfig(
+        raw_data_dir=tmp_path / "raw",
+        output_dir=tmp_path / "output",
+        job_tag="black_mage",
+    )
+    capture = {}
+
+    class WriterRecorder:
+        log_dir = str(tmp_path / "tensorboard")
+
+        def __init__(self):
+            self.closed = False
+
+        def add_scalar(self, *_args):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    class MonitorRecorder:
+        instance = None
+
+        def __init__(self, writer, tensorboard_config, *, model, vocab, metadata):
+            MonitorRecorder.instance = self
+            self.metadata = metadata
+            self.rollout = None
+            self.epoch_step = None
+            self.final_metrics = None
+
+        def log_distributions(self, values, *, global_step, prefix):
+            self.rollout = (values, global_step, prefix)
+
+        def log_epoch(self, *, global_step):
+            self.epoch_step = global_step
+
+        def finish(self, metrics, *, global_step):
+            self.final_metrics = (metrics, global_step)
+            if finish_failure:
+                raise RuntimeError("hparams write failure")
+
+    writer = WriterRecorder()
+    monkeypatch.setattr("grpo.trainer.TensorBoardMonitor", MonitorRecorder)
+
+    def run():
+        return _run_grpo_with_backend(
+            monkeypatch,
+            tmp_path,
+            config=config,
+            checkpoint_path=tmp_path / "checkpoint.pt",
+            checkpoint_payload={},
+            capture_output=capture,
+            run_to_completion=True,
+            tensorboard_writer=writer,
+        )
+
+    if finish_failure:
+        with pytest.raises(RuntimeError, match="hparams write failure"):
+            run()
+    else:
+        run()
+        assert capture["update_monitor"] is MonitorRecorder.instance
+    monitor = MonitorRecorder.instance
+    assert monitor.metadata["stage"] == "grpo"
+    values, step, prefix = monitor.rollout
+    assert prefix == "grpo/rollout" and step == 2
+    assert values["sample_ppg"] == [1.0, 1.0]
+    assert values["decision_count"] == [1, 1]
+    assert monitor.epoch_step == 2
+    metrics, step = monitor.final_metrics
+    assert metrics["grpo/iteration/loss"] == 0.25 and step == 2
+    assert writer.closed
 
 
 def test_grpo_tensorboard_root_uses_model_output_when_run_output_is_overridden(
@@ -629,17 +753,8 @@ def test_grpo_training_closes_replay_session_on_outer_failure(monkeypatch, tmp_p
     class FakeBackend:
         def __init__(self):
             self.model = FakeModel()
-            self.data_spec = SimpleNamespace(
-                job_tag="black_mage",
-                num_actions=1,
-                action_keys=("fire",),
-                action_to_vocab_id=(1,),
-                action_is_gcd=(True,),
-            )
-            self.input_contract = SimpleNamespace(
-                create_normalizer=lambda: object(),
-                create_skill_vocab=lambda: SkillVocab.from_entries([(152, 1)]),
-            )
+            self.input_contract = _rollout_contract()
+            self.data_spec = DataSpec.from_dict(self.input_contract.data_spec)
             self.repetition = SimpleNamespace()
             self.checkpoint = {}
 
@@ -906,7 +1021,7 @@ def test_grpo_rollout_store_rejects_previous_input_format(tmp_path, previous_for
         store._load_decisions(entry.path)
 
 
-def test_grpo_update_keeps_minibatch_weighting_and_defers_host_reads(monkeypatch):
+def test_grpo_update_weights_metrics_by_decisions_and_defers_host_reads(monkeypatch):
     policy = torch.nn.Linear(1, 1)
     optimizer = torch.optim.SGD(policy.parameters(), lr=0)
     decisions = [_decision(history_length=i, scene_length=i, action_index=0) for i in range(3)]
@@ -926,7 +1041,7 @@ def test_grpo_update_keeps_minibatch_weighting_and_defers_host_reads(monkeypatch
         device=torch.device("cpu"), precision="float32",
     )
     assert metrics.pop("optimizer_updates") == 4.0
-    assert set(metrics.values()) == {1.5}
+    assert all(value == pytest.approx(5.0 / 3.0) for value in metrics.values())
 
 
 def test_grpo_update_streams_disk_rollouts_without_full_decision_buffer(monkeypatch, tmp_path):
@@ -1002,6 +1117,110 @@ def test_grpo_update_logs_optimizer_metrics_to_tensorboard(monkeypatch):
     )
 
     assert any(tag == "grpo/update/loss" and step == 6 for tag, _value, step in writer.values)
+
+
+def test_grpo_tensorboard_interval_uses_sample_weights_and_applied_learning_rate(monkeypatch):
+    policy = torch.nn.Linear(1, 1)
+    optimizer = torch.optim.SGD(policy.parameters(), lr=0.1)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.5)
+
+    def loss_fn(model, batch, **_kwargs):
+        size = batch["current_state_vectors"].shape[0]
+        loss = model.weight.sum() * 0.0 + size
+        names = ("loss", "policy_loss", "kl", "entropy", "clip_fraction", "mean_ratio")
+        return loss, {name: loss.detach() for name in names}
+
+    class ScalarRecorder:
+        def __init__(self):
+            self.values = {}
+
+        def add_scalar(self, tag, value, step):
+            self.values[(tag, step)] = value
+
+    writer = ScalarRecorder()
+    monkeypatch.setattr("grpo.trainer.compute_grpo_loss", loss_fn)
+    _update_policy(
+        policy,
+        optimizer,
+        scheduler,
+        [_decision(history_length=0, scene_length=0, action_index=0) for _ in range(3)],
+        torch.ones(3),
+        grpo=GrpoConfig(minibatch_size=2, inner_updates=1),
+        repetition=SimpleNamespace(enabled=False),
+        device=torch.device("cpu"),
+        precision="float32",
+        tensorboard_writer=writer,
+        tensorboard_log_every_steps=2,
+        global_step_offset=4,
+    )
+
+    assert writer.values[("grpo/update/loss", 6)] == pytest.approx(5.0 / 3.0)
+    assert writer.values[("grpo/update/learning_rate", 6)] == pytest.approx(0.25 / 3.0)
+    assert writer.values[("grpo/update/next_learning_rate", 6)] == pytest.approx(0.025)
+    assert ("grpo/update/grad_norm", 6) in writer.values
+
+
+def test_grpo_monitor_reads_existing_forward_and_live_gradients():
+    class ToyPolicy(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.logits = torch.nn.Parameter(torch.zeros(3))
+            self.forward_count = 0
+
+        def forward(self, batch):
+            self.forward_count += 1
+            return {"logits": self.logits.unsqueeze(0)}
+
+    policy = ToyPolicy()
+    optimizer = torch.optim.SGD(policy.parameters(), lr=0.01)
+
+    class MonitorRecorder:
+        def __init__(self):
+            self.graph_batches = []
+            self.output_steps = []
+            self.gradient_steps = []
+            self.distributions = []
+
+        def should_log_histograms(self, step):
+            return step == 1
+
+        def log_graph(self, batch):
+            self.graph_batches.append(batch)
+
+        def log_gradients(self, step, grad_norm=None):
+            assert policy.logits.grad is not None
+            assert grad_norm is not None
+            self.gradient_steps.append(step)
+
+        def log_step(self, logits, *, global_step, prefix):
+            assert not logits.requires_grad
+            self.output_steps.append((global_step, prefix))
+
+        def log_distributions(self, values, *, global_step, prefix):
+            self.distributions.append((values, global_step, prefix))
+
+    monitor = MonitorRecorder()
+    metrics = _update_policy(
+        policy,
+        optimizer,
+        None,
+        [_decision(history_length=0, scene_length=0, action_index=index) for index in range(2)],
+        torch.tensor([1.0, -1.0]),
+        grpo=GrpoConfig(minibatch_size=1, inner_updates=1),
+        repetition=SimpleNamespace(enabled=False),
+        device=torch.device("cpu"),
+        precision="float32",
+        tensorboard_monitor=monitor,
+    )
+
+    assert policy.forward_count == metrics["optimizer_updates"] == 2
+    assert len(monitor.graph_batches) == 2
+    assert monitor.gradient_steps == [1, 2]
+    assert monitor.output_steps == [(1, "grpo/model")]
+    values, step, prefix = monitor.distributions[0]
+    assert step == 1 and prefix == "grpo/update"
+    assert "policy/ratio" in values and "rollout/advantages" in values
+    assert all(not value.requires_grad for value in values.values())
 
 
 @pytest.mark.parametrize("field", ["history_state_reset_mask", "current_state_reset_mask"])

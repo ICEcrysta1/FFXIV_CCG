@@ -12,6 +12,15 @@ grpo:
     enabled: true
     log_every_steps: 50
     flush_secs: 30
+    # 首个真实更新 batch 的结构图；梯度/输出按更新步，rollout 分布按轮。
+    graph: true
+    histogram_every_steps: 500
+    max_histogram_values: 4096
+    # 初始及每 N 轮保存输入技能 embedding 与独立输出头。
+    embedding_every_epochs: 1
+    # PR 曲线仅用于 BC 的监督验证；GRPO 不将策略样本冒充验证标签。
+    pr_curves: true
+    pr_curve_max_samples: 4096
 
   # ------------------------------
   # GRPO 训练参数
