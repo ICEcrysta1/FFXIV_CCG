@@ -6,7 +6,7 @@ import logging
 import math
 import random
 from contextlib import nullcontext
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import torch
@@ -22,6 +22,7 @@ from common.torch_runtime import autocast_context, model_dtype, move_batch
 from common.training.metrics import MetricAccumulator
 from common.training.optimizer import build_optimizer
 from common.training.tensorboard import (
+    TensorBoardMonitor,
     close_tensorboard_writer,
     create_tensorboard_writer,
     write_scalar_metrics,
@@ -227,12 +228,15 @@ def run_training(
         run_name="bc",
         model_variant=config.model_variant,
     )
+    tensorboard_monitor = None
+    global_step = 0
+    last_train_metrics: dict[str, float] = {}
+    last_val_metrics: dict[str, float] = {}
     try:
         if tensorboard_writer is not None:
             logger.info("TensorBoard events: %s", tensorboard_writer.log_dir)
         best_key: tuple[float, float, float, float] | None = None
         best_val_metrics: dict[str, float] = {}
-        last_val_metrics: dict[str, float] = {}
         start_epoch = 1
         if resume_checkpoint is not None:
             model.load_state_dict(resume_checkpoint["model_state_dict"])
@@ -263,6 +267,24 @@ def run_training(
                 start_epoch,
             )
 
+        # 调度器保存真实累计更新数；强制调整数据量续训时不能按新 loader 长度重算历史步号。
+        global_step = max(0, int(scheduler.last_epoch))
+        tensorboard_monitor = (
+            TensorBoardMonitor(
+                tensorboard_writer,
+                config.tensorboard,
+                model=model,
+                vocab=vocab,
+                initial_step=global_step,
+                metadata={
+                    "training": asdict(config),
+                    "resume_path": str(resume_path) if resume_path is not None else None,
+                    "resume_epoch": resume_epoch,
+                },
+            )
+            if tensorboard_writer is not None
+            else None
+        )
         for epoch in range(start_epoch, config.max_epochs + 1):
             train_epoch_kwargs = {
                 "action_quality": config.action_quality_loss,
@@ -274,8 +296,9 @@ def run_training(
             if tensorboard_writer is not None:
                 train_epoch_kwargs.update(
                     tensorboard_writer=tensorboard_writer,
+                    tensorboard_monitor=tensorboard_monitor,
                     tensorboard_log_every_steps=config.tensorboard.log_every_steps,
-                    global_step_offset=(epoch - 1) * len(train_loader),
+                    global_step_offset=global_step,
                 )
             train_metrics = train_epoch_fn(
                 model,
@@ -286,14 +309,25 @@ def run_training(
                 config.precision,
                 **train_epoch_kwargs,
             )
+            global_step += len(train_loader)
+            last_train_metrics = train_metrics
+            validation_kwargs = {
+                "value_preference": config.value_preference,
+                "context_encoder": context_encoder,
+            }
+            if tensorboard_monitor is not None:
+                validation_kwargs.update(
+                    tensorboard_monitor=tensorboard_monitor,
+                    global_step=global_step,
+                )
             val_metrics = validate_fn(
                 model,
                 val_loader,
                 device,
                 config.precision,
-                value_preference=config.value_preference,
-                context_encoder=context_encoder,
+                **validation_kwargs,
             )
+            last_val_metrics = val_metrics
             if config.ppg.enabled:
                 extra_metrics = validation_metrics_callback(
                     model=model,
@@ -323,7 +357,7 @@ def run_training(
                     val_metrics["val_ppg_normalized"],
                 )
             if tensorboard_writer is not None:
-                epoch_step = epoch * len(train_loader)
+                epoch_step = global_step
                 write_scalar_metrics(
                     tensorboard_writer,
                     train_metrics,
@@ -336,7 +370,10 @@ def run_training(
                     prefix="validation",
                     global_step=epoch_step,
                 )
-                tensorboard_writer.add_scalar("epoch/index", epoch, epoch_step)
+                write_scalar_metrics(
+                    tensorboard_writer, {"index": epoch}, prefix="epoch", global_step=epoch_step,
+                )
+                tensorboard_monitor.log_epoch(global_step=epoch_step)
             last_val_metrics = val_metrics
             logger.info(
                 "Epoch %3d | train loss=%.4f ce=%.4f value_aux=%.4f top1=%.4f top3=%.4f | "
@@ -413,7 +450,17 @@ def run_training(
             "output_dir": config.output_dir,
         }
     finally:
-        close_tensorboard_writer(tensorboard_writer)
+        try:
+            if tensorboard_monitor is not None:
+                tensorboard_monitor.finish(
+                    {
+                        **{f"train/epoch/{key}": value for key, value in last_train_metrics.items()},
+                        **{f"validation/{key}": value for key, value in last_val_metrics.items()},
+                    },
+                    global_step=max(global_step, int(scheduler.last_epoch)),
+                )
+        finally:
+            close_tensorboard_writer(tensorboard_writer)
 
 
 def train_epoch(
@@ -429,6 +476,7 @@ def train_epoch(
     runtime_debug: RuntimeDebugRecorder | None = None,
     epoch: int = 0,
     tensorboard_writer=None,
+    tensorboard_monitor: TensorBoardMonitor | None = None,
     tensorboard_log_every_steps: int = 50,
     global_step_offset: int = 0,
     context_encoder: ContextEncoder | None = None,
@@ -438,6 +486,13 @@ def train_epoch(
     totals = MetricAccumulator(
         (*_EPOCH_METRICS, *(term.metric_name for term in auxiliary_losses)),
         device=device,
+    )
+    if tensorboard_writer is not None and tensorboard_log_every_steps < 1:
+        raise ValueError("tensorboard_log_every_steps must be >= 1")
+    interval_totals = (
+        MetricAccumulator((*totals.names, "learning_rate", "gradient_norm"), device=device)
+        if tensorboard_writer is not None
+        else None
     )
     repetition = getattr(model, "repetition", RepetitionConfig())
     for step, batch in enumerate(loader, start=1):
@@ -451,6 +506,8 @@ def train_epoch(
             if context_encoder is not None:
                 with _debug_stage(runtime_debug, "context_encoding"):
                     batch = context_encoder.encode(batch)
+            if tensorboard_monitor is not None:
+                tensorboard_monitor.log_graph(batch)
             with _debug_stage(runtime_debug, "forward"):
                 with autocast_context(device, precision):
                     output = model(batch)
@@ -464,7 +521,12 @@ def train_epoch(
             with _debug_stage(runtime_debug, "backward"):
                 losses.total.backward()
             with _debug_stage(runtime_debug, "clip_grad_norm"):
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            global_step = global_step_offset + step
+            if tensorboard_monitor is not None:
+                tensorboard_monitor.log_gradients(global_step, grad_norm=grad_norm)
+            # 记录这次更新真正使用的学习率，调度器推进后的值属于下一次更新。
+            learning_rate = optimizer.param_groups[0]["lr"]
             with _debug_stage(runtime_debug, "optimizer_step"):
                 optimizer.step()
             with _debug_stage(runtime_debug, "scheduler_step"):
@@ -473,32 +535,38 @@ def train_epoch(
             if runtime_debug is not None:
                 runtime_debug.end_step()
         count = batch["label_index"].shape[0]
-        totals.update(
-            {
-                "loss": losses.total,
-                "cross_entropy_loss": losses.primary,
-                **losses.auxiliary,
-                "top1_accuracy": output["top1_accuracy"],
-                "top3_accuracy": output["top3_accuracy"],
-            },
-            weight=count,
-        )
+        step_metrics = {
+            "loss": losses.total,
+            "cross_entropy_loss": losses.primary,
+            **losses.auxiliary,
+            "top1_accuracy": output["top1_accuracy"],
+            "top3_accuracy": output["top3_accuracy"],
+        }
+        totals.update(step_metrics, weight=count)
+        if interval_totals is not None:
+            interval_totals.update(
+                {
+                    **step_metrics,
+                    "learning_rate": torch.tensor(learning_rate, dtype=torch.float64, device=device),
+                    "gradient_norm": torch.as_tensor(grad_norm, device=device),
+                },
+                weight=count,
+            )
+        if tensorboard_monitor is not None:
+            tensorboard_monitor.log_step(
+                output["logits"], global_step=global_step, labels=batch["label_index"],
+            )
         if tensorboard_writer is not None and (
             step % tensorboard_log_every_steps == 0 or step == len(loader)
         ):
             write_scalar_metrics(
                 tensorboard_writer,
-                {
-                    "loss": losses.total,
-                    "cross_entropy_loss": losses.primary,
-                    **losses.auxiliary,
-                    "top1_accuracy": output["top1_accuracy"],
-                    "top3_accuracy": output["top3_accuracy"],
-                    "learning_rate": optimizer.param_groups[0]["lr"],
-                },
+                interval_totals.mean(),
                 prefix="train/step",
                 global_step=global_step_offset + step,
             )
+            # 每个点汇总本日志区间的所有样本，末尾不足一个区间也会写入。
+            interval_totals = MetricAccumulator(interval_totals.names, device=device)
     return totals.mean()
 
 
@@ -511,6 +579,8 @@ def validate(
     *,
     value_preference: ValuePreferenceConfig | None = None,
     context_encoder: ContextEncoder | None = None,
+    tensorboard_monitor: TensorBoardMonitor | None = None,
+    global_step: int = 0,
 ) -> dict[str, float]:
     model.eval()
     auxiliary_losses = configured_auxiliary_losses(value_preference=value_preference)
@@ -519,6 +589,8 @@ def validate(
         device=device,
     )
     repetition = getattr(model, "repetition", RepetitionConfig())
+    if tensorboard_monitor is not None:
+        tensorboard_monitor.begin_validation()
     for batch in loader:
         batch = prepare_repetition_penalty(batch, repetition)
         batch = move_batch(batch, device, non_blocking=device.type == "cuda")
@@ -526,6 +598,8 @@ def validate(
             batch = context_encoder.encode(batch)
         with autocast_context(device, precision):
             output = model(batch)
+        if tensorboard_monitor is not None:
+            tensorboard_monitor.update_validation(output["logits"], batch["label_index"])
         losses = compose_training_loss(
             output,
             batch,
@@ -542,6 +616,8 @@ def validate(
             },
             weight=count,
         )
+    if tensorboard_monitor is not None:
+        tensorboard_monitor.end_validation(global_step=global_step)
     return totals.mean()
 
 

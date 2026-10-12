@@ -27,6 +27,7 @@ from common.torch_serialization import safe_torch_load
 from common.training.metrics import MetricAccumulator
 from common.training.optimizer import build_optimizer
 from common.training.tensorboard import (
+    TensorBoardMonitor,
     close_tensorboard_writer,
     create_tensorboard_writer,
     write_scalar_metrics,
@@ -259,11 +260,12 @@ def compute_grpo_loss(
     repetition,
     device: torch.device,
     precision: str,
+    diagnostics: dict[str, torch.Tensor] | None = None,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """计算 token-level clipped GRPO loss，指标保留为脱离计算图的设备 tensor。"""
     with autocast_context(device, precision):
-        logits = model(batch)["logits"]
-    logits = apply_repetition_penalty(logits, batch, repetition).float()
+        model_logits = model(batch)["logits"]
+    logits = apply_repetition_penalty(model_logits, batch, repetition).float()
     legal_mask = batch["action_legal_mask"].bool()
     masked_logits = logits.masked_fill(~legal_mask, float("-inf"))
     scaled_logits = masked_logits / grpo.temperature
@@ -296,6 +298,20 @@ def compute_grpo_loss(
     clipped_fraction = (
         (ratio < 1.0 - grpo.clip_low) | (ratio > 1.0 + grpo.clip_high)
     ).float()
+    if diagnostics is not None:
+        # 复用损失的同一次前向；行为分布只保留合法动作，所有数据均脱离计算图。
+        diagnostics.update({
+            "model_logits": model_logits.detach(),
+            "policy/legal_logits": logits.detach()[legal_mask],
+            "policy/legal_probabilities": probabilities.detach()[legal_mask],
+            "policy/selected_probability": selected.detach(),
+            "policy/ratio": ratio.detach(),
+            "policy/kl": kl.detach(),
+            "policy/entropy": entropy.detach(),
+            "rollout/advantages": advantages.detach(),
+            "rollout/old_logprob": old_logprobs.detach(),
+            "rollout/action_index": action_indices.detach(),
+        })
     return loss, {
         "loss": loss.detach(),
         "policy_loss": policy_loss.detach(),
@@ -357,6 +373,7 @@ def _update_policy(
     device: torch.device,
     precision: str,
     tensorboard_writer=None,
+    tensorboard_monitor: TensorBoardMonitor | None = None,
     tensorboard_log_every_steps: int = 50,
     global_step_offset: int = 0,
 ) -> dict[str, float]:
@@ -381,6 +398,29 @@ def _update_policy(
         device=device,
     )
     update_count = 0
+    interval_metrics = (
+        MetricAccumulator((*totals.names, "grad_norm"), device=device)
+        if tensorboard_writer is not None else None
+    )
+    interval_learning_rate_total = 0.0
+
+    def flush_interval(global_step: int) -> None:
+        nonlocal interval_metrics, interval_learning_rate_total
+        if interval_metrics is None or interval_metrics.weight == 0:
+            return
+        write_scalar_metrics(
+            tensorboard_writer,
+            {
+                **interval_metrics.mean(),
+                "learning_rate": interval_learning_rate_total / interval_metrics.weight,
+                "next_learning_rate": optimizer.param_groups[0]["lr"],
+            },
+            prefix="grpo/update",
+            global_step=global_step,
+        )
+        interval_metrics = MetricAccumulator((*totals.names, "grad_norm"), device=device)
+        interval_learning_rate_total = 0.0
+
     # rollout 行为策略和训练前向必须使用同一确定性分布；GRPO 不需要
     # BC 阶段的 dropout 噪声，否则零优势组会被 KL 项的随机 dropout 误更新。
     model.eval()
@@ -388,7 +428,8 @@ def _update_policy(
         selected_decisions: list[GrpoDecision],
         minibatch_advantages: torch.Tensor,
     ) -> None:
-        nonlocal update_count
+        nonlocal update_count, interval_learning_rate_total
+        global_step = global_step_offset + update_count + 1
         batch = move_batch(
             prepare_repetition_penalty(
                 collate_grpo_decisions(selected_decisions), repetition,
@@ -407,6 +448,12 @@ def _update_policy(
             device=device,
         )
         minibatch_advantages = minibatch_advantages.to(device=device)
+        diagnostics = (
+            {} if tensorboard_monitor is not None
+            and tensorboard_monitor.should_log_histograms(global_step) else None
+        )
+        if tensorboard_monitor is not None:
+            tensorboard_monitor.log_graph(batch)
         optimizer.zero_grad(set_to_none=True)
         loss, metrics = compute_grpo_loss(
             model,
@@ -418,28 +465,34 @@ def _update_policy(
             repetition=repetition,
             device=device,
             precision=precision,
+            **({"diagnostics": diagnostics} if diagnostics is not None else {}),
         )
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        if tensorboard_monitor is not None:
+            tensorboard_monitor.log_gradients(global_step, grad_norm=grad_norm)
+        if diagnostics is not None and tensorboard_monitor is not None:
+            model_logits = diagnostics.pop("model_logits", None)
+            if model_logits is not None:
+                tensorboard_monitor.log_step(
+                    model_logits, global_step=global_step, prefix="grpo/model",
+                )
+            tensorboard_monitor.log_distributions(
+                diagnostics, global_step=global_step, prefix="grpo/update",
+            )
+        # 当前更新使用的是 scheduler 推进之前的学习率。
+        learning_rate = float(optimizer.param_groups[0]["lr"])
         optimizer.step()
         if scheduler is not None:
             scheduler.step()
-        totals.update(metrics)
+        minibatch_size = len(selected_decisions)
+        totals.update(metrics, weight=minibatch_size)
+        if interval_metrics is not None:
+            interval_metrics.update({**metrics, "grad_norm": grad_norm}, weight=minibatch_size)
+            interval_learning_rate_total += learning_rate * minibatch_size
         update_count += 1
-        global_step = global_step_offset + update_count
-        if tensorboard_writer is not None and (
-            global_step % tensorboard_log_every_steps == 0
-        ):
-            write_scalar_metrics(
-                tensorboard_writer,
-                {
-                    **metrics,
-                    "loss": loss,
-                    "learning_rate": optimizer.param_groups[0]["lr"],
-                },
-                prefix="grpo/update",
-                global_step=global_step,
-            )
+        if global_step == 1 or global_step % tensorboard_log_every_steps == 0:
+            flush_interval(global_step)
 
     for _ in range(grpo.inner_updates):
         if isinstance(decisions, GrpoRolloutStore):
@@ -455,6 +508,7 @@ def _update_policy(
             assert advantages is not None
             minibatch_advantages = advantages[indices]
             update_minibatch(selected_decisions, minibatch_advantages)
+    flush_interval(global_step_offset + update_count)
     return totals.mean() | {"optimizer_updates": float(update_count)}
 
 
@@ -723,6 +777,10 @@ def run_grpo_training(
         )
 
     tensorboard_writer = None
+    tensorboard_monitor = None
+    best_greedy_ppg = float("-inf")
+    iteration_metrics: list[dict[str, float]] = []
+    total_optimizer_updates = 0
     try:
         tensorboard_writer = create_tensorboard_writer(
             grpo.tensorboard,
@@ -736,6 +794,22 @@ def run_grpo_training(
         )
         if tensorboard_writer is not None:
             logger.info("TensorBoard events: %s", tensorboard_writer.log_dir)
+            tensorboard_monitor = TensorBoardMonitor(
+                tensorboard_writer,
+                grpo.tensorboard,
+                model=model,
+                vocab=input_contract.create_skill_vocab(),
+                metadata={
+                    "stage": "grpo",
+                    "precision": resolved_precision,
+                    "checkpoint": str(checkpoint_path),
+                    "scene_count": len(scenes),
+                    "run_config": asdict(config),
+                    "grpo_config": asdict(grpo),
+                    "iteration_step": "累计优化器更新次数",
+                    "greedy_ppg_after_update": "贪心保护回滚前的候选模型 PPG",
+                },
+            )
         optimizer = build_optimizer(
             model,
             grpo.optimizer,
@@ -758,10 +832,7 @@ def run_grpo_training(
         )
 
         output_path.mkdir(parents=True, exist_ok=True)
-        best_greedy_ppg = float("-inf")
         best_metrics: dict[str, float] = {}
-        iteration_metrics: list[dict[str, float]] = []
-        total_optimizer_updates = 0
         rollout_root = resolve_policy_grpo_dir(data_spec.job_tag)
 
         for iteration in range(1, grpo.max_iterations + 1):
@@ -853,6 +924,7 @@ def run_grpo_training(
                 **(
                     {
                         "tensorboard_writer": tensorboard_writer,
+                        "tensorboard_monitor": tensorboard_monitor,
                         "tensorboard_log_every_steps": grpo.tensorboard.log_every_steps,
                         "global_step_offset": total_optimizer_updates,
                     }
@@ -931,6 +1003,21 @@ def run_grpo_training(
                     prefix="grpo/iteration",
                     global_step=total_optimizer_updates,
                 )
+            if tensorboard_monitor is not None:
+                tensorboard_monitor.log_distributions(
+                    {
+                        "greedy_ppg_before": baseline_ppgs,
+                        "greedy_ppg_after_update": post_update_greedy,
+                        "sample_ppg": [trajectory.ppg for trajectory in trajectories],
+                        "reward_delta": [trajectory.reward for trajectory in trajectories],
+                        "trajectory_advantage": trajectory_advantages,
+                        "decision_count": [trajectory.decision_count for trajectory in trajectories],
+                    },
+                    prefix="grpo/rollout",
+                    global_step=total_optimizer_updates,
+                )
+                # 回滚完成后再记录权重与 embedding，展示实际保留的策略。
+                tensorboard_monitor.log_epoch(global_step=total_optimizer_updates)
             iteration_metrics.append(metrics)
             logger.info(
                 "GRPO iteration %d | greedy %.2f -> %.2f | sample delta %.4f | "
@@ -1015,6 +1102,19 @@ def run_grpo_training(
 
     finally:
         try:
-            close_tensorboard_writer(tensorboard_writer)
+            if tensorboard_monitor is not None and iteration_metrics:
+                tensorboard_monitor.finish(
+                    {
+                        **{
+                            f"grpo/iteration/{name}": value
+                            for name, value in iteration_metrics[-1].items()
+                        },
+                        "grpo/best_greedy_ppg": best_greedy_ppg,
+                    },
+                    global_step=total_optimizer_updates,
+                )
         finally:
-            rollouts.close()
+            try:
+                close_tensorboard_writer(tensorboard_writer)
+            finally:
+                rollouts.close()

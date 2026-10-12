@@ -9,32 +9,38 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from .tensorboard_labels import tensorboard_tag
+
 _ACTIVE_WRITER_CLOSE_CALLBACKS: dict[int, Callable[[], None]] = {}
 
 
 @dataclass(frozen=True)
 class TensorBoardConfig:
-    """控制训练曲线写入频率与 SummaryWriter 刷新间隔。"""
+    """控制训练标量、模型诊断与 SummaryWriter 刷新间隔。"""
 
     enabled: bool = False
     log_every_steps: int = 50
     flush_secs: int = 30
+    graph: bool = True
+    histogram_every_steps: int = 500
+    embedding_every_epochs: int = 1
+    max_histogram_values: int = 4096
+    pr_curves: bool = True
+    pr_curve_max_samples: int = 4096
 
     def __post_init__(self) -> None:
-        if not isinstance(self.enabled, bool):
-            raise TypeError("training.tensorboard.enabled must be a boolean")
-        if (
-            isinstance(self.log_every_steps, bool)
-            or not isinstance(self.log_every_steps, int)
-            or self.log_every_steps < 1
+        for name in ("enabled", "graph", "pr_curves"):
+            if not isinstance(getattr(self, name), bool):
+                raise TypeError(f"training.tensorboard.{name} must be a boolean")
+        for name in (
+            "log_every_steps", "flush_secs", "histogram_every_steps",
+            "embedding_every_epochs", "max_histogram_values", "pr_curve_max_samples",
         ):
-            raise ValueError("training.tensorboard.log_every_steps must be >= 1")
-        if (
-            isinstance(self.flush_secs, bool)
-            or not isinstance(self.flush_secs, int)
-            or self.flush_secs < 1
-        ):
-            raise ValueError("training.tensorboard.flush_secs must be >= 1")
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"training.tensorboard.{name} must be an integer")
+            if value < 1:
+                raise ValueError(f"training.tensorboard.{name} must be >= 1")
 
     @classmethod
     def from_mapping(
@@ -46,20 +52,12 @@ class TensorBoardConfig:
         if not isinstance(values, Mapping):
             raise TypeError("training.tensorboard must be a mapping")
 
-        enabled = values.get("enabled", cls.enabled)
-        if not isinstance(enabled, bool):
-            raise TypeError("training.tensorboard.enabled must be a boolean")
-        log_every_steps = values.get("log_every_steps", cls.log_every_steps)
-        if isinstance(log_every_steps, bool) or not isinstance(log_every_steps, int):
-            raise TypeError("training.tensorboard.log_every_steps must be an integer")
-        flush_secs = values.get("flush_secs", cls.flush_secs)
-        if isinstance(flush_secs, bool) or not isinstance(flush_secs, int):
-            raise TypeError("training.tensorboard.flush_secs must be an integer")
-        return cls(
-            enabled=enabled,
-            log_every_steps=log_every_steps,
-            flush_secs=flush_secs,
-        )
+        from dataclasses import fields
+
+        return cls(**{
+            field.name: values.get(field.name, field.default)
+            for field in fields(cls)
+        })
 
 
 def _resolve_summary_writer():
@@ -150,7 +148,7 @@ def write_scalar_metrics(
         except (TypeError, ValueError, OverflowError):
             continue
         if math.isfinite(scalar):
-            writer.add_scalar(f"{prefix}/{name}", scalar, global_step)
+            writer.add_scalar(tensorboard_tag(f"{prefix}/{name}"), scalar, global_step)
 
 
 def close_tensorboard_writer(writer) -> None:
@@ -162,8 +160,12 @@ def close_tensorboard_writer(writer) -> None:
         writer.close()
 
 
+from .tensorboard_monitor import TensorBoardMonitor
+
+
 __all__ = [
     "TensorBoardConfig",
+    "TensorBoardMonitor",
     "close_tensorboard_writer",
     "create_tensorboard_writer",
     "resolve_tensorboard_root",

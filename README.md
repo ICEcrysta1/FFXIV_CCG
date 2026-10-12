@@ -56,6 +56,19 @@ dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj --configuration Debug
 
 菜单中的 BC 训练与恢复训练按 `training.yaml` 顶部的 `training.tensorboard.enabled` 决定是否自动打开 TensorBoard；GRPO 按 `grpo.yaml` 顶部的 `grpo.tensorboard.enabled` 独立决定。服务就绪后会打开本机浏览器，端口由 `.env` 的 `TENSORBOARD_PORT` 指定。由 `ffxiv_ccg.ps1` 启动的 Web 服务会在训练入口结束或中断后关闭；手动启动的后台服务仍需手动管理。若该端口上的旧服务读取其他模型的事件目录，启动器会报错并提示关闭旧服务或换端口。
 
+新训练 run 会写入以下面板，已有日志不会自动补齐缺少的数据：
+
+| 面板 | 数据与用途 |
+|---|---|
+| Scalars / Custom Scalars | 记录区间的样本加权损失、准确率、实际更新学习率、梯度范数及每轮回放 PPG；步号为累计优化器更新次数 |
+| Graphs | 首个真实编码样本的 eval 前向结构图，仅代表该样本的形状与分支 |
+| Histograms / Distributions | 权重、未缩放梯度、logits 与概率；GRPO 另记录奖励、优势、ratio、KL 等已有轨迹与更新数据 |
+| Projector | 分别展示输入技能 embedding 和独立输出动作头，带动作名、raw id、vocab id 和 GCD 类型，排除 padding 行 |
+| Images / PR Curves | BC 全验证集的动作混淆矩阵、逐动作 precision/recall/support，以及有界采样的一对其余类别 PR 曲线 |
+| Text / HParams | 模型结构、实际运行配置、指标语义、混淆计数和本次运行的最终指标，供跨 run 对比 |
+
+`tensorboard.graph` 控制结构图，`histogram_every_steps` 控制分布频率，`max_histogram_values` 限制每项分布的确定性采样量；`embedding_every_epochs` 控制向量快照频率，初始状态也会保存。BC 的 `pr_curves` / `pr_curve_max_samples` 控制 PR 曲线及其内存上限，混淆矩阵始终汇总全部有效验证样本。这些设置分别位于 BC / GRPO 的 YAML；诊断复用已有前向结果，不消耗训练随机数。HParams 在训练退出时写入最近一次完成的指标；训练中可先查看 Text 中的配置。
+
 训练、转换和回放通过 Python.NET 在当前 Python 进程内调用 C# 状态机。PythonBridge 构建会生成 CoreCLR 运行时配置，并将 FightEngine 与 YAML 依赖复制到同一输出目录；观测树由桥接程序集直接映射为 Python 原生字典和列表，不经过 JSON 文本。
 
 本项目只支持 NVIDIA CUDA 环境，训练、导出和自回归不提供 CPU 支持。

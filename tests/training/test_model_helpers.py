@@ -1088,7 +1088,7 @@ def test_training_helpers_and_epoch_metrics(tmp_path, monkeypatch):
     assert train_metrics["top1_accuracy"] == pytest.approx(1.0)
     assert validation_metrics["top3_accuracy"] == pytest.approx(1.0)
     assert any(
-        tag == "train/step/loss" and step == 7
+        tag == "训练/记录区间/总损失" and step == 7
         for tag, _value, step in tensorboard_writer.values
     )
 
@@ -1517,7 +1517,8 @@ def test_run_training_rejects_missing_model_variant_before_loading_data(
         )
 
 
-def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, caplog):
+@pytest.mark.parametrize("saved_scheduler_step", (None, 7))
+def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, caplog, saved_scheduler_step):
     caplog.set_level(logging.INFO)
     schema = TrainingSchema(
         serialization_format="test",
@@ -1554,7 +1555,7 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
         schema=schema,
         normalizer=normalizer,
     )
-    calls: dict[str, object] = {"validation_count": 0, "checkpoints": []}
+    calls: dict[str, object] = {"validation_count": 0, "checkpoints": [], "train_step_offsets": []}
 
     class ScalarRecorder:
         log_dir = str(tmp_path / "tensorboard" / "fake-run")
@@ -1584,6 +1585,8 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
         return ([0], [0], dataset, dataset)
 
     def fake_train_epoch(*args, **kwargs):
+        assert kwargs["tensorboard_monitor"] is not None
+        calls["train_step_offsets"].append(kwargs["global_step_offset"])
         return {
             "loss": 1.0,
             "cross_entropy_loss": 1.0,
@@ -1675,10 +1678,11 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
     assert result["last_val_metrics"]["top1_accuracy"] == pytest.approx(0.6)
     assert result["last_val_metrics"]["val_ppg"] == pytest.approx(900.0)
     assert result["output_dir"] == tmp_path / "override-output"
+    assert calls["train_step_offsets"] == [0, 1]
     assert tensorboard_output_dirs == [config.output_dir]
     assert tensorboard_writer.closed
     assert any(
-        tag == "validation/val_ppg" and step == 1
+        tag == "验证/真实副本每GCD平均威力（val_ppg）" and step == 1
         for tag, _value, step in tensorboard_writer.values
     )
     assert calls["model_args"][2] == dataset.skill_vocab.size()
@@ -1704,6 +1708,11 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
         repetition=config.repetition,
     )
     resume_optimizer = torch.optim.AdamW(resume_model.parameters(), lr=0.01)
+    resume_scheduler = torch.optim.lr_scheduler.LambdaLR(resume_optimizer, lambda _: 1.0)
+    resume_scheduler_state = resume_scheduler.state_dict()
+    # 保存的历史 batch 数与当前 loader 长度不同，用于验证续训不会倒退日志步号。
+    resume_scheduler_state["last_epoch"] = saved_scheduler_step
+    resume_scheduler_state["_step_count"] = (saved_scheduler_step or 0) + 1
     resume_input_contract = ModelInputContract.from_training(
         skill_vocab=dataset.skill_vocab,
         data_spec=DataSpec.from_dataset(dataset),
@@ -1715,6 +1724,7 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
         "epoch": 1,
         "model_state_dict": resume_model.state_dict(),
         "optimizer_state_dict": resume_optimizer.state_dict(),
+        **({"scheduler_state_dict": resume_scheduler_state} if saved_scheduler_step is not None else {}),
         "model_config": asdict(config.model),
         "data_spec": asdict(DataSpec.from_dataset(dataset)),
         "model_variant": "artzip",
@@ -1739,6 +1749,7 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
         resume_checkpoint,
     )
     calls["checkpoints"] = []
+    calls["train_step_offsets"] = []
     resumed = training_module.run_training(
         config,
         raw_paths=[Path("sample.json")],
@@ -1755,6 +1766,7 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
     assert resumed["best_val_top1_accuracy"] == pytest.approx(0.8)
     assert resumed["best_val_ppg"] == pytest.approx(700.0)
     assert resumed["last_val_metrics"]["top1_accuracy"] == pytest.approx(0.6)
+    assert calls["train_step_offsets"] == [saved_scheduler_step if saved_scheduler_step is not None else 1]
     assert [entry[0].name for entry in calls["checkpoints"]] == [
         "epoch_002_val_ppg_900.00.pt",
         "final.pt",
@@ -1776,6 +1788,7 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
     }
     torch.save(forced_payload, forced_checkpoint)
     calls["checkpoints"] = []
+    calls["train_step_offsets"] = []
     forced = training_module.run_training(
         config,
         raw_paths=[Path("sample.json")],
@@ -1791,6 +1804,7 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
     )
 
     assert forced["best_val_ppg"] == pytest.approx(900.0)
+    assert calls["train_step_offsets"] == [saved_scheduler_step if saved_scheduler_step is not None else 1]
     assert [entry[0].name for entry in calls["checkpoints"]] == [
         "epoch_002_val_ppg_900.00.pt",
         "best.pt",
@@ -1798,9 +1812,11 @@ def test_run_training_orchestrates_checkpoint_saving(tmp_path, monkeypatch, capl
     ]
 
 
-def test_run_training_closes_tensorboard_writer_when_validation_callback_raises(
+@pytest.mark.parametrize("failure_stage", ("validation_callback", "hparams"))
+def test_run_training_closes_tensorboard_writer_when_monitoring_or_validation_raises(
     tmp_path,
     monkeypatch,
+    failure_stage,
 ):
     schema = TrainingSchema(
         serialization_format="test",
@@ -1837,9 +1853,15 @@ def test_run_training_closes_tensorboard_writer_when_validation_callback_raises(
 
         def __init__(self):
             self.closed = False
+            self.hparams = []
 
         def add_scalar(self, *_args):
             pass
+
+        def add_hparams(self, config, metrics, **kwargs):
+            self.hparams.append((config, metrics, kwargs))
+            if failure_stage == "hparams":
+                raise RuntimeError("hparams failed")
 
         def close(self):
             self.closed = True
@@ -1858,7 +1880,10 @@ def test_run_training_closes_tensorboard_writer_when_validation_callback_raises(
     )
 
     def fail_validation_callback(**_kwargs):
-        raise RuntimeError("validation callback failed")
+        if failure_stage == "validation_callback":
+            raise RuntimeError("validation callback failed")
+        return {"val_ppg": 1.0, "val_ppg_normalized": 0.1,
+                "none_ppg": 1.0, "none_ppg_normalized": 0.1}
 
     config = RunConfig(
         raw_data_dir=tmp_path / "raw",
@@ -1882,7 +1907,8 @@ def test_run_training_closes_tensorboard_writer_when_validation_callback_raises(
         "top3_accuracy": 0.9,
     }
 
-    with pytest.raises(RuntimeError, match="validation callback failed"):
+    expected_error = "validation callback failed" if failure_stage == "validation_callback" else "hparams failed"
+    with pytest.raises(RuntimeError, match=expected_error):
         training_loop_impl.run_training(
             config,
             raw_paths=[tmp_path / "scene.json"],
@@ -1900,9 +1926,14 @@ def test_run_training_closes_tensorboard_writer_when_validation_callback_raises(
             _resolve_cache_dir=lambda _job: tmp_path / "cache",
             _registered_job_tags=lambda: ("black_mage",),
             _model_class=FakeModel,
+            _save_checkpoint=lambda *_args, **_kwargs: None,
         )
 
     assert writer.closed
+    assert len(writer.hparams) == 1
+    assert writer.hparams[0][1]["验证/总损失"] == pytest.approx(1.0)
+    assert writer.hparams[0][1]["训练/每轮/总损失"] == pytest.approx(1.0)
+    assert writer.hparams[0][2]["global_step"] == 1
 
 
 def test_best_metric_key_uses_requested_tie_break_order():
