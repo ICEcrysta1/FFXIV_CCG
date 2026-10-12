@@ -6,6 +6,7 @@ from collections.abc import Sequence
 
 import torch
 from torch import nn
+from torch.utils.checkpoint import checkpoint
 
 
 class FullAttentionResidual(nn.Module):
@@ -57,20 +58,34 @@ class FullAttentionResidual(nn.Module):
                 f"for {self.num_queries} queries"
             )
 
-        query = self.pseudo_queries[query_index]
         source_values = tuple(sources)
-        # 深度打分直接使用 query 与 RMSNorm(key) 的内积，不按模型宽度缩放。
-        logits = torch.cat(
-            tuple(
-                torch.einsum(
-                    "d,btd->bt",
-                    query,
-                    self.key_norms[query_index](source),
-                ).unsqueeze(0)
-                for source in source_values
-            ),
-            dim=0,
-        )
+        key_norm = self.key_norms[query_index]
+
+        def score_sources(*values: torch.Tensor) -> torch.Tensor:
+            query = self.pseudo_queries[query_index]
+            # 深度打分直接使用 query 与 RMSNorm(key) 的内积，不按模型宽度缩放。
+            return torch.cat(
+                tuple(
+                    torch.einsum("d,btd->bt", query, key_norm(source)).unsqueeze(0)
+                    for source in values
+                ),
+                dim=0,
+            )
+
+        if (
+            self.training
+            and torch.is_grad_enabled()
+            and not torch.onnx.is_in_onnx_export()
+        ):
+            # 只重算归一化 key 与打分，避免长期保留全尺寸副本；value 聚合无需重复执行。
+            logits = checkpoint(
+                score_sources,
+                *source_values,
+                use_reentrant=False,
+                preserve_rng_state=False,
+            )
+        else:
+            logits = score_sources(*source_values)
         weights = torch.softmax(logits, dim=0)
         output = torch.zeros_like(source_values[0])
         for source_index, source in enumerate(source_values):

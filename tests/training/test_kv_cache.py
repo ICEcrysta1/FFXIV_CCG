@@ -72,6 +72,18 @@ def _make_model_pair(
         full_attention_residuals=full_attention_residuals,
         n_heads=n_heads, num_kv_heads=num_kv_heads, qk_norm_scale=qk_norm_scale,
     )
+    if full_attention_residuals:
+        # 模拟已训练的不同深度权重，避免零 query 的均匀平均掩盖缓存聚合错误。
+        residual = cached_model.encoder.attention_residual
+        with torch.no_grad():
+            residual.pseudo_queries.copy_(torch.linspace(
+                -0.3, 0.4, residual.pseudo_queries.numel(),
+            ).reshape_as(residual.pseudo_queries))
+            for depth, key_norm in enumerate(residual.key_norms):
+                key_norm.weight.copy_(torch.linspace(
+                    0.7 + 0.02 * depth, 1.3 + 0.02 * depth,
+                    key_norm.weight.numel(),
+                ))
     full_model.load_state_dict(cached_model.state_dict())
     return cached_model, full_model
 
@@ -396,16 +408,35 @@ def test_kv_mixing_aligns_x0_for_prefix_append_current_and_rebuild(norm_first):
         mix_hook.remove()
 
 
-def test_kv_mixing_handles_empty_scene_and_history_prefix():
-    model, full_model = _make_model_pair(activation="swiglu")
+@pytest.mark.parametrize("full_attention_residuals", (False, True))
+def test_kv_cache_handles_empty_prefix_then_append_reuse_and_rebuild(full_attention_residuals):
+    """空前缀可追加历史；只改当前状态复用缓存，历史改动则重建。"""
+    model, full_model = _make_model_pair(
+        activation="swiglu", full_attention_residuals=full_attention_residuals,
+    )
     model.enable_kv_cache(True)
-    batch = _make_batch(0)
-    batch["scene_vectors"] = batch["scene_vectors"][:, :0]
-    batch["scene_types"] = batch["scene_types"][:, :0]
-    batch["scene_mask"] = batch["scene_mask"][:, :0]
-    torch.testing.assert_close(model(batch)["logits"], full_model(batch)["logits"], rtol=1e-5, atol=1e-6)
-    assert model._kv_cache.prefix_tokens.shape[1] == 0
-    assert all(key.shape[2] == 0 for key in model._kv_cache.key_cache)
+    previous_cache = None
+    requests = ((0, 0.0, False), (1, 0.0, False),
+                (1, 10.0, False), (1, 10.0, True))
+    with torch.no_grad():
+        for step, (history_length, current_offset, changed_history) in enumerate(requests):
+            batch = _make_batch(
+                history_length, current_state_offset=current_offset,
+                changed_history=changed_history,
+            )
+            for key in ("scene_vectors", "scene_types", "scene_mask"):
+                batch[key] = batch[key][:, :0]
+            torch.testing.assert_close(
+                model(batch)["logits"], full_model(batch)["logits"], rtol=1e-5, atol=1e-6,
+            )
+            cache = model._kv_cache
+            assert cache.prefix_tokens.shape[1] == 2 * history_length
+            assert all(key.shape[2] == 2 * history_length for key in cache.key_cache)
+            if step == 2:
+                assert cache is previous_cache
+            else:
+                assert cache is not previous_cache
+            previous_cache = cache
 
 
 @pytest.mark.parametrize("full_attention_residuals", (False, True))
@@ -493,10 +524,12 @@ def test_full_attention_residual_kv_cache_matches_full_forward(activation):
     assert len(trace.layer_hidden) == 2
     assert len(trace.attentions) == 2
 
+    original_cache = model._kv_cache
     changed_current = _make_batch(2, current_state_offset=10.0)
     full_logits = full_model(changed_current)["logits"]
     cached_logits = model(changed_current)["logits"]
     torch.testing.assert_close(cached_logits, full_logits, rtol=1e-5, atol=1e-6)
+    assert model._kv_cache is original_cache
 
 
 def test_kv_cache_is_eval_only_and_does_not_add_checkpoint_parameters():

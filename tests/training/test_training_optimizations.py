@@ -124,9 +124,77 @@ def test_shared_projections_and_single_causal_sdpa_run_once(monkeypatch):
     assert set(counts.values()) == {1}
 
 
+def test_full_attention_residual_aggregates_each_depth_once_and_preserves_trace():
+    """六层只执行十三个深度聚合，同时对齐独立公式和逐层 trace。"""
+    torch.manual_seed(30)
+    encoder = torch.nn.TransformerEncoder(
+        _layer(), 6, norm=torch.nn.RMSNorm(8, eps=1e-5, elementwise_affine=False),
+        enable_nested_tensor=False,
+    ).double().eval()
+    encoder.rotary_position_encoding = RotaryPositionEncoding(2)
+    encoder.attention_residual = FullAttentionResidual(d_model=8, num_queries=13).double()
+    with torch.no_grad():
+        encoder.attention_residual.pseudo_queries.normal_(std=0.15)
+        for norm in encoder.attention_residual.key_norms:
+            norm.weight.uniform_(0.8, 1.2)
+    reference = deepcopy(encoder)
+    encoded = _encoded(torch.randn(2, 5, 8, dtype=torch.float64), 3)
+    calls = []
+    hook = encoder.attention_residual.register_forward_pre_hook(
+        lambda _module, args: calls.append((args[1], len(args[0])))
+    )
+
+    def aggregate(sources, query_index):
+        # 独立堆叠公式覆盖 key 仿射、未缩放点积、depth softmax 与 raw value。
+        values = torch.stack(sources)
+        norm = reference.attention_residual.key_norms[query_index]
+        keys = values / (values.square().mean(-1, keepdim=True) + torch.finfo(values.dtype).eps).sqrt()
+        keys = keys * norm.weight
+        query = reference.attention_residual.pseudo_queries[query_index]
+        weights = (keys * query).sum(-1).softmax(dim=0)
+        return (weights.unsqueeze(-1) * values).sum(0)
+
+    with torch.no_grad():
+        sources = [encoded["tokens"]]
+        hidden = aggregate(sources, 0)
+        expected_layers = []
+        for index, layer in enumerate(reference.layers):
+            query, key, value = causal.project_qkv(layer.self_attn, layer.norm1(hidden))
+            query, key = causal.rotate_qk(
+                reference.rotary_position_encoding,
+                causal.split_heads(query, layer.self_attn.num_heads),
+                causal.split_heads(key, causal.kv_head_count(layer.self_attn)),
+                encoded["position_ids"], encoded["position_ids"],
+            )
+            query, key = causal.normalize_qk(query, key, scale=layer.qk_norm_scale)
+            attended, _ = attention_variants_module.run_head_attention(
+                layer, query, key, causal.split_heads(value, causal.kv_head_count(layer.self_attn)),
+                key_valid=encoded["valid"], causal=True, collect_attention=False,
+            )
+            sources.append(layer.dropout1(attended))
+            sources.append(layer._ff_block(layer.norm2(aggregate(sources, 2 * index + 1))))
+            hidden = aggregate(sources, 2 * index + 2)
+            expected_layers.append(hidden)
+        expected = reference.norm(hidden)
+        actual = causal.run_causal_encoder(encoder, encoded)[0]
+        assert calls == [(index, index + 1) for index in range(13)]
+        calls.clear()
+        traced, layer_hidden, attentions = causal.run_causal_encoder(
+            encoder, encoded, collect_attention=True,
+        )
+    hook.remove()
+
+    assert calls == [(index, index + 1) for index in range(13)]
+    assert len(layer_hidden) == len(attentions) == 6
+    torch.testing.assert_close(actual, expected, rtol=1e-10, atol=1e-10)
+    torch.testing.assert_close(traced, expected, rtol=1e-10, atol=1e-10)
+    for actual_hidden, expected_hidden in zip(layer_hidden, expected_layers):
+        torch.testing.assert_close(actual_hidden, expected_hidden, rtol=1e-10, atol=1e-10)
+
+
 @pytest.mark.parametrize("full_residual", (False, True))
 @pytest.mark.parametrize("checkpoint_ffn,checkpoint_attention", ((True, False), (False, True), (True, True)))
-def test_fused_checkpoint_preserves_dropout_outputs_and_gradients(full_residual, checkpoint_ffn, checkpoint_attention):
+def test_sublayer_checkpoints_preserve_dropout_outputs_and_gradients(full_residual, checkpoint_ffn, checkpoint_attention):
     torch.manual_seed(31)
     encoder = torch.nn.TransformerEncoder(_layer(dropout=0.15), 2, enable_nested_tensor=False)
     encoder.rotary_position_encoding = RotaryPositionEncoding(2)

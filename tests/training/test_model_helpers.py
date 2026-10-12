@@ -844,7 +844,11 @@ def test_attention_activation_checkpoint_preserves_forward_and_gradients(num_kv_
 
 
 @pytest.mark.parametrize("activation", ("gelu", "swiglu"))
-def test_full_attention_residual_checkpoint_recomputes_source_path_and_preserves_gradients(activation):
+@pytest.mark.parametrize("checkpoint_ffn,checkpoint_attention", ((True, False), (False, True), (True, True)))
+def test_full_attention_residual_preserves_independent_sublayer_checkpoints(
+    activation, checkpoint_ffn, checkpoint_attention,
+):
+    """局部深度聚合重算不改变 FFN/attention 的独立开关或 dropout 梯度。"""
     from unittest.mock import patch
     from common.policy.model.causal_encoder import run_causal_encoder
 
@@ -870,10 +874,14 @@ def test_full_attention_residual_checkpoint_recomputes_source_path_and_preserves
     ).train())
     eager.attention_residual = FullAttentionResidual(d_model=8, num_queries=5)
     checkpointed.attention_residual = FullAttentionResidual(d_model=8, num_queries=5)
+    with torch.no_grad():
+        eager.attention_residual.pseudo_queries.normal_(std=0.15)
+        for norm in eager.attention_residual.key_norms:
+            norm.weight.uniform_(0.8, 1.2)
     checkpointed.load_state_dict(eager.state_dict())
     for layer in checkpointed.layers:
-        layer.set_activation_checkpoint_ffn(True)
-        layer.set_activation_checkpoint_attention(True)
+        layer.set_activation_checkpoint_ffn(checkpoint_ffn)
+        layer.set_activation_checkpoint_attention(checkpoint_attention)
 
     eager_input = torch.randn(2, 4, 8, requires_grad=True)
     checkpointed_input = eager_input.detach().clone().requires_grad_(True)
@@ -885,36 +893,44 @@ def test_full_attention_residual_checkpoint_recomputes_source_path_and_preserves
     }
     checkpointed_encoded = {**encoded, "tokens": checkpointed_input}
 
+    # 参考只关闭深度聚合的重算，保留相同训练模式与 dropout。
+    with patch(
+        "common.policy.model.attention_residual.checkpoint",
+        side_effect=lambda function, *args, **_kwargs: function(*args),
+    ):
+        torch.manual_seed(123)
+        eager_output = run_causal_encoder(eager, encoded)
+
     with patch(
         "common.policy.model.causal_encoder.checkpoint",
         wraps=__import__("torch.utils.checkpoint", fromlist=["checkpoint"]).checkpoint,
-    ) as residual_checkpoint, patch(
+    ) as block_checkpoint, patch(
         "common.policy.model.trace.checkpoint",
         wraps=__import__("torch.utils.checkpoint", fromlist=["checkpoint"]).checkpoint,
     ) as ffn_checkpoint, patch(
-        "torch.nn.functional.scaled_dot_product_attention",
-        wraps=torch.nn.functional.scaled_dot_product_attention,
-    ) as sdpa:
-        torch.manual_seed(123)
-        eager_output = run_causal_encoder(eager, encoded)
-        sdpa.reset_mock()
+        "common.policy.model.attention_variants.checkpoint",
+        wraps=__import__("torch.utils.checkpoint", fromlist=["checkpoint"]).checkpoint,
+    ) as attention_checkpoint:
         torch.manual_seed(123)
         checkpointed_output = run_causal_encoder(checkpointed, checkpointed_encoded)
-        eager_output[0].square().sum().backward()
-        checkpointed_output[0].square().sum().backward()
+        probe = torch.randn_like(eager_output[0])
+        (eager_output[0] * probe).sum().backward()
+        (checkpointed_output[0] * probe).sum().backward()
 
-    assert residual_checkpoint.call_count == 1
-    assert ffn_checkpoint.call_count == 0
-    assert sdpa.call_count == 4
-    assert torch.allclose(eager_output[0], checkpointed_output[0])
-    assert torch.allclose(eager_input.grad, checkpointed_input.grad)
+    assert block_checkpoint.call_count == 0
+    assert ffn_checkpoint.call_count == 2 * checkpoint_ffn
+    assert attention_checkpoint.call_count == 2 * checkpoint_attention
+    torch.testing.assert_close(eager_output[0], checkpointed_output[0])
+    torch.testing.assert_close(eager_input.grad, checkpointed_input.grad)
     for eager_parameter, checkpointed_parameter in zip(
         eager.parameters(), checkpointed.parameters()
     ):
-        assert torch.allclose(eager_parameter.grad, checkpointed_parameter.grad)
+        torch.testing.assert_close(eager_parameter.grad, checkpointed_parameter.grad)
 
 
 def test_full_attention_residual_checkpoint_preserves_partial_layer_granularity():
+    """不同层分别启用 FFN 与整块 attention，仍与无重算参考一致。"""
+    from copy import deepcopy
     from unittest.mock import patch
     from common.policy.model.causal_encoder import run_causal_encoder
 
@@ -922,7 +938,7 @@ def test_full_attention_residual_checkpoint_preserves_partial_layer_granularity(
         "d_model": 8,
         "nhead": 2,
         "dim_feedforward": 16,
-        "dropout": 0.0,
+        "dropout": 0.1,
         "activation": "gelu",
         "batch_first": True,
         "norm_first": True,
@@ -933,9 +949,15 @@ def test_full_attention_residual_checkpoint_preserves_partial_layer_granularity(
         norm=nn.RMSNorm(8, eps=1e-5, elementwise_affine=False),
     ).train())
     encoder.attention_residual = FullAttentionResidual(d_model=8, num_queries=5)
+    with torch.no_grad():
+        encoder.attention_residual.pseudo_queries.normal_(std=0.15)
+    reference = deepcopy(encoder)
     encoder.layers[0].set_activation_checkpoint_ffn(True)
+    encoder.layers[1].set_activation_checkpoint_attention(True)
+    encoder.layers[1].set_activation_checkpoint_attention_block(True)
 
     tokens = torch.randn(2, 4, 8, requires_grad=True)
+    reference_tokens = tokens.detach().clone().requires_grad_(True)
     encoded = {
         "tokens": tokens,
 
@@ -943,17 +965,35 @@ def test_full_attention_residual_checkpoint_preserves_partial_layer_granularity(
 
     }
     with patch(
+        "common.policy.model.attention_residual.checkpoint",
+        side_effect=lambda function, *args, **_kwargs: function(*args),
+    ):
+        torch.manual_seed(29)
+        expected = run_causal_encoder(reference, {**encoded, "tokens": reference_tokens})[0]
+
+    with patch(
         "common.policy.model.causal_encoder.checkpoint",
         wraps=__import__("torch.utils.checkpoint", fromlist=["checkpoint"]).checkpoint,
-    ) as residual_checkpoint, patch(
+    ) as block_checkpoint, patch(
         "common.policy.model.trace.checkpoint",
         wraps=__import__("torch.utils.checkpoint", fromlist=["checkpoint"]).checkpoint,
-    ) as ffn_checkpoint:
+    ) as ffn_checkpoint, patch(
+        "common.policy.model.attention_variants.checkpoint",
+        wraps=__import__("torch.utils.checkpoint", fromlist=["checkpoint"]).checkpoint,
+    ) as attention_checkpoint:
+        torch.manual_seed(29)
         output = run_causal_encoder(encoder, encoded)
-        output[0].square().sum().backward()
+        probe = torch.randn_like(output[0])
+        (expected * probe).sum().backward()
+        (output[0] * probe).sum().backward()
 
-    assert residual_checkpoint.call_count == 0
+    assert block_checkpoint.call_count == 1
     assert ffn_checkpoint.call_count == 1
+    assert attention_checkpoint.call_count == 0
+    torch.testing.assert_close(output[0], expected)
+    torch.testing.assert_close(tokens.grad, reference_tokens.grad)
+    for actual_parameter, expected_parameter in zip(encoder.parameters(), reference.parameters()):
+        torch.testing.assert_close(actual_parameter.grad, expected_parameter.grad)
 
 
 class _TinyModel(nn.Module):
