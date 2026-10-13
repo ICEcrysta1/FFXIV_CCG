@@ -35,6 +35,8 @@ _PYTHON_BRIDGE_DLL = _DOTNET_OUTPUT / "FightEngine.PythonBridge.dll"
 
 _DOTNET_LOCK = threading.Lock()
 _DOTNET_TYPES: tuple[Any, Any, Any] | None = None
+# 与 C# SimulationEngine.MaxCapacity 一致；实际并发由所属工作流的 .env 参数决定。
+MAX_QUEUE_CAPACITY = 100
 
 
 def _load_dotnet_types() -> tuple[Any, Any, Any]:
@@ -109,9 +111,12 @@ class InProcessEngine:
     capacity 限制同时存活的队列数，满载立即报错，调度和任务等待由调用方负责。
     """
 
-    def __init__(self, job_tag: str, *, capacity: int = 16):
-        if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 1:
-            raise ValueError("capacity must be a positive integer")
+    def __init__(self, job_tag: str, *, capacity: int = MAX_QUEUE_CAPACITY):
+        if (
+            isinstance(capacity, bool) or not isinstance(capacity, int)
+            or not 1 <= capacity <= MAX_QUEUE_CAPACITY
+        ):
+            raise ValueError(f"capacity must be an integer between 1 and {MAX_QUEUE_CAPACITY}")
         engine_type, _, _ = _load_dotnet_types()
         self.job_tag = job_tag
         self.capacity = capacity

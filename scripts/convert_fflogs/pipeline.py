@@ -85,6 +85,7 @@ def convert_report_to_training_payload(
     player_name: str,
     generated_at: str,
     downtime_gap_seconds: float = DEFAULT_DOWNTIME_GAP_SECONDS,
+    deduplicate_history: bool = False,
 ) -> tuple[dict[str, object] | None, Counter[tuple[int, str]]]:
     """直接把一份原始 FFLogs payload 转成最终训练样本。"""
     fight_payload, ignored_skill_counts = convert_report_payload(
@@ -113,5 +114,6 @@ def convert_report_to_training_payload(
         backend,
         skill_book,
         fight_payload,
+        deduplicate_history=deduplicate_history,
     )
     return training_payload, ignored_skill_counts

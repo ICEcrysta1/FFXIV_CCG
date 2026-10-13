@@ -285,7 +285,8 @@ def test_training_selector_rejects_explicit_val_root(tmp_path):
         )
 
 
-def test_cli_training_selection_uses_model_quota(tmp_path, monkeypatch):
+@pytest.mark.parametrize("workers", [2, 4, 17, 100])
+def test_cli_training_selection_uses_model_quota(tmp_path, monkeypatch, workers):
     """独立转换入口按训练配置选择文件，训练入口不参与编译。"""
     run_config = SimpleNamespace(
         raw_data_dir=tmp_path / "annotated",
@@ -297,7 +298,7 @@ def test_cli_training_selection_uses_model_quota(tmp_path, monkeypatch):
     calls = {}
     monkeypatch.setattr(sys, "argv", ["convert_fflogs", "--training-selection"])
     monkeypatch.setattr(convert_cli, "load_convert_fflogs_dotenv", lambda: None)
-    monkeypatch.setenv("CONVERT_FFLOGS_WORKERS", "2")
+    monkeypatch.setenv("CONVERT_FFLOGS_WORKERS", str(workers))
     monkeypatch.setattr(convert_cli, "resolve_policy_model_config_path", lambda: tmp_path / "config.yaml")
     monkeypatch.setattr(convert_cli, "load_run_config", lambda _path: run_config)
     monkeypatch.setattr(convert_cli, "resolve_policy_model_job_tag", lambda _path: "black_mage")
@@ -311,8 +312,61 @@ def test_cli_training_selection_uses_model_quota(tmp_path, monkeypatch):
     convert_cli.main()
     assert calls["path"] == run_config.raw_data_dir
     assert calls["max_files"] == 8
-    assert calls["max_workers"] == 2
+    assert calls["max_workers"] == workers
     assert calls["validation_files"] == 4
+
+
+@pytest.mark.parametrize("worker_source", ["env", "cli"])
+@pytest.mark.parametrize("training_selection", [False, True])
+def test_cli_rejects_workers_above_engine_capacity_before_compilation(
+    tmp_path, monkeypatch, capsys, worker_source, training_selection,
+):
+    """环境和命令行的越界值均在选择文件或启动编译前失败。"""
+    run_config = SimpleNamespace(
+        raw_data_dir=tmp_path / "annotated", max_files=8, validation_files=4,
+        compiled_cache_shard_size=16, compiled_cache_max_shards=4,
+    )
+    argv = ["convert_fflogs"]
+    if training_selection:
+        argv.append("--training-selection")
+    if worker_source == "cli":
+        argv.extend(["--workers", "101"])
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(convert_cli, "load_convert_fflogs_dotenv", lambda: None)
+    monkeypatch.setenv("CONVERT_FFLOGS_WORKERS", "101" if worker_source == "env" else "4")
+    monkeypatch.setattr(convert_cli, "resolve_policy_model_config_path", lambda: tmp_path / "config.yaml")
+    monkeypatch.setattr(convert_cli, "load_run_config", lambda _path: run_config)
+    monkeypatch.setattr(convert_cli, "resolve_policy_model_job_tag", lambda _path: "black_mage")
+    monkeypatch.setattr(convert_cli, "resolve_policy_model_variant", lambda _path: "artzip")
+    monkeypatch.setattr(convert_cli, "resolve_convert_fflogs_job_tag", lambda _tag: "black_mage")
+    monkeypatch.setattr(convert_cli, "resolve_policy_cache_dir", lambda _tag: tmp_path / ".cache")
+
+    def reject_work(*_args, **_kwargs):
+        pytest.fail("越界并发数不得进入文件选择或缓存编译")
+
+    for name in ("_resolve_input_files", "load_precision_config", "precompile_raw_training_caches",
+                 "prepare_training_and_validation_caches"):
+        monkeypatch.setattr(convert_cli, name, reject_work)
+    with pytest.raises(SystemExit) as error:
+        convert_cli.main()
+    assert error.value.code == 2
+    message = capsys.readouterr().err
+    assert "workers" in message.lower()
+    assert "100" in message
+
+
+def test_precompile_rejects_workers_above_engine_capacity_before_loading_conversion(tmp_path, monkeypatch):
+    def reject_work(*_args, **_kwargs):
+        pytest.fail("越界并发数不得读取转换配置或创建引擎")
+
+    monkeypatch.setattr(cache_compile_module, "build_conversion_config_dependencies", reject_work)
+    monkeypatch.setattr(cache_compile_module, "InProcessEngine", reject_work)
+    with pytest.raises(ValueError, match="100"):
+        precompile_raw_training_caches(
+            [tmp_path / "fight.json.br"], job_tag="black_mage", max_workers=101,
+            normalizer=SimpleNamespace(ensure_job_resources=reject_work),
+            int_dtype="int32", float_dtype="float32", cache_dir=tmp_path / ".cache",
+        )
 
 
 def test_cli_fails_when_annotated_inputs_produce_no_compiled_cache(tmp_path, monkeypatch):

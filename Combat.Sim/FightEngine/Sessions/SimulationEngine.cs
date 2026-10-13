@@ -15,6 +15,9 @@ namespace Combat.Sim.Sessions;
 /// </summary>
 public sealed class SimulationEngine : IDisposable
 {
+    /// <summary>宿主最多容纳的独立队列数；容量不会提前创建队列。</summary>
+    public const int MaxCapacity = 100;
+
     private readonly object _gate = new();
     private readonly CombatStateMachine _rules;
     private readonly PolicyActionRegistry _policyRegistry;
@@ -22,9 +25,10 @@ public sealed class SimulationEngine : IDisposable
     private long _nextId;
     private bool _disposed;
 
-    public SimulationEngine(string projectRoot, string jobTag, int capacity = 16)
+    public SimulationEngine(string projectRoot, string jobTag, int capacity = MaxCapacity)
     {
-        if (capacity < 1) throw new ArgumentOutOfRangeException(nameof(capacity));
+        if (capacity < 1 || capacity > MaxCapacity)
+            throw new ArgumentOutOfRangeException(nameof(capacity));
         Capacity = capacity;
         _rules = CombatStateMachine.FromDefaultConfig(projectRoot, jobTag);
         _policyRegistry = PolicyActionRegistry.Load(projectRoot, _rules.SkillBook);
@@ -33,11 +37,12 @@ public sealed class SimulationEngine : IDisposable
     public int Capacity { get; }
 
     /// <summary>嵌入宿主可注入已装配的规则与策略索引，多个队列共用同一份配置。</summary>
-    public SimulationEngine(CombatStateMachine rules, PolicyActionRegistry policyRegistry, int capacity = 16)
+    public SimulationEngine(CombatStateMachine rules, PolicyActionRegistry policyRegistry, int capacity = MaxCapacity)
     {
         ArgumentNullException.ThrowIfNull(rules);
         ArgumentNullException.ThrowIfNull(policyRegistry);
-        if (capacity < 1) throw new ArgumentOutOfRangeException(nameof(capacity));
+        if (capacity < 1 || capacity > MaxCapacity)
+            throw new ArgumentOutOfRangeException(nameof(capacity));
         Capacity = capacity;
         _rules = rules;
         _policyRegistry = policyRegistry;

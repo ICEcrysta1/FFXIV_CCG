@@ -11,6 +11,79 @@ public sealed class SimulationEngineTests
     private static string Root => RepoRootLocator.Find();
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void 默认容量为一百且未申请队列时保持空宿主(bool injectRules)
+    {
+        using var engine = CreateCapacityEngine(injectRules);
+
+        Assert.Equal(100, SimulationEngine.MaxCapacity);
+        Assert.Equal(SimulationEngine.MaxCapacity, engine.Capacity);
+        Assert.Equal(0, engine.ActiveCount);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void 默认和显式一百容量可独立运行且满载释放后恢复(bool injectRules, bool explicitCapacity)
+    {
+        using var engine = CreateCapacityEngine(injectRules,
+            explicitCapacity ? SimulationEngine.MaxCapacity : null);
+        var sessions = Enumerable.Range(0, SimulationEngine.MaxCapacity)
+            .Select(index => engine.CreateSession(4, 2.0 + index * 0.001, index * 100, 30)).ToArray();
+
+        Assert.Equal(100, engine.ActiveCount);
+        Assert.Equal(100, sessions.Select(session => session.Id).Distinct().Count());
+        // 不同队列使用不同起点、基础 GCD 和历史长度，检查共享配置不串改运行状态。
+        Parallel.For(0, sessions.Length, index =>
+        {
+            var session = sessions[index];
+            var actions = 1 + index % 3;
+            for (var step = 0; step < actions; step++)
+            {
+                var time = index * 100 + step * 3.0;
+                Assert.True(session.SubmitAction(time, "heated_split_shot").Value.Accepted);
+                session.AdvanceTo(time + 0.7);
+                session.RecordPolicyAction(time + 0.7, "ogcd_wait", time + 3);
+            }
+            var timestamp = index * 100 + (actions - 1) * 3.0 + 0.7;
+            var statistics = session.GetStatistics();
+            Assert.Equal(timestamp, statistics.Timestamp);
+            Assert.Equal(actions, statistics.ActionHistoryCount);
+            Assert.Equal(actions, statistics.PolicyHistoryCount);
+            Assert.Equal(2.0 + index * 0.001,
+                Convert.ToDouble(session.ObserveAt(timestamp).Value["current_gcd_seconds"]), precision: 9);
+        });
+
+        Assert.Throws<InvalidOperationException>(() => engine.CreateSession(4));
+        Assert.Equal(100, engine.ActiveCount);
+        sessions[0].Dispose();
+        Assert.Equal(99, engine.ActiveCount);
+        Assert.True(sessions[0].IsClosed);
+        Assert.All(sessions.Skip(1), session => Assert.False(session.IsClosed));
+        using var replacement = engine.CreateSession(4);
+        Assert.Equal(100, engine.ActiveCount);
+        Assert.NotEqual(sessions[0].Id, replacement.Id);
+        Assert.True(replacement.SubmitAction(0, "heated_split_shot").Value.Accepted);
+        replacement.AdvanceTo(0.7);
+        Assert.Equal(1, replacement.GetStatistics().ActionHistoryCount);
+        Assert.Throws<InvalidOperationException>(() => engine.CreateSession(4));
+    }
+
+    [Theory]
+    [InlineData(false, 0)]
+    [InlineData(false, 101)]
+    [InlineData(true, 0)]
+    [InlineData(true, 101)]
+    public void 两种构造入口均拒绝容量越界(bool injectRules, int capacity)
+    {
+        var error = Assert.Throws<ArgumentOutOfRangeException>(() => CreateCapacityEngine(injectRules, capacity));
+        Assert.Equal("capacity", error.ParamName);
+    }
+
+    [Theory]
     [InlineData(-3.5)]
     [InlineData(-3.0)]
     public void 预读负起点允许当前及未来的有限同刻场景批次(double timestamp)
@@ -244,6 +317,19 @@ public sealed class SimulationEngineTests
         Assert.Equal(JsonSerializer.Serialize(full.ObserveAt(1280, "vector", 1280).Value["current_state_context"]),
             JsonSerializer.Serialize(none.ObserveAt(1280, "vector", 1280).Value["current_state_context"]));
         Assert.InRange(window.GetStatistics().QueueEntryCount, 0, 80);
+    }
+
+    private static SimulationEngine CreateCapacityEngine(bool injectRules, int? capacity = null)
+    {
+        if (!injectRules)
+            return capacity is { } configuredCapacity
+                ? new SimulationEngine(Root, "machinist", configuredCapacity)
+                : new SimulationEngine(Root, "machinist");
+        var rules = CombatStateMachine.FromDefaultConfig(Root, "machinist");
+        var policyRegistry = PolicyActionRegistry.Load(Root, rules.SkillBook);
+        return capacity is { } injectedCapacity
+            ? new SimulationEngine(rules, policyRegistry, injectedCapacity)
+            : new SimulationEngine(rules, policyRegistry);
     }
 
     private static List<Dictionary<string, object?>> Rows(Dictionary<string, object?> context) =>

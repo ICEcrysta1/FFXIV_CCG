@@ -20,6 +20,7 @@ from scripts.common.scene_state import SceneFactScheduler, rewrite_scene_player_
 
 from ..config.constants import _round_time
 from ..scene.scene_context import build_scene_context_view, normalize_scene_context, resolve_anchor
+from .history_bank import HistoryPrefixInterner
 
 OGCD_WAIT_ACTION_KEY = "ogcd_wait"
 
@@ -29,8 +30,9 @@ def build_training_samples(
     fight_payload: dict[str, object],
     *,
     policy_action_key: str = OGCD_WAIT_ACTION_KEY,
+    deduplicate_history: bool = False,
 ) -> dict[str, object]:
-    """把一场战斗展开成逐决策训练样本。"""
+    """把一场战斗展开成逐决策样本；编译侧可共享只读的冻结历史行。"""
     actions = fight_payload.get("actions", [])
     if not isinstance(actions, list) or not actions:
         raise ValueError("fight payload must contain at least one action")
@@ -43,6 +45,8 @@ def build_training_samples(
     scheduler.sync_through(backend, cursor)
 
     samples: list[dict[str, object]] = []
+    history_interner = HistoryPrefixInterner() if deduplicate_history else None
+    fight_id = str(fight_payload.get("fight_id", "unknown_fight"))
     resolved_sequence: list[str] = []
     next_step_index = 1
 
@@ -66,6 +70,8 @@ def build_training_samples(
         if wait_sample is not None:
             wait_sample["step"] = next_step_index
             wait_sample["source_step"] = source_step
+            if history_interner is not None:
+                history_interner.intern(wait_sample["context"], sample_index=len(samples), fight_id=fight_id)
             samples.append(wait_sample)
             resolved_sequence.append(policy_action_key)
             next_step_index += 1
@@ -85,6 +91,8 @@ def build_training_samples(
         )
         sample["step"] = next_step_index
         sample["source_step"] = source_step
+        if history_interner is not None:
+            history_interner.intern(sample["context"], sample_index=len(samples), fight_id=fight_id)
         samples.append(sample)
         resolved_sequence.append(str(raw_action["action_key"]))
         next_step_index += 1
@@ -92,7 +100,7 @@ def build_training_samples(
     return {
         "sample_schema_version": TRAINING_SAMPLE_SCHEMA_VERSION,
         "job_tag": str(fight_payload.get("job_tag", backend.job_tag)),
-        "fight_id": str(fight_payload.get("fight_id", "unknown_fight")),
+        "fight_id": fight_id,
         "player": fight_payload.get("player"),
         "encounter": fight_payload.get("encounter"),
         "ranking": fight_payload.get("ranking"),

@@ -51,8 +51,11 @@ class TrainingSourceReader:
             context = self._sample_context(sample_index)
             if context.get("schema_version") != CANONICAL_CONTEXT_SCHEMA_VERSION:
                 raise ValueError("unsupported canonical context schema version; recompile raw source")
-            if any("time_seconds" in row for row in self._history_rows(sample_index)):
-                raise ValueError("removed skill time_seconds field; recompile raw source")
+            for row in self._history_rows(sample_index):
+                if not isinstance(row, dict):
+                    raise ValueError("skill history rows must contain mappings")
+                if "time_seconds" in row:
+                    raise ValueError("removed skill time_seconds field; recompile raw source")
             if tuple(context.get("action_keys", ())) != self._action_keys:
                 raise ValueError("training output action space must match enabled configured actions")
             for key in ("action_legal_mask", "action_values"):
@@ -140,6 +143,8 @@ class TrainingSourceReader:
         self,
         sample_idx: int,
         start: int,
+        *,
+        copy_rows: bool = True,
     ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
         """返回该样本从 ``start`` 开始新增的技能与状态历史。
 
@@ -163,6 +168,9 @@ class TrainingSourceReader:
         delta_tokens = tokens[start:]
         if not all(isinstance(token, dict) for token in delta_tokens):
             raise ValueError(f"history state delta must contain mappings: sample={sample_idx}")
+        # bank 构建只读冻结行，直接借用引用，避免每步复制整个历史前缀。
+        if not copy_rows:
+            return rows[start:], delta_tokens
         return (
             [dict(row) for row in rows[start:]],
             [dict(token) for token in delta_tokens],
@@ -299,7 +307,7 @@ class TrainingSourceReader:
         rows = self._sample_context(sample_idx).get("skill_history_context", [])
         if not isinstance(rows, list):
             raise ValueError("skill_history_context must be a list")
-        return [dict(row) for row in rows]
+        return rows
 
 
 def _build_training_source_schema(payload: dict[str, object]) -> TrainingSchema:

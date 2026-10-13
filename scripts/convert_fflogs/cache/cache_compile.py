@@ -27,7 +27,7 @@ from common.policy.data.source_selection import (
     select_validation_raw_path_groups,
 )
 from common.torch_dependencies import import_torch
-from scripts.common.inprocess_backend import InProcessEngine
+from scripts.common.inprocess_backend import MAX_QUEUE_CAPACITY, InProcessEngine
 
 from ..config.constants import DEFAULT_DOWNTIME_GAP_SECONDS
 from ..source.raw_source import convert_raw_file
@@ -305,8 +305,11 @@ def precompile_raw_training_caches(
     """转换检查当前配置；完整模型契约读取沿用原缓存，缺失时才加载转换配置。"""
     if cache_dir is None or not raw_paths:
         return []
-    if max_workers < 1:
-        raise ValueError("compiled cache workers must be >= 1")
+    if (
+        isinstance(max_workers, bool) or not isinstance(max_workers, int)
+        or not 1 <= max_workers <= MAX_QUEUE_CAPACITY
+    ):
+        raise ValueError(f"compiled cache workers must be an integer between 1 and {MAX_QUEUE_CAPACITY}")
     if engine is not None and engine.job_tag != job_tag:
         raise ValueError("cache compilation job must match the shared engine")
 
@@ -469,6 +472,7 @@ def _compile_raw_source_worker(task, *, engine: InProcessEngine) -> tuple[str, i
         encounter=None if encounter is None else str(encounter),
         downtime_gap=float(downtime_gap_seconds),
         engine=engine,
+        deduplicate_history=True,
     )
     if training_payload is None:
         return str(source_path), 0, 0

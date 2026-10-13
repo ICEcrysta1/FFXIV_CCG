@@ -5,19 +5,20 @@ from threading import Barrier
 
 import pytest
 
-from scripts.common.inprocess_backend import InProcessEngine
+from scripts.common import inprocess_backend as backend_module
+from scripts.common.inprocess_backend import InProcessEngine, MAX_QUEUE_CAPACITY
 from scripts.convert_fflogs import build_training_samples
 from tests.helpers import build_test_scene_context, targetable_window_token
 from tests.scripts.conftest import _require_inprocess_backend
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def require_engine():
     _require_inprocess_backend()
 
 
 @pytest.mark.parametrize("job,action", [("black_mage", "blizzard_iii"), ("machinist", "heated_split_shot")])
-def test_sixteen_python_threads_share_one_engine_without_context_leaks(job, action):
+def test_sixteen_python_threads_share_one_engine_without_context_leaks(job, action, require_engine):
     def replay(backend, index):
         contexts = []
         for step in range(5):
@@ -57,7 +58,7 @@ def test_sixteen_python_threads_share_one_engine_without_context_leaks(job, acti
         assert engine.active_count == 0
 
 
-def test_capacity_reset_close_and_failed_creation_are_isolated():
+def test_capacity_reset_close_and_failed_creation_are_isolated(require_engine):
     with InProcessEngine("black_mage", capacity=2) as engine:
         first = engine.create_backend(max_history=4)
         second = engine.create_backend(max_history=None)
@@ -91,7 +92,7 @@ def test_capacity_reset_close_and_failed_creation_are_isolated():
     second.close()
 
 
-def test_six_conversion_workers_share_engine_and_preserve_full_history(cs_skill_book):
+def test_six_conversion_workers_share_engine_and_preserve_full_history(cs_skill_book, require_engine):
     payload = {
         "fight_id": "shared_conversion", "job_tag": "black_mage", "duration": 30.0,
         "gcd_time": 2.46,
@@ -123,13 +124,76 @@ def test_six_conversion_workers_share_engine_and_preserve_full_history(cs_skill_
         assert engine.active_count == 0
 
 
-@pytest.mark.parametrize("capacity", [0, -1, 1.5, True])
-def test_invalid_capacity_is_rejected_before_loading_runtime(capacity):
+@pytest.mark.parametrize("capacity", [0, -1, 101, 1.5, True, False])
+def test_invalid_capacity_is_rejected_before_loading_runtime(capacity, monkeypatch):
+    monkeypatch.setattr(
+        backend_module, "_load_dotnet_types",
+        lambda: pytest.fail("非法队列容量必须在加载 .NET runtime 前拒绝"),
+    )
     with pytest.raises(ValueError, match="capacity"):
         InProcessEngine("black_mage", capacity=capacity)
 
 
-def test_external_fact_batch_is_atomic_and_accepts_single_element():
+def test_python_queue_capacity_matches_csharp_limit(require_engine):
+    engine_type, _, _ = backend_module._load_dotnet_types()
+    assert MAX_QUEUE_CAPACITY == int(engine_type.MaxCapacity) == 100
+
+
+def test_default_engine_holds_one_hundred_independent_queues_and_reuses_capacity(require_engine):
+    """默认容量不预建队列；满载后的拒绝和回收不影响其他队列的状态。"""
+    with InProcessEngine("black_mage") as engine:
+        assert engine.capacity == 100
+        assert engine.active_count == 0
+        queues = [
+            engine.create_backend(
+                max_history=None, actual_base_gcd=2.0 + index * 0.005,
+                initial_timestamp=index * 100.0,
+            )
+            for index in range(100)
+        ]
+        assert engine.active_count == 100
+        assert len({queue.queue_id for queue in queues}) == 100
+        with pytest.raises(Exception, match="capacity reached"):
+            engine.create_backend(max_history=None)
+        assert engine.active_count == 100
+
+        # 先分别提交不同时间和动作，再回读所有队列，捕获后续操作造成的串状态。
+        actions = ["fire_iii" if index % 2 == 0 else "blizzard_iii" for index in range(100)]
+        for index, (backend, action) in enumerate(zip(queues, actions, strict=True)):
+            assert backend.statistics()["timestamp"] == index * 100.0
+            assert backend.statistics()["action_history_count"] == 0
+            assert backend.submit_action(index * 100.0, action, actual_cast_seconds=0.0).accepted
+        for index, (backend, action) in enumerate(zip(queues, actions, strict=True)):
+            timestamp = index * 100.0
+            scalar = backend.observe_at(timestamp, format="seconds").context
+            assert scalar["time_seconds"] == timestamp
+            assert scalar["gcd_remaining_seconds"] == pytest.approx(2.0 + index * 0.005)
+            canonical = backend.observe_at(
+                timestamp, format="vector", next_observation_timestamp=timestamp,
+            ).context
+            assert [row["skill_key"] for row in canonical["skill_history_context"]] == [action]
+
+        released = queues[37]
+        released_id = released.queue_id
+        released.close()
+        assert engine.active_count == 99
+        with engine.create_backend(
+            max_history=None, actual_base_gcd=2.37, initial_timestamp=12345.0,
+        ) as replacement:
+            assert engine.active_count == 100
+            assert replacement.queue_id not in {queue.queue_id for queue in queues if queue is not released}
+            assert replacement.queue_id != released_id
+            assert replacement.statistics()["timestamp"] == 12345.0
+            assert replacement.statistics()["action_history_count"] == 0
+            assert replacement.submit_action(12345.0, "blizzard_iii", actual_cast_seconds=0.0).accepted
+            assert queues[38].statistics()["timestamp"] == 3800.0
+            assert queues[38].statistics()["action_history_count"] == 1
+            with pytest.raises(RuntimeError, match="closed"):
+                released.advance_to(3700.0)
+        assert engine.active_count == 99
+
+
+def test_external_fact_batch_is_atomic_and_accepts_single_element(require_engine):
     with InProcessEngine("black_mage", capacity=1) as engine, engine.create_backend(max_history=None) as backend:
         before = backend.statistics()
         with pytest.raises(Exception):
