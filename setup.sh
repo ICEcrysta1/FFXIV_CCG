@@ -69,7 +69,13 @@ case "$(uname -m)" in
     aarch64|arm64) NODE_ARCH=arm64 ;;
     *) printf '不支持的 Node 架构：%s\n' "$(uname -m)" >&2; exit 1 ;;
 esac
-if [[ ! -d "$NODE_RUNTIME" ]]; then
+NODE="$NODE_RUNTIME/bin/node"
+if [[ ! -x "$NODE" ]] ||
+    ! NODE_RUNTIME_INFO="$("$NODE" -p 'process.platform + "/" + process.arch + "/" + process.versions.node.split(".")[0]' 2>/dev/null)" ||
+    [[ "$NODE_RUNTIME_INFO" != "linux/$NODE_ARCH/22" ]]; then
+    if [[ -e "$NODE_RUNTIME" ]]; then
+        printf '现有项目 Node 不兼容 Linux/%s/22.x 或安装不完整，正在重新安装。\n' "$NODE_ARCH"
+    fi
     mkdir -p "$NODE_HOME"
     NODE_STAGE="$(mktemp -d "$NODE_HOME/stage.XXXXXX")"
     trap 'rm -rf -- "$NODE_STAGE"' EXIT
@@ -81,11 +87,12 @@ if [[ ! -d "$NODE_RUNTIME" ]]; then
     awk -v archive="$NODE_ARCHIVE" '$2 == archive' "$NODE_STAGE/SHASUMS256.txt" > "$NODE_STAGE/selected.sha256"
     (cd "$NODE_STAGE" && sha256sum --check selected.sha256)
     tar -xJf "$NODE_STAGE/$NODE_ARCHIVE" -C "$NODE_STAGE"
+    # 下载、校验和解压成功后才替换，失败时保留现有运行时。
+    rm -rf -- "$NODE_RUNTIME"
     mv -- "$NODE_STAGE/${NODE_ARCHIVE%.tar.xz}" "$NODE_RUNTIME"
     rm -rf -- "$NODE_STAGE"
     trap - EXIT
 fi
-NODE="$NODE_RUNTIME/bin/node"
 [[ -x "$NODE" ]] || { printf '项目 Node 安装不完整：%s\n' "$NODE_RUNTIME" >&2; exit 1; }
 [[ "$("$NODE" --version)" == v22.* ]] || { printf '项目 Node 版本必须为 22.x。\n' >&2; exit 1; }
 export PATH="$NODE_RUNTIME/bin:$PATH"
