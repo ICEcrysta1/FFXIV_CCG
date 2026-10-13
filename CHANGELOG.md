@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.2.0-rc.2]
+
 ### Changed
 
 - 开发与运行主线迁移至 Linux／WSL2，安装与操作入口改为可执行的 `setup.sh`、`ffxiv_ccg.sh`；九项菜单由 Python 模块分发，保留 checkpoint 选择、续训确认及 TensorBoard 生命周期管理。
