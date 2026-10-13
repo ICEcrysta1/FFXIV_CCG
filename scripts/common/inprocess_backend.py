@@ -382,6 +382,23 @@ class InProcessBackend:
         payload = self._decode_observation(response, "vector").context
         return payload["observations"]
 
+    def replay_policy_sequence_packet(
+        self,
+        requests_json: str,
+        facts_json: str,
+        *,
+        fight_duration: float,
+        policy_action_key: str,
+    ) -> bytes:
+        """返回托管基础值数据包，供进程间转发；不在当前 Python 进程展开观测对象。"""
+        response = self._require_session().ReplayPolicySequence(
+            requests_json, facts_json, float(fight_duration), policy_action_key,
+        )
+        *_, context_packet_encoder = self._types()
+        encoded = context_packet_encoder.Encode(response.Value)
+        with memoryview(encoded) as buffer:
+            return bytes(buffer)
+
     def close(self) -> None:
         """立即从引擎注销队列并释放历史；关闭共享队列不影响其余任务。"""
         with self._lifecycle_lock:
