@@ -22,11 +22,26 @@ public sealed class PolicyContextBuilder
     public PolicyContextBuilder(PolicyActionRegistry registry) => _registry = registry;
 
     public Dictionary<string, object?> BuildVectorContext(
-        JobSimulator simulator, PolicyDecisionHistory history, double nextObservationTimestamp)
+        JobSimulator simulator, PolicyDecisionHistory history, double nextObservationTimestamp) =>
+        BuildVectorContext(simulator, history, nextObservationTimestamp, historyAfterSequence: null);
+
+    internal Dictionary<string, object?> BuildVectorDeltaContext(
+        JobSimulator simulator, PolicyDecisionHistory history, double nextObservationTimestamp, long afterSequence) =>
+        BuildVectorContext(simulator, history, nextObservationTimestamp, afterSequence);
+
+    private Dictionary<string, object?> BuildVectorContext(
+        JobSimulator simulator, PolicyDecisionHistory history, double nextObservationTimestamp, long? historyAfterSequence)
     {
         var state = simulator.GetState();
         if (!double.IsFinite(nextObservationTimestamp) || nextObservationTimestamp < state.Time)
             throw new ArgumentOutOfRangeException(nameof(nextObservationTimestamp));
+        if (historyAfterSequence is { } afterSequence)
+        {
+            if (simulator.HistoryRetention.Limit is not null || history.Retention.Limit is not null)
+                throw new InvalidOperationException("incremental vector observation requires full history retention");
+            if (afterSequence < 0 || afterSequence > state.LastHistorySequence)
+                throw new ArgumentOutOfRangeException(nameof(afterSequence));
+        }
         EnsureActionLayout(simulator.ActionKeys);
         var router = simulator.OutputRouter;
         var realValues = simulator.BuildActionValues(state);
@@ -61,8 +76,18 @@ public sealed class PolicyContextBuilder
         for (var index = 0; index < merged.Count; index++)
             if (merged[index].Sequence <= 0 || (index > 0 && merged[index - 1].Sequence == merged[index].Sequence))
                 throw new InvalidOperationException("history sequence must be positive and unique");
-        history.Retention.Trim(merged);
-        return router.FormatVectors(state, _actionKeys, _actionKeys.Select(key => values[key]).ToArray(), current, merged);
+        if (historyAfterSequence is { } historyStart)
+        {
+            if (merged.Count != state.LastHistorySequence
+                || merged.Where((row, index) => row.Sequence != (long)index + 1).Any())
+                throw new InvalidOperationException("incremental history sequence must be contiguous from 1 to history_cursor");
+            // 先选新增冻结行，再向量化与装配输出，避免每次把完整历史传过 Python 桥接。
+            merged = merged.Where(row => row.Sequence > historyStart).ToList();
+        }
+        else history.Retention.Trim(merged);
+        var output = router.FormatVectors(state, _actionKeys, _actionKeys.Select(key => values[key]).ToArray(), current, merged);
+        if (historyAfterSequence is { } start) output["history_start"] = start;
+        return output;
     }
 
     private void EnsureActionLayout(IReadOnlyList<string> realActionKeys)

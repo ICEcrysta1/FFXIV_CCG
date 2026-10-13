@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import pickle
 import threading
@@ -333,7 +334,24 @@ class InProcessBackend:
                 )
 
         response = self._require_session().ObserveAt(float(timestamp), format, next_observation_timestamp)
+        return self._decode_observation(response, format)
 
+    def observe_vector_delta_at(
+        self,
+        timestamp: float,
+        *,
+        next_observation_timestamp: float,
+        after_sequence: int,
+    ) -> ObservationResult:
+        """编译内部读取新增冻结历史；公开完整观测仍使用 observe_at。"""
+        if isinstance(after_sequence, bool) or not isinstance(after_sequence, int) or after_sequence < 0:
+            raise ValueError("after_sequence must be a non-negative integer")
+        response = self._require_session().ObserveVectorDeltaAt(
+            float(timestamp), float(next_observation_timestamp), after_sequence,
+        )
+        return self._decode_observation(response, "vector")
+
+    def _decode_observation(self, response, format: str) -> ObservationResult:
         *_, context_packet_encoder = self._types()
         # C# 编码不持有 GIL；借用托管数组缓冲区，交给标准库批量还原原生容器。
         # 数据只来自当前加载的桥接程序集，不接受文件或外部 pickle 输入。
@@ -346,6 +364,23 @@ class InProcessBackend:
             next_scheduled_event_time=self._optional(response.NextScheduledEventTime),
             context=python_context,
         )
+
+    def replay_policy_sequence(
+        self,
+        requests: list[dict[str, object]],
+        facts: list[dict[str, object]],
+        *,
+        fight_duration: float,
+        policy_action_key: str,
+    ) -> list[dict[str, object]]:
+        """一次托管调用推进完整请求序列，逐帧只传新增历史。"""
+        response = self._require_session().ReplayPolicySequence(
+            json.dumps(requests, allow_nan=False, separators=(",", ":")),
+            json.dumps(facts, allow_nan=False, separators=(",", ":")),
+            float(fight_duration), policy_action_key,
+        )
+        payload = self._decode_observation(response, "vector").context
+        return payload["observations"]
 
     def close(self) -> None:
         """立即从引擎注销队列并释放历史；关闭共享队列不影响其余任务。"""

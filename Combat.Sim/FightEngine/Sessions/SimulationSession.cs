@@ -97,6 +97,30 @@ public sealed class SimulationSession : IDisposable
                 : simulator.FormatState(format);
         });
 
+    /// <summary>
+    /// 完整历史会话的增量向量观测；只传输指定游标后的三通道历史，当前状态与普通观测一致。
+    /// history_start/history_cursor 表达增量边界，不改变正式 canonical 输出契约。
+    /// </summary>
+    public SessionResult<Dictionary<string, object?>> ObserveVectorDeltaAt(
+        double timestamp, double nextObservationTimestamp, long afterSequence) =>
+        Execute(simulator =>
+        {
+            if (simulator.HistoryRetention.Limit is not null)
+                throw new InvalidOperationException("incremental vector observation requires full history retention");
+            if (afterSequence < 0 || afterSequence > simulator.HistoryCursor)
+                throw new ArgumentOutOfRangeException(nameof(afterSequence));
+            if (!double.IsFinite(nextObservationTimestamp) || nextObservationTimestamp < timestamp)
+                throw new ArgumentOutOfRangeException(nameof(nextObservationTimestamp));
+            simulator.AdvanceClockTo(timestamp);
+            return _policy!.BuildVectorDeltaContext(simulator, nextObservationTimestamp, afterSequence);
+        });
+
+    /// <summary>在一次宿主调用中按绝对请求与场景事实回放；标签和场景 ETA 仍由调用方装配。</summary>
+    public SessionResult<Dictionary<string, object?>> ReplayPolicySequence(
+        string requestsJson, string factsJson, double fightDuration, string policyActionKey) =>
+        Execute(simulator => PolicySequenceReplay.Run(
+            simulator, _policy!, requestsJson, factsJson, fightDuration, policyActionKey));
+
     public SessionStatistics GetStatistics()
     {
         lock (_gate)

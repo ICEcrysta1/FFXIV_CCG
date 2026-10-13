@@ -505,10 +505,7 @@ def _compile_raw_source_worker(task, *, engine: InProcessEngine) -> tuple[str, i
 
     def sample_batches():
         for start in range(0, reader.num_samples, shard_size):
-            yield [
-                sample_builder.build(reader, sample_idx)
-                for sample_idx in range(start, min(start + shard_size, reader.num_samples))
-            ]
+            yield sample_builder.build_batch(reader, start, min(start + shard_size, reader.num_samples))
 
     signature = build_cache_signature(
         source_path,

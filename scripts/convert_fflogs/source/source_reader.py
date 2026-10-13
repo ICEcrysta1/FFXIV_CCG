@@ -6,7 +6,7 @@ import math
 
 from common.contracts import SCENE_CONTEXT_ABSOLUTE_MODE
 from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION, STATE_SNAPSHOTS, STATE_VECTOR_GROUP_SCHEMAS, build_output_context_schema_metadata
-from common.policy.data.state_features import read_state_tokens, validate_state_feature_keys
+from common.policy.data.state_features import StateTokenTensors, read_state_tokens, validate_state_feature_keys
 from common.torch_dependencies import import_torch
 from common.policy.data.action_space import ActionSpace
 
@@ -47,6 +47,7 @@ class TrainingSourceReader:
         self._state_layout = self.schema.state_layout(self._action_keys)
         self._action_to_vocab_id = action_space.action_to_vocab_id
         self._action_is_gcd = action_space.action_is_gcd
+        current_tokens = []
         for sample_index in range(self._num_samples):
             context = self._sample_context(sample_index)
             if context.get("schema_version") != CANONICAL_CONTEXT_SCHEMA_VERSION:
@@ -73,9 +74,15 @@ class TrainingSourceReader:
             current_metadata = build_output_context_schema_metadata(context)
             if current_metadata["current_state_feature_keys"] != current_metadata["state_history_feature_keys"]:
                 raise ValueError("current request and history state feature keys must match")
-            read_state_tokens(current, self._state_layout)
+            validate_state_feature_keys(current, self._state_layout)
+            tokens = current.get("tokens")
+            if not isinstance(tokens, (list, tuple)):
+                raise ValueError("state context tokens must be a list")
+            current_tokens.append(tokens[0])
             # 完整历史行只在 bank 构建时解析一次，这里只校验每步的字段元数据。
             validate_state_feature_keys(context["state_history_context"], self._state_layout)
+        # 当前状态逐行验证元数据、一次转换数值，供编译分片批量读取；公开单样本入口仍独立读取。
+        self._current_states = self.state_matrix_from_tokens(current_tokens, dtype=self._torch.float32)
         self._skill_feature_names = derive_skill_feature_names(self)
 
     @property
@@ -229,10 +236,34 @@ class TrainingSourceReader:
     def action_values(self, sample_idx: int, *, dtype):
         return self._torch.tensor(self._sample_context(sample_idx)["action_values"], dtype=dtype)
 
+    def action_legal_mask_batch(self, start: int, end: int):
+        indices = self._sample_range(start, end)
+        return self._torch.tensor(
+            [self._sample_context(index)["action_legal_mask"] for index in indices],
+            dtype=self._torch.bool,
+        ).reshape(end - start, self.num_actions)
+
+    def action_values_batch(self, start: int, end: int, *, dtype):
+        indices = self._sample_range(start, end)
+        return self._torch.tensor(
+            [self._sample_context(index)["action_values"] for index in indices], dtype=dtype,
+        ).reshape(end - start, self.num_actions)
+
     def current_state_matrix(self, sample_idx: int, *, dtype):
         if dtype != self._torch.float32:
             raise ValueError("raw state matrices require FP32 before delta encoding")
         return read_state_tokens(self._sample_context(sample_idx)["current_state_context"], self._state_layout)
+
+    def current_state_batch(self, start: int, end: int, *, dtype):
+        if dtype != self._torch.float32:
+            raise ValueError("raw state matrices require FP32 before delta encoding")
+        self._sample_range(start, end)
+        # 只复制当前分片；直接返回整场矩阵的 view 会让 torch.save 把整场底层 storage 重复写入每片。
+        return StateTokenTensors(
+            self._current_states.base_values[start:end].clone(),
+            self._current_states.base_null_mask[start:end].clone(),
+            self._current_states.availability[start:end].clone(),
+        )
 
     def scene_tokens(self, sample_idx: int, *, float_dtype, int_dtype):
         feature_dim = self.schema.scene_feature_dim()
@@ -296,6 +327,11 @@ class TrainingSourceReader:
         if not isinstance(sample, dict):
             raise ValueError(f"training sample {sample_idx} must be a mapping")
         return sample
+
+    def _sample_range(self, start: int, end: int) -> range:
+        if not 0 <= start <= end <= self._num_samples:
+            raise IndexError(f"training sample range out of bounds: [{start}, {end})")
+        return range(start, end)
 
     def _sample_context(self, sample_idx: int) -> dict[str, object]:
         context = self._sample(sample_idx).get("context")

@@ -23,6 +23,37 @@ class HistoryPrefixInterner:
     def __init__(self):
         self._prefixes: tuple[list, list, list] = ([], [], [])
 
+    @property
+    def cursor(self) -> int:
+        return len(self._prefixes[0])
+
+    def append_delta(self, context: dict[str, object]) -> None:
+        """只接收完整历史会话的连续增量，不重新比较已经冻结的旧行。"""
+        start = context.get("history_start")
+        end = context.get("history_cursor")
+        if (
+            isinstance(start, bool) or not isinstance(start, int) or start != self.cursor
+            or isinstance(end, bool) or not isinstance(end, int) or end < start
+        ):
+            raise ValueError("incremental history cursor does not match the collected prefix")
+        state_context = context.get("state_history_context")
+        if not isinstance(state_context, dict):
+            raise ValueError("state_history_context must be a mapping")
+        deltas = (
+            context.get("skill_history_context"),
+            state_context.get("tokens"),
+            state_context.get("execution_metrics"),
+        )
+        if any(not isinstance(rows, list) or len(rows) != end - start for rows in deltas):
+            raise ValueError("incremental skill/state/execution_metrics history length mismatch")
+        if any(not isinstance(row, dict) for rows in deltas for row in rows):
+            raise ValueError("incremental history rows must contain mappings")
+        # 每步仅复制前缀引用；数值对象只来自新增行，旧快照列表不受后续追加影响。
+        for previous, current in zip(self._prefixes, deltas, strict=True):
+            current[:0] = previous
+        self._prefixes = deltas
+        del context["history_start"]
+
     def intern(self, context: dict[str, object], *, sample_index: int, fight_id: str) -> None:
         state_context = context.get("state_history_context")
         if not isinstance(state_context, dict):

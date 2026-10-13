@@ -7,6 +7,30 @@ namespace FightEngine.Tests.Policy;
 
 public sealed class PolicyContextBuilderTests
 {
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("duplicate")]
+    [InlineData("future")]
+    public void 增量输出拒绝完整历史序号缺失重复和错位(string corruption)
+    {
+        var (simulator, registry) = CreateRuntime();
+        var history = new PolicyDecisionHistory(registry);
+        history.Record(simulator, 0, "ogcd_wait", 1);
+        history.Record(simulator, 0, "ogcd_wait", 1);
+        var snapshot = history.CreateSnapshot();
+        history.RestoreSnapshot(corruption switch
+        {
+            "missing" => snapshot.Skip(1),
+            "duplicate" => new[] { snapshot[0], snapshot[0] },
+            _ => new[] { snapshot[0], snapshot[1] with { HistorySequence = 3 } },
+        });
+
+        var builder = new PolicyContextBuilder(registry);
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            builder.BuildVectorDeltaContext(simulator, history, 1, afterSequence: 1));
+        Assert.Contains("history sequence", error.Message);
+    }
+
     [Fact]
     public void 等待输出缓存随窗口淘汰并在同刻恢复新快照后重新生成()
     {
