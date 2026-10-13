@@ -1,4 +1,4 @@
-"""调用独立 Node 解析进程，验证结果并原子保存完整标注 JSON。"""
+"""调用 Node 分析器，验证结果并原子保存完整标注 JSON。"""
 
 from __future__ import annotations
 
@@ -10,11 +10,15 @@ import time
 from concurrent.futures import CancelledError
 from pathlib import Path
 from threading import Event
+from typing import TYPE_CHECKING
 
 from common.dataset_layout import map_dataset_output_path
 from scripts.common.json_io import atomic_write_json, read_json_bytes
 
 from .config import BridgeConfig
+
+if TYPE_CHECKING:
+    from .node_pool import NodePool
 
 RUNTIME = Path(__file__).parent / "runtime" / "run.cjs"
 
@@ -176,6 +180,7 @@ def annotate_file(
     source: Path, *, config: BridgeConfig, output_root: Path | None = None,
     source_root: Path | None = None,
     stop: Event | None = None,
+    pool: NodePool | None = None,
 ) -> Path:
     """成功后新增 analysis，原始字段与 events 保持不变；失败不覆盖旧结果。"""
     _check_cancelled(stop)
@@ -195,18 +200,21 @@ def annotate_file(
         "source": str(source), "analyzer_root": str(config.analyzer_root),
         "node_modules": str(config.node_modules), "source_id": selected,
     }
-    process_env = dict(os.environ)
-    for key in ("FFLOGS_V2_CLIENT_ID", "FFLOGS_V2_CLIENT_SECRET"):
-        process_env.pop(key, None)
-    result = _run_node(
-        [config.node, str(RUNTIME)],
-        input=json.dumps(request, ensure_ascii=False),
-        cwd=RUNTIME.parent, env=process_env, stop=stop,
-        text=True, encoding="utf-8", errors="replace", timeout=config.timeout,
-    )
-    if result.returncode:
-        raise RuntimeError(f"analysis process failed:\n{result.stderr.strip()}")
-    analysis = json.loads(result.stdout)
+    if pool is not None:
+        analysis = pool.annotate(request, stop=stop)
+    else:
+        process_env = dict(os.environ)
+        for key in ("FFLOGS_V2_CLIENT_ID", "FFLOGS_V2_CLIENT_SECRET"):
+            process_env.pop(key, None)
+        result = _run_node(
+            [config.node, str(RUNTIME)],
+            input=json.dumps(request, ensure_ascii=False),
+            cwd=RUNTIME.parent, env=process_env, stop=stop,
+            text=True, encoding="utf-8", errors="replace", timeout=config.timeout,
+        )
+        if result.returncode:
+            raise RuntimeError(f"analysis process failed:\n{result.stderr.strip()}")
+        analysis = json.loads(result.stdout)
     if not isinstance(analysis, dict):
         raise TypeError("analysis result must be a JSON object")
     for field in ("source", "time_basis", "actor"):

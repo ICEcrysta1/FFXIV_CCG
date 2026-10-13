@@ -11,7 +11,8 @@ from threading import Event
 from common.dataset_layout import find_dataset_json_files
 from scripts.common.json_io import is_json_file
 
-from .config import default_raw_root, load_bridge_config
+from .config import annotation_worker_count, default_raw_root, load_bridge_config
+from .node_pool import NodePool
 from .runner import analyzer_commit, annotation_is_current, annotate_file, output_path_for_source
 from .scan import AnnotationInventory
 
@@ -54,6 +55,7 @@ def main() -> int:
 
     stop = Event()
     inventory = AnnotationInventory(commit=commit, validator=annotation_is_current)
+    pool = None
 
     def process(source: Path):
         try:
@@ -61,7 +63,7 @@ def main() -> int:
                 raise CancelledError("标注已取消")
             output = annotate_file(
                 source, config=config, output_root=args.output_root,
-                source_root=args.source_root, stop=stop,
+                source_root=args.source_root, stop=stop, pool=pool,
             )
         except (OSError, TypeError, ValueError, RuntimeError, UnicodeError, subprocess.TimeoutExpired) as error:
             return "failed", None, error
@@ -81,16 +83,22 @@ def main() -> int:
             previous_handlers[signum] = signal.signal(signum, cancel)
         logger.info("标注预检: 扫描 %d 份文件", len(selected))
         pending, counts["skipped"] = inventory.partition(
-            list(zip(selected, destinations, strict=True)), max_workers=config.max_workers, stop=stop,
+            list(zip(selected, destinations, strict=True)),
+            max_workers=annotation_worker_count(config, len(selected)), stop=stop,
         )
         logger.info("标注预检完成: 已有有效=%d 待标注=%d", counts["skipped"], len(pending))
-        executor = ThreadPoolExecutor(max_workers=min(config.max_workers, max(1, len(pending)))) if pending else None
+        worker_count = annotation_worker_count(config, len(pending))
+        if pending:
+            logger.info("标注分析: 单个常驻 Node 宿主, %d 个工作线程, 内存软预算 %d MiB",
+                        worker_count, config.memory_budget_mb)
+            pool = NodePool(config, workers=worker_count)
+            executor = ThreadPoolExecutor(max_workers=worker_count)
         remaining = iter(pending)
         futures = {}
         index = 0
         while not stop.is_set():
-            # 只提交当前并发所需任务，中断后不再从长队列启动 Node。
-            while len(futures) < config.max_workers and not stop.is_set():
+            # Python 与 Node 两侧都只保留当前并发所需任务，避免排队持有整批 raw。
+            while len(futures) < worker_count and not stop.is_set():
                 item = next(remaining, None)
                 if item is None:
                     break
@@ -118,9 +126,13 @@ def main() -> int:
             if executor is not None:
                 executor.shutdown(wait=True, cancel_futures=True)
         finally:
-            inventory.save()
-            for signum, handler in previous_handlers.items():
-                signal.signal(signum, handler)
+            try:
+                if pool is not None:
+                    pool.close()
+            finally:
+                inventory.save()
+                for signum, handler in previous_handlers.items():
+                    signal.signal(signum, handler)
     if cancelled:
         logger.warning("标注已取消，已回收分析进程；已保存的结果保留，下次运行可继续。")
         return 130
