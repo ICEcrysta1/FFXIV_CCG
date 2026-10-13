@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import pickle
 import threading
@@ -35,6 +36,8 @@ _PYTHON_BRIDGE_DLL = _DOTNET_OUTPUT / "FightEngine.PythonBridge.dll"
 
 _DOTNET_LOCK = threading.Lock()
 _DOTNET_TYPES: tuple[Any, Any, Any] | None = None
+# 与 C# SimulationEngine.MaxCapacity 一致；实际并发由所属工作流的 .env 参数决定。
+MAX_QUEUE_CAPACITY = 100
 
 
 def _load_dotnet_types() -> tuple[Any, Any, Any]:
@@ -109,9 +112,12 @@ class InProcessEngine:
     capacity 限制同时存活的队列数，满载立即报错，调度和任务等待由调用方负责。
     """
 
-    def __init__(self, job_tag: str, *, capacity: int = 16):
-        if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 1:
-            raise ValueError("capacity must be a positive integer")
+    def __init__(self, job_tag: str, *, capacity: int = MAX_QUEUE_CAPACITY):
+        if (
+            isinstance(capacity, bool) or not isinstance(capacity, int)
+            or not 1 <= capacity <= MAX_QUEUE_CAPACITY
+        ):
+            raise ValueError(f"capacity must be an integer between 1 and {MAX_QUEUE_CAPACITY}")
         engine_type, _, _ = _load_dotnet_types()
         self.job_tag = job_tag
         self.capacity = capacity
@@ -328,7 +334,24 @@ class InProcessBackend:
                 )
 
         response = self._require_session().ObserveAt(float(timestamp), format, next_observation_timestamp)
+        return self._decode_observation(response, format)
 
+    def observe_vector_delta_at(
+        self,
+        timestamp: float,
+        *,
+        next_observation_timestamp: float,
+        after_sequence: int,
+    ) -> ObservationResult:
+        """编译内部读取新增冻结历史；公开完整观测仍使用 observe_at。"""
+        if isinstance(after_sequence, bool) or not isinstance(after_sequence, int) or after_sequence < 0:
+            raise ValueError("after_sequence must be a non-negative integer")
+        response = self._require_session().ObserveVectorDeltaAt(
+            float(timestamp), float(next_observation_timestamp), after_sequence,
+        )
+        return self._decode_observation(response, "vector")
+
+    def _decode_observation(self, response, format: str) -> ObservationResult:
         *_, context_packet_encoder = self._types()
         # C# 编码不持有 GIL；借用托管数组缓冲区，交给标准库批量还原原生容器。
         # 数据只来自当前加载的桥接程序集，不接受文件或外部 pickle 输入。
@@ -341,6 +364,40 @@ class InProcessBackend:
             next_scheduled_event_time=self._optional(response.NextScheduledEventTime),
             context=python_context,
         )
+
+    def replay_policy_sequence(
+        self,
+        requests: list[dict[str, object]],
+        facts: list[dict[str, object]],
+        *,
+        fight_duration: float,
+        policy_action_key: str,
+    ) -> list[dict[str, object]]:
+        """一次托管调用推进完整请求序列，逐帧只传新增历史。"""
+        response = self._require_session().ReplayPolicySequence(
+            json.dumps(requests, allow_nan=False, separators=(",", ":")),
+            json.dumps(facts, allow_nan=False, separators=(",", ":")),
+            float(fight_duration), policy_action_key,
+        )
+        payload = self._decode_observation(response, "vector").context
+        return payload["observations"]
+
+    def replay_policy_sequence_packet(
+        self,
+        requests_json: str,
+        facts_json: str,
+        *,
+        fight_duration: float,
+        policy_action_key: str,
+    ) -> bytes:
+        """返回托管基础值数据包，供进程间转发；不在当前 Python 进程展开观测对象。"""
+        response = self._require_session().ReplayPolicySequence(
+            requests_json, facts_json, float(fight_duration), policy_action_key,
+        )
+        *_, context_packet_encoder = self._types()
+        encoded = context_packet_encoder.Encode(response.Value)
+        with memoryview(encoded) as buffer:
+            return bytes(buffer)
 
     def close(self) -> None:
         """立即从引擎注销队列并释放历史；关闭共享队列不影响其余任务。"""

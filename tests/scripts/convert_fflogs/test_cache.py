@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import sys
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-from threading import Barrier, Lock, get_ident
+from threading import Barrier, Lock
 from types import SimpleNamespace
 
 import pytest
@@ -285,7 +286,8 @@ def test_training_selector_rejects_explicit_val_root(tmp_path):
         )
 
 
-def test_cli_training_selection_uses_model_quota(tmp_path, monkeypatch):
+@pytest.mark.parametrize("workers", [2, 4, 17, 100])
+def test_cli_training_selection_uses_model_quota(tmp_path, monkeypatch, workers):
     """独立转换入口按训练配置选择文件，训练入口不参与编译。"""
     run_config = SimpleNamespace(
         raw_data_dir=tmp_path / "annotated",
@@ -297,7 +299,7 @@ def test_cli_training_selection_uses_model_quota(tmp_path, monkeypatch):
     calls = {}
     monkeypatch.setattr(sys, "argv", ["convert_fflogs", "--training-selection"])
     monkeypatch.setattr(convert_cli, "load_convert_fflogs_dotenv", lambda: None)
-    monkeypatch.setenv("CONVERT_FFLOGS_WORKERS", "2")
+    monkeypatch.setenv("CONVERT_FFLOGS_WORKERS", str(workers))
     monkeypatch.setattr(convert_cli, "resolve_policy_model_config_path", lambda: tmp_path / "config.yaml")
     monkeypatch.setattr(convert_cli, "load_run_config", lambda _path: run_config)
     monkeypatch.setattr(convert_cli, "resolve_policy_model_job_tag", lambda _path: "black_mage")
@@ -311,8 +313,61 @@ def test_cli_training_selection_uses_model_quota(tmp_path, monkeypatch):
     convert_cli.main()
     assert calls["path"] == run_config.raw_data_dir
     assert calls["max_files"] == 8
-    assert calls["max_workers"] == 2
+    assert calls["max_workers"] == workers
     assert calls["validation_files"] == 4
+
+
+@pytest.mark.parametrize("worker_source", ["env", "cli"])
+@pytest.mark.parametrize("training_selection", [False, True])
+def test_cli_rejects_workers_above_engine_capacity_before_compilation(
+    tmp_path, monkeypatch, capsys, worker_source, training_selection,
+):
+    """环境和命令行的越界值均在选择文件或启动编译前失败。"""
+    run_config = SimpleNamespace(
+        raw_data_dir=tmp_path / "annotated", max_files=8, validation_files=4,
+        compiled_cache_shard_size=16, compiled_cache_max_shards=4,
+    )
+    argv = ["convert_fflogs"]
+    if training_selection:
+        argv.append("--training-selection")
+    if worker_source == "cli":
+        argv.extend(["--workers", "101"])
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(convert_cli, "load_convert_fflogs_dotenv", lambda: None)
+    monkeypatch.setenv("CONVERT_FFLOGS_WORKERS", "101" if worker_source == "env" else "4")
+    monkeypatch.setattr(convert_cli, "resolve_policy_model_config_path", lambda: tmp_path / "config.yaml")
+    monkeypatch.setattr(convert_cli, "load_run_config", lambda _path: run_config)
+    monkeypatch.setattr(convert_cli, "resolve_policy_model_job_tag", lambda _path: "black_mage")
+    monkeypatch.setattr(convert_cli, "resolve_policy_model_variant", lambda _path: "artzip")
+    monkeypatch.setattr(convert_cli, "resolve_convert_fflogs_job_tag", lambda _tag: "black_mage")
+    monkeypatch.setattr(convert_cli, "resolve_policy_cache_dir", lambda _tag: tmp_path / ".cache")
+
+    def reject_work(*_args, **_kwargs):
+        pytest.fail("越界并发数不得进入文件选择或缓存编译")
+
+    for name in ("_resolve_input_files", "load_precision_config", "precompile_raw_training_caches",
+                 "prepare_training_and_validation_caches"):
+        monkeypatch.setattr(convert_cli, name, reject_work)
+    with pytest.raises(SystemExit) as error:
+        convert_cli.main()
+    assert error.value.code == 2
+    message = capsys.readouterr().err
+    assert "workers" in message.lower()
+    assert "100" in message
+
+
+def test_precompile_rejects_workers_above_engine_capacity_before_loading_conversion(tmp_path, monkeypatch):
+    def reject_work(*_args, **_kwargs):
+        pytest.fail("越界并发数不得读取转换配置或创建引擎")
+
+    monkeypatch.setattr(cache_compile_module, "build_conversion_config_dependencies", reject_work)
+    monkeypatch.setattr(cache_compile_module, "InProcessEngine", reject_work)
+    with pytest.raises(ValueError, match="100"):
+        precompile_raw_training_caches(
+            [tmp_path / "fight.json.br"], job_tag="black_mage", max_workers=101,
+            normalizer=SimpleNamespace(ensure_job_resources=reject_work),
+            int_dtype="int32", float_dtype="float32", cache_dir=tmp_path / ".cache",
+        )
 
 
 def test_cli_fails_when_annotated_inputs_produce_no_compiled_cache(tmp_path, monkeypatch):
@@ -471,7 +526,7 @@ def test_parallel_cache_compile_bounds_tasks_shares_engine_and_continues_after_f
     barrier = Barrier(2)
     lock = Lock()
     engines = []
-    seen_threads = set()
+    pools = []
     started = []
     waiting_counts = []
 
@@ -493,13 +548,35 @@ def test_parallel_cache_compile_bounds_tasks_shares_engine_and_continues_after_f
         assert not engine.closed
         source_path = Path(task[0])
         with lock:
-            seen_threads.add(get_ident())
             started.append(source_path)
         if source_path != later_path:
             barrier.wait(timeout=10)
         if source_path.name == "bad.json.br":
             raise ValueError("invalid raw JSON fixture")
         return str(source_path), 1, 1
+
+    class ProcessPool:
+        """只替代进程执行器，保持正式入口的有界调度与失败处理。"""
+
+        def __init__(self, *, engine, job_tag, max_processes):
+            assert engine is engines[0]
+            assert job_tag == "black_mage"
+            assert max_processes == 2
+            self.engine = engine
+            self.executor = ThreadPoolExecutor(max_workers=max_processes)
+            self.closed = False
+            pools.append(self)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.executor.shutdown(wait=True)
+            self.closed = True
+
+        def submit(self, task):
+            assert not self.closed
+            return self.executor.submit(fake_worker, task, engine=self.engine)
 
     actual_wait = cache_compile_module.wait
 
@@ -508,8 +585,9 @@ def test_parallel_cache_compile_bounds_tasks_shares_engine_and_continues_after_f
         return actual_wait(futures, **kwargs)
 
     monkeypatch.setattr(cache_compile_module, "InProcessEngine", Engine)
+    monkeypatch.setattr(cache_compile_module, "ProcessCompilePool", ProcessPool)
+    monkeypatch.setattr(cache_compile_module.os, "sched_getaffinity", lambda _pid: {0, 1})
     monkeypatch.setattr(cache_compile_module, "wait", track_wait)
-    monkeypatch.setattr(cache_compile_module, "_compile_raw_source_worker", fake_worker)
     with caplog.at_level("ERROR"):
         valid_paths = precompile_raw_training_caches(
             [bad_path, good_path, later_path, good_path],
@@ -523,11 +601,81 @@ def test_parallel_cache_compile_bounds_tasks_shares_engine_and_continues_after_f
 
     assert valid_paths == [good_path, later_path]
     assert len(engines) == 1 and engines[0].closed
-    assert len(seen_threads) == 2
+    assert len(pools) == 1 and pools[0].closed
     assert sorted(started) == sorted([bad_path, good_path, later_path])
     assert max(waiting_counts) == 2
     assert "bad.json.br" in caplog.text
     assert "跳过并继续" in caplog.text
+
+
+@pytest.mark.parametrize("cpu_count,borrowed_capacity,expected_workers,expected_processes", [
+    (0, None, 5, 1),
+    (2, None, 5, 2),
+    (8, 3, 3, 3),
+])
+def test_process_count_is_cpu_bounded_without_changing_inflight_limit(
+    tmp_path, monkeypatch, cpu_count, borrowed_capacity, expected_workers, expected_processes,
+):
+    sources = [tmp_path / f"fight{index}.json.br" for index in range(6)]
+    for source in sources:
+        source.write_text("{}", encoding="utf-8")
+    engines = []
+    pools = []
+    waiting_counts = []
+
+    class Engine:
+        def __init__(self, job_tag, *, capacity):
+            self.job_tag = job_tag
+            self.capacity = capacity
+            self.closed = False
+            engines.append(self)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.closed = True
+
+    class ProcessPool:
+        def __init__(self, *, engine, job_tag, max_processes):
+            assert engine is engines[0] and job_tag == "black_mage"
+            assert max_processes == expected_processes
+            self.closed = False
+            pools.append(self)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.closed = True
+
+        def submit(self, task):
+            assert not engines[0].closed and not self.closed
+            future = Future()
+            future.set_result((str(task[0]), 0, 0))
+            return future
+
+    actual_wait = cache_compile_module.wait
+
+    def track_wait(futures, **kwargs):
+        waiting_counts.append(len(futures))
+        return actual_wait(futures, **kwargs)
+
+    borrowed = Engine("black_mage", capacity=borrowed_capacity) if borrowed_capacity else None
+    monkeypatch.setattr(cache_compile_module, "InProcessEngine", Engine)
+    monkeypatch.setattr(cache_compile_module, "ProcessCompilePool", ProcessPool)
+    monkeypatch.setattr(cache_compile_module.os, "sched_getaffinity", lambda _pid: set(range(cpu_count)))
+    monkeypatch.setattr(cache_compile_module, "wait", track_wait)
+    assert precompile_raw_training_caches(
+        sources, job_tag="black_mage", normalizer=Normalizer(),
+        int_dtype="int32", float_dtype="float32", cache_dir=tmp_path / ".cache",
+        max_workers=5, engine=borrowed,
+    ) == []
+    assert len(engines) == len(pools) == 1
+    assert engines[0].capacity == expected_workers
+    assert engines[0].closed is (borrowed is None)
+    assert pools[0].closed
+    assert max(waiting_counts) == expected_workers
 
 
 def test_valid_cache_does_not_start_engine(tmp_path, monkeypatch):
@@ -541,13 +689,14 @@ def test_valid_cache_does_not_start_engine(tmp_path, monkeypatch):
         pytest.fail("有效缓存不应启动引擎")
 
     monkeypatch.setattr(cache_compile_module, "InProcessEngine", unexpected_engine)
+    monkeypatch.setattr(cache_compile_module, "ProcessCompilePool", unexpected_engine)
     assert precompile_raw_training_caches(
         [source], job_tag="black_mage", normalizer=Normalizer(),
         int_dtype="int32", float_dtype="float32", cache_dir=tmp_path / ".cache", max_workers=2,
     ) == [source]
 
 
-def test_real_threaded_cache_compile_matches_serial_and_keeps_full_history(tmp_path, monkeypatch, cs_backend):
+def test_real_process_cache_compile_matches_serial_and_keeps_full_history(tmp_path, monkeypatch, cs_backend):
     """从压缩日志到最终 PT 走正式入口，逐项比较共享引擎的并发与串行结果。"""
     from dataclasses import asdict, is_dataclass
     from scripts.common.inprocess_backend import InProcessEngine
@@ -588,19 +737,22 @@ def test_real_threaded_cache_compile_matches_serial_and_keeps_full_history(tmp_p
 
     monkeypatch.setattr(cache_compile_module, "InProcessEngine", TrackedEngine)
     monkeypatch.setattr(TrackedEngine, "create_backend", create_backend)
-    cache_dirs = [tmp_path / "serial", tmp_path / "parallel"]
-    for workers, cache_dir in zip((1, 3), cache_dirs):
+    cache_dirs = [tmp_path / name for name in ("serial", "two_processes", "four_processes")]
+    monkeypatch.setattr(cache_compile_module.os, "sched_getaffinity", lambda _pid: set(range(4)))
+    for workers, cache_dir in zip((1, 2, 4), cache_dirs):
         assert precompile_raw_training_caches(
             sources, job_tag="black_mage", normalizer=Normalizer(),
             int_dtype=torch.int32, float_dtype=torch.float32, cache_dir=cache_dir,
             max_workers=workers, shard_size=4,
         ) == sources
-    assert len(engines) == 2 and len(queues) == 8
+    assert len(engines) == 3 and len(queues) == 12
+    assert [engine.capacity for engine in engines] == [1, 2, 4]
     assert all(engine._engine is None for engine in engines)
 
     def assert_equal(left, right):
         if isinstance(left, torch.Tensor):
-            assert left.dtype == right.dtype and torch.equal(left, right)
+            assert left.dtype == right.dtype and left.shape == right.shape
+            assert torch.equal(left.contiguous().view(torch.uint8), right.contiguous().view(torch.uint8))
         elif is_dataclass(left):
             assert_equal(asdict(left), asdict(right))
         elif isinstance(left, dict):
@@ -620,9 +772,12 @@ def test_real_threaded_cache_compile_matches_serial_and_keeps_full_history(tmp_p
         manifests = [cache_path_for_source(root, source) for root in cache_dirs]
         payloads = [torch.load(path, weights_only=False) for path in manifests]
         assert payloads[0]["num_samples"] >= 6
-        assert_equal(*payloads)
+        for payload in payloads[1:]:
+            assert_equal(payloads[0], payload)
         for shard in payloads[0]["shard_files"]:
-            assert_equal(*(torch.load(path.parent / shard, weights_only=False) for path in manifests))
+            shards = [torch.load(path.parent / shard, weights_only=False) for path in manifests]
+            for shard_payload in shards[1:]:
+                assert_equal(shards[0], shard_payload)
 
 
 def test_real_raw_cache_reused_across_windows_scales_and_random_crops(tmp_path, monkeypatch, cs_backend):

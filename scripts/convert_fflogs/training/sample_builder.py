@@ -48,6 +48,66 @@ class TrainingSampleBuilder:
             float_dtype=self._torch.float32,
             int_dtype=self._int_dtype,
         )
+        return self._assemble_sample(
+            reader, sample_idx, history_end=history_end, history_length=history_length,
+            state_fields={
+                "current_state_abs_values": current_abs,
+                "current_state_delta_values": current_delta,
+                "current_state_null_mask": current_state.base_null_mask[0],
+                "current_state_delta_reset_mask": current_reset,
+                "current_state_skill_availability": current_state.availability[0],
+            },
+            action_values=reader.action_values(sample_idx, dtype=self._float_dtype),
+            action_legal_mask=reader.action_legal_mask(sample_idx),
+            scene_vectors=scene_vectors, scene_types=scene_types,
+        )
+
+    def build_batch(self, reader, start: int, end: int) -> list[dict[str, object]]:
+        """按分片批量求 raw 差分和监督张量，样本字段保持独立且只持有本片 storage。"""
+        current_state = reader.current_state_batch(start, end, dtype=self._torch.float32)
+        if start == end:
+            return []
+        references = [history_reference(reader, index) for index in range(start, end)]
+        previous_indices = self._torch.tensor(
+            [history_end - 1 for history_end, _length in references], dtype=self._torch.int64,
+        )
+        previous_abs = self._history_bank["state_abs_values"].index_select(0, previous_indices)
+        previous_null = self._history_bank["state_null_mask"].index_select(0, previous_indices)
+        no_history = self._torch.tensor([length == 0 for _end, length in references], dtype=self._torch.bool)
+        # padding 的 null 为 false；无前驱样本必须视作全部前驱未知，不能直接借用 padding mask。
+        previous_null |= no_history[:, None]
+        current_delta, current_reset = raw_state_delta(
+            current_state.base_values, current_state.base_null_mask, previous_abs, previous_null,
+        )
+        action_values = reader.action_values_batch(start, end, dtype=self._float_dtype)
+        legal_masks = reader.action_legal_mask_batch(start, end)
+        scene_vectors, scene_types = reader.scene_tokens(
+            start, float_dtype=self._torch.float32, int_dtype=self._int_dtype,
+        )
+        batch_size = end - start
+        # repeat 分配不重叠区域，某样本原地修改 scene 时不能影响同片其他样本。
+        scene_batch = scene_vectors.unsqueeze(0).repeat(batch_size, 1, 1)
+        scene_type_batch = scene_types.unsqueeze(0).repeat(batch_size, 1)
+        return [
+            self._assemble_sample(
+                reader, sample_idx, history_end=references[offset][0], history_length=references[offset][1],
+                state_fields={
+                    "current_state_abs_values": current_state.base_values[offset],
+                    "current_state_delta_values": current_delta[offset],
+                    "current_state_null_mask": current_state.base_null_mask[offset],
+                    "current_state_delta_reset_mask": current_reset[offset],
+                    "current_state_skill_availability": current_state.availability[offset],
+                },
+                action_values=action_values[offset], action_legal_mask=legal_masks[offset],
+                scene_vectors=scene_batch[offset], scene_types=scene_type_batch[offset],
+            )
+            for offset, sample_idx in enumerate(range(start, end))
+        ]
+
+    def _assemble_sample(
+        self, reader, sample_idx: int, *, history_end: int, history_length: int,
+        state_fields: dict[str, object], action_values, action_legal_mask, scene_vectors, scene_types,
+    ) -> dict[str, object]:
         label = reader.label(sample_idx)
         label_index = int(label.get("action_index", -1))
         if not 0 <= label_index < self._num_actions:
@@ -89,13 +149,9 @@ class TrainingSampleBuilder:
                 "quality_label_status": quality_status,
             },
             "action_keys": list(reader.action_keys),
-            "action_values": reader.action_values(sample_idx, dtype=self._float_dtype),
-            "current_state_abs_values": current_abs,
-            "current_state_delta_values": current_delta,
-            "current_state_null_mask": current_state.base_null_mask[0],
-            "current_state_delta_reset_mask": current_reset,
-            "current_state_skill_availability": current_state.availability[0],
-            "action_legal_mask": reader.action_legal_mask(sample_idx),
+            "action_values": action_values,
+            **state_fields,
+            "action_legal_mask": action_legal_mask,
             "scene_vectors": scene_vectors,
             "scene_types": scene_types,
             "label_index": label_index,

@@ -35,6 +35,10 @@ public sealed class PolicySession
         double nextObservationTimestamp) =>
         _contextBuilder.BuildVectorContext(simulator, _history, nextObservationTimestamp);
 
+    internal Dictionary<string, object?> BuildVectorDeltaContext(
+        JobSimulator simulator, double nextObservationTimestamp, long afterSequence) =>
+        _contextBuilder.BuildVectorDeltaContext(simulator, _history, nextObservationTimestamp, afterSequence);
+
     public PolicyDecision Record(
         JobSimulator simulator,
         double timestamp,

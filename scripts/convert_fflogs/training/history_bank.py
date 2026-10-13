@@ -13,6 +13,85 @@ from ..source.source_helpers import (
 )
 
 
+class HistoryPrefixInterner:
+    """收集样本时复用已校验的冻结历史行，保留各样本独立的前缀列表。
+
+    桥接观测仍返回独立容器；只有转换内部不再改写的历史行参与共享。
+    完整历史及每步的边界不变，避免重复保留同一行的字典、向量和浮点对象。
+    """
+
+    def __init__(self):
+        self._prefixes: tuple[list, list, list] = ([], [], [])
+
+    @property
+    def cursor(self) -> int:
+        return len(self._prefixes[0])
+
+    def append_delta(self, context: dict[str, object]) -> None:
+        """只接收完整历史会话的连续增量，不重新比较已经冻结的旧行。"""
+        start = context.get("history_start")
+        end = context.get("history_cursor")
+        if (
+            isinstance(start, bool) or not isinstance(start, int) or start != self.cursor
+            or isinstance(end, bool) or not isinstance(end, int) or end < start
+        ):
+            raise ValueError("incremental history cursor does not match the collected prefix")
+        state_context = context.get("state_history_context")
+        if not isinstance(state_context, dict):
+            raise ValueError("state_history_context must be a mapping")
+        deltas = (
+            context.get("skill_history_context"),
+            state_context.get("tokens"),
+            state_context.get("execution_metrics"),
+        )
+        if any(not isinstance(rows, list) or len(rows) != end - start for rows in deltas):
+            raise ValueError("incremental skill/state/execution_metrics history length mismatch")
+        if any(not isinstance(row, dict) for rows in deltas for row in rows):
+            raise ValueError("incremental history rows must contain mappings")
+        # 每步仅复制前缀引用；数值对象只来自新增行，旧快照列表不受后续追加影响。
+        for previous, current in zip(self._prefixes, deltas, strict=True):
+            current[:0] = previous
+        self._prefixes = deltas
+        del context["history_start"]
+
+    def intern(self, context: dict[str, object], *, sample_index: int, fight_id: str) -> None:
+        state_context = context.get("state_history_context")
+        if not isinstance(state_context, dict):
+            raise ValueError("state_history_context must be a mapping")
+        prefixes = (
+            context.get("skill_history_context"),
+            state_context.get("tokens"),
+            state_context.get("execution_metrics"),
+        )
+        if any(not isinstance(rows, list) for rows in prefixes):
+            raise ValueError("skill/state/execution_metrics history must contain lists")
+        length = len(prefixes[0])
+        if any(len(rows) != length for rows in prefixes[1:]):
+            raise ValueError(f"skill/state/execution_metrics history length mismatch: sample={sample_index}")
+        previous_length = len(self._prefixes[0])
+        if length < previous_length:
+            raise ValueError(
+                "training history length moved backwards: "
+                f"sample={sample_index} actual={length} previous={previous_length}"
+            )
+
+        # 先验证三个前缀，再替换引用；等长观测和一次多条结算也必须验证旧行。
+        for field, previous, current in zip(
+            ("skill", "state", "execution_metrics"), self._prefixes, prefixes, strict=True,
+        ):
+            if any(not isinstance(row, dict) for row in current):
+                raise ValueError(f"history rows must contain mappings: sample={sample_index} field={field}")
+            for row_index, previous_row in enumerate(previous):
+                if current[row_index] != previous_row:
+                    raise ValueError(
+                        "training history prefix changed: "
+                        f"sample={sample_index} row={row_index} field={field} fight={fight_id}"
+                    )
+        for previous, current in zip(self._prefixes, prefixes, strict=True):
+            current[:previous_length] = previous
+        self._prefixes = prefixes
+
+
 def build_history_bank(
     reader,
     *,
@@ -44,7 +123,7 @@ def build_history_bank(
                 "training history length moved backwards: "
                 f"sample={sample_idx} actual={actual_length} previous={previous_length}"
             )
-        current_skill_rows, current_state_tokens = reader.history_delta(sample_idx, 0)
+        current_skill_rows, current_state_tokens = reader.history_delta(sample_idx, 0, copy_rows=False)
         current_metrics = reader.history_execution_metrics(sample_idx)
         # 长度递增不能证明历史只追加；相同长度的重排或旧行回填同样必须拒绝。
         for field, previous_rows, current_rows in (
@@ -53,7 +132,7 @@ def build_history_bank(
             ("execution_metrics", execution_metrics, current_metrics),
         ):
             for row_index, previous_row in enumerate(previous_rows):
-                if current_rows[row_index] != previous_row:
+                if current_rows[row_index] is not previous_row and current_rows[row_index] != previous_row:
                     raise ValueError(
                         "training history prefix changed: "
                         f"sample={sample_idx} row={row_index} field={field} fight={reader.fight_id}"
@@ -69,7 +148,7 @@ def build_history_bank(
             require_numeric_skill_kind(skill_row, context=context)
             skill_rows.append(skill_row)
             state_tokens.append(state_token)
-            execution_metrics.append(dict(metric))
+            execution_metrics.append(metric)
             action_keys.append(str(skill_row.get("skill_key", "")))
             skill_potencies.append(float(skill_row.get("potency", 0.0)))
             cumulative_dot_potencies.append(

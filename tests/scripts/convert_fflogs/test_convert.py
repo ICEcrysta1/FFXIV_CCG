@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from scripts.convert_fflogs import (
     load_job_project_config,
     load_convert_fflogs_config,
@@ -318,12 +320,16 @@ def test_convert_report_payload_keeps_one_complete_fight_even_with_long_downtime
     )
 
 
-def test_convert_report_to_training_payload_invokes_build_training_samples(cs_backend, cs_skill_book, monkeypatch):
+@pytest.mark.parametrize("deduplicate", [False, True])
+def test_convert_report_to_training_payload_invokes_build_training_samples(
+    cs_backend, cs_skill_book, monkeypatch, deduplicate,
+):
     import scripts.convert_fflogs.pipeline as pipeline_module
 
     captured: dict[str, object] = {}
 
-    def _fake_build_training_samples(backend, skill_book, fight_payload):
+    def _fake_build_training_samples(backend, skill_book, fight_payload, *, deduplicate_history):
+        assert deduplicate_history is deduplicate
         captured["job_tag"] = backend.job_tag
         captured["fight_id"] = fight_payload["fight_id"]
         return {
@@ -358,6 +364,7 @@ def test_convert_report_to_training_payload_invokes_build_training_samples(cs_ba
         report_code="demo_report",
         player_name="Tester",
         generated_at="2026-07-07T00:00:00+00:00",
+        deduplicate_history=deduplicate,
     )
 
     assert ignored == {}

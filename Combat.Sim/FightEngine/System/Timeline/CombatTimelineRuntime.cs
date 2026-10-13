@@ -150,6 +150,7 @@ public sealed class CombatTimelineRuntime
     public int QueueEntryCount => _queue.Count;
     public int PendingSettlementCount => _pendingSettlements.Count;
     internal int HistoryCount => _state.History.Count;
+    internal long HistoryCursor => _state.LastHistorySequence;
 
     public IReadOnlyList<TimelineEvent> PendingEvents =>
         _scheduledEvents.Values

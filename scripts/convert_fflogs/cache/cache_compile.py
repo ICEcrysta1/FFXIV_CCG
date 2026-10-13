@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import nullcontext
@@ -27,7 +28,7 @@ from common.policy.data.source_selection import (
     select_validation_raw_path_groups,
 )
 from common.torch_dependencies import import_torch
-from scripts.common.inprocess_backend import InProcessEngine
+from scripts.common.inprocess_backend import MAX_QUEUE_CAPACITY, InProcessEngine
 
 from ..config.constants import DEFAULT_DOWNTIME_GAP_SECONDS
 from ..source.raw_source import convert_raw_file
@@ -38,6 +39,7 @@ from ..training.sample_builder import TrainingSampleBuilder
 from .cache_config import build_conversion_config_dependencies
 from .cache_load import RAW_CONVERSION_VERSION, ConversionCacheInventory
 from .cache_writer import write_compiled_cache_stream
+from .process_compile import ProcessCompilePool
 
 logger = logging.getLogger(__name__)
 
@@ -305,8 +307,11 @@ def precompile_raw_training_caches(
     """转换检查当前配置；完整模型契约读取沿用原缓存，缺失时才加载转换配置。"""
     if cache_dir is None or not raw_paths:
         return []
-    if max_workers < 1:
-        raise ValueError("compiled cache workers must be >= 1")
+    if (
+        isinstance(max_workers, bool) or not isinstance(max_workers, int)
+        or not 1 <= max_workers <= MAX_QUEUE_CAPACITY
+    ):
+        raise ValueError(f"compiled cache workers must be an integer between 1 and {MAX_QUEUE_CAPACITY}")
     if engine is not None and engine.job_tag != job_tag:
         raise ValueError("cache compilation job must match the shared engine")
 
@@ -372,7 +377,12 @@ def precompile_raw_training_caches(
     worker_count = min(int(max_workers), len(missing))
     if engine is not None:
         worker_count = min(worker_count, engine.capacity)
-    logger.info("raw JSON 缓存编译: %d 个源文件, %d 个线程共享一个状态机引擎", len(missing), worker_count)
+    process_count = min(worker_count, max(1, len(os.sched_getaffinity(0))))
+    logger.info(
+        "raw JSON 缓存编译: %d 个源文件, %d 个 Python %s共享一个状态机引擎, 在途上限=%d",
+        len(missing), process_count if worker_count > 1 else 1,
+        "进程" if worker_count > 1 else "线程", worker_count,
+    )
     normalizer_contract = normalizer.normalization_contract
     tasks = (
         (
@@ -394,13 +404,23 @@ def precompile_raw_training_caches(
 
     results: list[tuple[str, int, int]] = []
     failed_count = 0
-    # 线程数与队列容量一致，在途任务也不超过该上限。完成一个才接收下一个，
-    # 避免大量 Future 或异常 traceback 持有已失败文件的完整转换上下文。
+    # Python 进程数受可用 CPU 限制；总在途任务仍由用户的并发上限约束。
+    # 子进程只请求父进程的共享状态机，不复制 CLR 引擎或跨进程传完整历史前缀。
     owner = InProcessEngine(job_tag, capacity=worker_count) if engine is None else nullcontext(engine)
     with owner as engine:
-        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="fflogs-convert") as executor:
+        executor = (
+            ProcessCompilePool(engine=engine, job_tag=job_tag, max_processes=process_count)
+            if worker_count > 1
+            else ThreadPoolExecutor(max_workers=1, thread_name_prefix="fflogs-convert")
+        )
+        with executor:
+            def submit_task(task):
+                if worker_count > 1:
+                    return executor.submit(task)
+                return executor.submit(_compile_raw_source_worker, task, engine=engine)
+
             future_sources = {
-                executor.submit(_compile_raw_source_worker, task, engine=engine): Path(task[0])
+                submit_task(task): Path(task[0])
                 for task in islice(tasks, worker_count)
             }
             while future_sources:
@@ -417,9 +437,7 @@ def precompile_raw_training_caches(
                         _log_compile_failure(source_path, exc)
                     task = next(tasks, None)
                     if task is not None:
-                        future_sources[executor.submit(
-                            _compile_raw_source_worker, task, engine=engine,
-                        )] = Path(task[0])
+                        future_sources[submit_task(task)] = Path(task[0])
 
     if failed_count:
         logger.error(
@@ -469,6 +487,7 @@ def _compile_raw_source_worker(task, *, engine: InProcessEngine) -> tuple[str, i
         encounter=None if encounter is None else str(encounter),
         downtime_gap=float(downtime_gap_seconds),
         engine=engine,
+        deduplicate_history=True,
     )
     if training_payload is None:
         return str(source_path), 0, 0
@@ -501,10 +520,7 @@ def _compile_raw_source_worker(task, *, engine: InProcessEngine) -> tuple[str, i
 
     def sample_batches():
         for start in range(0, reader.num_samples, shard_size):
-            yield [
-                sample_builder.build(reader, sample_idx)
-                for sample_idx in range(start, min(start + shard_size, reader.num_samples))
-            ]
+            yield sample_builder.build_batch(reader, start, min(start + shard_size, reader.num_samples))
 
     signature = build_cache_signature(
         source_path,

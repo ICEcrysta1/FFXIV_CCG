@@ -56,6 +56,7 @@ public sealed class JobSimulator
 
     public string JobTag => _machine.JobTag;
     public double Time => _timeline.CurrentTime;
+    internal long HistoryCursor => _timeline.HistoryCursor;
     public CombatState GetState() => _timeline.GetState();
     internal CombatState GetStateWithoutHistory() => _timeline.GetStateWithoutHistory();
     internal void AdvanceClockTo(double timestamp) => _timeline.AdvanceClockTo(timestamp);

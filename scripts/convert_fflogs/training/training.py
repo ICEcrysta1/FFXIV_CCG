@@ -1,8 +1,8 @@
 """训练样本回放 —— 逐步展开战斗并生成逐决策样本（绝对时间线版）。
 
 状态机的推进、校验与结算由 C# FightEngine 独占，通过进程内后端直接调用；
-本模块只保留决策逻辑：
-请求时刻解析、场景事实提交、policy 动作合成与样本装配。
+公开回放逐步提交请求与场景事实；编译回放把时间线与等待决策整批交给 C#，
+本模块统一负责标签装配、场景字段合成与历史引用恢复。
 
 时间轴以日志为准：转换层已经把整场最早请求平移到 0；动作严格在归一化后的
 请求时刻提交。调用方不钳制请求时间，也不按拒绝原因补推进。
@@ -13,15 +13,51 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
+
 from common.contracts import SCENE_EPSILON
 from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION
 
 from scripts.common.scene_state import SceneFactScheduler, rewrite_scene_player_state
+from scripts.common.state_machine_types import ActionSubmissionResult
 
 from ..config.constants import _round_time
 from ..scene.scene_context import build_scene_context_view, normalize_scene_context, resolve_anchor
+from .history_bank import HistoryPrefixInterner
 
 OGCD_WAIT_ACTION_KEY = "ogcd_wait"
+
+
+class _TrainingObserver:
+    """转换专用观测：先合成新增状态的场景字段，再恢复完整历史引用。"""
+
+    def __init__(self, backend, scheduler: SceneFactScheduler, *, incremental: bool):
+        self._backend = backend
+        self._scheduler = scheduler
+        self._history = HistoryPrefixInterner() if incremental else None
+        self._scene_view = build_scene_context_view(scheduler.scene_context) if incremental else None
+
+    def observe(self, *, timestamp: float, next_observation_timestamp: float) -> dict[str, object]:
+        if self._history is None:
+            observation = self._backend.observe_at(
+                timestamp, format="vector", next_observation_timestamp=next_observation_timestamp,
+            )
+        else:
+            observation = self._backend.observe_vector_delta_at(
+                timestamp, next_observation_timestamp=next_observation_timestamp,
+                after_sequence=self._history.cursor,
+            )
+        return self.restore(observation.context)
+
+    def restore(self, canonical: dict[str, object]) -> dict[str, object]:
+        context = rewrite_scene_player_state(dict(canonical), scene_state_at=self._scheduler.state_at)
+        if self._history is not None:
+            self._history.append_delta(context)
+            context["scene_context"] = self._scene_view
+        else:
+            context["scene_context"] = build_scene_context_view(self._scheduler.scene_context)
+        return context
+
 
 def build_training_samples(
     backend,
@@ -29,8 +65,9 @@ def build_training_samples(
     fight_payload: dict[str, object],
     *,
     policy_action_key: str = OGCD_WAIT_ACTION_KEY,
+    deduplicate_history: bool = False,
 ) -> dict[str, object]:
-    """把一场战斗展开成逐决策训练样本。"""
+    """把一场战斗展开成逐决策样本；编译侧可共享只读的冻结历史行。"""
     actions = fight_payload.get("actions", [])
     if not isinstance(actions, list) or not actions:
         raise ValueError("fight payload must contain at least one action")
@@ -42,7 +79,15 @@ def build_training_samples(
     cursor = resolve_initial_timestamp(fight_payload)
     scheduler.sync_through(backend, cursor)
 
+    if deduplicate_history:
+        samples, resolved_sequence = _collect_native_samples(
+            backend, skill_book, fight_payload, scheduler,
+            fight_duration=fight_duration, policy_action_key=policy_action_key,
+        )
+        return _training_payload(backend, fight_payload, scene_context, samples, resolved_sequence)
+
     samples: list[dict[str, object]] = []
+    observer = _TrainingObserver(backend, scheduler, incremental=deduplicate_history)
     resolved_sequence: list[str] = []
     next_step_index = 1
 
@@ -57,6 +102,7 @@ def build_training_samples(
             backend,
             scheduler,
             skill_book,
+            observer=observer,
             cursor=cursor,
             next_action=raw_action,
             action_request_offset=_request_time_offset(raw_action),
@@ -75,6 +121,7 @@ def build_training_samples(
             scheduler,
             skill_book,
             raw_action,
+            observer=observer,
             cursor=cursor,
             next_request_offset=next_request_offset,
             fight_duration=fight_duration,
@@ -89,6 +136,13 @@ def build_training_samples(
         resolved_sequence.append(str(raw_action["action_key"]))
         next_step_index += 1
 
+    return _training_payload(backend, fight_payload, scene_context, samples, resolved_sequence)
+
+
+def _training_payload(
+    backend, fight_payload: dict[str, object], scene_context: dict[str, object],
+    samples: list[dict[str, object]], resolved_sequence: list[str],
+) -> dict[str, object]:
     return {
         "sample_schema_version": TRAINING_SAMPLE_SCHEMA_VERSION,
         "job_tag": str(fight_payload.get("job_tag", backend.job_tag)),
@@ -104,12 +158,75 @@ def build_training_samples(
     }
 
 
+def _collect_native_samples(
+    backend, skill_book, fight_payload: dict[str, object], scheduler: SceneFactScheduler,
+    *, fight_duration: float, policy_action_key: str,
+) -> tuple[list[dict[str, object]], list[str]]:
+    """托管执行只负责时间线和决策；样本、标签及场景合成仍留在转换模块。"""
+    actions = fight_payload["actions"]
+    start = resolve_initial_timestamp(fight_payload)
+    requests = []
+    for source_step, action in enumerate(actions, 1):
+        if not isinstance(action, dict):
+            raise ValueError(f"action at source step {source_step} must be an object")
+        cast_seconds = action.get("actual_cast_seconds")
+        requests.append({
+            "timestamp": _request_time_offset(action),
+            "skill_key": str(action["action_key"]),
+            "actual_cast_seconds": None if cast_seconds is None else float(cast_seconds),
+        })
+    facts = [asdict(fact) for fact in scheduler.lookup.facts() if fact.timestamp > start]
+    frames = backend.replay_policy_sequence(
+        requests, facts, fight_duration=fight_duration, policy_action_key=policy_action_key,
+    )
+    observer = _TrainingObserver(backend, scheduler, incremental=True)
+    samples: list[dict[str, object]] = []
+    resolved_sequence: list[str] = []
+    for frame in frames:
+        source_index = int(frame["source_index"])
+        raw_action = actions[source_index]
+        timestamp = float(frame["timestamp"])
+        context = observer.restore(frame["context"])
+        step_index = len(samples) + 1
+        if frame["is_wait"]:
+            action_key = policy_action_key
+            sample = _wait_sample(context, scheduler, timestamp, fight_duration, policy_action_key)
+        else:
+            action_key = str(raw_action["action_key"])
+            _assert_no_label_leak(
+                context, expected_history_sequence=resolved_sequence, policy_action_key=policy_action_key,
+                current_action_key=action_key, current_step=step_index,
+            )
+            raw_submission = frame["submission"]
+            submission = ActionSubmissionResult(
+                accepted=bool(raw_submission["accepted"]), queued=bool(raw_submission["queued"]),
+                reason=str(raw_submission["reason"]), action_instance_id=None, request_timestamp=timestamp,
+                accepted_timestamp=raw_submission["accepted_timestamp"],
+                effect_timestamp=raw_submission["effect_timestamp"], next_scheduled_event_time=None,
+            )
+            if not submission.accepted:
+                raise ValueError(
+                    "logged action was rejected by the state machine: "
+                    f"step={step_index}, action={action_key}, request_time={timestamp:.4f}, "
+                    f"reason={submission.reason}"
+                )
+            sample = _real_action_sample(
+                raw_action, skill_book.get(action_key), context, timestamp, submission, fight_duration,
+            )
+        sample["step"] = step_index
+        sample["source_step"] = source_index + 1
+        samples.append(sample)
+        resolved_sequence.append(action_key)
+    return samples, resolved_sequence
+
+
 def _run_real_action(
     backend,
     scheduler: SceneFactScheduler,
     skill_book,
     raw_action: dict[str, object],
     *,
+    observer: _TrainingObserver,
     cursor: float,
     next_request_offset: float | None,
     fight_duration: float,
@@ -130,9 +247,7 @@ def _run_real_action(
     request_time, _ = _advance_to_with_facts(backend, scheduler, logged_request)
 
     observation_timestamp = _resolve_next_observation(next_request_offset, request_time, fight_duration)
-    context = _observe_canonical(
-        backend,
-        scheduler,
+    context = observer.observe(
         timestamp=request_time,
         next_observation_timestamp=observation_timestamp,
     )
@@ -167,7 +282,13 @@ def _run_real_action(
         else float(submission.effect_timestamp)
     )
 
-    sample = {
+    return _real_action_sample(raw_action, skill, context, request_time, submission, fight_duration), effect_timestamp
+
+
+def _real_action_sample(raw_action, skill, context, request_time, submission, fight_duration):
+    action_key = str(raw_action["action_key"])
+    observed_cast_seconds = raw_action.get("actual_cast_seconds")
+    return {
         "time_offset": _round_time(request_time),
         "label": {
             "action_key": action_key,
@@ -195,7 +316,6 @@ def _run_real_action(
         },
         "context": context,
     }
-    return sample, effect_timestamp
 
 
 def _build_ogcd_wait_sample(
@@ -203,6 +323,7 @@ def _build_ogcd_wait_sample(
     scheduler: SceneFactScheduler,
     skill_book,
     *,
+    observer: _TrainingObserver,
     cursor: float,
     next_action: dict[str, object],
     action_request_offset: float,
@@ -229,38 +350,34 @@ def _build_ogcd_wait_sample(
         return None, cursor
 
     observation_timestamp = max(window_end, action_request_offset)
-    context = _observe_canonical(
-        backend,
-        scheduler,
+    context = observer.observe(
         timestamp=decision_time,
         next_observation_timestamp=observation_timestamp,
     )
     backend.record_policy_action(decision_time, policy_action_key, observation_timestamp)
-    return (
-        {
-            "time_offset": _round_time(decision_time),
-            "label": {
-                "action_key": policy_action_key,
-                "skill_id": 0,
-                "skill_name": "",
-                "action_index": _find_action_index(
-                    context["action_keys"],
-                    policy_action_key,
-                ),
-                "cast_time_seconds": 0.0,
-                "is_legal": True,
-                "invalid_reason": "",
-                "time_gap": 0.0,
-                "anchor": resolve_anchor(decision_time, scheduler.scene_context),
-                "fight_remaining": _round_time(max(0.0, fight_duration - decision_time)),
-                "timing_retry_count": 0,
-                "request_time_clamped": 0.0,
-                "cast_timing_source": "",
-            },
-            "context": context,
+    return _wait_sample(context, scheduler, decision_time, fight_duration, policy_action_key), cursor
+
+
+def _wait_sample(context, scheduler, decision_time, fight_duration, policy_action_key):
+    return {
+        "time_offset": _round_time(decision_time),
+        "label": {
+            "action_key": policy_action_key,
+            "skill_id": 0,
+            "skill_name": "",
+            "action_index": _find_action_index(context["action_keys"], policy_action_key),
+            "cast_time_seconds": 0.0,
+            "is_legal": True,
+            "invalid_reason": "",
+            "time_gap": 0.0,
+            "anchor": resolve_anchor(decision_time, scheduler.scene_context),
+            "fight_remaining": _round_time(max(0.0, fight_duration - decision_time)),
+            "timing_retry_count": 0,
+            "request_time_clamped": 0.0,
+            "cast_timing_source": "",
         },
-        cursor,
-    )
+        "context": context,
+    }
 
 
 def _advance_to_with_facts(
@@ -274,28 +391,6 @@ def _advance_to_with_facts(
     """
     scheduler.sync_through(backend, timestamp)
     return timestamp, backend.advance_to(timestamp).timestamp
-
-
-def _observe_canonical(
-    backend,
-    scheduler: SceneFactScheduler,
-    *,
-    timestamp: float,
-    next_observation_timestamp: float,
-) -> dict[str, object]:
-    """取一次完整模型输入，并按场景上下文改写 player 向量的场景字段。"""
-    observation = backend.observe_at(
-        timestamp,
-        format="vector",
-        next_observation_timestamp=next_observation_timestamp,
-    )
-    context = dict(observation.context)  # type: ignore[arg-type]
-    context = rewrite_scene_player_state(
-        context,
-        scene_state_at=scheduler.state_at,
-    )
-    context["scene_context"] = build_scene_context_view(scheduler.scene_context)
-    return context
 
 
 def _resolve_next_observation(

@@ -22,6 +22,7 @@ def convert_raw_file(
     encounter: str | None = None,
     downtime_gap: float = DEFAULT_DOWNTIME_GAP_SECONDS,
     engine: InProcessEngine,
+    deduplicate_history: bool = False,
 ) -> tuple[dict[str, object] | None, Counter[tuple[int, str]]]:
     """读取一份 raw JSON，并直接返回内存训练 payload。"""
     if engine is None or engine.job_tag != job_tag:
@@ -56,6 +57,7 @@ def convert_raw_file(
             player_name=player_name,
             generated_at=datetime.now(timezone.utc).isoformat(),
             downtime_gap_seconds=float(downtime_gap),
+            deduplicate_history=deduplicate_history,
         )
     finally:
         backend.close()

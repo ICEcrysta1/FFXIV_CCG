@@ -16,6 +16,7 @@ from common.policy.config import (
 )
 from common.policy.data import Normalizer
 from common.project_config import resolve_positive_worker_count
+from scripts.common.inprocess_backend import MAX_QUEUE_CAPACITY
 from scripts.common.json_io import is_json_file
 from training.config import load_run_config
 
@@ -47,7 +48,10 @@ def main() -> None:
     parser.add_argument("--encounter", default=None, help="覆盖 JSON 中的副本名称")
     parser.add_argument("--cache-root", type=Path, default=None, help="compiled cache 根目录")
     parser.add_argument("--shard-size", type=int, default=None)
-    parser.add_argument("--workers", type=int, default=None)
+    parser.add_argument(
+        "--workers", type=int, default=None,
+        help=f"转换并发数（1-{MAX_QUEUE_CAPACITY}）；省略时读取 .env 的 CONVERT_FFLOGS_WORKERS",
+    )
     parser.add_argument(
         "--training-selection", action="store_true",
         help="按 training.max_files 的配额选择并编译训练文件，失败时按副本和区间补位",
@@ -94,8 +98,9 @@ def main() -> None:
         )
         if args.workers is None else int(args.workers)
     )
-    if workers < 1:
-        parser.error("--workers must be >= 1")
+    if not 1 <= workers <= MAX_QUEUE_CAPACITY:
+        parameter = "CONVERT_FFLOGS_WORKERS" if args.workers is None else "--workers"
+        parser.error(f"{parameter} must be between 1 and {MAX_QUEUE_CAPACITY}")
     precision = load_precision_config()
     if args.training_selection:
         valid_paths, validation_paths = prepare_training_and_validation_caches(
