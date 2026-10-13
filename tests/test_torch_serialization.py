@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import pickle
-from pathlib import Path
+from pathlib import Path, PureWindowsPath, WindowsPath
 
 import pytest
 import torch
 
-from common.torch_serialization import safe_torch_load
+from common.torch_serialization import safe_torch_load, stringify_paths
 
 
 _EXECUTED: list[bool] = []
@@ -40,3 +40,37 @@ def test_safe_torch_load_allows_legacy_path_metadata(tmp_path: Path):
     payload = safe_torch_load(checkpoint_path)
 
     assert payload["run_config"]["output_dir"] == tmp_path
+
+
+class _LegacyWindowsPath:
+    def __reduce__(self):
+        # 生成真正引用 pathlib.WindowsPath 的旧格式 pickle，无需在 Linux 构造它。
+        return WindowsPath, ("C:\\training", "artifacts", "best.pt")
+
+
+def test_safe_torch_load_reads_windows_checkpoint_paths_on_linux(tmp_path: Path):
+    checkpoint_path = tmp_path / "windows.pt"
+    torch.save({"run_config": {"output_dir": _LegacyWindowsPath()}, "weight": torch.ones(2)}, checkpoint_path)
+
+    loaded = safe_torch_load(checkpoint_path)
+
+    assert loaded["run_config"]["output_dir"] == PureWindowsPath("C:/training/artifacts/best.pt")
+    torch.testing.assert_close(loaded["weight"], torch.ones(2))
+    assert Path is __import__("pathlib").Path
+
+
+def test_stringify_paths_preserves_tensors_and_container_types(tmp_path: Path):
+    weight = torch.ones(2)
+    original = {"config": {"root": tmp_path}, "paths": [PureWindowsPath("C:/data")], "values": (tmp_path, weight)}
+
+    saved = stringify_paths(original)
+    checkpoint_path = tmp_path / "portable.pt"
+    torch.save(saved, checkpoint_path)
+    loaded = torch.load(checkpoint_path, weights_only=True)
+
+    assert saved["values"][1] is weight
+    assert original["config"]["root"] == tmp_path
+    assert loaded["config"]["root"] == str(tmp_path)
+    assert loaded["paths"] == ["C:\\data"]
+    assert isinstance(loaded["values"], tuple)
+    torch.testing.assert_close(loaded["values"][1], weight)

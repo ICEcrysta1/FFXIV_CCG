@@ -12,7 +12,7 @@ import torch
 
 from common.policy.data import DataSpec, ModelInputContract
 from common.policy.model import CausalPolicyModel
-from common.torch_serialization import safe_torch_load
+from common.torch_serialization import safe_torch_load, stringify_paths
 
 from ..config import RunConfig
 
@@ -445,7 +445,7 @@ def _save_checkpoint(
         "input_contract": input_contract.to_dict(),
         "training_precision": config.precision,
         "training_parameter_precision": "float32" if config.fp32_gradients else config.precision,
-        "run_config": asdict(config),
+        "run_config": stringify_paths(asdict(config)),
         "metrics": metrics,
         "rng_state": _capture_rng_state(),
     }

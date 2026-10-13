@@ -363,7 +363,10 @@ def test_grpo_checkpoint_preserves_complete_input_vocab(tmp_path):
     _save_grpo_checkpoint(path, model=model, optimizer=optimizer, scheduler=None, iteration=1,
                           config=config, grpo=GrpoConfig(), data_spec=spec, input_contract=input_contract,
                           precision="float32", metrics={})
-    saved = ModelInputContract.from_checkpoint(safe_torch_load(path))
+    payload = safe_torch_load(path)
+    assert payload["run_config"]["raw_data_dir"] == str(config.raw_data_dir)
+    assert payload["run_config"]["output_dir"] == str(config.output_dir)
+    saved = ModelInputContract.from_checkpoint(payload)
     assert saved.create_skill_vocab().to_dict() == input_contract.create_skill_vocab().to_dict()
     backend = PyTorchPolicyBackend(path, device="cpu", use_kv_cache=False)
     assert backend.vocab_entries == input_contract.skill_vocab_entries

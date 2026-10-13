@@ -68,6 +68,6 @@ def find_prepared_scene_source(
         return source
     raise FileNotFoundError(
         f"没有可用的已编译参考场景：{raw_root}（缓存目录：{cache_dir}）；"
-        "请先运行训练文件转换：.\\ffxiv_ccg.ps1 -Action convert，"
+        "请先运行训练文件转换：./ffxiv_ccg.sh --action convert，"
         "或显式指定场景 JSON"
     )

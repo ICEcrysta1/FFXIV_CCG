@@ -738,51 +738,10 @@ def _percentile(values: list[float], percentile: float) -> float:
 
 
 def _process_peak_working_set_bytes() -> int | None:
-    """读取进程生命周期峰值；不引入 psutil 运行时依赖。"""
+    """读取 Linux 进程生命周期峰值，并将 KiB 转换为字节。"""
     try:
-        import os
-
-        if os.name == "nt":
-            import ctypes
-            from ctypes import wintypes
-
-            class ProcessMemoryCounters(ctypes.Structure):
-                _fields_ = [
-                    ("cb", wintypes.DWORD),
-                    ("PageFaultCount", wintypes.DWORD),
-                    ("PeakWorkingSetSize", ctypes.c_size_t),
-                    ("WorkingSetSize", ctypes.c_size_t),
-                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
-                    ("QuotaPagedPoolUsage", ctypes.c_size_t),
-                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
-                    ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
-                    ("PagefileUsage", ctypes.c_size_t),
-                    ("PeakPagefileUsage", ctypes.c_size_t),
-                ]
-
-            counters = ProcessMemoryCounters()
-            counters.cb = ctypes.sizeof(counters)
-            get_current_process = ctypes.windll.kernel32.GetCurrentProcess
-            get_current_process.restype = wintypes.HANDLE
-            get_process_memory_info = ctypes.windll.psapi.GetProcessMemoryInfo
-            get_process_memory_info.argtypes = (
-                wintypes.HANDLE,
-                ctypes.POINTER(ProcessMemoryCounters),
-                wintypes.DWORD,
-            )
-            get_process_memory_info.restype = wintypes.BOOL
-            process = get_current_process()
-            if not get_process_memory_info(
-                process,
-                ctypes.byref(counters),
-                counters.cb,
-            ):
-                return None
-            return int(counters.PeakWorkingSetSize)
-
         import resource
 
-        peak = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
-        return peak if os.uname().sysname == "Darwin" else peak * 1024
+        return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * 1024
     except (AttributeError, ImportError, OSError, ValueError):
         return None

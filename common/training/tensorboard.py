@@ -85,7 +85,7 @@ def create_tensorboard_writer(
     except ImportError as exc:
         raise RuntimeError(
             "TensorBoard is enabled but its dependency is missing; "
-            "install it with `.venv/Scripts/python -m pip install -r requirements.txt`."
+            "install it with `.venv/bin/python3 -m pip install -r requirements.txt`."
         ) from exc
 
     root.mkdir(parents=True, exist_ok=True)

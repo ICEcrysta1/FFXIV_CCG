@@ -20,8 +20,6 @@ logger = logging.getLogger(__name__)
 def _ignore_interrupts() -> None:
     """取消由主进程协调，子进程完成当前一份校验后统一回收。"""
     signal.signal(signal.SIGINT, signal.SIG_IGN)
-    if hasattr(signal, "SIGBREAK"):
-        signal.signal(signal.SIGBREAK, signal.SIG_IGN)
 
 
 class AnnotationInventory:

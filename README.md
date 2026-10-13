@@ -17,7 +17,7 @@
 
 ## 📄 FFXIV CCG 文档
 
-[FFXIV CCG](https://github.com/ICEcrysta1/FFXIV_CCG)（Context Combat Generator）是一个面向《最终幻想 XIV》战斗场景的生成式决策模型系列，覆盖 FFLogs 战斗日志采集、行为克隆预训练、GRPO 后训练、ONNX 部署导出、模型表征分析与自回归回放，并提供 PowerShell 命令行入口统一调用。模型以 Transformer 为骨干，依靠注意力机制对战斗上下文进行长程建模；在实时推理约束下，建议采用较小规模的层数与维度配置（例如 6×768、8×512），以在推理时延与表征能力之间取得平衡。
+[FFXIV CCG](https://github.com/ICEcrysta1/FFXIV_CCG)（Context Combat Generator）是一个面向《最终幻想 XIV》战斗场景的生成式决策模型系列，覆盖 FFLogs 战斗日志采集、行为克隆预训练、GRPO 后训练、ONNX 部署导出、模型表征分析与自回归回放，并提供 Bash 命令行入口统一调用。模型以 Transformer 为骨干，依靠注意力机制对战斗上下文进行长程建模；在实时推理约束下，建议采用较小规模的层数与维度配置（例如 6×768、8×512），以在推理时延与表征能力之间取得平衡。
 
 ---
 
@@ -35,30 +35,27 @@
 
 ## 🚀 通过命令快速开始
 
-本节命令面向 Windows PowerShell。先安装 Python 3.12+、.NET 10 SDK、Git 和支持 CUDA 13.x 的 NVIDIA 驱动；`setup.ps1` 会安装项目专用 Node 22、pnpm 10 和 Python 依赖。详细参数见 [命令行使用说明](./docs/命令行使用说明.md)。
+项目开发与运行主线为 Linux／WSL2，统一使用 `python3` 和 Bash 入口。先安装 Python 3.12+（含 venv）、.NET 10 SDK、Git、curl、tar、xz，以及支持 CUDA 13.x 的 NVIDIA 驱动；`setup.sh` 会安装项目专用 Linux Node 22、pnpm 10 和 Python 依赖，并构建 Python.NET 桥接。详细参数见 [命令行使用说明](./docs/命令行使用说明.md)。
 
-计划以 `0.2.0-rc.1` 作为转向 Linux/WSL 开发前的最后一个 Windows 候选版。当前安装脚本和菜单仍面向 Windows，Linux/WSL 的安装与运行流程将在迁移后单独提供；实际发布状态以仓库标签和 Releases 为准。
-
-```pwsh
+```bash
 # 1) 一键准备环境：创建根目录 .venv 和项目本地 .node，安装 Python GPU 与 Node 依赖
-.\setup.ps1
-# 如果执行策略拦截脚本，再执行：
-# Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-# .\setup.ps1
+./setup.sh
 
 # 2) 按 .env.example 配置职业、模型变体、FFLogs 凭证及本机参数
-if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+[ -f .env ] || cp .env.example .env
 
 # 3) 构建 Python.NET 可加载的状态机程序集、依赖和运行时配置
 dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj --configuration Debug
 
 # 4) 验证配置与 Python.NET 状态机链路
-.\.venv\Scripts\python.exe main.py validate --job-tag black_mage
-.\.venv\Scripts\python.exe main.py smoke --job-tag black_mage
+.venv/bin/python3 main.py validate --job-tag black_mage
+.venv/bin/python3 main.py smoke --job-tag black_mage
 
 # 5) 启动工具菜单：输入 1～9 执行对应工具，10 退出
-.\ffxiv_ccg.ps1
+./ffxiv_ccg.sh
 ```
+
+Windows 的 `.venv` 和 `.node` 不能搬入 Linux 复用，需要在 Linux 重新运行 `./setup.sh`。
 
 首次训练按以下顺序准备数据；重复运行下载、标注和转换会复用经校验仍有效的产物：
 
@@ -72,7 +69,7 @@ dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj --configuration Debug
 
 训练配额和验证配额互不借用；验证副本不足时只在同副本内补位。下载器的 `validation_ratio` 决定准备多少验证日志，训练 YAML 的 `validation_files` 决定实际消费多少份，两者独立配置。算法、数据语义和训练参数以 YAML 为准，根目录 `.env` 管理本机配置；BC 与 GRPO 的优化器分别由 `optimizer.yaml` 的 `optimizers.bc` / `optimizers.grpo` 配置。
 
-菜单中的 BC 训练与恢复训练按 `training.yaml` 顶部的 `training.tensorboard.enabled` 决定是否自动打开 TensorBoard；GRPO 按 `grpo.yaml` 顶部的 `grpo.tensorboard.enabled` 独立决定。服务就绪后会打开本机浏览器，端口由 `.env` 的 `TENSORBOARD_PORT` 指定。由 `ffxiv_ccg.ps1` 启动的 Web 服务会在训练入口结束或中断后关闭；手动启动的后台服务仍需手动管理。若该端口上的旧服务读取其他模型的事件目录，启动器会报错并提示关闭旧服务或换端口。
+菜单中的 BC 训练与恢复训练按 `training.yaml` 顶部的 `training.tensorboard.enabled` 决定是否自动打开 TensorBoard；GRPO 按 `grpo.yaml` 顶部的 `grpo.tensorboard.enabled` 独立决定。服务就绪后会打开本机浏览器，端口由 `.env` 的 `TENSORBOARD_PORT` 指定。由 `ffxiv_ccg.sh` 启动的 Web 服务会在训练入口结束或中断后关闭；手动启动的后台服务仍需手动管理。若该端口上的旧服务读取其他模型的事件目录，启动器会报错并提示关闭旧服务或换端口。
 
 新训练 run 会写入以下面板，已有日志不会自动补齐缺少的数据：
 
@@ -101,14 +98,14 @@ dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj --configuration Debug
 `third_party/xivanalysis/`，版本由主仓库的子模块 commit 固定。已有仓库可运行
 以下命令获取该版本；新克隆仓库也可以使用 `git clone --recurse-submodules`：
 
-```pwsh
+```bash
 git submodule update --init -- third_party/xivanalysis
 ```
 
 该依赖采用 MIT 许可，原始许可证保留在
 [third_party/xivanalysis/LICENSE](./third_party/xivanalysis/LICENSE)，来源与完整许可声明见
 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。离线桥接入口为
-`python -m scripts.action_quality`，安装和输出契约见 [命令行说明](./docs/命令行使用说明.md#附录-d离线动作质量标注)。
+`python3 -m scripts.action_quality`，安装和输出契约见 [命令行说明](./docs/命令行使用说明.md#附录-d离线动作质量标注)。
 
 Project-owned source code in this repository is licensed under the GNU
 General Public License v3.0 only (GPL-3.0-only); see LICENSE. Third-party

@@ -365,4 +365,6 @@ def test_checkpoint_records_forward_and_parameter_precision(
     assert saved["training_precision"] == precision
     assert saved["training_parameter_precision"] == parameter_precision
     assert saved["run_config"]["fp32_gradients"] is enabled
+    assert saved["run_config"]["raw_data_dir"] == str(config.raw_data_dir)
+    assert saved["run_config"]["output_dir"] == str(config.output_dir)
     assert saved["model_state_dict"]["weight"].dtype == dtype
