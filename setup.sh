@@ -21,12 +21,40 @@ dotnet --list-sdks | awk '$1 ~ /^10\./ { found=1 } END { exit !found }' || {
     printf '需要 .NET 10 SDK，请先安装后重新运行。\n' >&2
     exit 1
 }
-if [[ ! -e .venv ]]; then
-    python3 -m venv .venv
-fi
 PROJECT_PYTHON="$PROJECT_ROOT/.venv/bin/python3"
-[[ -x "$PROJECT_PYTHON" ]] || { printf '.venv 不是有效的 Linux 虚拟环境，请移走后重新运行。\n' >&2; exit 1; }
-"$PROJECT_PYTHON" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else ".venv 需要 Python 3.12 或更新版本")'
+VENV_PYTHON=python3
+if [[ -e .venv && ! -d .venv ]] || [[ -d .venv/Scripts ]]; then
+    printf '.venv 不是有效的 Linux 虚拟环境，请移走后重新运行。\n' >&2
+    exit 1
+fi
+if [[ -x "$PROJECT_PYTHON" ]]; then
+    "$PROJECT_PYTHON" -c 'import sys; sys.exit(0 if sys.prefix != sys.base_prefix and sys.version_info >= (3, 12) else ".venv 需要有效的 Python 3.12+ 虚拟环境，请移走后重新运行")'
+    # 修复时沿用原解释器，避免默认 python3 升级后混用不同版本的依赖。
+    VENV_PYTHON="$("$PROJECT_PYTHON" -c 'import sys; print(sys._base_executable)')"
+fi
+if [[ ! -x "$PROJECT_PYTHON" ]] || ! "$PROJECT_PYTHON" -m pip --version >/dev/null 2>&1; then
+    if ! "$VENV_PYTHON" -c 'import venv, ensurepip' >/dev/null 2>&1; then
+        VENV_PACKAGE="$("$VENV_PYTHON" -c 'import sys; print(f"python{sys.version_info.major}.{sys.version_info.minor}-venv")')"
+        if ! command -v apt-get >/dev/null; then
+            printf '缺少 venv／ensurepip，请使用系统包管理器安装 %s 后重新运行。\n' "$VENV_PACKAGE" >&2
+            exit 1
+        fi
+        APT_COMMAND=(apt-get)
+        if (( EUID != 0 )); then
+            if ! command -v sudo >/dev/null; then
+                printf '自动安装 %s 需要 root 或 sudo；请管理员安装后重新运行。\n' "$VENV_PACKAGE" >&2
+                exit 1
+            fi
+            APT_COMMAND=(sudo apt-get)
+        fi
+        printf '正在安装虚拟环境支持：%s\n' "$VENV_PACKAGE"
+        "${APT_COMMAND[@]}" update
+        "${APT_COMMAND[@]}" install -y "$VENV_PACKAGE"
+    fi
+    printf '正在创建或补全项目虚拟环境 .venv……\n'
+    "$VENV_PYTHON" -m venv .venv
+fi
+"$PROJECT_PYTHON" -c 'import sys; sys.exit(0 if sys.prefix != sys.base_prefix and sys.version_info >= (3, 12) else ".venv 需要有效的 Python 3.12+ 虚拟环境")'
 "$PROJECT_PYTHON" -m pip install --upgrade pip
 "$PROJECT_PYTHON" -m pip install -r requirements.txt
 if "$PROJECT_PYTHON" -m pip show onnxruntime >/dev/null 2>&1; then
