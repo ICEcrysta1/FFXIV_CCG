@@ -77,8 +77,6 @@ def main() -> int:
     executor = None
     try:
         signals = [signal.SIGINT, signal.SIGTERM]
-        if hasattr(signal, "SIGBREAK"):
-            signals.append(signal.SIGBREAK)
         for signum in signals:
             previous_handlers[signum] = signal.signal(signum, cancel)
         logger.info("标注预检: 扫描 %d 份文件", len(selected))

@@ -370,7 +370,7 @@ def test_bridge_defaults_to_project_node(tmp_path, monkeypatch, configured_node)
         monkeypatch.delenv("ACTION_QUALITY_NODE", raising=False)
     else:
         monkeypatch.setenv("ACTION_QUALITY_NODE", configured_node)
-    assert config.load_bridge_config().node == str(tmp_path / ".node/runtime/node.exe")
+    assert config.load_bridge_config().node == str(tmp_path / ".node/runtime/bin/node")
 
 
 def test_legacy_parallel_worker_limit_is_rejected(tmp_path, monkeypatch):
@@ -590,9 +590,7 @@ def test_cancellation_before_publish_preserves_output(raw_file, bridge_config, m
     assert output.read_bytes() == before
 
 
-@pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM] + (
-    [signal.SIGBREAK] if hasattr(signal, "SIGBREAK") else []
-))
+@pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM])
 def test_cli_repeated_interrupt_stops_running_nodes_and_pending_files(
     raw_file, bridge_config, lifecycle_node, launched_nodes, monkeypatch, tmp_path, signum,
 ):

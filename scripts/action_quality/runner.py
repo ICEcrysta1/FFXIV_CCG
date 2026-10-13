@@ -29,9 +29,8 @@ def _run_node(arguments: list[str], *, input: str, timeout: float,
     """短周期检查取消；所有退出路径都回收本次启动的 Node。"""
     _check_cancelled(stop)
     # 由 Python 统一处理终端中断，避免 Node 抢先退出被记作分析失败。
-    options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
     with subprocess.Popen(arguments, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, **options, **kwargs) as process:
+                          stderr=subprocess.PIPE, start_new_session=True, **kwargs) as process:
         deadline = time.monotonic() + timeout
         owner_pipe = None
         try:

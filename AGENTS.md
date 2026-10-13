@@ -35,8 +35,11 @@
 
 - 文件编码：UTF-8
 - 换行：LF
-- 不要依赖 PowerShell 或编辑器的默认编码
-- 使用项目.venv作为py正式环境
+- 开发与运行主线为 Linux／WSL2；不维护 Windows、PowerShell 或 Windows 可执行文件回退。
+- 对外命令统一使用 `python3`；项目正式 Python 环境为根目录 `.venv`，直接执行时使用 `.venv/bin/python3`。
+- 安装与操作入口使用 Bash `.sh` 脚本；脚本只负责环境准备与入口分发，业务编排留在所属 Python 模块。
+- 不要依赖 shell 或编辑器的默认编码；Shell 脚本使用 `#!/usr/bin/env bash` 并保留可执行权限。
+- 根目录 `.env` 只通过 `python-dotenv` 加载，禁止在 shell 中 `source .env` 或自行解析其内容。
 
 ## 发布文件约定
 
@@ -67,7 +70,7 @@
 转换与自回归回放通过 Python.NET 在当前 Python 进程内调用 C# 状态机。修改
 `FightEngine`、`PythonBridge` 或 `config/schema.yaml` 后，必须在同一工作树重建桥接程序集：
 
-```powershell
+```bash
 dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj --configuration Debug
 ```
 

@@ -775,33 +775,33 @@ checkpoint、训练续训、实时后端、分析和导出加载器均通过 Mod
 - 场景/转换/实时：`tests/scripts/test_scene_state.py`、`test_inprocess_engine.py`、`test_context_packet.py`，以及 convert_fflogs、autoregressive_replay 中的 scene、timestamp、context、scheduler、cache、ppg、parity、parallel integration 测试；包含 validate_at 的真实桥接对照、实际 cache 往返的执行精度、ETA/剩余的双入口接入与纯合成边界，以及非状态 token 的输出/输入基线对照。
 - 持久化/分析/部署：`tests/grpo/test_grpo.py`、`tests/scripts/test_model_analysis.py`、`tests/scripts/onnx_export/`。
 
-```powershell
+```bash
 dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj --configuration Debug
 dotnet test Combat.Sim/FightEngine.Tests/FightEngine.Tests.csproj --configuration Debug
 ```
 
 先验证父级布局、读取、编码和模型语义：
 
-```powershell
-.\.venv\Scripts\python.exe -m pytest tests/training/test_state_features.py tests/training/test_context_encoding.py tests/training/test_common_norm.py tests/training/test_input_contract.py tests/training/test_causal_data_contract.py tests/training/test_independent_token_encoder.py tests/training/test_input_encoder_normalization.py tests/training/test_kv_cache.py
+```bash
+.venv/bin/python3 -m pytest tests/training/test_state_features.py tests/training/test_context_encoding.py tests/training/test_common_norm.py tests/training/test_input_contract.py tests/training/test_causal_data_contract.py tests/training/test_independent_token_encoder.py tests/training/test_input_encoder_normalization.py tests/training/test_kv_cache.py
 ```
 
 再验证共享场景和真实桥接：
 
-```powershell
-.\.venv\Scripts\python.exe -m pytest tests/scripts/test_scene_state.py tests/scripts/test_inprocess_engine.py tests/scripts/test_context_packet.py tests/scripts/convert_fflogs tests/scripts/autoregressive_replay
+```bash
+.venv/bin/python3 -m pytest tests/scripts/test_scene_state.py tests/scripts/test_inprocess_engine.py tests/scripts/test_context_packet.py tests/scripts/convert_fflogs tests/scripts/autoregressive_replay
 ```
 
 完成分析、GRPO、导出边界：
 
-```powershell
-.\.venv\Scripts\python.exe -m pytest tests/grpo tests/scripts/test_model_analysis.py tests/scripts/onnx_export
+```bash
+.venv/bin/python3 -m pytest tests/grpo tests/scripts/test_model_analysis.py tests/scripts/onnx_export
 ```
 
 这次涉及公共 schema/DataSpec 和基础夹具迁移；合并前补一次完整相关测试域检查，以覆盖未在定向命令中运行的训练消费方。检查通过后不无理由重复运行昂贵用例。
 
-```powershell
-.\.venv\Scripts\python.exe -m pytest tests/training
+```bash
+.venv/bin/python3 -m pytest tests/training
 ```
 
 真实 checkpoint 的 ONNX 门禁必须使用新结构产物，并按现有测试要求启用实际导出；若文件/provider 不可用，明确记录未验证。固定日志片段转换、性能记录和正式数据/训练/部署产物更新分别保留执行条件与结果，不以单元测试代替。

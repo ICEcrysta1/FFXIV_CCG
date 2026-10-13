@@ -121,7 +121,7 @@ def select_prepared_training_sources(
     if missing:
         raise FileNotFoundError(
             "训练缓存缺失或已过期（" + ", ".join(missing)
-            + "）；请先运行训练文件转换：.\\ffxiv_ccg.ps1 -Action convert"
+            + "）；请先运行训练文件转换：./ffxiv_ccg.sh --action convert"
         )
     return selected
 

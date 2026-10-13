@@ -48,7 +48,7 @@ def load_bridge_config() -> BridgeConfig:
         project_root=PROJECT_ROOT, env_name="ACTION_QUALITY_WORKERS",
     )
     configured_node = os.environ.get("ACTION_QUALITY_NODE")
-    local_node = PROJECT_ROOT / ".node" / "runtime" / "node.exe"
+    local_node = PROJECT_ROOT / ".node" / "runtime" / "bin" / "node"
     node = configured_node if configured_node and configured_node != "node" else str(local_node)
     return BridgeConfig(analyzer, modules, node, timeout, max_workers)
 

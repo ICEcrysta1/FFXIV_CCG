@@ -159,8 +159,8 @@ scene tokens, S1, A1, S2, A2, ..., SH, AH, S_current
 
 实施时对当前 Git 跟踪的正式源码、配置、测试和文档进行扫描，再逐项检查命中的生产路径：
 
-```powershell
-rg -n "candidate|Candidate|num_candidates|candidate_index|candidate_kind" common/policy training grpo scripts/common scripts/convert_fflogs scripts/autoregressive_replay scripts/onnx_export scripts/model_analysis Combat.Sim/FightEngine Combat.Sim/PythonBridge config tests main.py ffxiv_ccg.ps1 .env.example README.md docs -g "*.py" -g "*.cs" -g "*.yaml" -g "*.json" -g "*.md" -g "*.ps1" -g "*.example" -g "!**/__pycache__/**" -g "!**/bin/**" -g "!**/obj/**"
+```bash
+rg -n "candidate|Candidate|num_candidates|candidate_index|candidate_kind" common/policy training grpo scripts/common scripts/convert_fflogs scripts/autoregressive_replay scripts/onnx_export scripts/model_analysis Combat.Sim/FightEngine Combat.Sim/PythonBridge config tests main.py ffxiv_ccg.sh .env.example README.md docs -g "*.py" -g "*.cs" -g "*.yaml" -g "*.json" -g "*.md" -g "*.sh" -g "*.example" -g "!**/__pycache__/**" -g "!**/bin/**" -g "!**/obj/**"
 ```
 
 验收要求：
@@ -192,8 +192,8 @@ rg -n "candidate|Candidate|num_candidates|candidate_index|candidate_kind" common
 
 全仓集成命令：
 
-```powershell
-.\.venv\Scripts\python.exe -B -m pytest tests -q --tb=short --basetemp=.tmp/stage1-final-integrated-temp-02 -o cache_dir=.tmp/stage1-final-integrated-cache --junitxml=.tmp/stage1-final-integrated-proof.xml
+```bash
+.venv/bin/python3 -B -m pytest tests -q --tb=short --basetemp=.tmp/stage1-final-integrated-temp-02 -o cache_dir=.tmp/stage1-final-integrated-cache --junitxml=.tmp/stage1-final-integrated-proof.xml
 ```
 
 残留审计覆盖 455 个项目源文件：正式模型候选字段、类和执行入口为零；旧 context key 只出现在明确禁止它们存在的测试断言。宽 `candidate` 命中按文件/副本筛选、checkpoint 选项、事件队列、截止时间备选、历史重合长度、旧契约拒绝和版本/计划记录分类，不属于模型候选能力。删除了根 CLI 的旧读取路径和未使用的候选测试 helper。修改文件的 UTF-8/LF、Python AST 和 `git diff --check` 通过；未启动正式训练，未 commit/push，未改 CHANGELOG。
@@ -520,7 +520,7 @@ ONNX 的容量、padding、manifest、golden 和 parity 统一消费最终序列
 
 每次修改 FightEngine、PythonBridge 或 `config/schema.yaml` 后，在同一工作树重建：
 
-```powershell
+```bash
 dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj --configuration Debug
 ```
 

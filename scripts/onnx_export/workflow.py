@@ -1,4 +1,4 @@
-"""由根目录 PowerShell 菜单调用的 ONNX 发布工作流。"""
+"""由根目录 Bash 菜单调用的 ONNX 发布工作流。"""
 
 from __future__ import annotations
 

@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+### Changed
+
+- 开发与运行主线迁移至 Linux／WSL2，安装与操作入口改为可执行的 `setup.sh`、`ffxiv_ccg.sh`；九项菜单由 Python 模块分发，保留 checkpoint 选择、续训确认及 TensorBoard 生命周期管理。
+- 对外 Python 命令统一使用 `python3`，正式环境使用根目录 `.venv/bin/python3`；项目本地 Node 22、pnpm 10、依赖准备及 PythonBridge 构建入口同步迁移，更新环境示例、开发约定和命令文档。
+- 离线标注与 TensorBoard 子进程管理统一使用 Linux 进程组，回放峰值内存统计统一按 Linux 的 KiB 单位转换为字节。
+
+### Fixed
+
+- 修复 Linux 安全读取含 `WindowsPath` 元数据的旧 checkpoint 时无法实例化路径的问题；新 BC／GRPO checkpoint 的运行配置将路径保存为字符串。
+
+### Removed
+
+- 移除 PowerShell 安装脚本、操作入口和菜单模块，以及 Windows 可执行文件回退和 Win32 进程内存统计分支。
+
 ## [0.2.0-rc.1]
 
 ### Added

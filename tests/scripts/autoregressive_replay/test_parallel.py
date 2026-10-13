@@ -193,6 +193,15 @@ def test_backend_measurement_retains_bounded_samples(monkeypatch):
     assert metrics.to_dict()["memory_scope"] == "process_and_torch_device_peak"
 
 
+def test_linux_peak_memory_is_reported_in_bytes(monkeypatch):
+    import resource
+    from types import SimpleNamespace
+    from scripts.autoregressive_replay import backends
+
+    monkeypatch.setattr(resource, "getrusage", lambda _: SimpleNamespace(ru_maxrss=42))
+    assert backends._process_peak_working_set_bytes() == 42 * 1024
+
+
 def test_per_queue_policy_failure_does_not_cancel_other_audits():
     shared = FakePolicy()
     policies = []
