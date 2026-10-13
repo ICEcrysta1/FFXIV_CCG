@@ -67,6 +67,14 @@ def fake_process(monkeypatch, *, error=False, wrong_source=False, schema=2,
         return SimpleNamespace(returncode=0, stdout=json.dumps(analysis), stderr="")
     monkeypatch.setattr(runner, "_run_node", run)
 
+    def pooled(_pool, request, *, stop=None):
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in {"FFLOGS_V2_CLIENT_ID", "FFLOGS_V2_CLIENT_SECRET"}}
+        return json.loads(run([None, str(runner.RUNTIME)],
+                              input=json.dumps(request), env=environment).stdout)
+
+    monkeypatch.setattr(cli.NodePool, "annotate", pooled)
+
 
 def test_merge_preserves_raw_and_uses_shared_stage_layout(raw_file, bridge_config, monkeypatch):
     original = raw_file.read_bytes()
@@ -257,6 +265,7 @@ def test_scan_bounds_workers_saves_progress_and_resumes(raw_file, bridge_config,
 
 
 def test_cli_force_and_bounded_parallel_workers(raw_file, bridge_config, monkeypatch):
+    monkeypatch.setattr(config.os, "sched_getaffinity", lambda _pid: {0, 1})
     second = raw_file.with_name("second.json.br")
     second.write_bytes(raw_file.read_bytes())
     barrier = Barrier(2, timeout=5)
@@ -276,13 +285,15 @@ def test_cli_force_and_bounded_parallel_workers(raw_file, bridge_config, monkeyp
 
 
 @pytest.mark.parametrize("error,wrong_source", [(True, False), (False, True)])
-def test_invalid_analysis_preserves_existing_output(raw_file, bridge_config, monkeypatch, error, wrong_source):
+@pytest.mark.parametrize("use_pool", [False, True])
+def test_invalid_analysis_preserves_existing_output(raw_file, bridge_config, monkeypatch, error, wrong_source, use_pool):
     output = runner.output_path_for_source(raw_file, None, None)
     atomic_write_json(output, {"existing": True})
     before = output.read_bytes()
     fake_process(monkeypatch, error=error, wrong_source=wrong_source)
-    with pytest.raises(ValueError):
-        runner.annotate_file(raw_file, config=bridge_config)
+    with cli.NodePool(bridge_config) as pool:
+        with pytest.raises(ValueError):
+            runner.annotate_file(raw_file, config=bridge_config, pool=pool if use_pool else None)
     assert output.read_bytes() == before
 
 
@@ -346,18 +357,44 @@ def test_dotenv_reuses_loader_and_environment_wins(tmp_path, monkeypatch):
         "bridge": {"analyzer_root": "engine", "timeout_seconds": 9},
     })
     (tmp_path / ".env").write_text(
-        "ACTION_QUALITY_NODE=from-file\nACTION_QUALITY_WORKERS=2\n",
+        "ACTION_QUALITY_NODE=from-file\nACTION_QUALITY_WORKERS=2\nACTION_QUALITY_MEMORY_MB=3072\n",
         encoding="utf-8", newline="\n",
     )
     monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
     monkeypatch.setenv("ACTION_QUALITY_NODE", "from-process")
     monkeypatch.delenv("ACTION_QUALITY_WORKERS", raising=False)
     monkeypatch.delenv("ACTION_QUALITY_NODE_MODULES", raising=False)
+    monkeypatch.setenv("ACTION_QUALITY_MEMORY_MB", "1024")
     settings = config.load_bridge_config()
     assert settings.node == "from-process"
     assert settings.node_modules == tmp_path / "engine/node_modules"
     assert settings.timeout == 9
     assert settings.max_workers == 2
+    assert settings.memory_budget_mb == 1024
+
+
+@pytest.mark.parametrize("value", ["", "0", "-1", "1.5", "nan"])
+def test_invalid_annotation_memory_budget_is_rejected(tmp_path, monkeypatch, value):
+    atomic_write_json(tmp_path / "config/action_quality.yaml", {
+        "bridge": {"analyzer_root": "engine", "timeout_seconds": 9},
+    })
+    monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setenv("ACTION_QUALITY_MEMORY_MB", value)
+    with pytest.raises(ValueError, match="ACTION_QUALITY_MEMORY_MB"):
+        config.load_bridge_config()
+
+
+def test_annotation_concurrency_respects_cpu_memory_and_pending(bridge_config, monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.setattr(config.os, "sched_getaffinity", lambda _pid: set(range(8)))
+    settings = replace(bridge_config, max_workers=32, memory_budget_mb=2048)
+    assert config.annotation_worker_count(settings, 50) == 2
+    assert config.annotation_worker_count(replace(settings, memory_budget_mb=3072), 50) == 4
+    assert config.annotation_worker_count(settings, 2) == 2
+    assert config.annotation_worker_count(replace(settings, memory_budget_mb=256), 50) == 1
+    monkeypatch.setattr(config.os, "sched_getaffinity", lambda _pid: {0, 1})
+    assert config.annotation_worker_count(settings, 50) == 2
 
 
 @pytest.mark.parametrize("configured_node", [None, "node"])
@@ -604,6 +641,9 @@ def test_cli_repeated_interrupt_stops_running_nodes_and_pending_files(
     runtime = tmp_path / "blocked.cjs"
     runtime.write_text("setInterval(() => {}, 1000);", encoding="utf-8", newline="\n")
     monkeypatch.setattr(runner, "RUNTIME", runtime)
+    bridge_config.analyzer_root.mkdir()
+    real_pool = cli.NodePool
+    monkeypatch.setattr(cli, "NodePool", lambda settings, **kwargs: real_pool(settings, runtime=runtime, **kwargs))
     monkeypatch.setattr(cli, "load_bridge_config", lambda: replace(bridge_config, node=lifecycle_node))
     monkeypatch.setattr(sys, "argv", ["action_quality", str(raw_file.parent), "--force"])
     original_wait = cli.wait
@@ -611,9 +651,9 @@ def test_cli_repeated_interrupt_stops_running_nodes_and_pending_files(
 
     def interrupt(futures, **kwargs):
         deadline = time.monotonic() + 5
-        while len(launched_nodes) < 2 and time.monotonic() < deadline:
+        while not launched_nodes and time.monotonic() < deadline:
             original_wait(futures, timeout=0.05)
-        assert len(launched_nodes) == 2
+        assert len(launched_nodes) == 1
         signal.raise_signal(signum)
         signal.raise_signal(signum)
         return original_wait(futures, **kwargs)
@@ -622,7 +662,7 @@ def test_cli_repeated_interrupt_stops_running_nodes_and_pending_files(
     started = time.monotonic()
     assert cli.main() == 130
     assert time.monotonic() - started < 8
-    assert len(launched_nodes) == 2
+    assert len(launched_nodes) == 1
     assert all(process.poll() is not None for process in launched_nodes)
     assert signal.getsignal(signum) == previous_handler
     assert output.read_bytes() == before

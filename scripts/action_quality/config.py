@@ -28,6 +28,14 @@ class BridgeConfig:
     node: str
     timeout: float
     max_workers: int
+    memory_budget_mb: int = 2048
+
+
+def annotation_worker_count(config: BridgeConfig, task_count: int) -> int:
+    """按机器容量限制并发；每工作线程预留约 768 MiB 的启动空间。"""
+    cpu_count = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1)
+    return min(config.max_workers, max(1, task_count), max(1, cpu_count),
+               max(1, config.memory_budget_mb // 768))
 
 
 def load_bridge_config() -> BridgeConfig:
@@ -47,10 +55,13 @@ def load_bridge_config() -> BridgeConfig:
     max_workers = resolve_positive_worker_count(
         project_root=PROJECT_ROOT, env_name="ACTION_QUALITY_WORKERS",
     )
+    memory_value = os.environ.get("ACTION_QUALITY_MEMORY_MB", "2048").strip()
+    if not memory_value.isdecimal() or int(memory_value) < 1:
+        raise ValueError("ACTION_QUALITY_MEMORY_MB must be a positive integer")
     configured_node = os.environ.get("ACTION_QUALITY_NODE")
     local_node = PROJECT_ROOT / ".node" / "runtime" / "bin" / "node"
     node = configured_node if configured_node and configured_node != "node" else str(local_node)
-    return BridgeConfig(analyzer, modules, node, timeout, max_workers)
+    return BridgeConfig(analyzer, modules, node, timeout, max_workers, int(memory_value))
 
 
 def default_raw_root() -> Path:

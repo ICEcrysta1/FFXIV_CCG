@@ -2,7 +2,9 @@
 const {Socket} = require('net');
 const {Worker, isMainThread, parentPort} = require('worker_threads');
 
-if (!isMainThread) {
+if (isMainThread && process.argv.includes('--pool')) {
+  require('./pool.cjs').startPool();
+} else if (!isMainThread) {
   // 独立线程读请求并监视管道；分析主线程卡住时也能检测 Python 退出。
   const input = new Socket({fd: 0, readable: true, writable: false});
   const chunks = [];

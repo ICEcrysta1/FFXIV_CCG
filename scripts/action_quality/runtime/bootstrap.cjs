@@ -3,15 +3,21 @@ const fs = require('fs');
 const path = require('path');
 const Module = require('module');
 
-function bootstrap(analyzerRoot, nodeModules) {
+function bootstrap(analyzerRoot, nodeModules, {skipChdir = false} = {}) {
   if (!fs.existsSync(path.join(analyzerRoot, 'src/parser/AVAILABLE_MODULES.ts'))) {
     throw new Error('分析器源码缺失，请先运行 git submodule update --init');
   }
   const projectRoot = path.resolve(__dirname, '../../..');
   const paths = [nodeModules, path.join(nodeModules, '.pnpm/node_modules'), path.join(projectRoot, 'node_modules')];
   const resolve = name => require.resolve(name, {paths});
-  // Lingui 从工作目录发现上游配置；只影响独立子进程。
-  process.chdir(analyzerRoot);
+  // Lingui 从工作目录发现上游配置；工作线程共用宿主目录，不能自行 chdir。
+  if (skipChdir) {
+    if (path.resolve(process.cwd()) !== path.resolve(analyzerRoot)) {
+      throw new Error('分析线程的工作目录与分析器源码目录不一致');
+    }
+  } else {
+    process.chdir(analyzerRoot);
+  }
   process.env.NODE_ENV = 'development';
   // Lingui 的 TS 配置会经 jiti 编译；禁用共享磁盘缓存，避免权限问题或并发写入使整份标注失败。
   // 需在任何上游依赖加载前设置，jiti 会在首次 require 时读取环境变量。
