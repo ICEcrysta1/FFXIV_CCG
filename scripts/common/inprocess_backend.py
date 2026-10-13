@@ -58,7 +58,7 @@ def _load_dotnet_types() -> tuple[Any, Any, Any]:
             missing = ", ".join(str(path) for path in missing_files)
             raise FileNotFoundError(
                 f"C# 状态机运行文件缺失：{missing}；"
-                "请执行 .\\setup.ps1 安装项目依赖，再运行 "
+                "请执行 ./setup.sh 安装项目依赖，再运行 "
                 "dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj。"
             )
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import ctypes
 import json
 import os
 import subprocess
@@ -48,21 +47,6 @@ def _record_path(port: int) -> Path:
 def _pid_is_alive(pid: object) -> bool:
     if not isinstance(pid, int) or pid <= 0:
         return False
-    if sys.platform == "win32":
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
-        kernel32.OpenProcess.restype = ctypes.c_void_p
-        handle = kernel32.OpenProcess(0x1000, False, pid)
-        if not handle:
-            return False
-        try:
-            exit_code = ctypes.c_ulong()
-            return (
-                bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)))
-                and exit_code.value == 259
-            )
-        finally:
-            kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except OSError:
@@ -157,8 +141,7 @@ def _run_owned_worker(
         command,
         cwd=PROJECT_ROOT,
         stdin=subprocess.DEVNULL,
-        creationflags=(subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0),
-        start_new_session=(sys.platform != "win32"),
+        start_new_session=True,
     )
     stop_file = _stop_path(port, os.getpid())
     try:
@@ -235,12 +218,7 @@ def _start_owned_background(*, port: int, log_dir: Path, owner_pid: int) -> None
                 stdin=subprocess.DEVNULL,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
-                creationflags=(
-                    subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
-                    if sys.platform == "win32"
-                    else 0
-                ),
-                start_new_session=(sys.platform != "win32"),
+                start_new_session=True,
             )
     except Exception:
         log_path.unlink(missing_ok=True)
@@ -302,10 +280,7 @@ def _start_background(
                 stdin=subprocess.DEVNULL,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
-                creationflags=(
-                    subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-                ),
-                start_new_session=(sys.platform != "win32"),
+                start_new_session=True,
             )
     except Exception:
         log_path.unlink(missing_ok=True)

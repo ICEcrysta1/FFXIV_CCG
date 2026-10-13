@@ -3,13 +3,31 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from pathlib import Path, PosixPath, WindowsPath
+from pathlib import Path, PosixPath, PurePath, PureWindowsPath
 from typing import Any
 
 from .torch_dependencies import import_torch
 
 
-_SAFE_PATH_GLOBALS = (Path, PosixPath, WindowsPath)
+# WindowsPath 在 Linux 上不能实例化；显式映射成只解析路径的纯路径类，
+# 兼容旧 checkpoint，且不修改 pathlib 的进程级行为。
+_SAFE_PATH_GLOBALS = (
+    Path, PosixPath,
+    (PureWindowsPath, "pathlib.WindowsPath"),
+)
+
+
+def stringify_paths(value: Any) -> Any:
+    """保存元数据前递归将路径转成字符串，保留张量与容器的原有语义。"""
+    if isinstance(value, PurePath):
+        return str(value)
+    if isinstance(value, dict):
+        return {stringify_paths(key): stringify_paths(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [stringify_paths(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(stringify_paths(item) for item in value)
+    return value
 
 
 def safe_torch_load(
