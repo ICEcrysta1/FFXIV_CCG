@@ -17,6 +17,7 @@ from torch.nn import functional as F
 from common.policy.model import CausalPolicyModel
 from common.policy.model.repetition import build_repetition_penalty_mask
 from common.policy.model.causal_encoder import run_causal_layer
+from common.torch_runtime import model_dtype
 from training import TrainingCollator
 
 from ..common import (
@@ -158,7 +159,12 @@ def plot_loss_landscape(
         "loss": "mean cross entropy",
         "precision": context.precision,
         "loss_accumulation_dtype": "float64",
-        "model_forward_dtype": str(next(model.parameters()).dtype).removeprefix("torch."),
+        # 前向精度由 autocast 配置决定，混合参数模型不能用首个参数代表整体精度。
+        "model_forward_dtype": str(model_dtype(context.precision)).removeprefix("torch."),
+        "model_parameter_dtypes": {
+            name: str(next(getattr(model, name).parameters()).dtype).removeprefix("torch.")
+            for name in ("input_encoder", "encoder", "output_head")
+        },
         "color_scale": "normalized independently within each layer",
         "resolution": resolution,
         "radius": radius,

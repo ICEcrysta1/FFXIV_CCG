@@ -1560,6 +1560,7 @@ def test_run_training_rejects_missing_model_variant_before_loading_data(
 @pytest.mark.parametrize("saved_scheduler_step", (None, 7))
 @pytest.mark.parametrize(("precision", "fp32_gradients"), [
     ("float32", False), ("bf16", False), ("bf16", True),
+    ("float16", False), ("float16", True),
 ])
 def test_run_training_orchestrates_checkpoint_saving(
     tmp_path, monkeypatch, caplog, saved_scheduler_step, precision, fp32_gradients,
@@ -1741,10 +1742,15 @@ def test_run_training_orchestrates_checkpoint_saving(
         for tag, _value, step in tensorboard_writer.values
     )
     assert calls["model_args"][2] == dataset.skill_vocab.size()
-    assert any(
-        "模型: job=black_mage model_variant=artzip" in record.getMessage()
-        for record in caplog.records
+    model_log = next(
+        record.getMessage() for record in caplog.records
+        if "模型: job=black_mage model_variant=artzip" in record.getMessage()
     )
+    expected_parameter_dtype = torch.float32 if fp32_gradients else model_dtype(precision)
+    assert f"precision={precision}" in model_log
+    assert "input_encoder_parameter_dtype=torch.float32" in model_log
+    assert f"encoder_parameter_dtype={expected_parameter_dtype}" in model_log
+    assert f"output_head_parameter_dtype={expected_parameter_dtype}" in model_log
     assert [entry[0].name for entry in calls["checkpoints"]] == [
         "epoch_001_val_ppg_700.00.pt",
         "best.pt",

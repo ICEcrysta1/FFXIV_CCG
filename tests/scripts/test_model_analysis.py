@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from contextlib import nullcontext
 from pathlib import Path
@@ -16,6 +17,7 @@ from torch import nn
 
 import common.cache_compilation as cache_compilation
 from common.torch_serialization import safe_torch_load
+from common.torch_runtime import model_dtype
 from common.policy.model.input_encoder import (
     ROLE_SCENE, ROLE_STATE, ROLE_SKILL, build_position_ids, build_role_ids,
 )
@@ -1175,10 +1177,20 @@ def test_loss_landscape_directions_are_filter_normalized_and_orthogonal():
     )
 
 
-def test_loss_landscape_exports_every_layer_and_restores_parameters(monkeypatch, tmp_path):
+@pytest.mark.parametrize(("precision", "parameter_precision"), [
+    ("float32", "float32"),
+    ("bf16", "bf16"),
+    ("float16", "float16"),
+    ("bf16", "float32"),
+    ("float16", "float32"),
+])
+def test_loss_landscape_exports_every_layer_and_restores_parameters(
+    monkeypatch, tmp_path, precision, parameter_precision,
+):
     class TinyModel(nn.Module):
         def __init__(self):
             super().__init__()
+            self.input_encoder = nn.Linear(2, 2)
             self.encoder = nn.Module()
             self.encoder.layers = nn.ModuleList(
                 [
@@ -1186,6 +1198,7 @@ def test_loss_landscape_exports_every_layer_and_restores_parameters(monkeypatch,
                     nn.Linear(2, 2),
                 ]
             )
+            self.output_head = nn.Linear(2, 2)
 
         def forward(self, batch):
             hidden = batch["features"]
@@ -1194,6 +1207,8 @@ def test_loss_landscape_exports_every_layer_and_restores_parameters(monkeypatch,
             return {"logits": logits}
 
     model = TinyModel()
+    model.encoder.to(dtype=model_dtype(parameter_precision))
+    model.output_head.to(dtype=model_dtype(parameter_precision))
     model.train()
     initial_state = {
         name: value.detach().clone()
@@ -1209,8 +1224,11 @@ def test_loss_landscape_exports_every_layer_and_restores_parameters(monkeypatch,
         dataset=dataset,
         device=torch.device("cpu"),
         output_dir=tmp_path,
-        precision="float32",
-        autocast=nullcontext,
+        precision=precision,
+        # 使用 CPU autocast 验证报告，避免精度元数据回归依赖 CUDA。
+        autocast=lambda: torch.autocast(
+            device_type="cpu", dtype=model_dtype(precision), enabled=precision != "float32",
+        ),
         encode_batch=lambda batch: batch,
     )
 
@@ -1245,10 +1263,16 @@ def test_loss_landscape_exports_every_layer_and_restores_parameters(monkeypatch,
             rtol=0.0,
             atol=0.0,
         )
-    metadata = (tmp_path / "11_loss_landscape_metadata.json").read_text(encoding="utf-8")
-    assert '"precision": "float32"' in metadata
-    assert '"loss_accumulation_dtype": "float64"' in metadata
-    assert '"layer": 2' in metadata
+    metadata = json.loads((tmp_path / "11_loss_landscape_metadata.json").read_text(encoding="utf-8"))
+    assert metadata["precision"] == precision
+    assert metadata["model_forward_dtype"] == str(model_dtype(precision)).removeprefix("torch.")
+    assert metadata["model_parameter_dtypes"] == {
+        "input_encoder": "float32",
+        "encoder": str(model_dtype(parameter_precision)).removeprefix("torch."),
+        "output_head": str(model_dtype(parameter_precision)).removeprefix("torch."),
+    }
+    assert metadata["loss_accumulation_dtype"] == "float64"
+    assert metadata["layers"][-1]["layer"] == 2
     assert model.training is True
     for name, value in model.state_dict().items():
         torch.testing.assert_close(value, initial_state[name], rtol=0.0, atol=0.0)

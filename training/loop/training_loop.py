@@ -187,7 +187,9 @@ def run_training(
     if callable(set_runtime_debug):
         set_runtime_debug(debug_recorder)
     logger.info(
-        "模型: job=%s model_variant=%s actions=%d state=%d scene=%d skill_features=%d layers=%d d_model=%d activation=%s ff_dim=%d precision=%s parameter_gradient_dtype=%s ffn_checkpoint=%s attention_checkpoint=%s device=%s",
+        "模型: job=%s model_variant=%s actions=%d state=%d scene=%d skill_features=%d layers=%d d_model=%d activation=%s ff_dim=%d precision=%s"
+        " input_encoder_parameter_dtype=%s encoder_parameter_dtype=%s output_head_parameter_dtype=%s"
+        " ffn_checkpoint=%s attention_checkpoint=%s device=%s",
         data_spec.job_tag,
         config.model_variant,
         data_spec.num_actions,
@@ -199,7 +201,9 @@ def run_training(
         config.model.transformer_activation,
         config.model.ff_dim,
         config.precision,
-        next(model.parameters()).dtype,
+        next(model.input_encoder.parameters()).dtype,
+        next(model.encoder.parameters()).dtype,
+        next(model.output_head.parameters()).dtype,
         config.activation_checkpoint_ffn,
         config.activation_checkpoint_attention,
         device,
