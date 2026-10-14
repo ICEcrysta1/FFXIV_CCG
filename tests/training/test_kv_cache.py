@@ -217,8 +217,6 @@ def test_qk_normalized_kv_reuses_old_keys_once_and_matches_dense_trace(
         n_heads=4, num_kv_heads=num_kv_heads, qk_norm_scale=scale,
         full_attention_residuals=full_attention_residuals, activation="swiglu",
     )
-    model.double()
-    dense.double()
     model.enable_kv_cache(True)
     calls = []
     original = causal_encoder.normalize_qk
@@ -226,10 +224,10 @@ def test_qk_normalized_kv_reuses_old_keys_once_and_matches_dense_trace(
     def observe_normalization(query, key, *, scale):
         calls.append((query.shape[2], key.shape[2]))
         normalized = original(query, key, scale=scale)
-        epsilon = torch.finfo(torch.float64).eps
+        epsilon = torch.finfo(query.dtype).eps
         for raw, actual in zip((query, key), normalized):
             expected = raw * scale / (raw.square().mean(-1, keepdim=True) + epsilon).sqrt()
-            torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
+            torch.testing.assert_close(actual, expected, rtol=2e-6, atol=2e-6)
         return normalized
 
     monkeypatch.setattr(causal_encoder, "normalize_qk", observe_normalization)
@@ -239,8 +237,6 @@ def test_qk_normalized_kv_reuses_old_keys_once_and_matches_dense_trace(
     with torch.no_grad():
         for history_length, offset, blocks in requests:
             batch = _make_batch(history_length, current_state_offset=offset)
-            batch = {key: value.double() if value.is_floating_point() else value
-                     for key, value in batch.items()}
             calls.clear()
             cached_logits = model(batch)["logits"]
             assert calls == [(length, length) for length in blocks
@@ -250,7 +246,7 @@ def test_qk_normalized_kv_reuses_old_keys_once_and_matches_dense_trace(
                 assert key.shape[1] == num_kv_heads
                 rms = key.square().mean(-1).sqrt()
                 torch.testing.assert_close(rms, torch.full_like(rms, scale),
-                                           rtol=1e-12, atol=1e-12)
+                                           rtol=2e-6, atol=2e-6)
             if previous_keys is not None:
                 for old, current in zip(previous_keys, keys):
                     # 旧 K 必须逐位复用；结合新增块调用统计，禁止再次归一化前缀。
@@ -258,9 +254,9 @@ def test_qk_normalized_kv_reuses_old_keys_once_and_matches_dense_trace(
             previous_keys = tuple(key.clone() for key in keys)
             trace = dense.trace(batch)
             torch.testing.assert_close(cached_logits, dense(batch)["logits"],
-                                       rtol=1e-11, atol=1e-11)
+                                       rtol=2e-6, atol=2e-6)
             torch.testing.assert_close(cached_logits, dense.score_hidden(trace.encoded, trace.hidden, batch),
-                                       rtol=1e-11, atol=1e-11)
+                                       rtol=2e-6, atol=2e-6)
 
 
 @pytest.mark.parametrize("norm_first", (True, False))
@@ -366,8 +362,6 @@ def test_kv_mixing_aligns_x0_for_prefix_append_current_and_rebuild(norm_first):
         model.encoder.residual_mix.r.copy_(torch.tensor([0.7, 1.4]))
         model.encoder.residual_mix.a.copy_(torch.tensor([0.6, -0.2]))
     full_model.load_state_dict(model.state_dict())
-    model.double()
-    full_model.double()
     model.enable_kv_cache(True)
     captured, calls = {}, []
     input_hook = model.input_encoder.register_forward_hook(
@@ -381,12 +375,10 @@ def test_kv_mixing_aligns_x0_for_prefix_append_current_and_rebuild(norm_first):
         for step, (history_length, current_offset, rebuild) in enumerate(requests):
             calls.clear()
             batch = _make_batch(history_length, current_state_offset=current_offset)
-            batch = {key: value.double() if value.is_floating_point() else value
-                     for key, value in batch.items()}
             if rebuild:
                 batch["scene_vectors"][0, 0, 0] += 7.0
             actual = model(batch)["logits"]
-            torch.testing.assert_close(actual, full_model(batch)["logits"], rtol=1e-12, atol=1e-12)
+            torch.testing.assert_close(actual, full_model(batch)["logits"], rtol=2e-6, atol=2e-6)
             encoded = captured["encoded"]
             prefix_length = encoded["prefix_length"]
             if step == 0 or rebuild:

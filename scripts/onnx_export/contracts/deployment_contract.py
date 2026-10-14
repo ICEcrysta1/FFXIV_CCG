@@ -43,7 +43,11 @@ from ..runtime.tensor_runtime import GOLDEN_FORMAT, golden_encoding
 # 22：RoPE 后逐 head 归一化 Q/K，尺度由 checkpoint 保存的 model_config 提供。
 # 23：独立无 bias 动作输出头与 FP32 softcap，尺度由 checkpoint 保存的配置提供。
 # 24：宿主 FP32 重锚 ABS/DELTA 与场景裁剪差分，增加逐字段 reset mask。
-DEPLOYMENT_CONTRACT_VERSION = 25
+# 25：固定动作的两段冻结技能表进入状态输入，null/reset mask 只覆盖基础状态。
+# 26：模型状态删除累计威力，并使用统一的资源/充能/时间/单次威力缩放契约。
+#     黑魔绝望最低 MP 修正为 800，拒绝旧输入与旧状态机规则的部署产物。
+#     同版本统一数值入口与输入投影为 FP32，主干及输出沿用部署精度。
+DEPLOYMENT_CONTRACT_VERSION = 26
 DEPLOYMENT_MANIFEST_VERSION = 16
 MANIFEST_SCHEMA_FILENAME = "manifest.schema.json"
 
@@ -298,9 +302,8 @@ class DeploymentContract:
     def tensor_inputs(self) -> tuple[TensorSpec, ...]:
         dimensions = tensor_dimensions(self.data_spec, batch=self.capacity.batch_size,
                                        scene=self.capacity.scene_capacity, history=self.capacity.history_capacity)
-        float_dtype = precision_onnx_dtype(self.precision)
         semantics = {
-            "scene_vectors": "host FP32 anchor-clipped then time-differenced scene vectors; cast after encoding",
+            "scene_vectors": "host FP32 anchor-clipped then time-differenced scene vectors; FP32 projection",
             "scene_types": "scene type ids",
             "scene_mask": "true for valid scene tokens",
             "history_skill_ids": "right-padded vocab ids",
@@ -313,8 +316,8 @@ class DeploymentContract:
             "history_state_reset_mask": "base per-field ABS reset markers; first visible state is absolute",
             "current_state_reset_mask": "current base per-field ABS reset markers",
         }
-        # 宿主 FP32 和技能浮点载荷在图入口统一转换到部署精度。
-        dtypes = {"float32": float_dtype, "float": float_dtype, "index": "tensor(int64)", "bool": "tensor(bool)"}
+        # 数值入口保持宿主编码的 FP32，主干与输出沿用部署精度。
+        dtypes = {"float32": "tensor(float)", "float": "tensor(float)", "index": "tensor(int64)", "bool": "tensor(bool)"}
         return tuple(TensorSpec(field.name, dtypes[field.dtype], field.resolve_shape(dimensions), semantics[field.name]) for field in MODEL_INPUT_FIELDS)
 
     def tensor_outputs(self) -> tuple[TensorSpec, ...]:

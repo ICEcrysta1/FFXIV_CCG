@@ -33,8 +33,9 @@ class ConversionCacheInventory:
         self.load_options = load_options
         actions = load_options["expected_action_space"]
         vocab = load_options.get("expected_skill_vocab")
+        # 技能 bank 新增 FP32 校验，旧预检结论必须重新通过正式读取器。
         context = {
-            "validator": 1, "format": CACHE_FORMAT, "conversion": RAW_CONVERSION_VERSION,
+            "validator": 2, "format": CACHE_FORMAT, "conversion": RAW_CONVERSION_VERSION,
             "job": job_tag, "normalizer": load_options["normalizer"].cache_signature,
             "int_dtype": str(load_options["int_dtype"]), "float_dtype": str(load_options["float_dtype"]),
             "shard_size": load_options["shard_size"], "config": load_options.get("expected_config"),

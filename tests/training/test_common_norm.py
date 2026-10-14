@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from tests.training._causal_fixtures import make_state_groups
 
-import math
-
 import pytest
 import torch
 
@@ -13,7 +11,7 @@ from common.policy.config import ModelConfig
 from common.policy.data import Normalizer
 from common.policy.data.context_encoding import ContextEncoder, raw_state_delta
 from common.policy.data.schema import SceneWindowSchema, TrainingSchema
-from common.policy.data.normalization import NormalizerConfig
+from common.policy.data.normalization import NormalizerConfig, load_normalizer_config
 from common.policy.data.normalizer import NORMALIZER_CONTRACT_VERSION
 
 
@@ -75,17 +73,17 @@ def test_state_encoder_does_not_treat_midfield_seconds_name_as_time_rule():
     encoded = _encode_states(Normalizer(), (
         "previous_action_after.some_seconds_counter", "previous_action_after.real_remaining_seconds",
     ), [[7, 60], [8, 0]])
-    torch.testing.assert_close(encoded, torch.tensor([[7, .5], [1, -.5]]))
+    torch.testing.assert_close(encoded, torch.tensor([[7, 60 / 270], [1, -60 / 270]]))
 
 
 def test_state_encoder_reanchors_player_time_and_preserves_small_deltas():
     encoded = _encode_states(Normalizer(), (
         "previous_action_after.time_seconds", "request_state.time_seconds",
     ), [[898, 900], [901, 903], [903, 907]])
-    torch.testing.assert_close(encoded, torch.tensor([[-2 / 120, 0], [3 / 120, 3 / 120], [2 / 120, 4 / 120]]))
+    torch.testing.assert_close(encoded, torch.tensor([[-2 / 270, 0], [3 / 270, 3 / 270], [2 / 270, 4 / 270]]))
 
 
-def test_normalizer_caches_job_max_cooldown_for_remaining_seconds(monkeypatch):
+def test_normalizer_keeps_configured_time_scale_when_job_cooldowns_change(monkeypatch):
     from dataclasses import replace
 
     import common.config as config_module
@@ -105,10 +103,10 @@ def test_normalizer_caches_job_max_cooldown_for_remaining_seconds(monkeypatch):
         return project_config
 
     monkeypatch.setattr(config_module, "load_project_config", fake_load_project_config)
-    normalizer = Normalizer()
+    normalizer = Normalizer(config=NormalizerConfig(time_scale=180))
     normalizer.configure_job_resources("black_mage")
     encoded = _encode_states(normalizer, ("previous_action_after.next_cooldown_seconds",), [[270], [135]])
-    torch.testing.assert_close(encoded, torch.tensor([[1], [-.5]]))
+    torch.testing.assert_close(encoded, torch.tensor([[1], [-135 / 180]]))
     normalizer.configure_job_resources("black_mage")
     assert calls == ["black_mage"]
 
@@ -119,25 +117,21 @@ def test_normalizer_rejects_removed_skill_time_feature():
 
 
 @pytest.mark.parametrize("rows,expected", [
-    ([[1250], [2500]], [[.5], [.5]]),
-    ([[3000], [1250]], [[1], [-.7]]),
+    ([[1000], [2000]], [[.5], [.5]]),
+    ([[3000], [1000]], [[1], [-1]]),
 ])
 def test_state_encoder_clips_absolute_potency_but_keeps_signed_delta(rows, expected):
     encoded = _encode_states(Normalizer(), ("previous_action_after.target.current_potency",), rows)
     torch.testing.assert_close(encoded, torch.tensor(expected, dtype=torch.float32))
 
 
-@pytest.mark.parametrize("mode,initial,change", [
-    ("log1p", math.log1p(900), -math.log1p(50)),
-    ("divide", .5, -50 / 1800),
-])
-def test_state_encoder_honors_cumulative_potency_mode_for_signed_deltas(mode, initial, change):
-    normalizer = Normalizer(config=NormalizerConfig(cumulative_potency_mode=mode))
-    encoded = _encode_states(normalizer, (
-        "previous_action_after.target.cumulative_potency",
-        "previous_action_after.target.current_gcd_dot_potency",
-    ), [[900, 1250], [850, 1000]])
-    torch.testing.assert_close(encoded, torch.tensor([[initial, .5], [change, -.1]]))
+@pytest.mark.parametrize("name", ["cumulative_potency", "cumulative_dot_potency"])
+def test_normalizer_rejects_cumulative_potency_model_features(name):
+    normalizer = Normalizer()
+    with pytest.raises(ValueError, match="cumulative potency must not enter"):
+        normalizer.register_feature_keys("state", (f"request_state.target.{name}",))
+    with pytest.raises(ValueError, match="cumulative potency must not enter"):
+        normalizer.normalize_skill_features(torch.tensor([[1000.0]]), (name,))
 
 
 def test_scene_window_schema_resolves_indices_once_and_reports_missing_fields():
@@ -159,7 +153,7 @@ def test_state_encoder_infers_job_agnostic_ready_and_timer_fields():
     encoded = _encode_states(Normalizer(), (
         "previous_action_after.some_ready", "previous_action_after.some_timer",
     ), [[1, 60], [0, 0]])
-    torch.testing.assert_close(encoded, torch.tensor([[1, .5], [-1, -.5]]))
+    torch.testing.assert_close(encoded, torch.tensor([[1, 60 / 270], [-1, -60 / 270]]))
 
 
 def test_normalizer_uses_job_resource_limits_for_state_and_skill_features():
@@ -168,11 +162,11 @@ def test_normalizer_uses_job_resource_limits_for_state_and_skill_features():
     encoded = _encode_states(normalizer, (
         "previous_action_after.astral_soul", "previous_action_after.polyglot_timer",
     ), [[99, 99], [0, 0]])
-    torch.testing.assert_close(encoded, torch.tensor([[1, 1], [-99 / 6, -99 / 30]]))
+    torch.testing.assert_close(encoded, torch.tensor([[1, 99 / 270], [-99 / 6, -99 / 270]]))
     normalized = normalizer.normalize_skill_features(
         torch.tensor([[6.0, 30.0]]), ("job_resources_after.astral_soul", "job_resources_after.polyglot_timer"),
     )
-    torch.testing.assert_close(normalized, torch.ones((1, 2)))
+    torch.testing.assert_close(normalized, torch.tensor([[1, 30 / 270]]))
 
 
 def test_state_encoder_uses_system_and_job_status_max_stacks():
@@ -188,3 +182,77 @@ def test_state_encoder_uses_system_and_job_status_max_stacks():
         "job.ley_lines": 1.0, "job.lucid_dreaming": 1.0, "job.swiftcast": 1.0, "job.triplecast": 3.0,
         "system.burst_potion": 1.0, "system.raid_buff_window": 1.0,
     }
+
+
+@pytest.mark.parametrize("names", [
+    ("max_charges", "available_charges", "potency", "kind", "is_legal"),
+    ("available_charges", "potency", "kind", "is_legal", "max_charges"),
+])
+def test_skill_charge_ratios_use_frozen_limits_without_mutating_raw(names):
+    """不同技能的充能上限不同，字段顺序不能改变每行的分母。"""
+    rows = [dict(max_charges=2, available_charges=1, potency=1000, kind=0, is_legal=1),
+            dict(max_charges=3, available_charges=2, potency=2000, kind=1, is_legal=0),
+            dict(max_charges=1, available_charges=0, potency=0, kind=0, is_legal=1)]
+    raw = torch.tensor([[row[key] for key in names] for row in rows], dtype=torch.float32)
+    saved = raw.clone()
+    encoded = Normalizer().normalize_skill_features(raw, names)
+    for key, values in {"available_charges": [.5, 2 / 3, 0], "max_charges": [1, 1, 1],
+                        "potency": [.5, 1, 0], "kind": [0, 1, 0], "is_legal": [1, 0, 1]}.items():
+        torch.testing.assert_close(encoded[:, names.index(key)], torch.tensor(values, dtype=torch.float32))
+    torch.testing.assert_close(raw, saved, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("available,maximum", [(0, 0), (0, -1), (0, float("nan")),
+                                               (0, float("inf")), (-1, 2), (3, 2)])
+def test_skill_charge_ratios_reject_invalid_raw_limits_and_counts(available, maximum):
+    with pytest.raises(ValueError, match="charges"):
+        Normalizer().normalize_skill_features(
+            torch.tensor([[available, maximum]]), ("available_charges", "max_charges"),
+        )
+
+
+def test_skill_charge_ratios_require_frozen_limit_and_allow_empty_history():
+    normalizer = Normalizer()
+    with pytest.raises(ValueError, match="requires.*max_charges"):
+        normalizer.normalize_skill_features(torch.tensor([[1.0]]), ("available_charges",))
+    empty = torch.empty((0, 2))
+    assert normalizer.normalize_skill_features(empty, ("available_charges", "max_charges")).shape == (0, 2)
+
+
+@pytest.mark.parametrize("job,resource", [("black_mage", "polyglot_timer"),
+                                        ("machinist", "combo_remaining"),
+                                        ("machinist", "wildfire_remaining")])
+def test_time_resources_share_time_scale_in_state_skill_and_saved_contract(job, resource, monkeypatch):
+    normalizer = Normalizer()
+    normalizer.configure_job_resources(job)
+    contract = normalizer.normalization_contract
+    assert resource in contract["resource_time_fields"]
+    import common.config as config_module
+    monkeypatch.setattr(config_module, "load_project_config", lambda **_kwargs: pytest.fail("恢复不得读取本机配置"))
+    restored = Normalizer.from_contract(contract)
+    restored.ensure_job_resources(job)
+    torch.testing.assert_close(restored.normalize_skill_features(
+        torch.tensor([[10.0]]), (f"job_resources_consumed.{resource}",),
+    ), torch.tensor([[10 / 270]]))
+    torch.testing.assert_close(_encode_states(restored, (f"request_state.{resource}",), [[10], [5]]),
+                               torch.tensor([[10 / 270], [-5 / 270]]))
+
+
+def test_model_default_time_scale_comes_from_public_normalization_config(monkeypatch):
+    import common.policy.data.normalization as normalization_module
+    monkeypatch.setattr(normalization_module, "load_normalizer_config", lambda: NormalizerConfig(time_scale=180))
+    assert ModelConfig().time_delta_scale == 180
+    assert ModelConfig.from_mapping({}).time_delta_scale == 180
+    assert ModelConfig.from_mapping({"time_delta_scale": 90}).time_delta_scale == 90
+
+
+@pytest.mark.parametrize("field", ["mp_max", "time_scale", "target_count_max", "current_potency_max"])
+@pytest.mark.parametrize("value", [True, 0, -1, float("nan"), float("inf")])
+def test_public_normalization_scales_are_finite_positive_numbers(field, value):
+    with pytest.raises(ValueError, match=f"normalizer.{field}"):
+        NormalizerConfig(**{field: value})
+
+
+def test_public_normalizer_yaml_preserves_only_active_scales():
+    assert load_normalizer_config() == NormalizerConfig(mp_max=10000, time_scale=270,
+                                                       target_count_max=5, current_potency_max=2000)

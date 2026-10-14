@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 import math
 from pathlib import Path
 
 from .normalization import NormalizerConfig, load_normalizer_config
 
 
-# 2：移除 GCD 单位时间字段的归一化上限和规则。
-NORMALIZER_CONTRACT_VERSION = 2
+# 3：统一公共尺度、按冻结上限编码充能，并移除累计威力输入。
+NORMALIZER_CONTRACT_VERSION = 3
 
 
 class Normalizer:
@@ -29,6 +29,7 @@ class Normalizer:
         self._rules: dict[str, list[_FieldRule]] = {}
         self._resource_limits: dict[str, float] = {}
         self._status_limits: dict[str, float] = {}
+        self._resource_time_fields: tuple[str, ...] = ()
         self._configured_job_tag: str | None = None
 
     def register_resource_limits(self, resource_limits: dict[str, float]) -> None:
@@ -51,7 +52,7 @@ class Normalizer:
                 self.register_feature_keys(group_key, feature_keys)
 
     def configure_job_resources(self, job_tag: str) -> None:
-        """缓存职业配置中的量谱、Buff 层数上限和最大技能冷却。"""
+        """缓存职业量谱单位和 Buff 层数上限，公共尺度保持 YAML 配置值。"""
         normalized_job_tag = str(job_tag)
         if self._configured_job_tag == normalized_job_tag:
             return
@@ -59,20 +60,6 @@ class Normalizer:
         from common.config import load_project_config
 
         project_config = load_project_config(job_tag=normalized_job_tag)
-        max_cooldown = max(
-            (
-                float(skill.cooldown)
-                for skill in (*project_config.system.skills, *project_config.job.skills)
-                if skill.enabled and float(skill.cooldown) > 0.0
-            ),
-            default=float(self._config.remaining_seconds_max),
-        )
-        if not math.isfinite(max_cooldown) or max_cooldown <= 0.0:
-            raise ValueError(
-                f"job {normalized_job_tag!r} must define a positive skill cooldown "
-                "for remaining-seconds normalization"
-            )
-
         status_limits = {
             f"{source}.{status_key}": float(status.max_stacks)
             for source, statuses in (
@@ -84,7 +71,7 @@ class Normalizer:
         if any(not math.isfinite(value) or value <= 0.0 for value in status_limits.values()):
             raise ValueError("status max_stacks must be positive and finite")
 
-        self._config = replace(self._config, remaining_seconds_max=max_cooldown)
+        self._resource_time_fields = project_config.job.resource_time_fields
         self._status_limits = status_limits
         self.register_resource_limits(project_config.job.resource_limits)
         self._configured_job_tag = normalized_job_tag
@@ -116,6 +103,7 @@ class Normalizer:
             "config": asdict(self._config),
             "resource_limits": dict(sorted(self._resource_limits.items())),
             "status_limits": dict(sorted(self._status_limits.items())),
+            "resource_time_fields": sorted(self._resource_time_fields),
         }
 
     @property
@@ -150,19 +138,21 @@ class Normalizer:
                 "normalizer contract config is missing: "
                 + ", ".join(missing_config_keys)
             )
-        normalizer_config = NormalizerConfig(
-            mp_max=float(config_payload["mp_max"]),
-            remaining_seconds_max=float(config_payload["remaining_seconds_max"]),
-            fight_time_max=float(config_payload["fight_time_max"]),
-            target_count_max=float(config_payload["target_count_max"]),
-            current_potency_max=float(config_payload["current_potency_max"]),
-            cumulative_potency_mode=str(config_payload["cumulative_potency_mode"]),
-        )
+        extra = config_payload.keys() - set(required_config_keys)
+        if extra:
+            raise ValueError("normalizer contract config has removed or unknown fields: " + ", ".join(sorted(extra)))
+        normalizer_config = NormalizerConfig(**config_payload)
         normalizer = cls(config=normalizer_config)
         normalizer.register_resource_limits(
             _contract_limits(contract, "resource_limits")
         )
         normalizer._status_limits = _contract_limits(contract, "status_limits")
+        time_fields = contract.get("resource_time_fields")
+        if (not isinstance(time_fields, (list, tuple))
+                or any(not isinstance(key, str) or key not in normalizer._resource_limits for key in time_fields)
+                or len(set(time_fields)) != len(time_fields)):
+            raise ValueError("normalizer contract resource_time_fields must list unique registered resources")
+        normalizer._resource_time_fields = tuple(time_fields)
         job_tag = contract.get("job_tag")
         if job_tag is not None:
             normalized_job_tag = str(job_tag).strip()
@@ -180,7 +170,7 @@ class Normalizer:
                 raw_name,
                 self._resource_limits,
                 self._status_limits,
-                self._config.cumulative_potency_mode,
+                self._resource_time_fields,
             )
             rules.append(
                 _FieldRule(
@@ -204,7 +194,7 @@ class Normalizer:
     def state_encoding_metadata(self, schema) -> StateEncodingMetadata:
         """从已注册规则生成向量化 ABS/有符号 DELTA 元数据，不重复推断字段。"""
         self.register_schema(schema)
-        keys, divisors, lower_bounds, upper_bounds, logarithmic = [], [], [], [], []
+        keys, divisors, lower_bounds, upper_bounds = [], [], [], []
         for group in schema.state_groups:
             if group.encoding != "anchored_delta":
                 continue
@@ -214,32 +204,27 @@ class Normalizer:
                 if kind in {"divide_mp_max", "divide_max_mp"}:
                     divisor = self._config.mp_max
                 elif kind == "clip_divide_seconds_max":
-                    divisor, lower, upper = self._config.remaining_seconds_max, 0.0, self._config.remaining_seconds_max
-                elif kind == "clip_divide_fight_time_max":
-                    divisor, lower, upper = self._config.fight_time_max, 0.0, self._config.fight_time_max
+                    divisor, lower, upper = self._config.time_scale, 0.0, self._config.time_scale
+                elif kind == "divide_time_scale":
+                    divisor = self._config.time_scale
                 elif kind in {"clip_divide_resource_max", "clip_divide_status_max"}:
                     if rule.max_value is None or rule.max_value <= 0:
                         raise ValueError(f"state field {rule.feature_name!r} requires a positive max_value")
                     divisor, lower, upper = rule.max_value, 0.0, rule.max_value
                 elif kind == "divide_current_potency_max":
                     divisor, lower, upper = self._config.current_potency_max, 0.0, self._config.current_potency_max
-                elif kind == "divide_potency_by_fight_time_max":
-                    divisor, lower = self._config.fight_time_max, 0.0
-                elif kind == "log1p_potency":
-                    lower = 0.0
                 keys.append(rule.feature_name)
                 divisors.append(float(divisor))
                 lower_bounds.append(float(lower))
                 upper_bounds.append(float(upper))
-                logarithmic.append(kind == "log1p_potency")
         return StateEncodingMetadata(
-            tuple(keys), tuple(divisors), tuple(lower_bounds), tuple(upper_bounds), tuple(logarithmic),
+            tuple(keys), tuple(divisors), tuple(lower_bounds), tuple(upper_bounds),
         )
 
     @property
-    def remaining_seconds_max(self) -> float:
-        """返回 skill/状态剩余秒数特征使用的归一化上限。"""
-        return float(self._config.remaining_seconds_max)
+    def time_scale(self) -> float:
+        """返回普通时间字段使用的公共秒数尺度。"""
+        return float(self._config.time_scale)
 
     @property
     def target_count_max(self) -> float:
@@ -250,12 +235,30 @@ class Normalizer:
         if any(str(name).split(".")[-1] == "time_seconds" for name in feature_names):
             raise ValueError("skill features must not include time_seconds; rebuild old input artifacts")
         result = tensor.clone()
+        # 分母必须来自尚未归一化的冻结记录，不能受字段排列顺序影响。
+        names = tuple(str(name) for name in feature_names)
+        if tensor.shape[-1] != len(names):
+            raise ValueError("skill feature width must match feature names")
+        charge_limits = None
+        if "available_charges" in names or "max_charges" in names:
+            if "max_charges" not in names:
+                raise ValueError("available_charges requires the frozen max_charges field")
+            charge_limits = tensor[..., names.index("max_charges") : names.index("max_charges") + 1]
+            if not bool((charge_limits.isfinite() & (charge_limits > 0)).all()):
+                raise ValueError("skill max_charges must be finite and positive")
         for index, feature_name in enumerate(feature_names):
+            if feature_name in {"available_charges", "max_charges"}:
+                values = result[..., index : index + 1]
+                if not bool((values.isfinite() & (values >= 0) & (values <= charge_limits)).all()):
+                    raise ValueError("skill charges must be finite and within the frozen max_charges")
+                values.div_(charge_limits)
+                continue
             _apply_skill_normalize_inplace(
                 result[..., index : index + 1],
                 str(feature_name),
                 self._config,
                 resource_limits=self._resource_limits,
+                resource_time_fields=self._resource_time_fields,
             )
         result[result.isnan()] = 0.0
         return result
@@ -266,36 +269,44 @@ def _apply_skill_normalize_inplace(
     config: NormalizerConfig,
     *,
     resource_limits: dict[str, float],
+    resource_time_fields: tuple[str, ...],
 ) -> None:
     """把 compiled cache 中的动态 skill 数值压到模型可比较的尺度。"""
     leaf_name = feature_name.split(".")[-1]
-    if leaf_name in {"is_legal", "max_charges", "available_charges"}:
+    if leaf_name in {"is_legal", "kind"}:
         return
+    if leaf_name in {"cumulative_potency", "cumulative_dot_potency"}:
+        raise ValueError("cumulative potency must not enter model features; rebuild old input artifacts")
     if leaf_name == "potency":
         values.clamp_(min=0.0, max=config.current_potency_max).div_(config.current_potency_max)
         return
     if leaf_name in {"actual_mp_cost", "mp_cost"}:
         values.clamp_(min=0.0, max=config.mp_max).div_(config.mp_max)
         return
+    if leaf_name in resource_time_fields:
+        values.clamp_(min=0.0, max=config.time_scale).div_(config.time_scale)
+        return
     resource_max = resource_limits.get(leaf_name)
     if resource_max is not None:
         values.clamp_(min=0.0, max=resource_max).div_(resource_max)
         return
     if feature_name.endswith(".seconds") or leaf_name.endswith("_seconds"):
-        values.clamp_(min=0.0, max=config.remaining_seconds_max).div_(config.remaining_seconds_max)
+        values.clamp_(min=0.0, max=config.time_scale).div_(config.time_scale)
         return
     if leaf_name.endswith("_timer"):
-        values.clamp_(min=0.0, max=config.remaining_seconds_max).div_(config.remaining_seconds_max)
+        values.clamp_(min=0.0, max=config.time_scale).div_(config.time_scale)
 
 
 def _infer_rule_type(
     raw_name: str,
     resource_limits: dict[str, float],
     status_limits: dict[str, float],
-    cumulative_potency_mode: str,
+    resource_time_fields: tuple[str, ...],
 ) -> str:
     """根据字段名推断归一化规则。"""
     leaf_name = _leaf_name(raw_name)
+    if leaf_name in {"cumulative_potency", "cumulative_dot_potency"}:
+        raise ValueError("cumulative potency must not enter model features; rebuild old input artifacts")
 
     if leaf_name in _BINARY_FIELDS:
         return "keep"
@@ -314,7 +325,9 @@ def _infer_rule_type(
     if leaf_name == "max_mp":
         return "divide_max_mp"
     if leaf_name == "time_seconds":
-        return "clip_divide_fight_time_max"
+        return "divide_time_scale"
+    if leaf_name in resource_time_fields:
+        return "clip_divide_seconds_max"
     if leaf_name in resource_limits:
         return "clip_divide_resource_max"
     if leaf_name.endswith("_seconds"):
@@ -323,15 +336,6 @@ def _infer_rule_type(
         return "divide_current_potency_max"
     if leaf_name == "current_gcd_dot_potency":
         return "divide_current_potency_max"
-    if leaf_name in ("cumulative_potency", "cumulative_dot_potency"):
-        if cumulative_potency_mode == "log1p":
-            return "log1p_potency"
-        if cumulative_potency_mode == "divide":
-            return "divide_potency_by_fight_time_max"
-        raise ValueError(
-            "unsupported cumulative_potency_mode: "
-            f"{cumulative_potency_mode!r}; expected 'log1p' or 'divide'"
-        )
     if leaf_name.endswith("_timer"):
         return "clip_divide_seconds_max"
     return "skip"
@@ -382,7 +386,6 @@ class StateEncodingMetadata:
     divisors: tuple[float, ...]
     absolute_lower_bounds: tuple[float, ...]
     absolute_upper_bounds: tuple[float, ...]
-    logarithmic: tuple[bool, ...]
 
 
 @dataclass(frozen=True)

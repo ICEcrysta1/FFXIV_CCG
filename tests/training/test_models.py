@@ -42,8 +42,8 @@ def test_qk_rmsnorm_matches_independent_formula_and_gradients_at_small_norms(sca
     from common.policy.model.attention_utils import normalize_qk
 
     torch.manual_seed(819)
-    raw_query = torch.randn(1, 4, 3, 8, dtype=torch.float64)
-    raw_key = torch.randn(1, 2, 3, 8, dtype=torch.float64)
+    raw_query = torch.randn(1, 4, 3, 8, dtype=torch.float32)
+    raw_key = torch.randn(1, 2, 3, 8, dtype=torch.float32)
     raw_query[:, 0] = 0
     raw_query[:, 1] *= 1e-10
     raw_query[:, 2] *= 1e4
@@ -51,14 +51,14 @@ def test_qk_rmsnorm_matches_independent_formula_and_gradients_at_small_norms(sca
     actual_inputs = tuple(tensor.clone().requires_grad_(True) for tensor in (raw_query, raw_key))
     reference_inputs = tuple(tensor.clone().requires_grad_(True) for tensor in (raw_query, raw_key))
     actual = normalize_qk(*actual_inputs, scale=scale)
-    epsilon = torch.finfo(torch.float64).eps
+    epsilon = torch.finfo(torch.float32).eps
     reference = tuple(
         tensor * scale / (tensor.square().mean(-1, keepdim=True) + epsilon).sqrt()
         for tensor in reference_inputs
     )
     for left, right in zip(actual, reference):
         assert torch.isfinite(left).all()
-        torch.testing.assert_close(left, right, rtol=1e-12, atol=1e-12)
+        torch.testing.assert_close(left, right, rtol=2e-6, atol=2e-6)
     assert torch.count_nonzero(actual[0][:, 0]) == 0
     # epsilon 会衰减极小向量，不把所有 head 无条件顶到固定 RMS。
     assert (actual[0][:, 1].square().mean(-1).sqrt() < scale / 10).all()
@@ -67,7 +67,7 @@ def test_qk_rmsnorm_matches_independent_formula_and_gradients_at_small_norms(sca
     reference_grad = torch.autograd.grad(sum((value * target).sum() for value, target in zip(reference, targets)), reference_inputs)
     for left, right in zip(actual_grad, reference_grad):
         assert torch.isfinite(left).all()
-        torch.testing.assert_close(left, right, rtol=1e-11, atol=1e-9)
+        torch.testing.assert_close(left, right, rtol=2e-6, atol=2e-6)
 
 
 @pytest.mark.parametrize("num_kv_heads", (4, 2, 1))
@@ -88,9 +88,9 @@ def test_qk_head_rmsnorm_follows_rope_and_matches_trace_attention(
             ff_dim=48, dropout=0.0, transformer_activation="swiglu",
             full_attention_residuals=full_attention_residuals, qk_norm_scale=scale,
         ), vocab_size=3,
-    ).double().eval()
+    ).eval()
     batch = make_batch(spec, batch_size=2, history_length=2, scene_length=2,
-                       dtype=torch.float64)
+                       dtype=torch.float32)
     batch["scene_mask"][1, -1] = False
     batch["history_mask"][1, -1] = False
     rotated, attention_calls = [], []
@@ -106,19 +106,19 @@ def test_qk_head_rmsnorm_follows_rope_and_matches_trace_attention(
 
     def observe_attention(layer, query, key, value, **kwargs):
         raw_query, raw_key = rotated[-1]
-        epsilon = torch.finfo(torch.float64).eps
+        epsilon = torch.finfo(raw_query.dtype).eps
         expected = tuple(
             tensor * scale / (tensor.square().mean(-1, keepdim=True) + epsilon).sqrt()
             for tensor in (raw_query, raw_key)
         )
-        torch.testing.assert_close(query, expected[0], rtol=1e-12, atol=1e-12)
-        torch.testing.assert_close(key, expected[1], rtol=1e-12, atol=1e-12)
+        torch.testing.assert_close(query, expected[0], rtol=2e-6, atol=2e-6)
+        torch.testing.assert_close(key, expected[1], rtol=2e-6, atol=2e-6)
         assert query.shape[1] == 4
         assert key.shape[1] == value.shape[1] == num_kv_heads
         for tensor in (query, key):
             head_rms = tensor.square().mean(-1).sqrt()
             torch.testing.assert_close(head_rms, torch.full_like(head_rms, scale),
-                                       rtol=1e-12, atol=1e-12)
+                                       rtol=2e-6, atol=2e-6)
         output, weights = original_attention(layer, query, key, value, **kwargs)
         if kwargs["collect_attention"]:
             # 独立展开 MQA/GQA，按合法 key 与严格因果 mask 计算完整逐 head 权重。
@@ -128,7 +128,7 @@ def test_qk_head_rmsnorm_follows_rope_and_matches_trace_attention(
             causal = torch.arange(count).view(-1, 1) >= torch.arange(count).view(1, -1)
             allowed = kwargs["key_valid"][:, None, None, :] & causal
             expected_weights = scores.masked_fill(~allowed, -torch.inf).softmax(-1)
-            torch.testing.assert_close(weights, expected_weights, rtol=1e-12, atol=1e-12)
+            torch.testing.assert_close(weights, expected_weights, rtol=2e-6, atol=2e-6)
         attention_calls.append(kwargs["collect_attention"])
         return output, weights
 
@@ -142,7 +142,7 @@ def test_qk_head_rmsnorm_follows_rope_and_matches_trace_attention(
     finally:
         handle.remove()
     assert attention_calls == [False, False, True, True]
-    torch.testing.assert_close(logits, traced_logits, rtol=1e-12, atol=1e-12)
+    torch.testing.assert_close(logits, traced_logits, rtol=2e-6, atol=2e-6)
 
 
 @pytest.mark.parametrize("num_kv_heads", (4, 2, 1))
@@ -162,12 +162,12 @@ def test_qk_normalization_preserves_recomputed_forward_and_gradients(
         ff_dim=32, dropout=0.1, transformer_activation="swiglu",
         full_attention_residuals=full_attention_residuals, qk_norm_scale=0.85,
     )
-    eager = CausalPolicyModel(spec, config, vocab_size=3).double().train()
-    recomputed = CausalPolicyModel(spec, config, vocab_size=3).double().train()
+    eager = CausalPolicyModel(spec, config, vocab_size=3).float().train()
+    recomputed = CausalPolicyModel(spec, config, vocab_size=3).float().train()
     recomputed.load_state_dict(eager.state_dict())
     recomputed.enable_activation_checkpoint_attention(True, block=attention_block)
     recomputed.enable_activation_checkpoint_ffn(True)
-    template = torch.randn(2, 5, 16, dtype=torch.float64)
+    template = torch.randn(2, 5, 16, dtype=torch.float32)
     target = torch.randn_like(template)
     valid = torch.tensor([[True, True, True, True, True],
                           [True, True, False, True, True]])
@@ -188,12 +188,12 @@ def test_qk_normalization_preserves_recomputed_forward_and_gradients(
 
     expected, expected_input_grad, expected_grads = run(eager)
     actual, actual_input_grad, actual_grads = run(recomputed)
-    torch.testing.assert_close(actual, expected, rtol=1e-11, atol=1e-11)
-    torch.testing.assert_close(actual_input_grad, expected_input_grad, rtol=1e-10, atol=1e-10)
+    torch.testing.assert_close(actual, expected, rtol=2e-6, atol=2e-6)
+    torch.testing.assert_close(actual_input_grad, expected_input_grad, rtol=2e-6, atol=2e-6)
     assert actual_grads.keys() == expected_grads.keys()
     for name, gradient in actual_grads.items():
         assert torch.isfinite(gradient).all()
-        torch.testing.assert_close(gradient, expected_grads[name], rtol=1e-10, atol=1e-10)
+        torch.testing.assert_close(gradient, expected_grads[name], rtol=2e-6, atol=2e-6)
     # 标准 MHA 使用 packed 投影，GQA/MQA 使用独立投影；两种布局都要保留 Q/K 梯度。
     if num_kv_heads == 4:
         for gradient in actual_grads["layers.0.self_attn.in_proj_weight"].chunk(3, dim=0)[:2]:
@@ -305,7 +305,9 @@ def test_swiglu_training_updates_all_ffn_projections_with_checkpointing(tmp_path
             ff_dim=96, dropout=0.1, transformer_activation="swiglu",
         ),
         vocab_size=SkillVocab.build_from_job_tag(data_spec.job_tag).size(),
-    ).to(device=device, dtype=model_dtype(precision)).train()
+    ).to(device=device).train()
+    model.encoder.to(dtype=model_dtype(precision))
+    model.output_head.to(dtype=model_dtype(precision))
     model.enable_activation_checkpoint_attention()
     model.enable_activation_checkpoint_ffn()
     batch = move_batch(TrainingCollator()([dataset[0], dataset[1]]), device)

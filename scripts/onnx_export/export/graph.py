@@ -62,7 +62,7 @@ def export_and_stamp(
 
     model_proto = onnx.load(model_path, load_external_data=True)
     if precision == PRECISION_BF16 and contracts.policy.compute_model is not None:
-        _store_float_compute_weights_as_bf16(model_proto, onnx)
+        _store_float_compute_weights_as_bf16(model_proto, onnx, contracts.policy.model)
     _set_onnx_metadata(
         model_proto,
         {
@@ -130,13 +130,15 @@ def export_and_stamp(
     )
 
 
-def _store_float_compute_weights_as_bf16(model_proto, onnx) -> None:
-    """将量化后 FP32 计算图的常量还原为 BF16 存储，并显式恢复计算 dtype。"""
+def _store_float_compute_weights_as_bf16(model_proto, onnx, model) -> None:
+    """主干还原为 BF16 存储，输入编码器的原始 FP32 权重保持精度。"""
     from onnx import numpy_helper
 
     casts = []
     for initializer in model_proto.graph.initializer:
         if initializer.data_type != onnx.TensorProto.FLOAT or math.prod(initializer.dims) <= 1:
+            continue
+        if _is_input_encoder_initializer(initializer, model, float_data_type=onnx.TensorProto.FLOAT):
             continue
         values = torch.from_numpy(numpy_helper.to_array(initializer).copy())
         quantized = values.to(torch.bfloat16)
@@ -233,6 +235,9 @@ def model_alignment(
             model,
             float_data_type=tensor_proto.FLOAT,
         )
+        and not _is_input_encoder_initializer(
+            initializer, model, float_data_type=tensor_proto.FLOAT,
+        )
     ]
     other_float_initializer_max_elements = max(
         (
@@ -266,6 +271,29 @@ def model_alignment(
             float(onnx_float_initializer_count) / float(pt_parameter_count)
         ),
     }
+
+
+def _is_input_encoder_initializer(initializer, model: torch.nn.Module, *, float_data_type: int) -> bool:
+    """识别输入权重及 exporter 折叠后的转置、角色 embedding 常量。"""
+    if initializer.data_type != float_data_type:
+        return False
+    if ".input_encoder." in initializer.name:
+        return True
+    from onnx import numpy_helper
+
+    actual = torch.from_numpy(numpy_helper.to_array(initializer).copy()).float()
+    for value in model.input_encoder.state_dict().values():
+        expected = value.detach().to(device="cpu", dtype=torch.float32)
+        if actual.shape == expected.shape and torch.equal(actual, expected):
+            return True
+        if expected.ndim == 2 and actual.shape == expected.T.shape and torch.equal(actual, expected.T):
+            return True
+    # 固定角色编号使 Gather 可被折叠；每行仍须逐位匹配保存的角色权重。
+    role_weight = model.input_encoder.role_embed.weight.detach().float().cpu()
+    if actual.ndim >= 3 and actual.shape[-1] == role_weight.shape[-1]:
+        rows = actual.reshape(-1, actual.shape[-1])
+        return bool((rows[:, None, :] == role_weight[None, :, :]).all(dim=-1).any(dim=-1).all())
+    return False
 
 
 def _is_rope_frequency_initializer(

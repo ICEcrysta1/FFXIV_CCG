@@ -88,8 +88,9 @@ def validate_pytorch_matrix(
         dynamic_trace = policy.trace(*dynamic)
         fixed_trace = policy.trace(*fixed)
         zero_padding_trace = policy.trace(*zero_padding)
-        raw_dynamic_trace = policy.model.trace(_build_batch(*dynamic))
-        raw_dynamic_logits = _raw_logits(policy, raw_dynamic_trace)
+        with torch.autocast(device_type=device.type, dtype=dtype, enabled=dtype != torch.float32):
+            raw_dynamic_trace = policy.model.trace(_build_batch(*dynamic))
+            raw_dynamic_logits = _raw_logits(policy, raw_dynamic_trace)
         fixed_logits = policy(*fixed)
         zero_padding_logits = policy(*zero_padding)
         _assert_trace_finite(dynamic_trace)

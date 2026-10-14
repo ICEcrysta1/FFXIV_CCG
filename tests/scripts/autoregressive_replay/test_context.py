@@ -442,13 +442,14 @@ def _live_builder_fixture(*, max_history=2, reorder_state_fields=False):
         state_groups=(StateFeatureGroup("player_state", "player_state_feature_keys", player_keys, "anchored_delta"),
                       StateFeatureGroup("skill_availability", "skill_availability_feature_keys", availability_keys, "absolute_binary")),
         state_snapshots=("previous_action_after", "request_state"),
-        skill_history_fields=("kind", "potency"),
+        skill_history_fields=("kind", "potency", "available_charges", "max_charges"),
     )
     normalizer = Normalizer()
     normalizer.ensure_job_resources("black_mage")
     builder = LiveBatchBuilder(
         backend=Backend(), vocab=SimpleNamespace(require_lookup=lambda value, **kwargs: int(value)),
-        normalizer=normalizer, schema=schema, skill_feature_names=("kind", "potency"),
+        normalizer=normalizer, schema=schema,
+        skill_feature_names=("kind", "potency", "available_charges", "max_charges"),
         scene_provider=SimpleNamespace(at_time=lambda _: (torch.empty((0, 3)), torch.empty(0, dtype=torch.int32)),
                                        state_at=lambda _: SimpleNamespace(next_downtime_eta=0.0, downtime_remaining=0.0)),
         device=torch.device("cpu"), max_history=max_history,
@@ -458,10 +459,12 @@ def _live_builder_fixture(*, max_history=2, reorder_state_fields=False):
     return builder, canonical
 
 
-def _append_live_history(canonical, index, *, after=100.0, request_time=None, skill_id=None):
+def _append_live_history(canonical, index, *, after=100.0, request_time=None, skill_id=None,
+                         available_charges=1, max_charges=1):
     canonical["history_cursor"] += 1
     canonical["skill_history_context"].append({
         "skill_id": index if skill_id is None else skill_id, "skill_key": "fire", "kind": 1, "potency": 50.0,
+        "available_charges": available_charges, "max_charges": max_charges,
     })
     state_values = {"previous_action_after.time_seconds": float(index - 1), "previous_action_after.mp": 200.0,
                     "request_state.time_seconds": float(index) if request_time is None else request_time,
@@ -496,14 +499,53 @@ def test_live_history_window_keeps_matching_skill_and_state_rows():
         _append_live_history(canonical, index, after=float(index))
     batch, _ = builder.build(SimpleNamespace(time=4.0, gcd_remaining=0.0))
     assert batch["history_skill_ids"].tolist() == [[2, 3]]
-    torch.testing.assert_close(batch["history_state_vectors"][..., :4], torch.tensor([[[-1/120, .02, 0, .0002], [1/120, 0, 1/120, .0001]]]))
+    torch.testing.assert_close(batch["history_state_vectors"][..., :4], torch.tensor([[[-1/270, .02, 0, .0002], [1/270, 0, 1/270, .0001]]]))
     assert batch["history_state_reset_mask"][0, 0].all()
     assert not batch["history_state_reset_mask"][0, 1].any()
     assert batch["history_skill_features"][0, :, 0].tolist() == [1.0, 1.0]
+    torch.testing.assert_close(batch["history_skill_features"][0, :, 1], torch.full((2,), 50 / 2000))
     assert batch["history_action_keys"] == [["fire", "fire"]]
     empty, _ = builder.build(SimpleNamespace(time=4.0, gcd_remaining=0.0), max_history=0)
     assert empty["history_skill_ids"].shape == (1, 0)
     assert empty["current_state_vectors"].shape == (1, 12)
+
+
+def test_live_history_normalizes_charges_with_each_rows_frozen_maximum():
+    builder, canonical = _live_builder_fixture()
+    _append_live_history(canonical, 1, available_charges=1, max_charges=2)
+    _append_live_history(canonical, 2, available_charges=2, max_charges=3)
+
+    batch, _ = builder.build_from_canonical(canonical, gcd_phase=True, max_history=2)
+
+    torch.testing.assert_close(
+        batch["history_skill_features"][0, :, 2:],
+        torch.tensor([[1 / 2, 1.0], [2 / 3, 1.0]]),
+    )
+
+
+@pytest.mark.parametrize("max_charges", [0, -1, float("nan"), float("inf")])
+def test_live_history_rejects_invalid_frozen_charge_maximum(max_charges):
+    builder, canonical = _live_builder_fixture()
+    _append_live_history(canonical, 1, max_charges=max_charges)
+
+    with pytest.raises(ValueError, match="max_charges must be finite and positive"):
+        builder.build_from_canonical(canonical, gcd_phase=True, max_history=2)
+
+
+def test_live_history_cumulative_potency_does_not_enter_model_inputs():
+    builder, canonical = _live_builder_fixture()
+    _append_live_history(canonical, 1)
+    baseline, _ = builder.build_from_canonical(canonical, gcd_phase=True, max_history=2)
+    # 累计威力留在原始 token 供统计读取，模型字段只选择单次威力。
+    canonical["skill_history_context"][0].update(
+        cumulative_potency=1_000_000_000.0,
+        cumulative_dot_potency=1_000_000_000.0,
+    )
+
+    changed, _ = builder.build_from_canonical(canonical, gcd_phase=True, max_history=2)
+
+    torch.testing.assert_close(changed["history_skill_features"], baseline["history_skill_features"])
+    assert changed["history_skill_features"].shape[-1] == 4
 
 
 @pytest.mark.parametrize("context_key", ["state_history_context", "current_state_context"])
@@ -556,7 +598,7 @@ def test_live_history_cache_reuses_unchanged_rows_and_refreshes_mutated_rows(mon
     canonical["current_state_context"]["tokens"][0]["player_state"] = [0.0, 150.0, 0.0, 150.0, 0.0, 0.0, 0.0, 0.0]
     refreshed, _ = builder.build(state)
     assert calls == [1, 2]
-    torch.testing.assert_close(refreshed["current_state_vectors"][..., :4], torch.tensor([[-1/120, -.005, -2/120, .005]]))
+    torch.testing.assert_close(refreshed["current_state_vectors"][..., :4], torch.tensor([[-1/270, -.005, -2/270, .005]]))
     _append_live_history(canonical, 3)
     builder.build(state)
     assert calls == [1, 2, 3]
@@ -770,8 +812,8 @@ def test_live_scene_eta_is_shared_by_both_build_entries_and_preserves_other_toke
     for key in live:
         if isinstance(live[key], torch.Tensor):
             torch.testing.assert_close(live[key], cached[key])
-    # ETA/剩余沿用 Normalizer 的秒数上限，两段使用各自冻结时间。
-    expected_seconds = 5 / builder._normalizer.remaining_seconds_max
+    # ETA/剩余沿用 Normalizer 的统一时间尺度，两段使用各自冻结时间。
+    expected_seconds = 5 / builder._normalizer.time_scale
     assert live["current_state_vectors"][0, keys.index("previous_action_after.next_untargetable_in_seconds")] == pytest.approx(expected_seconds)
     assert live["current_state_vectors"][0, keys.index("request_state.downtime_remaining_seconds")] == pytest.approx(expected_seconds)
     before_non_state = {key: value.clone() for key, value in live.items()

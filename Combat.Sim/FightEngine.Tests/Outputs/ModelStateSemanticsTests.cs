@@ -170,7 +170,7 @@ public sealed class ModelStateSemanticsTests
         double Read(string group, string key) => OutputsTestKit.HistoryVectorValue(current, group, key);
         Assert.True(Read("resource_state", "request_state.polyglot_timer") > Read("resource_state", "previous_action_after.polyglot_timer"));
         Assert.True(Read("buff_state", "request_state.system.burst_potion.remaining_seconds") < Read("buff_state", "previous_action_after.system.burst_potion.remaining_seconds"));
-        Assert.True(Read("target_buff_state", "request_state.target.cumulative_dot_potency") > Read("target_buff_state", "previous_action_after.target.cumulative_dot_potency"));
+        Assert.True(Read("target_buff_state", "request_state.target.high_thunder.remaining_seconds") < Read("target_buff_state", "previous_action_after.target.high_thunder.remaining_seconds"));
         Assert.Equal(frozen, JsonSerializer.Serialize(Context(after, "state_history_context")));
     }
 

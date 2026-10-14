@@ -35,7 +35,9 @@ def test_real_graph_preserves_repetition_rng_and_runtime_state(
         ),
         vocab_size=3,
         repetition=repetition,
-    ).to(device=device, dtype=dtype)
+    ).to(device=device)
+    model.encoder.to(dtype=dtype)
+    model.output_head.to(dtype=dtype)
     model.enable_activation_checkpoint_ffn()
     model.enable_activation_checkpoint_attention(block=True)
     batch = prepare_repetition_penalty(make_batch(spec), repetition)

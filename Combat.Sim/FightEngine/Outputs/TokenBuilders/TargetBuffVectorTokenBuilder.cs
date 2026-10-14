@@ -12,7 +12,7 @@ namespace Combat.Sim.Outputs.TokenBuilders;
 /// <summary>
 /// 目标 Buff 向量 token 装配器（对照 token_builders/target_buff_vector_token_builder.py）。
 /// 统一导出目标侧 DoT 的 active / remaining_seconds / stacks
-/// 与累计直伤、累计 DoT、当前直伤、当前 GCD 内 DoT 结算威力。
+/// 与当前直伤、当前 GCD 内 DoT 结算威力；累计统计只由独立执行 metadata 提供。
 /// </summary>
 public sealed class TargetBuffVectorTokenBuilder
 {
@@ -77,8 +77,6 @@ public sealed class TargetBuffVectorTokenBuilder
 
     private static double ValueForTarget(TargetContext target, string field) => field switch
     {
-        "target.cumulative_dot_potency" => target.CumulativeDotPotency,
-        "target.cumulative_potency" => target.CumulativePotency,
         "target.current_potency" => target.CurrentPotency,
         "target.current_gcd_dot_potency" => target.CurrentGcdDotPotency,
         _ => throw new InvalidOperationException($"schema.yaml 中未知的目标威力字段: {field}"),

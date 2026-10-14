@@ -99,24 +99,13 @@ def observe_replay_state(backend: InProcessBackend, timestamp: float):
 
 
 def read_replay_cumulative_potency(backend: InProcessBackend, timestamp: float) -> tuple[float, float]:
-    """从最终 vector 观测读取状态机实际累计威力。"""
-    canonical = backend.observe_at(
-        float(timestamp),
-        format="vector",
-        next_observation_timestamp=float(timestamp),
-    ).context
-    history = canonical.get("current_state_context", {})
-    tokens = history.get("tokens", []) if isinstance(history, dict) else []
-    if not tokens:
-        raise RuntimeError("C# vector observation lacks current request state")
-    keys = history.get("target_buff_state_feature_keys", [])
-    target = tokens[-1].get("target_buff_state", [])
+    """从秒制观测的独立真实执行 metadata 读取累计威力。"""
+    context = backend.observe_at(float(timestamp), format="seconds").context
+    metrics = context.get("execution_metrics", {})
     try:
-        potency_index = keys.index("request_state.target.cumulative_potency")
-        dot_index = keys.index("request_state.target.cumulative_dot_potency")
-        return float(target[potency_index]), float(target[dot_index])
-    except (AttributeError, IndexError, ValueError, TypeError):
-        raise RuntimeError("C# vector observation lacks cumulative potency fields") from None
+        return float(metrics["cumulative_potency"]), float(metrics["cumulative_dot_potency"])
+    except (KeyError, ValueError, TypeError):
+        raise RuntimeError("C# seconds observation lacks cumulative potency execution metrics") from None
 
 
 class NoLegalActionError(RuntimeError):

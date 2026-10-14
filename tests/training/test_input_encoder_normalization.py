@@ -1,4 +1,4 @@
-"""统一输入 RMSNorm 的数值、布局和梯度边界。"""
+"""FP32 输入投影及统一 RMSNorm 的数值、布局和梯度边界。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from torch import nn
 
 from common.policy.config import ModelConfig
 from common.policy.model.input_encoder import CausalInputEncoder
-from common.torch_runtime import autocast_context, model_dtype, move_batch
+from common.torch_runtime import autocast_context, move_batch
 from tests.training._causal_fixtures import make_batch, make_data_spec
 
 
@@ -20,10 +20,10 @@ def _encoder():
         make_data_spec(num_scene_types=2),
         ModelConfig(d_model=8, n_layers=1, n_heads=2, ff_dim=16, dropout=0.0),
         vocab_size=3,
-    ).double()
+    )
 
 
-def _dense_batch(*, scene_length=2, history_length=2, dtype=torch.float64):
+def _dense_batch(*, scene_length=2, history_length=2, dtype=torch.float32):
     batch = make_batch(
         make_data_spec(num_scene_types=2), batch_size=2,
         history_length=history_length, scene_length=scene_length, dtype=dtype)
@@ -65,11 +65,12 @@ def test_input_rms_is_applied_once_after_content_and_role():
     history = encoder.embed_history(batch)
     interleaved = torch.stack((history['state'], history['skill']), dim=2).reshape(2, 4, 8)
     state = encoder.state_proj(batch['current_state_vectors']) + encoder.state_null_proj(
-        batch['current_state_null_mask'].double())
+        batch['current_state_null_mask'].float())
     content = torch.cat((scene, interleaved, state.unsqueeze(1)), dim=1)
     raw = content + encoder.role_embed(encoded['role_ids'])
     expected = raw / (raw.square().mean(dim=-1, keepdim=True) + 1e-5).sqrt()
-    torch.testing.assert_close(encoded['tokens'], expected, atol=1e-12, rtol=1e-12)
+    assert encoded['tokens'].dtype == torch.float32
+    torch.testing.assert_close(encoded['tokens'], expected, atol=1e-6, rtol=1e-6)
     # RMSNorm 不去均值；这个断言会拒绝把统一步骤换成 LayerNorm。
     assert torch.any(encoded['tokens'][encoded['valid']].mean(dim=-1).abs() > 0.1)
     assert not any(isinstance(module, nn.LayerNorm) for module in encoder.modules())
@@ -80,7 +81,7 @@ def test_zero_initialized_reset_projection_receives_gradients():
     encoder = _encoder()
     assert torch.count_nonzero(encoder.state_reset_proj.weight) == 0
     encoded = encoder(_dense_batch())
-    (encoded['tokens'] * torch.arange(8, dtype=torch.float64)).sum().backward()
+    (encoded['tokens'] * torch.arange(8, dtype=torch.float32)).sum().backward()
     assert torch.count_nonzero(encoder.state_reset_proj.weight.grad) > 0
 
 
@@ -121,7 +122,7 @@ def test_zero_content_and_role_have_finite_values_and_gradients():
             parameter.zero_()
     encoded = encoder(_dense_batch(scene_length=0, history_length=0))
     assert torch.equal(encoded['tokens'], torch.zeros_like(encoded['tokens']))
-    weights = torch.linspace(-0.7, 1.3, 8, dtype=torch.float64)
+    weights = torch.linspace(-0.7, 1.3, 8, dtype=torch.float32)
     (encoded['tokens'] * weights).sum().backward()
     for parameter in (encoder.state_proj.weight, encoder.state_proj.bias, encoder.role_embed.weight):
         assert parameter.grad is not None
@@ -129,15 +130,14 @@ def test_zero_content_and_role_have_finite_values_and_gradients():
         assert torch.count_nonzero(parameter.grad) > 0
 
 
-@pytest.mark.parametrize('precision', ('float64', 'bf16'))
+@pytest.mark.parametrize('precision', ('float32', 'bf16'))
 def test_input_rms_backpropagates_to_all_sources_and_preserves_padding_embedding(precision):
     if precision == 'bf16' and (
             not torch.cuda.is_available() or not torch.cuda.is_bf16_supported()):
         pytest.skip('CUDA BF16 is unavailable')
     device = torch.device('cuda' if precision == 'bf16' else 'cpu')
-    dtype = model_dtype('bf16') if precision == 'bf16' else torch.float64
-    encoder = _encoder().to(device=device, dtype=dtype)
-    batch = _dense_batch(dtype=torch.float32 if precision == 'bf16' else torch.float64)
+    encoder = _encoder().to(device=device)
+    batch = _dense_batch(dtype=torch.float32)
     batch = move_batch(batch, device)
     with autocast_context(device, 'bf16' if precision == 'bf16' else 'float32'):
         encoded = encoder(batch)
@@ -150,3 +150,73 @@ def test_input_rms_backpropagates_to_all_sources_and_preserves_padding_embedding
         assert torch.isfinite(parameter.grad).all(), name
         assert torch.count_nonzero(parameter.grad) > 0, name
     assert torch.count_nonzero(encoder.skill_embed.weight.grad[0]) == 0
+
+
+def test_all_input_projections_and_tokens_stay_fp32_under_bf16_autocast():
+    encoder = _encoder()
+    batch = _dense_batch()
+    outputs = {}
+    projections = {
+        'state': encoder.state_proj,
+        'null': encoder.state_null_proj,
+        'reset': encoder.state_reset_proj,
+        'skill': encoder.skill_feat_proj,
+        **{f'scene_{index}': projection for index, projection in enumerate(encoder.scene_proj)},
+    }
+    handles = [projection.register_forward_hook(
+        lambda _module, _inputs, result, name=name: outputs.setdefault(name, []).append(result)
+    ) for name, projection in projections.items()]
+    try:
+        with torch.autocast(device_type='cpu', dtype=torch.bfloat16):
+            encoded = encoder(batch)
+            weights = torch.linspace(-0.7, 1.3, 8)
+            loss = (encoded['tokens'][encoded['valid']] * weights).sum()
+    finally:
+        for handle in handles:
+            handle.remove()
+    assert outputs.keys() == projections.keys()
+    assert all(value.dtype == torch.float32 for values in outputs.values() for value in values)
+    assert encoded['tokens'].dtype == torch.float32
+    loss.backward()
+    for name, parameter in encoder.named_parameters():
+        assert parameter.grad is not None, name
+        assert torch.isfinite(parameter.grad).all(), name
+        assert torch.count_nonzero(parameter.grad) > 0, name
+    assert torch.count_nonzero(encoder.skill_embed.weight.grad[0]) == 0
+
+
+@pytest.mark.parametrize('route', ('state', 'skill', 'scene'))
+@pytest.mark.parametrize('raw_values,scale', (((8000.0, 8001.0), 10000.0), ((30.0, 30.1), 270.0)))
+def test_fp32_input_keeps_differences_that_bf16_would_merge(route, raw_values, scale):
+    encoder = _encoder()
+    batch = make_batch(make_data_spec(num_scene_types=2), batch_size=2, history_length=1)
+    normalized = torch.tensor(raw_values, dtype=torch.float32) / scale
+    assert normalized[0].to(torch.bfloat16) == normalized[1].to(torch.bfloat16)
+    # 留一个独立角色分量，确保 RMSNorm 以后数值差异也能保留。
+    with torch.no_grad():
+        for parameter in encoder.parameters():
+            parameter.zero_()
+        encoder.role_embed.weight[:, 1] = 1
+        if route == 'state':
+            encoder.state_proj.weight[0, 0] = 1
+        elif route == 'skill':
+            encoder.skill_feat_proj.weight[0, 0] = 1
+        else:
+            for projection in encoder.scene_proj:
+                projection.weight[0, 0] = 1
+    if route == 'state':
+        batch['current_state_vectors'][:, 0] = normalized
+        position = 3
+    elif route == 'skill':
+        batch['history_skill_features'][:, 0, 0] = normalized
+        position = 2
+    else:
+        batch['scene_vectors'][:, 0, 0] = normalized
+        position = 0
+    with torch.autocast(device_type='cpu', dtype=torch.bfloat16):
+        encoded = encoder(batch)
+    tokens = encoded['tokens'][:, position]
+    assert tokens.dtype == torch.float32
+    assert not torch.equal(tokens[0], tokens[1])
+    # 两个非零分量之比消去 RMSNorm 的共同因子，独立恢复原始数值。
+    torch.testing.assert_close(tokens[:, 0] / tokens[:, 1], normalized, atol=1e-7, rtol=1e-6)

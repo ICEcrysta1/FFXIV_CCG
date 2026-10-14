@@ -80,6 +80,7 @@ def make_input_contract(data_spec=None, *, vocab_size=None) -> ModelInputContrac
     normalizer = Normalizer.from_contract({
         "version": NORMALIZER_CONTRACT_VERSION, "job_tag": spec.job_tag,
         "config": asdict(NormalizerConfig()), "resource_limits": {}, "status_limits": {},
+        "resource_time_fields": (),
     })
     normalizer.register_schema(schema)
     vocab_size = vocab_size or max(spec.action_to_vocab_id) + 1

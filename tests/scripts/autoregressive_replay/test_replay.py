@@ -55,9 +55,9 @@ def test_backend_restores_parameter_precision_without_changing_bf16_compute(
     monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
     monkeypatch.setattr(backend_module.PyTorchPolicyBackend, "_synchronize", lambda _self: None)
 
-    def to_cpu(model, *, device, dtype):
+    def to_cpu(model, *, device):
         assert device.type == "cuda"
-        return original_to(model, device="cpu", dtype=dtype)
+        return original_to(model, device="cpu")
 
     monkeypatch.setattr(backend_module.CausalPolicyModel, "to", to_cpu)
     contexts = []
@@ -71,9 +71,10 @@ def test_backend_restores_parameter_precision_without_changing_bf16_compute(
         checkpoint, device="cuda", use_kv_cache=False, precision=precision,
     )
     assert backend.precision == "bf16"
-    assert all(parameter.dtype == expected_dtype for parameter in backend.model.parameters())
     for name, parameter in backend.model.named_parameters():
-        torch.testing.assert_close(parameter, saved["model_state_dict"][name].to(expected_dtype), rtol=0, atol=0)
+        parameter_dtype = torch.float32 if name.startswith('input_encoder.') else expected_dtype
+        assert parameter.dtype == parameter_dtype, name
+        torch.testing.assert_close(parameter, saved["model_state_dict"][name].to(parameter_dtype), rtol=0, atol=0)
     assert any(
         not torch.equal(value, value.bfloat16().float())
         for value in saved["model_state_dict"].values() if value.is_floating_point()

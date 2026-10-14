@@ -76,7 +76,7 @@ def tensor_dimensions(data_spec, *, batch=None, scene=None, history=None, bank=N
 _ENCODING_STAGES = ("cache", "dataset", "collator", "encoder")
 HISTORY_BANK_FIELDS = (
     TensorField("skill_ids", _ENCODING_STAGES, "index", ("bank",), semantic="skill"),
-    TensorField("skill_features", _ENCODING_STAGES, "float", ("bank", "skill_feature"), semantic="skill"),
+    TensorField("skill_features", _ENCODING_STAGES, "float32", ("bank", "skill_feature"), semantic="skill"),
     TensorField("state_abs_values", _ENCODING_STAGES, "float32", ("bank", "base_state")),
     TensorField("state_delta_values", _ENCODING_STAGES, "float32", ("bank", "base_state")),
     TensorField("state_null_mask", _ENCODING_STAGES, "bool", ("bank", "base_state"), False),

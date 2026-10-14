@@ -59,7 +59,9 @@ def load_policy(
         vocab_size=vocab_size,
     )
     model.load_state_dict(state_dict, strict=True)
-    model.to(device="cpu", dtype=dtype)
+    # 输入投影保留加载得到的 FP32 权重，主干和输出沿用部署精度。
+    model.encoder.to(dtype=dtype)
+    model.output_head.to(dtype=dtype)
     model.eval()
     return OnnxPolicy(model, bf16_float_compute=precision == PRECISION_BF16), data_spec, vocab_size, dtype, checkpoint
 

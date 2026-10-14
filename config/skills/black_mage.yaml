@@ -23,6 +23,7 @@ resources:
     max_value: 3
   polyglot_timer:
     max_value: 30
+    unit: seconds
   paradox_ready:
     max_value: 1
   thundercloud_ready:
@@ -49,7 +50,8 @@ statuses:
     max_stacks: 1
 
 skills:
-  # value 只供训练辅助 loss 读取，不写入 PT，也不作为模型输入；黑魔技能当前统一为 1.00。
+  # value 只供训练辅助 loss 读取，不写入 PT，也不作为模型输入。
+  # 所有技能显式声明相同字段；无 DoT 的 dot_key 使用 null，其余空集合使用 []。
   fire_iii:
     game_id: 152
     name: 爆炎
@@ -60,7 +62,16 @@ skills:
     cast_time: 3.5
     recast_time: 2.5
     mp_cost: 2000
+    mp_cost_floor: 2000
+    cooldown: 0.0
+    charges: 1
+    max_targets: 1
     aoe_secondary_reduction: 1.00
+    dot_potency: 0
+    dot_duration: 0.0
+    dot_key: null
+    requires_target: true
+    applies_statuses: []
     tags: [fire, stance]
   high_fire_ii:
     game_id: 25794
@@ -72,8 +83,16 @@ skills:
     cast_time: 3.0
     recast_time: 2.5
     mp_cost: 1500
+    mp_cost_floor: 1500
+    cooldown: 0.0
+    charges: 1
     max_targets: 99
     aoe_secondary_reduction: 0.00
+    dot_potency: 0
+    dot_duration: 0.0
+    dot_key: null
+    requires_target: true
+    applies_statuses: []
     tags: [fire, stance, aoe]
   fire_iv:
     game_id: 3577
@@ -85,7 +104,16 @@ skills:
     cast_time: 2.0
     recast_time: 2.5
     mp_cost: 800
+    mp_cost_floor: 800
+    cooldown: 0.0
+    charges: 1
+    max_targets: 1
     aoe_secondary_reduction: 1.00
+    dot_potency: 0
+    dot_duration: 0.0
+    dot_key: null
+    requires_target: true
+    applies_statuses: []
     tags: [fire, spender]
   despair:
     game_id: 16505
@@ -97,8 +125,16 @@ skills:
     cast_time: 0.0
     recast_time: 2.5
     mp_cost: full
-    mp_cost_floor: 1
+    mp_cost_floor: 800
+    cooldown: 0.0
+    charges: 1
+    max_targets: 1
     aoe_secondary_reduction: 1.00
+    dot_potency: 0
+    dot_duration: 0.0
+    dot_key: null
+    requires_target: true
+    applies_statuses: []
     tags: [fire, finisher]
   flare:
     game_id: 162
@@ -111,8 +147,15 @@ skills:
     recast_time: 2.5
     mp_cost: full
     mp_cost_floor: 800
+    cooldown: 0.0
+    charges: 1
     max_targets: 99
     aoe_secondary_reduction: 0.30
+    dot_potency: 0
+    dot_duration: 0.0
+    dot_key: null
+    requires_target: true
+    applies_statuses: []
     tags: [fire, spender, aoe]
   flare_star:
     game_id: 36989
@@ -123,8 +166,17 @@ skills:
     value: 1.00
     cast_time: 2.0
     recast_time: 2.5
+    mp_cost: 0
+    mp_cost_floor: 0
+    cooldown: 0.0
+    charges: 1
     max_targets: 99
     aoe_secondary_reduction: 0.65
+    dot_potency: 0
+    dot_duration: 0.0
+    dot_key: null
+    requires_target: true
+    applies_statuses: []
     tags: [fire, spender, aoe]
   blizzard_iii:
     game_id: 154
@@ -136,7 +188,16 @@ skills:
     cast_time: 3.5
     recast_time: 2.5
     mp_cost: 800
+    mp_cost_floor: 800
+    cooldown: 0.0
+    charges: 1
+    max_targets: 1
     aoe_secondary_reduction: 1.00
+    dot_potency: 0
+    dot_duration: 0.0
+    dot_key: null
+    requires_target: true
+    applies_statuses: []
     tags: [ice, stance]
   blizzard_iv:
     game_id: 3576
@@ -148,7 +209,16 @@ skills:
     cast_time: 2.0
     recast_time: 2.5
     mp_cost: 800
+    mp_cost_floor: 800
+    cooldown: 0.0
+    charges: 1
+    max_targets: 1
     aoe_secondary_reduction: 1.00
+    dot_potency: 0
+    dot_duration: 0.0
+    dot_key: null
+    requires_target: true
+    applies_statuses: []
     tags: [ice, generator]
   freeze:
     game_id: 159
@@ -160,8 +230,16 @@ skills:
     cast_time: 2.0
     recast_time: 2.5
     mp_cost: 1000
+    mp_cost_floor: 1000
+    cooldown: 0.0
+    charges: 1
     max_targets: 99
     aoe_secondary_reduction: 0.00
+    dot_potency: 0
+    dot_duration: 0.0
+    dot_key: null
+    requires_target: true
+    applies_statuses: []
     tags: [ice, generator, aoe]
   high_blizzard_ii:
     game_id: 25795
@@ -173,8 +251,16 @@ skills:
     cast_time: 3.0
     recast_time: 2.5
     mp_cost: 800
+    mp_cost_floor: 800
+    cooldown: 0.0
+    charges: 1
     max_targets: 99
     aoe_secondary_reduction: 0.00
+    dot_potency: 0
+    dot_duration: 0.0
+    dot_key: null
+    requires_target: true
+    applies_statuses: []
     tags: [ice, stance, aoe]
   paradox:
     game_id: 25797
@@ -185,7 +271,18 @@ skills:
     value: 1.00
     cast_time: 0.0
     recast_time: 2.5
+    # 悖论实际耗蓝由职业状态机按当前元素态计算，此字段保持原值，不直接决定耗蓝。
+    mp_cost: 0
+    mp_cost_floor: 0
+    cooldown: 0.0
+    charges: 1
+    max_targets: 1
     aoe_secondary_reduction: 1.00
+    dot_potency: 0
+    dot_duration: 0.0
+    dot_key: null
+    requires_target: true
+    applies_statuses: []
     tags: [proc, fire, ice]
   xenoglossy:
     game_id: 16507
@@ -196,7 +293,17 @@ skills:
     value: 1.00
     cast_time: 0.0
     recast_time: 2.5
+    mp_cost: 0
+    mp_cost_floor: 0
+    cooldown: 0.0
+    charges: 1
+    max_targets: 1
     aoe_secondary_reduction: 1.00
+    dot_potency: 0
+    dot_duration: 0.0
+    dot_key: null
+    requires_target: true
+    applies_statuses: []
     tags: [polyglot]
   foul:
     game_id: 7422
@@ -207,8 +314,17 @@ skills:
     value: 1.00
     cast_time: 0.0
     recast_time: 2.5
+    mp_cost: 0
+    mp_cost_floor: 0
+    cooldown: 0.0
+    charges: 1
     max_targets: 99
     aoe_secondary_reduction: 0.25
+    dot_potency: 0
+    dot_duration: 0.0
+    dot_key: null
+    requires_target: true
+    applies_statuses: []
     tags: [polyglot, aoe]
   high_thunder:
     game_id: 36986
@@ -219,11 +335,18 @@ skills:
     value: 1.00
     cast_time: 0.0
     recast_time: 2.5
+    mp_cost: 0
+    mp_cost_floor: 0
+    cooldown: 0.0
+    charges: 1
+    max_targets: 1
+    aoe_secondary_reduction: 1.00
     dot_potency: 60
     dot_duration: 30.0
-    aoe_secondary_reduction: 1.00
-    tags: [thunder, proc]
     dot_key: high_thunder
+    requires_target: true
+    applies_statuses: []
+    tags: [thunder, proc]
   high_thunder_ii:
     game_id: 36987
     name: 高震雷
@@ -233,40 +356,79 @@ skills:
     value: 1.00
     cast_time: 0.0
     recast_time: 2.5
-    dot_potency: 40
-    dot_duration: 24.0
+    mp_cost: 0
+    mp_cost_floor: 0
+    cooldown: 0.0
+    charges: 1
     max_targets: 99
     aoe_secondary_reduction: 0.00
-    tags: [thunder, proc, aoe]
+    dot_potency: 40
+    dot_duration: 24.0
     dot_key: high_thunder
+    requires_target: true
+    applies_statuses: []
+    tags: [thunder, proc, aoe]
   transpose:
     game_id: 149
     name: 星灵移位
     kind: ogcd
     behavior: transpose
+    potency: 0
     value: 1.00
+    cast_time: 0.0
+    recast_time: 2.5
+    mp_cost: 0
+    mp_cost_floor: 0
     cooldown: 5.0
+    charges: 1
+    max_targets: 1
     aoe_secondary_reduction: 1.00
+    dot_potency: 0
+    dot_duration: 0.0
+    dot_key: null
+    requires_target: false
+    applies_statuses: []
     tags: [stance]
   umbral_soul:
     game_id: 16506
     name: 灵极魂
     kind: gcd
     behavior: umbral_soul
+    potency: 0
     value: 1.00
     cast_time: 0.0
     recast_time: 2.5
+    mp_cost: 0
+    mp_cost_floor: 0
+    cooldown: 0.0
+    charges: 1
+    max_targets: 1
     aoe_secondary_reduction: 1.00
+    dot_potency: 0
+    dot_duration: 0.0
+    dot_key: null
+    requires_target: false
+    applies_statuses: []
     tags: [ice, downtime]
   ley_lines:
     game_id: 3573
     name: 黑魔纹
     kind: ogcd
     behavior: grant_status
+    potency: 0
     value: 1.00
+    cast_time: 0.0
+    recast_time: 2.5
+    mp_cost: 0
+    mp_cost_floor: 0
     cooldown: 120.0
     charges: 2
+    max_targets: 1
     aoe_secondary_reduction: 1.00
+    dot_potency: 0
+    dot_duration: 0.0
+    dot_key: null
+    requires_target: false
     applies_statuses: [ley_lines]
     tags: [buff]
   manafont:
@@ -274,19 +436,41 @@ skills:
     name: 魔泉
     kind: ogcd
     behavior: manafont
+    potency: 0
     value: 1.00
+    cast_time: 0.0
+    recast_time: 2.5
+    mp_cost: 0
+    mp_cost_floor: 0
     cooldown: 100.0
+    charges: 1
+    max_targets: 1
     aoe_secondary_reduction: 1.00
+    dot_potency: 0
+    dot_duration: 0.0
+    dot_key: null
+    requires_target: false
+    applies_statuses: []
     tags: [resource]
   triplecast:
     game_id: 7421
     name: 三连咏唱
     kind: ogcd
     behavior: grant_status
+    potency: 0
     value: 1.00
+    cast_time: 0.0
+    recast_time: 2.5
+    mp_cost: 0
+    mp_cost_floor: 0
     cooldown: 60.0
     charges: 2
+    max_targets: 1
     aoe_secondary_reduction: 1.00
+    dot_potency: 0
+    dot_duration: 0.0
+    dot_key: null
+    requires_target: false
     applies_statuses: [triplecast]
     tags: [buff]
   amplifier:
@@ -294,18 +478,41 @@ skills:
     name: 详述
     kind: ogcd
     behavior: amplifier
+    potency: 0
     value: 1.00
+    cast_time: 0.0
+    recast_time: 2.5
+    mp_cost: 0
+    mp_cost_floor: 0
     cooldown: 120.0
+    charges: 1
+    max_targets: 1
     aoe_secondary_reduction: 1.00
+    dot_potency: 0
+    dot_duration: 0.0
+    dot_key: null
+    requires_target: false
+    applies_statuses: []
     tags: [polyglot]
   swiftcast:
     game_id: 7561
     name: 即刻咏唱
     kind: ogcd
     behavior: grant_status
+    potency: 0
     value: 1.00
+    cast_time: 0.0
+    recast_time: 2.5
+    mp_cost: 0
+    mp_cost_floor: 0
     cooldown: 40.0
+    charges: 1
+    max_targets: 1
     aoe_secondary_reduction: 1.00
+    dot_potency: 0
+    dot_duration: 0.0
+    dot_key: null
+    requires_target: false
     applies_statuses: [swiftcast]
     tags: [buff]
   lucid_dreaming:
@@ -313,8 +520,19 @@ skills:
     name: 醒梦
     kind: ogcd
     behavior: grant_status
+    potency: 0
     value: 1.00
+    cast_time: 0.0
+    recast_time: 2.5
+    mp_cost: 0
+    mp_cost_floor: 0
     cooldown: 60.0
+    charges: 1
+    max_targets: 1
     aoe_secondary_reduction: 1.00
+    dot_potency: 0
+    dot_duration: 0.0
+    dot_key: null
+    requires_target: false
     applies_statuses: [lucid_dreaming]
     tags: [buff]

@@ -383,7 +383,10 @@ def _load_model_analysis_context(
         vocab_size=vocab.size(),
         repetition=repetition_config,
     )
-    model.to(device=device, dtype=parameter_dtype)
+    model.to(device=device)
+    # 输入投影固定 FP32，主干与输出头继续使用既有参数精度。
+    model.encoder.to(dtype=parameter_dtype)
+    model.output_head.to(dtype=parameter_dtype)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
     del checkpoint

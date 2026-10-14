@@ -1188,7 +1188,7 @@ def test_training_helpers_and_epoch_metrics(tmp_path, monkeypatch):
     assert saved["job_tag"] == "black_mage"
     assert saved["model_variant"] == "artzip"
     assert saved["data_spec"]["num_actions"] == 2
-    assert saved["input_contract"]["normalizer"]["config"]["fight_time_max"] == 1800.0
+    assert saved["input_contract"]["normalizer"]["config"]["time_scale"] == 270.0
 
 
 def test_checkpoint_save_rejects_missing_model_variant(tmp_path):
@@ -1560,6 +1560,7 @@ def test_run_training_rejects_missing_model_variant_before_loading_data(
 @pytest.mark.parametrize("saved_scheduler_step", (None, 7))
 @pytest.mark.parametrize(("precision", "fp32_gradients"), [
     ("float32", False), ("bf16", False), ("bf16", True),
+    ("float16", False), ("float16", True),
 ])
 def test_run_training_orchestrates_checkpoint_saving(
     tmp_path, monkeypatch, caplog, saved_scheduler_step, precision, fp32_gradients,
@@ -1623,6 +1624,9 @@ def test_run_training_orchestrates_checkpoint_saving(
     class FakeModel(_TinyModel):
         def __init__(self, data_spec, model_config, *, vocab_size, repetition):
             super().__init__()
+            self.input_encoder = nn.Linear(1, 1, bias=False)
+            self.encoder = nn.Linear(1, 1, bias=False)
+            self.output_head = nn.Linear(1, 1, bias=False)
             calls["model_args"] = (data_spec, model_config, vocab_size, repetition)
 
     def fake_build_dataloaders(*args, **kwargs):
@@ -1632,7 +1636,9 @@ def test_run_training_orchestrates_checkpoint_saving(
     def fake_train_epoch(*args, **kwargs):
         assert kwargs["tensorboard_monitor"] is not None
         expected_dtype = torch.float32 if fp32_gradients else model_dtype(precision)
-        assert all(parameter.dtype == expected_dtype for parameter in args[0].parameters())
+        assert all(parameter.dtype == (
+            expected_dtype if name.startswith(('encoder.', 'output_head.')) else torch.float32
+        ) for name, parameter in args[0].named_parameters())
         assert ("master_weights" in args[2].state_dict()) == (expected_dtype != torch.float32)
         calls["train_step_offsets"].append(kwargs["global_step_offset"])
         return {
@@ -1736,10 +1742,15 @@ def test_run_training_orchestrates_checkpoint_saving(
         for tag, _value, step in tensorboard_writer.values
     )
     assert calls["model_args"][2] == dataset.skill_vocab.size()
-    assert any(
-        "模型: job=black_mage model_variant=artzip" in record.getMessage()
-        for record in caplog.records
+    model_log = next(
+        record.getMessage() for record in caplog.records
+        if "模型: job=black_mage model_variant=artzip" in record.getMessage()
     )
+    expected_parameter_dtype = torch.float32 if fp32_gradients else model_dtype(precision)
+    assert f"precision={precision}" in model_log
+    assert "input_encoder_parameter_dtype=torch.float32" in model_log
+    assert f"encoder_parameter_dtype={expected_parameter_dtype}" in model_log
+    assert f"output_head_parameter_dtype={expected_parameter_dtype}" in model_log
     assert [entry[0].name for entry in calls["checkpoints"]] == [
         "epoch_001_val_ppg_700.00.pt",
         "best.pt",
@@ -1757,7 +1768,9 @@ def test_run_training_orchestrates_checkpoint_saving(
         vocab_size=4,
         repetition=config.repetition,
     )
-    resume_model.to(dtype=torch.float32 if fp32_gradients else model_dtype(precision))
+    resume_dtype = torch.float32 if fp32_gradients else model_dtype(precision)
+    resume_model.encoder.to(dtype=resume_dtype)
+    resume_model.output_head.to(dtype=resume_dtype)
     resume_optimizer = training_loop_impl.build_optimizer(
         resume_model, config.optimizer, learning_rate=0.01, weight_decay=config.weight_decay,
     )
@@ -1927,6 +1940,9 @@ def test_run_training_closes_tensorboard_writer_when_monitoring_or_validation_ra
     class FakeModel(_TinyModel):
         def __init__(self, *_args, **_kwargs):
             super().__init__()
+            self.input_encoder = nn.Linear(1, 1, bias=False)
+            self.encoder = nn.Linear(1, 1, bias=False)
+            self.output_head = nn.Linear(1, 1, bias=False)
 
     writer = FakeWriter()
     monkeypatch.setattr(

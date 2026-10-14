@@ -133,7 +133,7 @@ def make_inputs(
         return MODEL_INPUT_FIELDS_BY_NAME[name].resolve_shape(dimensions)
 
     def floats(*shape: int) -> torch.Tensor:
-        return torch.randn(shape, generator=generator, dtype=dtype)
+        return torch.randn(shape, generator=generator, dtype=torch.float32)
 
     scene_vectors = floats(*shape("scene_vectors"))
     scene_types = torch.randint(
@@ -181,7 +181,7 @@ def make_inputs(
     # 有效状态的技能可用性为绝对布尔值；脏 padding 仍用于检验 mask。
     for values in (history_state_vectors[:, :history_valid], current_state_vectors):
         availability = values[..., data_spec.base_state_dim:]
-        availability.copy_(torch.randint(0, 2, availability.shape, generator=generator).to(dtype))
+        availability.copy_(torch.randint(0, 2, availability.shape, generator=generator))
     named_inputs = {
         "scene_vectors": scene_vectors,
         "scene_types": scene_types,

@@ -293,7 +293,9 @@ def test_train_epoch_updates_both_parameter_groups_with_real_gradients(
     device = torch.device("cuda" if precision == "bf16" else "cpu")
     dtype = torch.bfloat16 if precision == "bf16" and not fp32_gradients else torch.float32
     torch.manual_seed(73)
-    model = _model(dtype=dtype, full_attention_residuals=full_attention_residuals).to(device)
+    model = _model(full_attention_residuals=full_attention_residuals).to(device)
+    model.encoder.to(dtype=dtype)
+    model.output_head.to(dtype=dtype)
     # 关闭衰减，确保检查到的权重变化确实来自前后向梯度。
     optimizer = _build_optimizer(model, _config(name), weight_decay=0.0)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda step: 0.8**step)
@@ -331,8 +333,8 @@ def test_train_epoch_updates_both_parameter_groups_with_real_gradients(
             assert torch.is_autocast_enabled(device.type) == (precision == "bf16")
 
         def log_gradients(self, global_step, grad_norm=None):
-            assert grad_norm.dtype == dtype
-            assert all(parameter.grad.dtype == dtype for parameter in model.parameters()
+            assert grad_norm.dtype == torch.float32
+            assert all(parameter.grad.dtype == parameter.dtype for parameter in model.parameters()
                        if parameter.grad is not None)
             norms = [parameter.grad.float().norm() for parameter in model.parameters()
                      if parameter.grad is not None]
@@ -356,7 +358,9 @@ def test_train_epoch_updates_both_parameter_groups_with_real_gradients(
         assert not torch.equal(original, parameter)
     assert scheduler.get_last_lr() == [0.02 * 0.8] * (2 if name == "muon" else 1)
     if precision == "bf16" and not fp32_gradients:
-        assert all(parameter.dtype == torch.bfloat16 for parameter in model.parameters())
+        assert all(parameter.dtype == (
+            torch.float32 if parameter_name.startswith('input_encoder.') else torch.bfloat16
+        ) for parameter_name, parameter in model.named_parameters())
         assert optimizer.state_dict()["format"] == "fp32_master_v1"
     else:
         assert all(parameter.dtype == torch.float32 for parameter in model.parameters())

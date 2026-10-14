@@ -254,7 +254,8 @@ def test_forward_and_trace_delegate_action_readout_to_public_model_method(
     bf16_float_compute: bool,
 ):
     model = _make_model()
-    model.to(dtype=dtype)
+    model.encoder.to(dtype=dtype)
+    model.output_head.to(dtype=dtype)
     # 非低精度格点的 FP32 分数同时验证最终输出的目标精度舍入。
     sentinel = torch.tensor([[7.0003, -3.0003, 2.0003]], dtype=torch.float32)
     calls = []
@@ -265,10 +266,7 @@ def test_forward_and_trace_delegate_action_readout_to_public_model_method(
 
     monkeypatch.setattr(model, "compute_action_logits", compute_action_logits)
     policy = OnnxPolicy(model, bf16_float_compute=bf16_float_compute)
-    batch = {
-        key: value.to(dtype=dtype) if value.is_floating_point() else value
-        for key, value in _make_batch().items()
-    }
+    batch = _make_batch()
     with torch.no_grad():
         actual = policy(*_tensor_args(batch))
         traced = policy.trace(*_tensor_args(batch))
@@ -277,8 +275,7 @@ def test_forward_and_trace_delegate_action_readout_to_public_model_method(
     torch.testing.assert_close(traced.logits, sentinel.to(dtype=dtype), rtol=0, atol=0)
     assert len(calls) == 2
     assert calls[0].shape == calls[1].shape == (1, model.config.d_model)
-    assert calls[0].dtype == (torch.float32 if bf16_float_compute else dtype)
-    assert calls[1].dtype == dtype
+    assert calls[0].dtype == calls[1].dtype == torch.float32
     if bf16_float_compute:
         assert policy.model.output_head.weight.dtype == torch.bfloat16
         assert policy.compute_model.output_head.weight.dtype == torch.float32
@@ -294,22 +291,23 @@ def test_float16_policy_and_trace_cast_after_fp32_softcap(
         activation=activation,
         full_attention_residuals=full_attention_residuals,
         logit_softcap=2.5,
-    ).to(dtype=torch.float16)
+    )
+    model.encoder.half()
+    model.output_head.half()
     policy = OnnxPolicy(model)
-    batch = {
-        key: value.half() if value.is_floating_point() else value
-        for key, value in _make_batch().items()
-    }
+    batch = _make_batch()
     with torch.no_grad():
         actual = policy(*_tensor_args(batch))
         traced = policy.trace(*_tensor_args(batch))
         current_hidden = traced.hidden[:, traced.encoded["current_state_position"]]
-        raw_logits = torch.nn.functional.linear(current_hidden, model.output_head.weight)
+        with torch.autocast(device_type="cpu", dtype=torch.float16):
+            raw_logits = torch.nn.functional.linear(current_hidden, model.output_head.weight)
         expected_fp32 = 2.5 * torch.tanh(raw_logits.float() / 2.5)
-        expected_forward = model(batch)["logits"]
+        with torch.autocast(device_type="cpu", dtype=torch.float16):
+            expected_forward = model(batch)["logits"]
 
     assert actual.dtype == traced.logits.dtype == torch.float16
-    assert expected_forward.dtype == model.compute_action_logits(current_hidden).dtype == torch.float32
+    assert expected_forward.dtype == torch.float32
     assert torch.isfinite(actual).all() and torch.isfinite(traced.logits).all()
     torch.testing.assert_close(traced.logits, expected_fp32.half(), rtol=0, atol=0)
     # 正式 SDPA 与显式 mask 入口沿用项目既有 FP16 门槛。
@@ -332,12 +330,14 @@ def test_float16_softcap_boundaries_keep_saturated_outputs_finite(
     """FP16 正常范围端点经正式 FP32 softcap 与部署 cast 后保持有限饱和值。"""
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA is unavailable")
-    model = _make_model(logit_softcap=logit_softcap).to(device=device, dtype=torch.float16)
+    model = _make_model(logit_softcap=logit_softcap).to(device=device)
+    model.encoder.half()
+    model.output_head.half()
     raw_logits = torch.tensor([[-float("inf"), 0.0, float("inf")]],
                               device=device, dtype=torch.float16)
 
     def saturated_output_head(current_hidden):
-        assert current_hidden.dtype == torch.float16
+        assert current_hidden.dtype == torch.float32
         assert current_hidden.device == raw_logits.device
         return raw_logits.expand(current_hidden.shape[0], -1)
 
@@ -345,14 +345,15 @@ def test_float16_softcap_boundaries_keep_saturated_outputs_finite(
     monkeypatch.setattr(model.output_head, "forward", saturated_output_head)
     policy = OnnxPolicy(model)
     batch = {
-        key: value.to(device=device, dtype=torch.float16 if value.is_floating_point() else value.dtype)
+        key: value.to(device=device)
         for key, value in _make_batch().items()
     }
     with torch.no_grad():
         actual = policy(*_tensor_args(batch))
         traced = policy.trace(*_tensor_args(batch))
         current_hidden = traced.hidden[:, traced.encoded["current_state_position"]]
-        fp32_logits = model.compute_action_logits(current_hidden)
+        with torch.autocast(device_type=device, dtype=torch.float16):
+            fp32_logits = model.compute_action_logits(current_hidden)
 
     assert fp32_logits.dtype == torch.float32
     expected = torch.tensor([[-logit_softcap, 0.0, logit_softcap]],
@@ -430,13 +431,10 @@ def test_onnx_policy_exports_with_tensor_only_user_inputs(
     activation: str,
     dtype: torch.dtype,
 ):
-    batch = {
-        key: value.to(dtype=dtype) if value.is_floating_point() else value
-        for key, value in _make_batch().items()
-    }
+    batch = _make_batch()
     policy = OnnxPolicy(
-        _make_model(full_attention_residuals=full_attention_residuals, activation=activation).to(dtype=dtype)
-    )
+        _make_model(full_attention_residuals=full_attention_residuals, activation=activation)
+    ).to(dtype=dtype)
     inputs = _tensor_args(batch)
     exported = torch.export.export(policy, inputs)
 
@@ -454,7 +452,13 @@ def test_onnx_policy_exports_with_tensor_only_user_inputs(
     assert user_inputs == list(TENSOR_INPUT_KEYS)
     assert "history_action_keys" not in exported.graph_module.code
     assert "action_keys" not in exported.graph_module.code
-    assert any(node.target == torch.ops.aten.tanh.default for node in exported.graph.nodes)
+    # autocast 会把实际计算包装为子图，softcap 的 Tanh 仍必须存在。
+    assert any(
+        node.target == torch.ops.aten.tanh.default
+        for module in exported.graph_module.modules()
+        if isinstance(module, torch.fx.GraphModule)
+        for node in module.graph.nodes
+    )
     parameter_targets = {
         spec.target
         for spec in exported.graph_signature.input_specs

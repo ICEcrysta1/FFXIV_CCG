@@ -36,12 +36,12 @@ training:
 
   # 训练输入 JSON 文件数上限；null 表示使用模型输入目录下全部有效文件。
   # 训练文件先按副本子目录比例分配，再在已有百分位区间均分。
-  max_files: 1280
+  max_files: 1430
 
   # 训练阶段：从 .cache/VAL/<副本>/ 的有效 compiled PT 中总共消费多少份验证数据。
   # 与下载器 batch.yaml 的 validation_ratio 独立；该比例只决定每个副本准备多少 VAL。
   # 各副本均分；某副本不足时只在该副本内补位，仍不足则拒绝启动训练。
-  validation_files: 30
+  validation_files: 44
 
   # 数据采样、历史增强和模型初始化使用的随机种子。
   seed: 42

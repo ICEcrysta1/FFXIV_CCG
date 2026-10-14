@@ -19,8 +19,8 @@ class OnnxPolicy(nn.Module):
         super().__init__()
         self.model = model
         self.model.enable_kv_cache(False)
-        # 部署 BF16 权重先按原链路量化，再用 FP32 计算影子模型减少
-        # CUDA/ORT 各算子逐层 BF16 舍入差异；图的权重和 I/O 仍保持 BF16。
+        # 输入投影保持 FP32；主干和输出权重沿用部署精度。
+        # BF16 影子模型沿用 FP32 计算，减少 CUDA/ORT 的逐层舍入差异。
         self.compute_model = (
             deepcopy(model).to(dtype=torch.float32)
             if bf16_float_compute
@@ -28,10 +28,12 @@ class OnnxPolicy(nn.Module):
         )
         super().train(False)
 
-    def to(self, *args, **kwargs):
-        result = super().to(*args, **kwargs)
-        if self.compute_model is not None:
-            self.compute_model.to(dtype=torch.float32)
+    def to(self, device=None, dtype=None, non_blocking=False):
+        # 先只移动设备，输入权重始终保持 FP32，不先降精度再转回。
+        result = super().to(device=device, non_blocking=non_blocking)
+        if dtype is not None:
+            self.model.encoder.to(dtype=dtype)
+            self.model.output_head.to(dtype=dtype)
         return result
 
     def train(self, mode: bool = True):
@@ -71,19 +73,15 @@ class OnnxPolicy(nn.Module):
             current_state_reset_mask,
         )
         compute_model = self.compute_model or self.model
-        if self.compute_model is not None:
-            batch = {
-                key: value.float() if value.dtype == torch.bfloat16 else value
-                for key, value in batch.items()
-            }
         encoded = compute_model.input_encoder(batch)
-        hidden, _, _ = run_causal_encoder(
-            compute_model.encoder,
-            encoded,
-            force_explicit_mask=True,
-        )
-        logits = _raw_logits(compute_model, encoded, hidden)
-        # softcap 内部使用 FP32，部署输出仍匹配原模型的目标精度。
+        dtype = compute_model.output_head.weight.dtype
+        with torch.autocast(device_type=scene_vectors.device.type, dtype=dtype, enabled=dtype != torch.float32):
+            hidden, _, _ = run_causal_encoder(
+                compute_model.encoder,
+                encoded,
+                force_explicit_mask=True,
+            )
+            logits = _raw_logits(compute_model, encoded, hidden)
         return logits.to(self.model.output_head.weight.dtype)
 
     @torch.no_grad()
@@ -91,9 +89,11 @@ class OnnxPolicy(nn.Module):
         """保留稳定 attention 路径的逐层 hidden/权重，供导出验收使用。"""
         batch = _build_batch(*inputs)
         encoded = self.model.input_encoder(batch)
-        trace = trace_encoder(self.model.encoder, encoded)
-        hidden = trace.hidden
-        logits = _raw_logits(self.model, encoded, hidden)
+        dtype = self.model.output_head.weight.dtype
+        with torch.autocast(device_type=inputs[0].device.type, dtype=dtype, enabled=dtype != torch.float32):
+            trace = trace_encoder(self.model.encoder, encoded)
+            hidden = trace.hidden
+            logits = _raw_logits(self.model, encoded, hidden)
         return OnnxPolicyTrace(
             encoded=trace.encoded,
             layer_hidden=trace.layer_hidden,

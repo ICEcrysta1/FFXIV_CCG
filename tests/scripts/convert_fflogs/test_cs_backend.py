@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -24,6 +25,38 @@ def test_inprocess_backend_submit_rejects_illegal_cooldown_action(cs_backend):
     assert not rejected.accepted
     assert rejected.reason == "cooldown_locked"
     assert after == before
+
+
+@pytest.mark.parametrize("skill_key", ["despair", "flare"])
+@pytest.mark.parametrize("astral_fire", [1, 3])
+@pytest.mark.parametrize(("mp", "accepted"), [(799, False), (800, True)])
+def test_black_mage_full_mp_spenders_share_800_mp_boundary(cs_backend, skill_key, astral_fire, mp, accepted):
+    """通过 Python.NET 的真实快照恢复检验精确 MP 边界，不扩展生产队列 API。"""
+    del cs_backend
+    from Combat.Sim.Facade import CombatStateMachine, JobSimulator
+    from System import Int32
+
+    machine = CombatStateMachine.FromDefaultConfig(str(Path(__file__).resolve().parents[3]), "black_mage")
+    simulator = JobSimulator(machine)
+    snapshot = simulator.CreateSnapshot()
+    snapshot.State.Mp = mp
+    snapshot.State.SetJobResource("astral_fire", Int32(astral_fire))
+    simulator.RestoreSnapshot(snapshot)
+
+    validation = simulator.ValidateActionAt(0.0, skill_key)
+    assert validation.Ok is accepted
+    assert (skill_key in list(simulator.AvailableActionKeysAt(0.0))) is accepted
+    submitted = simulator.SubmitAction(0.0, skill_key)
+    assert submitted.Accepted is accepted
+    assert not submitted.Queued
+    if accepted:
+        simulator.AdvanceTo(submitted.EffectTimestamp)
+        assert simulator.GetState().Mp == 0
+    else:
+        assert validation.Reason == "not_enough_mp"
+        assert submitted.Reason == "not_enough_mp"
+        assert simulator.GetState().Mp == mp
+        assert simulator.GetState().History.Count == 0
 
 
 def test_inprocess_backend_accepts_observed_cast_duration_override(cs_backend):

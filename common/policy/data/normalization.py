@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 
 from common.yaml_config import load_yaml_mapping
@@ -15,14 +16,25 @@ DEFAULT_CONFIG_PATH = (
 
 @dataclass(frozen=True)
 class NormalizerConfig:
-    """策略输入归一化上限与累计威力变换。"""
+    """策略输入的公共数值尺度；职业资源和层数上限由职业 YAML 提供。"""
 
     mp_max: float = 10000.0
-    remaining_seconds_max: float = 120.0
-    fight_time_max: float = 1800.0
-    target_count_max: float = 3.0
-    current_potency_max: float = 2500.0
-    cumulative_potency_mode: str = "log1p"
+    time_scale: float = 270.0
+    target_count_max: float = 5.0
+    current_potency_max: float = 2000.0
+
+    def __post_init__(self) -> None:
+        for name in self.__dataclass_fields__:
+            raw = getattr(self, name)
+            if isinstance(raw, bool):
+                raise ValueError(f"normalizer.{name} must be a finite positive number")
+            try:
+                value = float(raw)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(f"normalizer.{name} must be a finite positive number") from exc
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError(f"normalizer.{name} must be a finite positive number")
+            object.__setattr__(self, name, value)
 
 
 def load_normalizer_config(path: Path | None = None) -> NormalizerConfig:
@@ -32,17 +44,7 @@ def load_normalizer_config(path: Path | None = None) -> NormalizerConfig:
     values = raw.get("normalizer", {}) or {}
     if not isinstance(values, dict):
         raise ValueError("normalizer config section must be a mapping")
-    return NormalizerConfig(
-        mp_max=float(values.get("mp_max", NormalizerConfig.mp_max)),
-        remaining_seconds_max=float(
-            values.get("remaining_seconds_max", NormalizerConfig.remaining_seconds_max)
-        ),
-        fight_time_max=float(values.get("fight_time_max", NormalizerConfig.fight_time_max)),
-        target_count_max=float(values.get("target_count_max", NormalizerConfig.target_count_max)),
-        current_potency_max=float(
-            values.get("current_potency_max", NormalizerConfig.current_potency_max)
-        ),
-        cumulative_potency_mode=str(
-            values.get("cumulative_potency_mode", NormalizerConfig.cumulative_potency_mode)
-        ),
-    )
+    unknown = values.keys() - NormalizerConfig.__dataclass_fields__.keys()
+    if unknown:
+        raise ValueError("unknown or removed normalizer options: " + ", ".join(sorted(unknown)))
+    return NormalizerConfig(**values)
