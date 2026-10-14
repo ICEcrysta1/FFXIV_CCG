@@ -240,11 +240,15 @@ def _run_all(*, checkpoint: Path | None = None) -> int:
     except Exception as exc:
         failures.append(str(exc))
         print(f"parity 未通过，各场景验收结果已汇总：{exc}")
-    print_release_status(checkpoint=checkpoint)
+    try:
+        print_release_status(checkpoint=checkpoint)
+    except Exception as exc:
+        # 验收可能在生成报告前失败，状态审计异常也必须纳入失败汇总。
+        failures.append(f"发布状态校验失败：{exc}")
     if failures:
         print()
         print("ONNX 图已经导出并保留，但发布门禁未通过。")
-        print("部署包状态为 parity_failed，不能声明与 PyTorch 逐决策等价。")
+        print("部署包尚未通过完整发布验收，不能声明与 PyTorch 逐决策等价。")
         for failure in failures:
             print(f"- {failure}")
         return 2

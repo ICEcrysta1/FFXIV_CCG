@@ -182,9 +182,67 @@ def test_full_workflow_returns_gate_exit_without_raising(monkeypatch, capsys):
 
     assert workflow._run_all() == 2
     output = capsys.readouterr().out
-    assert "部署包状态为 parity_failed" in output
+    assert "部署包尚未通过完整发布验收" in output
     assert "empty mismatch" in output
     assert "scene mismatch" in output
+
+
+def test_full_workflow_reports_scene_preflight_failures_without_release_report(
+    monkeypatch, tmp_path, capsys,
+):
+    checkpoint = tmp_path / "best.pt"
+    package = tmp_path / "deployment"
+    package.mkdir()
+    scene = tmp_path / "missing.json.br"
+    prepared = []
+    monkeypatch.setattr(workflow, "check_environment", lambda **_kwargs: None)
+    monkeypatch.setattr(workflow, "run_export", lambda **_kwargs: None)
+    monkeypatch.setattr(workflow, "_load_export_config", lambda _checkpoint: SimpleNamespace(output_dir=package))
+    monkeypatch.setattr(workflow.DeploymentManifest, "load", lambda *_args, **_kwargs: object())
+
+    def fail_request(scenario, **kwargs):
+        assert kwargs["checkpoint"] == checkpoint
+        prepared.append(scenario)
+        raise FileNotFoundError(f"autoregressive scene raw JSON not found: {scene}")
+
+    monkeypatch.setattr(workflow, "_parity_request", fail_request)
+    monkeypatch.setattr(
+        workflow, "run_rollout_parities",
+        lambda *_args, **_kwargs: pytest.fail("无有效场景请求时不应启动验收"),
+    )
+
+    assert workflow._run_all(checkpoint=checkpoint) == 2
+    output = capsys.readouterr().out
+    assert prepared == ["empty", "scene"]
+    assert "empty: autoregressive scene raw JSON not found" in output
+    assert "scene: autoregressive scene raw JSON not found" in output
+    assert "deployment release report missing" in output
+    assert "完整流程通过" not in output
+    assert "部署包状态为 parity_failed" not in output
+    assert not (package / "release_report.json").exists()
+
+
+@pytest.mark.parametrize("invalid_report", [False, True])
+def test_full_workflow_handles_release_audit_result(monkeypatch, tmp_path, capsys, invalid_report):
+    monkeypatch.setattr(workflow, "check_environment", lambda **_kwargs: None)
+    monkeypatch.setattr(workflow, "run_export", lambda **_kwargs: None)
+    monkeypatch.setattr(workflow, "run_parities", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(workflow, "_load_export_config", lambda _checkpoint: SimpleNamespace(output_dir=tmp_path))
+
+    def verify(package, **kwargs):
+        assert package == tmp_path
+        assert kwargs == {"require_validated": False, "audit_history": True}
+        if invalid_report:
+            raise ValueError("release parity evidence hash mismatch")
+        return {"status": "release_validated", "requirements": {}, "runtime_targets": {}}
+
+    monkeypatch.setattr(workflow, "verify_release", verify)
+
+    assert workflow._run_all() == (2 if invalid_report else 0)
+    output = capsys.readouterr().out
+    assert ("完整流程通过" in output) is not invalid_report
+    if invalid_report:
+        assert "release parity evidence hash mismatch" in output
 
 
 def test_workflow_cli_forwards_explicit_checkpoint(monkeypatch, tmp_path):
