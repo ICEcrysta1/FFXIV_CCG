@@ -336,7 +336,8 @@ class TensorBoardMonitor:
             family = next((name for name in (
                 "Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "WenQuanYi Micro Hei",
             ) if name in available_fonts), "sans-serif")
-            font = font_manager.FontProperties(family=family)
+            # 使用字体族列表，避免 sans-serif 被当作 fontconfig 表达式解析。
+            font = font_manager.FontProperties(family=[family])
             figure = Figure(figsize=(max(6, len(self.action_keys) * 0.32), max(5, len(self.action_keys) * 0.30)))
             axis = figure.subplots()
             image = axis.imshow(self._confusion.float() / support.clamp_min(1).unsqueeze(1), vmin=0, vmax=1, cmap="Blues")
