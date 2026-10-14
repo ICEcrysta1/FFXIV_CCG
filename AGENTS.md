@@ -1,13 +1,27 @@
-## 准则
+## 始终生效的规则
 
-- 保持项目结构的清晰和无多余代码，不要让 A 模块干 B 模块的事情，模块应该专职。
+以下规则适用于所有任务，无须满足特定触发条件。
+
+## 最小化修复
+
+应采用能够解决问题根本原因的最小改动，而不是仅仅处理表面症状。
+
+- 不进行无关的重构、代码清理或其他改进。
+- 不修改指定仓库之外的任何文件。
+- 如果真正解决问题必须进行上述操作，应明确说明原因，而不是未经说明便擅自执行。
+
+## 代码编写准则
+
+- 保持模块专职。
 - 根目录 `common/` 只放跨顶层模块复用、无具体业务归属的公共函数；模块内部共享 helper 留在所属模块，不因为“看起来通用”就上移。
 - 根目录 `.env` 统一通过 `python-dotenv` 加载，禁止各模块维护自定义 `.env` 解析器
 - 影响算法、数据语义与可复现行为的运行参数以 `YAML` 为权威；
 - 机器本地路径、凭据、端口和硬件相关并发参数允许由根目录 `.env` 管理。
+
+## 其他 
+
 - `README.md` 顶部保留项目展示区域；`preview/` 只承载 README 和项目展示资源，不承载业务代码，目录内文件无需逐个写入架构说明。
 - 使用中文思考和回答，思考过程中发现什么问题先报告，再继续推进。
-- 你是一个用中文思考的助手。在分析任何问题时，先用中文建立思维框架，再执行具体步骤。
 - 使用中文注释
 - 每次需要更新变更说明时，统一修改 [CHANGELOG.md](./CHANGELOG.md)；如果没有历史 tag，就先维护 `Unreleased`。
 - 修改 changelog 前，先看 git 历史里的最新 tag。
@@ -36,10 +50,8 @@
 
 - 文件编码：UTF-8
 - 换行：LF
-- 开发与运行主线为 Linux／WSL2；不维护 Windows、PowerShell 或 Windows 可执行文件回退。
-- 对外命令统一使用 `python3`；项目正式 Python 环境为根目录 `.venv`，直接执行时使用 `.venv/bin/python3`。
 - 安装与操作入口使用 Bash `.sh` 脚本；脚本只负责环境准备与入口分发，业务编排留在所属 Python 模块。
-- 不要依赖 shell 或编辑器的默认编码；Shell 脚本使用 `#!/usr/bin/env bash` 并保留可执行权限。
+- Python 环境为根目录 `.venv`，直接执行时使用 `.venv/bin/python3`。
 - 根目录 `.env` 只通过 `python-dotenv` 加载，禁止在 shell 中 `source .env` 或自行解析其内容。
 
 ## 发布文件约定
@@ -53,30 +65,3 @@
 
 - 详细看 [项目各文件说明.md](./docs/项目各文件说明.md) 每次新会话时请自动阅读了解项目结构
 - 修改 [项目各文件说明.md](./docs/项目各文件说明.md) 时内部项目结构的时候保持首字母排序，顶部文件夹底部文件的方式修改
-
-## 训练指标与缓存契约
-
-- compiled cache 编译阶段固定保存完整 raw ABS／DELTA history bank；`model.history_capacity`、`model.history_reset_keep`、`model.time_delta_scale` 与随机历史裁剪只属于模型读取侧，不得进入 cache signature、编译 worker、raw source 后端或 history bank 构建参数。
-- 修改容量、重置保留数或时间尺度只应改变读取侧的编码／窗口；旧格式 cache 因格式版本升级可以一次性重建，但同一 raw source 的后续读取配置调整必须复用同一份 compiled cache。
-
-- 技能 token 不保留原始 `kind` 字符串：状态机内部仍使用 `gcd` / `ogcd` 语义，输出 token 只写数值维度，`gcd=1`、`ogcd=0`。该维度同时进入模型 `skill_features`，并由验证 PPG 统计历史 GCD 数。
-- `val_ppg` 是模型在真实验证副本上的自回归表现：每个验证 source 从首个缓存样本的初始状态和完整 scene token 开始，由模型 Top-1 自循环到最后一个 `targetable=true` Boss 窗口结束；按该次回放的 `(历史 GCD 直接威力 + 历史 oGCD 直接威力 + 历史累计 DoT 威力) / 执行 GCD 数` 得到单副本 PPG，最后对副本平均。固定动作价值元数据、label 和 teacher-forced logits 不参与该指标。回放中动作全非法时先由 `DecisionScheduler` 推进到下一可决策事件；若已无法推进，则该副本按正式失败语义返回全 0（包括此前已执行的伤害），仍计入副本平均。“跳过本副本并记 0”只表示返回零结果，不表示从平均值排除。
-- `none_ppg` 是模型相关指标：训练验证完成后，使用当前 checkpoint 在空场景中由 C# 状态机驱动自回归 Top-1 回放，再按累计直接/DoT 威力除以执行 GCD 数计算。`top1` / `top3` 仍单独使用人类前上下文评估。
-- compiled cache 的 v23 / 转换版本 v25 保存跨步模型状态与真实当前请求状态的 raw FP32 ABS／DELTA、null／字段 reset mask、完整 raw 场景、固定动作监督及历史 bank 中已有的技能直接威力、累计 DoT 威力和数值化 `kind` 维度；技能字段不包含绝对时间 `time_seconds`，两段状态保留各自时间。状态与场景在共享 `ContextEncoder` 中完成重锚和归一化，随后转换到模型精度。真实执行统计从独立 metadata 读取，不从请求状态推导，并固定保存完整 history bank（含逐行两段技能可用性的 bool 表）；状态内容为基础 86 维加两段固定动作表，当前黑魔共 136 维，null/reset 仍为基础 86 维。availability 始终为绝对 0/1，不做 DELTA；验证 PPG 从现有 cache reader、保存的输入契约和完整绝对 scene 恢复回放所需信息，不为副本时长或基础 GCD 增加重复 manifest 字段。状态机语义变化导致历史状态转移结果不可复用时，必须提升转换版本并让旧 cache 自动回到重编译路径。
-
-- 固定动作 `action_keys`、`action_to_vocab_id` 和 `action_is_gcd` 随 checkpoint 输入契约保存；离线恢复不得从本机当前 YAML 重建。技能输入和输出共享唯一的语义 embedding 参数表，固定动作的合法性 mask 与动态价值元数据不进入 Transformer token；历史技能 token 仍保留数值 `is_legal`，原始 `invalid_reason` 供调用方读取。
-
-## Combat.Sim 部署契约
-
-转换与自回归回放通过 Python.NET 在当前 Python 进程内调用 C# 状态机。修改
-`FightEngine`、`PythonBridge` 或 `config/schema.yaml` 后，必须在同一工作树重建桥接程序集：
-
-```bash
-dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj --configuration Debug
-```
-
-Python 客户端会将程序集嵌入的契约版本与 `config/schema.yaml`（当前 `sidecar_contract_version: 17`）比较，拒绝旧 DLL；新版 DLL 使用缺少
-`contracts.scene_epsilon` 或 `contracts.sidecar_contract_version` 的旧 schema 则会在 C# 配置加载时失败。
-FightEngine DLL、`config/schema.yaml` 与输出 token 契约必须作为同一版本构建和使用。转换与自回归回放使用同一 raw FP32 场景执行视图，将同刻事实整批提交给状态机；输出合成只负责各冻结快照的 ETA/停机剩余，不回写移动事实或原始 scene token。
-
-职业状态机的合法性或状态转移语义发生变化时，必须检查所有受影响的边界并同步升级契约：`sidecar_contract_version`、checkpoint 输入契约（`INPUT_CONTRACT_VERSION`）、compiled cache 转换版本（`CACHE_FORMAT` / `DEFAULT_CONVERSION_VERSION`）和 ONNX deployment contract（`DEPLOYMENT_CONTRACT_VERSION`，以及 `manifest.schema.json` 里对应的 `const`）；同时补充 Python/C# 状态机回归测试，并重建 PythonBridge、缓存、checkpoint 和部署包，禁止旧产物静默复用。
