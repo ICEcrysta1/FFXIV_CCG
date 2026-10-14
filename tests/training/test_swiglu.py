@@ -71,10 +71,10 @@ def test_swiglu_matches_explicit_gate_formula_and_gradients(bias):
     torch.manual_seed(37)
     layer = TraceableTransformerEncoderLayer(
         d_model=8, nhead=2, dim_feedforward=24, dropout=0.0,
-        activation="swiglu", bias=bias, dtype=torch.float64,
+        activation="swiglu", bias=bias, dtype=torch.float32,
     )
     reference = deepcopy(layer)
-    x = torch.randn(2, 3, 8, dtype=torch.float64, requires_grad=True)
+    x = torch.randn(2, 3, 8, dtype=torch.float32, requires_grad=True)
     reference_x = x.detach().clone().requires_grad_(True)
 
     actual = layer._ff_block(x)
@@ -86,17 +86,17 @@ def test_swiglu_matches_explicit_gate_formula_and_gradients(bias):
         reference.linear2.weight,
         reference.linear2.bias,
     )
-    torch.testing.assert_close(actual, expected, atol=1e-12, rtol=1e-12)
+    torch.testing.assert_close(actual, expected, atol=2e-6, rtol=2e-6)
     gradient = torch.randn_like(actual)
     actual.backward(gradient)
     expected.backward(gradient)
-    torch.testing.assert_close(x.grad, reference_x.grad, atol=1e-12, rtol=1e-12)
+    torch.testing.assert_close(x.grad, reference_x.grad, atol=2e-6, rtol=2e-6)
     for name in ("gate_proj", "linear1", "linear2"):
         for parameter_name, parameter in getattr(layer, name).named_parameters():
             reference_parameter = getattr(getattr(reference, name), parameter_name)
             assert parameter.grad is not None
             torch.testing.assert_close(
-                parameter.grad, reference_parameter.grad, atol=1e-12, rtol=1e-12,
+                parameter.grad, reference_parameter.grad, atol=2e-6, rtol=2e-6,
             )
 
 
@@ -122,20 +122,20 @@ def test_existing_ffn_keeps_torch_weights_forward_and_gradients(activation, norm
     kwargs = dict(
         d_model=8, nhead=2, dim_feedforward=24, dropout=0.0,
         activation=activation, norm_first=norm_first,
-        batch_first=True, dtype=torch.float64,
+        batch_first=True, dtype=torch.float32,
     )
     torch.manual_seed(41)
     original = nn.TransformerEncoderLayer(**kwargs)
     # 参考层只替换归一化；投影初始化、FFN、attention 和残差布局继续由 PyTorch 实现。
-    original.norm1 = nn.RMSNorm(8, eps=1e-5, elementwise_affine=False, dtype=torch.float64)
-    original.norm2 = nn.RMSNorm(8, eps=1e-5, elementwise_affine=False, dtype=torch.float64)
+    original.norm1 = nn.RMSNorm(8, eps=1e-5, elementwise_affine=False, dtype=torch.float32)
+    original.norm2 = nn.RMSNorm(8, eps=1e-5, elementwise_affine=False, dtype=torch.float32)
     torch.manual_seed(41)
     current = TraceableTransformerEncoderLayer(**kwargs)
 
     assert current.state_dict().keys() == original.state_dict().keys()
     for name, tensor in current.state_dict().items():
         torch.testing.assert_close(tensor, original.state_dict()[name], atol=0, rtol=0)
-    x = torch.randn(2, 3, 8, dtype=torch.float64, requires_grad=True)
+    x = torch.randn(2, 3, 8, dtype=torch.float32, requires_grad=True)
     original_x = x.detach().clone().requires_grad_(True)
     actual, expected = current(x), original(original_x)
     torch.testing.assert_close(actual, expected, atol=0, rtol=0)
@@ -156,9 +156,9 @@ def test_eval_does_not_bypass_rms_norm_with_fused_layer_norm_path(activation, no
     layer = TraceableTransformerEncoderLayer(
         d_model=8, nhead=2, dim_feedforward=24, dropout=0.0,
         activation=activation, batch_first=True, norm_first=norm_first,
-        dtype=torch.float64,
+        dtype=torch.float32,
     ).eval()
-    x = torch.randn(2, 3, 8, dtype=torch.float64)
+    x = torch.randn(2, 3, 8, dtype=torch.float32)
     expected = layer(x)
 
     def reject_gelu_fastpath(*args, **kwargs):
@@ -167,7 +167,7 @@ def test_eval_does_not_bypass_rms_norm_with_fused_layer_norm_path(activation, no
     monkeypatch.setattr(torch, "_transformer_encoder_layer_fwd", reject_gelu_fastpath)
     with torch.no_grad():
         actual = layer(x)
-    torch.testing.assert_close(actual, expected, atol=1e-12, rtol=1e-12)
+    torch.testing.assert_close(actual, expected, atol=2e-6, rtol=2e-6)
 
 
 @pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
@@ -177,13 +177,13 @@ def test_outer_encoder_eval_keeps_unparameterized_rms_path(activation, norm_firs
     layer = TraceableTransformerEncoderLayer(
         d_model=8, nhead=2, dim_feedforward=24, dropout=0.0,
         activation=activation, batch_first=True, norm_first=norm_first,
-        dtype=torch.float64,
+        dtype=torch.float32,
     )
     encoder = nn.TransformerEncoder(
         layer, 2,
-        norm=nn.RMSNorm(8, eps=1e-5, elementwise_affine=False, dtype=torch.float64),
+        norm=nn.RMSNorm(8, eps=1e-5, elementwise_affine=False, dtype=torch.float32),
     ).eval()
-    x = torch.randn(2, 3, 8, dtype=torch.float64)
+    x = torch.randn(2, 3, 8, dtype=torch.float32)
     expected = encoder(x)
 
     def reject_layer_norm_fastpath(*args, **kwargs):
@@ -192,12 +192,12 @@ def test_outer_encoder_eval_keeps_unparameterized_rms_path(activation, norm_firs
     monkeypatch.setattr(torch, "_transformer_encoder_layer_fwd", reject_layer_norm_fastpath)
     with torch.no_grad():
         actual = encoder(x)
-    torch.testing.assert_close(actual, expected, atol=1e-12, rtol=1e-12)
+    torch.testing.assert_close(actual, expected, atol=2e-6, rtol=2e-6)
 
 
 def test_layer_rms_norm_honors_custom_epsilon_without_affine_parameters():
     layer = TraceableTransformerEncoderLayer(
-        d_model=8, nhead=2, layer_norm_eps=2e-4, dtype=torch.float64,
+        d_model=8, nhead=2, layer_norm_eps=2e-4, dtype=torch.float32,
     )
     for norm in (layer.norm1, layer.norm2):
         assert isinstance(norm, nn.RMSNorm)
@@ -212,32 +212,29 @@ def test_model_rms_norm_preserves_nonzero_mean_and_shared_forward_gradients(acti
     torch.manual_seed(57)
     model = CausalPolicyModel(
         _activation_spec(), _activation_config(activation), vocab_size=4,
-    ).double().eval()
+    ).eval()
     norms = [model.encoder.norm]
     for layer in model.encoder.layers:
         norms.extend((layer.norm1, layer.norm2))
-    values = torch.arange(1, 9, dtype=torch.float64).reshape(1, 8).requires_grad_(True)
+    values = torch.arange(1, 9, dtype=torch.float32).reshape(1, 8).requires_grad_(True)
     expected = values / torch.sqrt(values.square().mean(dim=-1, keepdim=True) + 1e-5)
     for norm in norms:
         assert norm.elementwise_affine is False
         assert norm.eps == 1e-5
         assert list(norm.parameters()) == []
         actual = norm(values)
-        torch.testing.assert_close(actual, expected, atol=1e-12, rtol=1e-12)
+        torch.testing.assert_close(actual, expected, atol=1e-6, rtol=1e-6)
         assert actual.mean() > 0
         gradient = torch.autograd.grad(actual.square().sum(), values)[0]
         assert torch.isfinite(gradient).all()
         assert torch.count_nonzero(gradient) > 0
 
-    batch = {
-        key: value.double() if value.is_floating_point() else value
-        for key, value in _activation_batch().items()
-    }
+    batch = _activation_batch()
     output = model(batch)
     traced = model.trace(batch)
     torch.testing.assert_close(
         output["logits"], model.score_hidden(traced.encoded, traced.hidden, batch),
-        atol=1e-12, rtol=1e-12,
+        atol=2e-6, rtol=2e-6,
     )
     output["logits"].square().mean().backward()
     for parameter in model.parameters():
@@ -282,24 +279,24 @@ def test_checkpoint_rejects_removed_cls_architecture():
 @pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
 def test_independent_output_head_matches_fp32_softcap_and_gradients(activation):
     torch.manual_seed(23)
-    model = CausalPolicyModel(_activation_spec(), _activation_config(activation), vocab_size=4).double().eval()
+    model = CausalPolicyModel(_activation_spec(), _activation_config(activation), vocab_size=4).float().eval()
     reference = deepcopy(model)
-    current_hidden = torch.randn(2, 8, dtype=torch.float64, requires_grad=True)
+    current_hidden = torch.randn(2, 8, dtype=torch.float32, requires_grad=True)
     reference_hidden = current_hidden.detach().clone().requires_grad_(True)
     actual = model._score_current_hidden(current_hidden, {})
     scale = reference.config.logit_softcap
     expected = scale * torch.tanh(F.linear(reference_hidden, reference.output_head.weight).float() / scale)
-    torch.testing.assert_close(actual, expected, atol=1e-12, rtol=1e-12)
+    torch.testing.assert_close(actual, expected, atol=2e-6, rtol=2e-6)
     gradient = torch.randn_like(actual)
     actual.backward(gradient)
     expected.backward(gradient)
     torch.testing.assert_close(
-        current_hidden.grad, reference_hidden.grad, atol=1e-12, rtol=1e-12,
+        current_hidden.grad, reference_hidden.grad, atol=2e-6, rtol=2e-6,
     )
     actual_parameter = model.output_head.weight
     reference_parameter = reference.output_head.weight
     assert actual_parameter.grad is not None
-    torch.testing.assert_close(actual_parameter.grad, reference_parameter.grad, atol=1e-12, rtol=1e-12)
+    torch.testing.assert_close(actual_parameter.grad, reference_parameter.grad, atol=2e-6, rtol=2e-6)
     assert model.input_encoder.skill_embed.weight.grad is None
 
 
@@ -328,21 +325,22 @@ def test_independent_skill_and_state_embeddings_match_explicit_formula(activatio
         _activation_spec(),
         _activation_config(activation),
         vocab_size=4,
-    ).double().eval()
+    ).eval()
     batch = _activation_batch()
-    batch["history_skill_features"] = torch.randn(1, 1, 1, dtype=torch.float64)
-    batch["history_state_vectors"] = torch.nn.functional.pad(torch.randn(1, 1, 3, dtype=torch.float64), (0, 4))
+    batch["history_skill_features"] = torch.randn(1, 1, 1, dtype=torch.float32)
+    batch["history_state_vectors"] = torch.nn.functional.pad(torch.randn(1, 1, 3, dtype=torch.float32), (0, 4))
     batch["history_state_null_mask"] = torch.tensor([[[True, False, True]]])
     actual = encoder.embed_history(batch)
     skill_content = F.embedding(batch["history_skill_ids"], encoder.skill_embed.weight) + F.linear(
         batch["history_skill_features"], encoder.skill_feat_proj.weight, encoder.skill_feat_proj.bias,
     )
     state_content = F.linear(batch["history_state_vectors"], encoder.state_proj.weight, encoder.state_proj.bias) + F.linear(
-        batch["history_state_null_mask"].double(), encoder.state_null_proj.weight,
+        batch["history_state_null_mask"].float(), encoder.state_null_proj.weight,
     )
     # 独立内容投影不先归一化；role 相加后的统一 RMS 由完整编码入口负责。
-    torch.testing.assert_close(actual["skill"], skill_content, atol=1e-12, rtol=1e-12)
-    torch.testing.assert_close(actual["state"], state_content, atol=1e-12, rtol=1e-12)
+    assert actual["skill"].dtype == actual["state"].dtype == torch.float32
+    torch.testing.assert_close(actual["skill"], skill_content, atol=0, rtol=0)
+    torch.testing.assert_close(actual["state"], state_content, atol=0, rtol=0)
     assert not any("pair_fusion" in name for name, _ in encoder.named_parameters())
 
 
@@ -376,8 +374,8 @@ def test_every_configured_activation_resolves():
 
 def test_activation_hidden_merges_gate_and_pointwise_paths():
     """门控合成只在 activation.py 实现一次，两条分支都要整段重合。"""
-    up = torch.randn(2, 3, dtype=torch.float64)
-    gate = torch.randn(2, 3, dtype=torch.float64)
+    up = torch.randn(2, 3, dtype=torch.float32)
+    gate = torch.randn(2, 3, dtype=torch.float32)
 
     torch.testing.assert_close(
         activation_hidden(F.gelu, up), F.gelu(up), atol=0.0, rtol=0.0

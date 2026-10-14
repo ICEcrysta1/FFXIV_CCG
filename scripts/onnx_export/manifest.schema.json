@@ -337,6 +337,12 @@
                 "skill": "E[id] + Linear(skill_features)",
                 "state": "Linear(state_values) + Linear(null_mask, bias=False) + Linear(state_reset_mask, bias=False)",
                 "scene": "Linear_by_scene_type(scene_values)",
+                "input_precision": {
+                  "values": "float32",
+                  "projections": "float32",
+                  "token_composition": "float32",
+                  "token_normalization": "float32"
+                },
                 "token_normalization": {
                   "type": "RMSNorm",
                   "position": "after_content_plus_role",
@@ -401,7 +407,7 @@
                 ],
                 "history_state_frozen_at": "request",
                 "context_encoding": {
-                  "compute_dtype": "float32_before_activation_cast",
+                  "compute_dtype": "float32",
                   "state": "first_visible_ABS_then_raw_numeric_DELTA",
                   "state_abs_time_origin": "first_visible_request_state.time_seconds",
                   "boolean_delta": "minus_one_zero_plus_one",

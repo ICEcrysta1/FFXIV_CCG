@@ -270,6 +270,41 @@ def test_precision_uses_onnx_tensor_proto_constants():
     )
 
 
+@pytest.mark.parametrize("precision", ("float16", "bf16"))
+def test_low_precision_export_keeps_fp32_input_values_and_weights(tmp_path, precision):
+    """真实导出检查匿名转置权重仍为 FP32，主干及输出维持原部署精度。"""
+    onnx = pytest.importorskip("onnx")
+    pytest.importorskip("onnxscript")
+    from onnx import numpy_helper
+    from scripts.onnx_export.export.checkpoint import load_policy_contracts
+    from scripts.onnx_export.export.graph import export_and_stamp
+
+    checkpoint = tmp_path / "checkpoint.pt"
+    _write_small_checkpoint(checkpoint)
+    profile = tmp_path / "profile.json"
+    _write_small_profile(profile)
+    contracts = load_policy_contracts(
+        checkpoint_path=checkpoint, deployment_profile_path=profile, precision=precision,
+    )
+    package = tmp_path / "graph"
+    package.mkdir()
+    artifacts = export_and_stamp(onnx=onnx, contracts=contracts, package_dir=package, opset=18, precision=precision)
+    model_proto = onnx.load(artifacts.model_path)
+    float_inputs = {"scene_vectors", "history_skill_features", "history_state_vectors", "current_state_vectors"}
+    assert all(value.type.tensor_type.elem_type == onnx.TensorProto.FLOAT for value in model_proto.graph.input if value.name in float_inputs)
+    assert model_proto.graph.output[0].type.tensor_type.elem_type == precision_onnx_data_type(precision, onnx.TensorProto)
+    expected = contracts.policy.model.input_encoder.skill_feat_proj.weight.detach().T.cpu()
+    assert any(
+        initializer.data_type == onnx.TensorProto.FLOAT
+        and tuple(initializer.dims) == tuple(expected.shape)
+        and torch.equal(torch.from_numpy(numpy_helper.to_array(initializer).copy()), expected)
+        for initializer in model_proto.graph.initializer
+    )
+    assert artifacts.alignment["onnx_float_initializer_dtype_counts"]["float32"] > 1
+    assert artifacts.alignment["onnx_requested_precision_initializer_count"] > 1
+    assert artifacts.alignment["onnx_other_float_initializer_max_elements"] <= 1
+
+
 def test_zero_padding_fill_clears_all_padding_dtypes():
     data_spec = SimpleNamespace(
         scene_dim=2,
@@ -1070,6 +1105,7 @@ def test_small_float16_model_exports_and_runs_on_strict_cuda(tmp_path, activatio
     assert manifest["contract"]["model_input_contract"] == json.loads(json.dumps(input_contract.to_dict()))
     assert manifest["contract"]["model_config"]["logit_softcap"] == logit_softcap
     assert manifest["contract"]["tensor_outputs"][0]["dtype"] == "tensor(float16)"
+    assert all(field["dtype"] == "tensor(float)" for field in manifest["contract"]["tensor_inputs"] if "vectors" in field["name"] or field["name"] == "history_skill_features")
     assert manifest["model"]["compute_precision"] == "float16"
 
     exported_model = onnx.load(output / "model.onnx")
@@ -1105,6 +1141,9 @@ def test_small_float16_model_exports_and_runs_on_strict_cuda(tmp_path, activatio
         rtol=0,
         atol=0,
     )
+    for name, tensor in policy.model.input_encoder.state_dict().items():
+        assert tensor.dtype == torch.float32
+        torch.testing.assert_close(tensor, saved["model_state_dict"][f"input_encoder.{name}"], rtol=0, atol=0)
     inputs = make_inputs(
         data_spec, loaded.contract.capacity,
         vocab_size=vocab_size, scene_valid=2, history_valid=3,
@@ -1162,6 +1201,8 @@ def test_small_bf16_model_exports_and_runs_on_strict_cuda(tmp_path, activation):
     assert manifest["golden"]["float_encoding"] == GOLDEN_BF16_ENCODING
     assert manifest["model"]["onnx_other_float_initializer_max_elements"] <= 1
     assert manifest["model"]["onnx_float_initializer_dtype_counts"]["bfloat16"] > 0
+    assert manifest["model"]["onnx_float_initializer_dtype_counts"]["float32"] > 1
+    assert all(field["dtype"] == "tensor(float)" for field in manifest["contract"]["tensor_inputs"] if "vectors" in field["name"] or field["name"] == "history_skill_features")
     exported_model = onnx.load(output / "model.onnx")
     assert any(node.op_type == "Tanh" for node in exported_model.graph.node)
     assert not any(node.op_type == "LayerNormalization" for node in exported_model.graph.node)

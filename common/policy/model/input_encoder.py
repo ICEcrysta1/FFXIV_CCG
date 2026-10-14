@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import torch
 import torch.nn as nn
 
@@ -57,7 +56,7 @@ class CausalInputEncoder(nn.Module):
 
     def forward(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         self._validate_batch(batch)
-        scene_vectors = batch["scene_vectors"].to(dtype=self.scene_proj[0].weight.dtype)
+        scene_vectors = batch["scene_vectors"].float()
         batch_size, scene_length, _ = scene_vectors.shape
         history_length = batch["history_skill_ids"].shape[1]
         # 物理 token 布局仍按 batch 的最大 scene/history 宽度补齐；
@@ -74,10 +73,12 @@ class CausalInputEncoder(nn.Module):
 
         # 所有 scene 类型都先投影，再由张量索引选择对应类型，避免根据输入值
         # 进入 Python 分支。这样 scene_types 仍然是图输入，而不是导出时的常量。
-        scene_type_embeds = torch.stack(
-            [projection(scene_vectors) for projection in self.scene_proj],
-            dim=2,
-        )
+        # 保留普通 Linear，只在数值投影边界关闭混合精度。
+        with torch.autocast(device_type=device.type, enabled=False):
+            scene_type_embeds = torch.stack(
+                [projection(scene_vectors) for projection in self.scene_proj],
+                dim=2,
+            )
         scene_type_indices = batch["scene_types"].unsqueeze(-1).unsqueeze(-1)
         scene_embeds = torch.gather(
             scene_type_embeds,
@@ -114,9 +115,10 @@ class CausalInputEncoder(nn.Module):
             history_length=history_length,
             device=device,
         )
-        tokens = content_tokens + self.role_embed(role_ids)
-        # 全部角色合成后统一尺度，不去均值，也不引入可学习仿射参数。
-        tokens = torch.nn.functional.rms_norm(tokens, (d_model,), eps=1e-5)
+        with torch.autocast(device_type=device.type, enabled=False):
+            tokens = content_tokens + self.role_embed(role_ids).float()
+            # 全部角色在 FP32 中合成和统一尺度，不去均值，也不引入仿射参数。
+            tokens = torch.nn.functional.rms_norm(tokens, (d_model,), eps=1e-5)
 
         current_state_position = scene_length + history_token_length
         current_state_positions = torch.full(
@@ -155,24 +157,25 @@ class CausalInputEncoder(nn.Module):
     def embed_history(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """返回历史技能、状态的原始 content；role 和 RMSNorm 由 forward 统一施加。"""
         self._validate_batch(batch)
-        return {
-            "skill": self.skill_embed(batch["history_skill_ids"])
-            + self.skill_feat_proj(batch["history_skill_features"].to(dtype=self.skill_feat_proj.weight.dtype)),
-            "state": self._embed_state(
-                batch["history_state_vectors"],
-                batch["history_state_null_mask"],
-                batch["history_state_reset_mask"],
-            ),
-        }
+        with torch.autocast(device_type=batch["history_skill_features"].device.type, enabled=False):
+            return {
+                "skill": self.skill_embed(batch["history_skill_ids"]).float()
+                + self.skill_feat_proj(batch["history_skill_features"].float()),
+                "state": self._embed_state(
+                    batch["history_state_vectors"],
+                    batch["history_state_null_mask"],
+                    batch["history_state_reset_mask"],
+                ),
+            }
 
     def _embed_state(self, values, null_mask, reset_mask) -> torch.Tensor:
-        """投影已编码数值、缺失及 ABS 重置标识；精度转换发生在编码完成后。"""
-        values = values.to(dtype=self.state_proj.weight.dtype)
-        return (
-            self.state_proj(values)
-            + self.state_null_proj(null_mask.to(dtype=values.dtype))
-            + self.state_reset_proj(reset_mask.to(dtype=values.dtype))
-        )
+        """已编码数值、缺失及 ABS 重置标识统一在 FP32 中投影和相加。"""
+        with torch.autocast(device_type=values.device.type, enabled=False):
+            return (
+                self.state_proj(values.float())
+                + self.state_null_proj(null_mask.float())
+                + self.state_reset_proj(reset_mask.float())
+            )
 
     def _validate_batch(self, batch: dict[str, torch.Tensor]) -> None:
         expected = self.data_spec
@@ -192,14 +195,8 @@ class CausalInputEncoder(nn.Module):
         for field in MODEL_INPUT_FIELDS:
             if field.name not in batch:
                 raise ValueError(f"missing model input: {field.name}")
-            # 神经入口允许部署已转换的浮点精度，结构与 bool/index 仍按统一声明检查。
-            value = batch[field.name]
-            if field.dtype in {"float", "float32"}:
-                if not value.is_floating_point():
-                    raise ValueError(f"{field.name} must be floating point")
-                replace(field, dtype="float").validate_tensor(value, dimensions, torch=torch, float_dtype=value.dtype)
-            else:
-                field.validate_tensor(value, dimensions, torch=torch)
+            # 数值入口固定为 FP32，禁止在投影之前提前量化。
+            field.validate_tensor(batch[field.name], dimensions, torch=torch)
         if "action_legal_mask" in batch and batch["action_legal_mask"].shape != (
             batch["scene_vectors"].shape[0], expected.num_actions,
         ):

@@ -160,11 +160,12 @@ def build_history_bank(
             )
         previous_length = actual_length
 
+    # 技能输入在原料和归一化阶段都保持 FP32，避免低精度提前合并数值。
     feature_matrix = build_skill_feature_matrix(
         skill_rows,
         feature_names=reader.skill_feature_names,
         torch=torch,
-        dtype=float_dtype,
+        dtype=torch.float32,
     )
     if normalizer is not None:
         feature_matrix = normalizer.normalize_skill_features(
@@ -186,7 +187,7 @@ def build_history_bank(
     )
     skill_features = torch.cat(
         (
-            torch.zeros((1, feature_matrix.shape[-1]), dtype=float_dtype),
+            torch.zeros((1, feature_matrix.shape[-1]), dtype=torch.float32),
             feature_matrix,
         ),
         dim=0,

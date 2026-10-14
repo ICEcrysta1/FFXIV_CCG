@@ -667,14 +667,15 @@ def test_analysis_restores_saved_input_contract_without_current_yaml(
     normalizer = seen["dataset"]["normalizer"]
     assert normalizer.normalization_contract == saved.normalizer_contract
     time_index = saved.schema.state_layout(spec.action_keys).base_feature_keys.index("previous_action_after.time_seconds")
-    assert context.context_encoder.state_divisors[time_index] == pytest.approx(120.0)
+    assert context.context_encoder.state_divisors[time_index] == pytest.approx(context.model.config.time_delta_scale)
     assert seen["source"]["normalizer"] is normalizer
     assert seen["source"]["expected_skill_vocab"] is seen["dataset"]["skill_vocab"]
     assert context.model.input_encoder.skill_embed.weight.shape[0] == 8
     assert context.precision == precision
-    assert all(parameter.dtype == expected_dtype for parameter in context.model.parameters())
     for name, parameter in context.model.named_parameters():
-        torch.testing.assert_close(parameter, payload["model_state_dict"][name].to(expected_dtype), rtol=0, atol=0)
+        parameter_dtype = torch.float32 if name.startswith('input_encoder.') else expected_dtype
+        assert parameter.dtype == parameter_dtype, name
+        torch.testing.assert_close(parameter, payload["model_state_dict"][name].to(parameter_dtype), rtol=0, atol=0)
     inputs = make_inputs(
         spec, CapacityContract(3, 4), vocab_size=8, scene_valid=1, history_valid=1,
         dtype=torch.float32, seed=7,

@@ -254,6 +254,8 @@ def test_compiled_cache_manifest_uses_mmap_for_history_bank(tmp_path, monkeypatc
         "overflow_num_samples",
         "overflow_shard_size",
         "skill_width_mismatch",
+        "skill_features_bfloat16",
+        "skill_features_float16",
         "previous_sample_schema",
         "previous_context_schema",
         "removed_skill_field",
@@ -304,6 +306,9 @@ def test_corrupt_history_bank_manifest_falls_back_to_recompile(
         payload_num_samples = 1
     elif corruption == "skill_width_mismatch":
         history_bank["skill_features"] = torch.zeros((2, 2))
+    elif corruption in {"skill_features_bfloat16", "skill_features_float16"}:
+        dtype = torch.bfloat16 if corruption == "skill_features_bfloat16" else torch.float16
+        history_bank["skill_features"] = history_bank["skill_features"].to(dtype)
     elif corruption == "raw_state_dtype":
         history_bank["state_abs_values"] = history_bank["state_abs_values"].to(torch.bfloat16)
     elif corruption == "raw_state_nonfinite":

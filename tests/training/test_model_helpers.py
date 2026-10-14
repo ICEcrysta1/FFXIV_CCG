@@ -1623,6 +1623,9 @@ def test_run_training_orchestrates_checkpoint_saving(
     class FakeModel(_TinyModel):
         def __init__(self, data_spec, model_config, *, vocab_size, repetition):
             super().__init__()
+            self.input_encoder = nn.Linear(1, 1, bias=False)
+            self.encoder = nn.Linear(1, 1, bias=False)
+            self.output_head = nn.Linear(1, 1, bias=False)
             calls["model_args"] = (data_spec, model_config, vocab_size, repetition)
 
     def fake_build_dataloaders(*args, **kwargs):
@@ -1632,7 +1635,9 @@ def test_run_training_orchestrates_checkpoint_saving(
     def fake_train_epoch(*args, **kwargs):
         assert kwargs["tensorboard_monitor"] is not None
         expected_dtype = torch.float32 if fp32_gradients else model_dtype(precision)
-        assert all(parameter.dtype == expected_dtype for parameter in args[0].parameters())
+        assert all(parameter.dtype == (
+            expected_dtype if name.startswith(('encoder.', 'output_head.')) else torch.float32
+        ) for name, parameter in args[0].named_parameters())
         assert ("master_weights" in args[2].state_dict()) == (expected_dtype != torch.float32)
         calls["train_step_offsets"].append(kwargs["global_step_offset"])
         return {
@@ -1757,7 +1762,9 @@ def test_run_training_orchestrates_checkpoint_saving(
         vocab_size=4,
         repetition=config.repetition,
     )
-    resume_model.to(dtype=torch.float32 if fp32_gradients else model_dtype(precision))
+    resume_dtype = torch.float32 if fp32_gradients else model_dtype(precision)
+    resume_model.encoder.to(dtype=resume_dtype)
+    resume_model.output_head.to(dtype=resume_dtype)
     resume_optimizer = training_loop_impl.build_optimizer(
         resume_model, config.optimizer, learning_rate=0.01, weight_decay=config.weight_decay,
     )
@@ -1927,6 +1934,9 @@ def test_run_training_closes_tensorboard_writer_when_monitoring_or_validation_ra
     class FakeModel(_TinyModel):
         def __init__(self, *_args, **_kwargs):
             super().__init__()
+            self.input_encoder = nn.Linear(1, 1, bias=False)
+            self.encoder = nn.Linear(1, 1, bias=False)
+            self.output_head = nn.Linear(1, 1, bias=False)
 
     writer = FakeWriter()
     monkeypatch.setattr(

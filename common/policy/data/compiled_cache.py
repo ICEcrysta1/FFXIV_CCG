@@ -203,6 +203,9 @@ class CompiledCacheReader:
                 )
             if field.shape[spec.sequence_axis] != bank_size:
                 raise ValueError(f"compiled cache history_bank field length mismatch: {key}")
+            if key == "skill_features":
+                # 旧低精度技能 bank 交给上层重编译，不能在读取时转型掩盖精度损失。
+                spec.validate_tensor(field, dimensions, torch=torch, stage="cache")
         if history_bank["skill_features"].shape != (bank_size, len(self._skill_feature_names)):
             raise ValueError("compiled cache history_bank skill feature width mismatch")
         for spec in STATE_BANK_FIELDS:

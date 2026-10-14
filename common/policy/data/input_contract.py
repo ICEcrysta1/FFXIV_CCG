@@ -43,6 +43,7 @@ from .spec import DataSpec
 #     执行时间精度和状态场景合成采用共享契约，旧输入和执行产物均不可复用。
 # 23：模型状态移除累计威力，资源/充能/时间/单次威力采用统一的显式缩放契约。
 #     黑魔绝望最低 MP 修正为 800；旧 checkpoint 的输入与执行语义均不可复用。
+#     同版本统一输入数值投影、token 合成和输入归一化为 FP32。
 INPUT_CONTRACT_VERSION = 23
 
 RESIDUAL_MIX_CONFIG_FIELDS = (
@@ -113,6 +114,12 @@ TOKEN_ENCODING_CONTRACT = {
     "skill": "E[id] + Linear(skill_features)",
     "state": "Linear(state_values) + Linear(null_mask, bias=False) + Linear(state_reset_mask, bias=False)",
     "scene": "Linear_by_scene_type(scene_values)",
+    "input_precision": {
+        "values": "float32",
+        "projections": "float32",
+        "token_composition": "float32",
+        "token_normalization": "float32",
+    },
     "token_normalization": {
         "type": "RMSNorm",
         "position": "after_content_plus_role",
@@ -146,7 +153,7 @@ TOKEN_ENCODING_CONTRACT = {
     "state_snapshots": ["previous_action_after", "request_state"],
     "history_state_frozen_at": "request",
     "context_encoding": {
-        "compute_dtype": "float32_before_activation_cast",
+        "compute_dtype": "float32",
         "state": "first_visible_ABS_then_raw_numeric_DELTA",
         "state_abs_time_origin": "first_visible_request_state.time_seconds",
         "boolean_delta": "minus_one_zero_plus_one",

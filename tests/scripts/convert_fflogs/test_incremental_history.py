@@ -515,6 +515,71 @@ def _assert_compiled_equal(left, right):
         assert left == right
 
 
+@pytest.mark.parametrize("float_dtype_name", ["float32", "bfloat16", "float16"])
+@pytest.mark.parametrize("normalize", [False, True])
+def test_history_skill_features_keep_fp32_through_collation_and_context_encoding(
+    float_dtype_name, normalize,
+):
+    """低精度缓存也必须保留技能数值差异，并能直接进入正式上下文编码。"""
+    import torch
+
+    from common.policy.config import ModelConfig
+    from common.policy.data import Normalizer, SkillVocab
+    from common.policy.data.context_encoding import ContextEncoder
+    from common.policy.data.context_fields import ENCODING_BANK_FIELDS
+    from common.policy.data.normalization import NormalizerConfig
+    from scripts.convert_fflogs.source.source_reader import TrainingSourceReader
+    from scripts.convert_fflogs.training.history_bank import build_history_bank
+    from scripts.convert_fflogs.training.sample_builder import TrainingSampleBuilder
+    from training.data.collator import TrainingCollator
+
+    payload = _batch_source()
+    # 这两个威力值在 FP16/BF16 原料阶段就会合并，事后转回 FP32 无法恢复。
+    potencies = (1000.125, 1000.25)
+    for sample in payload["samples"]:
+        for index, row in enumerate(sample["context"]["skill_history_context"]):
+            row["max_charges"] = 1
+            if index < len(potencies):
+                row["potency"] = potencies[index]
+    reader = TrainingSourceReader(payload)
+    float_dtype = getattr(torch, float_dtype_name)
+    normalizer_config = NormalizerConfig()
+    normalizer = Normalizer(normalizer_config)
+    bank = build_history_bank(
+        reader, torch=torch, normalizer=normalizer if normalize else None,
+        skill_vocab=SkillVocab.build_from_job_tag(reader.job_tag),
+        skill_feature_names=reader.skill_feature_names, int_dtype=torch.int32, float_dtype=float_dtype,
+    )
+    assert bank["skill_features"].dtype == torch.float32
+    assert bank["skill_potencies"].dtype == bank["cumulative_dot_potencies"].dtype == float_dtype
+    builder = TrainingSampleBuilder(
+        torch=torch, int_dtype=torch.int32, float_dtype=float_dtype, num_actions=reader.num_actions,
+        history_bank=bank, ranking=reader.ranking, annotation_status=reader.annotation_status,
+    )
+    samples = builder.build_batch(reader, 0, 4)
+    for sample in samples:
+        sample["scene_abs_values"] = sample.pop("scene_vectors")
+        sample["history_bank_id"] = "fp32_skill_features"
+        sample["history_bank_action_keys"] = bank["action_keys"]
+        for field in ENCODING_BANK_FIELDS:
+            sample[f"history_bank_{field.name}"] = bank[field.name]
+    batch = TrainingCollator(
+        int_dtype=torch.int32, index_dtype=torch.int64, float_dtype=float_dtype,
+    )(samples)
+    encoded = ContextEncoder(
+        normalizer, reader.schema, ModelConfig(), layout=reader.schema.state_layout(reader.action_keys),
+    ).encode(batch)
+    assert encoded["history_skill_features"].dtype == torch.float32
+    assert torch.count_nonzero(encoded["history_skill_features"][0]) == 0
+    expected = torch.tensor(potencies, dtype=torch.float32)
+    if normalize:
+        expected /= normalizer_config.current_potency_max
+    potency_index = reader.skill_feature_names.index("potency")
+    actual = encoded["history_skill_features"][3, :2, potency_index]
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    assert actual[0] != actual[1]
+
+
 @pytest.mark.parametrize("int_dtype_name", ["int32", "int64"])
 @pytest.mark.parametrize("float_dtype_name", ["float32", "bfloat16"])
 @pytest.mark.parametrize("shard_size", [1, 3, 7])

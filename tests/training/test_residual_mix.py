@@ -77,10 +77,10 @@ def test_checkpoint_endpoint_config_rejects_boolean_values(key, value, full_atte
 @pytest.mark.parametrize("norm_first", (True, False))
 def test_neutral_mixing_matches_ordinary_residual_forward_and_trace(norm_first):
     model = _model(transformer_norm_first=norm_first, residual_mix_r_start=1.0,
-                   residual_mix_r_end=1.0, residual_mix_a_start=0.0, residual_mix_a_end=0.0).double().eval()
+                   residual_mix_r_end=1.0, residual_mix_a_start=0.0, residual_mix_a_end=0.0).eval()
     reference = deepcopy(model)
     del reference.encoder.residual_mix
-    batch = make_batch(batch_size=2, dtype=torch.float64)
+    batch = make_batch(batch_size=2)
     batch["history_mask"][0, -1] = False
     actual, expected = model(batch), reference(batch)
     for key in actual:
@@ -94,7 +94,7 @@ def test_neutral_mixing_matches_ordinary_residual_forward_and_trace(norm_first):
 
 
 def test_real_mix_changes_skip_once_per_layer_and_keeps_original_x0():
-    model = _model().double().eval()
+    model = _model().eval()
     for layer in model.encoder.layers:
         for projection in (layer.self_attn.out_proj, layer.linear2):
             nn.init.zeros_(projection.weight)
@@ -104,7 +104,7 @@ def test_real_mix_changes_skip_once_per_layer_and_keeps_original_x0():
         lambda module, args, output: captured.update(encoded=output))
     mix_hook = model.encoder.residual_mix.register_forward_hook(
         lambda module, args, output: calls.append((args, output)))
-    trace = model.trace(make_batch(dtype=torch.float64))
+    trace = model.trace(make_batch())
     input_hook.remove()
     mix_hook.remove()
     x0 = captured["encoded"]["tokens"]
@@ -118,7 +118,7 @@ def test_real_mix_changes_skip_once_per_layer_and_keeps_original_x0():
 
 
 def test_x0_injection_keeps_gradients_when_previous_hidden_scale_is_zero():
-    model = _model().double()
+    model = _model()
     with torch.no_grad():
         model.encoder.residual_mix.r.zero_()
         model.encoder.residual_mix.a.fill_(1.0)
@@ -126,12 +126,12 @@ def test_x0_injection_keeps_gradients_when_previous_hidden_scale_is_zero():
             for projection in (layer.self_attn.out_proj, layer.linear2):
                 projection.weight.zero_()
                 projection.bias.zero_()
-    tokens = torch.randn(1, 3, 16, dtype=torch.float64, requires_grad=True)
+    tokens = torch.randn(1, 3, 16, requires_grad=True)
     hidden, _, _ = run_causal_encoder(model.encoder, {
         "tokens": tokens, "valid": torch.ones((1, 3), dtype=torch.bool),
         "position_ids": torch.arange(3).unsqueeze(0),
     })
-    (hidden * torch.arange(16, dtype=torch.float64)).sum().backward()
+    (hidden * torch.arange(16, dtype=torch.float32)).sum().backward()
     assert tokens.grad is not None and torch.isfinite(tokens.grad).all()
     assert torch.count_nonzero(tokens.grad) == tokens.numel()
 
@@ -145,11 +145,11 @@ def test_full_attention_residual_has_no_unused_mix_parameters():
 
 @pytest.mark.parametrize("attention_block", (False, True))
 def test_activation_checkpoint_keeps_mix_output_and_all_parameter_gradients(attention_block):
-    model = _model().double().train()
+    model = _model().train()
     checkpointed = deepcopy(model)
     checkpointed.enable_activation_checkpoint_attention(True, block=attention_block)
     checkpointed.enable_activation_checkpoint_ffn(True)
-    batch = make_batch(dtype=torch.float64)
+    batch = make_batch()
     output, expected = checkpointed(batch)["logits"], model(batch)["logits"]
     torch.testing.assert_close(output, expected, rtol=0, atol=0)
     output.square().mean().backward()
@@ -159,7 +159,7 @@ def test_activation_checkpoint_keeps_mix_output_and_all_parameter_gradients(atte
     ):
         assert name == expected_name and parameter.grad is not None
         assert torch.isfinite(parameter.grad).all()
-        torch.testing.assert_close(parameter.grad, reference.grad, rtol=1e-12, atol=1e-12)
+        torch.testing.assert_close(parameter.grad, reference.grad, rtol=1e-6, atol=1e-6)
         if name.startswith("encoder.residual_mix."):
             assert torch.count_nonzero(parameter.grad) == parameter.numel()
 

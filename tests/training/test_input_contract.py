@@ -96,6 +96,13 @@ def test_model_input_contract_describes_post_role_parameterless_rms():
     assert encoding["skill"] == "E[id] + Linear(skill_features)"
     assert encoding["state"] == "Linear(state_values) + Linear(null_mask, bias=False) + Linear(state_reset_mask, bias=False)"
     assert encoding["scene"] == "Linear_by_scene_type(scene_values)"
+    assert encoding["input_precision"] == {
+        "values": "float32",
+        "projections": "float32",
+        "token_composition": "float32",
+        "token_normalization": "float32",
+    }
+    assert encoding["context_encoding"]["compute_dtype"] == "float32"
     assert encoding["token_normalization"] == {
         "type": "RMSNorm",
         "position": "after_content_plus_role",
