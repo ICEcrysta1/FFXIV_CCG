@@ -94,6 +94,28 @@ def test_real_event_files_activate_supported_panels_and_projector(tmp_path):
     assert all(path.name.isdigit() for path in tmp_path.iterdir() if path.is_dir())
 
 
+def test_validation_figure_falls_back_without_cjk_fonts(tmp_path, monkeypatch):
+    from matplotlib import font_manager, rcParams
+
+    # 仅保留 Matplotlib 自带字体，稳定复现 Linux 未安装中文字体的环境。
+    monkeypatch.setattr(font_manager.fontManager, "ttflist", [
+        font for font in font_manager.fontManager.ttflist if font.name == "DejaVu Sans"
+    ])
+    font_family = list(rcParams["font.family"])
+    with SummaryWriter(str(tmp_path)) as writer:
+        monitor = TensorBoardMonitor(writer, TensorBoardConfig(enabled=True), model=_model())
+        monitor.update_validation(torch.tensor([[3., 1.], [0., 4.]]), torch.tensor([0, 1]))
+        monitor.end_validation(global_step=2)
+
+    events = EventAccumulator(str(tmp_path)).Reload()
+    image = events.Images(tensorboard_tag("validation/confusion_matrix"))[0]
+    assert image.step == 2
+    assert image.width > 0 and image.height > 0
+    assert image.encoded_image_string.startswith(b"\x89PNG\r\n\x1a\n")
+    assert tensorboard_tag("validation/actions/first") in events.Tags()["tensors"]
+    assert rcParams["font.family"] == font_family
+
+
 def test_histograms_are_bounded_finite_and_deterministic():
     class Writer:
         def __init__(self):
