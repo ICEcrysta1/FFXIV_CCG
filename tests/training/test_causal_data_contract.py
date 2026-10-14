@@ -21,14 +21,15 @@ def _source(*, history_length=0):
     keys = {
         "player_state_feature_keys": ["previous_action_after.mp", "request_state.mp", "request_state.time_seconds"],
         "buff_state_feature_keys": [],
-        "target_buff_state_feature_keys": ["previous_action_after.target.cumulative_dot_potency", "request_state.target.cumulative_dot_potency"],
+        "target_buff_state_feature_keys": ["previous_action_after.target.current_gcd_dot_potency", "request_state.target.current_gcd_dot_potency"],
         "resource_state_feature_keys": [],
         "skill_availability_feature_keys": [f"{snapshot}.{key}" for snapshot in ("previous_action_after", "request_state") for key in space.action_keys],
     }
     token = {"player_state": [10000.0, 10000.0, 0.0], "buff_state": [], "target_buff_state": [0.0, 0.0], "resource_state": [], "skill_availability": [1] * (2 * len(space.action_keys))}
     samples = []
     for step in range(history_length + 1):
-        history = [{"skill_id": 0, "skill_key": "ogcd_wait", "kind": 0, "potency": 0.0} for _ in range(step)]
+        history = [{"skill_id": 0, "skill_key": "ogcd_wait", "kind": 0, "potency": 0.0,
+                    "available_charges": 1, "max_charges": 1} for _ in range(step)]
         samples.append({
             "step": step + 1,
             "context": {

@@ -73,8 +73,8 @@ model:
   # 历史超出容量时保留最近这些动作，再重新累积；仅影响读取，不改变完整 raw bank。
   history_reset_keep: 8
 
-  # 状态单步时间增量和场景时间使用同一秒数尺度；保留符号，不截断到 [0, 1]。
-  time_delta_scale: 120.0
+  # 状态/场景时间默认继承 config/policy/normalizer.yaml 的 time_scale（270 秒）。
+  # 如需独立实验可显式设置 time_delta_scale；它只影响读侧，不改变完整 raw cache。
 
   # 部署侧 scene 容量上限；必须不小于语料实测 scene 长度最大值。
   scene_capacity: 200

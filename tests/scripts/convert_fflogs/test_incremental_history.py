@@ -390,8 +390,8 @@ def _batch_source():
         ],
         "buff_state_feature_keys": [],
         "target_buff_state_feature_keys": [
-            "previous_action_after.target.cumulative_dot_potency",
-            "request_state.target.cumulative_dot_potency",
+            "previous_action_after.target.current_gcd_dot_potency",
+            "request_state.target.current_gcd_dot_potency",
         ],
         "resource_state_feature_keys": [],
         "skill_availability_feature_keys": [

@@ -34,7 +34,9 @@ logger = logging.getLogger(__name__)
 # v21：技能字段与完整 history bank 移除绝对时间列，状态时间仍保留。
 # v22：完整状态保存未归一化 FP32 ABS／DELTA；场景保存原始绝对秒值。
 # v23：保存有序状态分组与完整冻结技能表，基础 ABS／DELTA／mask 不扩宽。
-CACHE_FORMAT = "raw_json_compiled_samples_v23_state_skill_availability"
+# v24：基础状态删除累计直伤/DoT 维度；独立真实执行统计继续保留。
+#      同步黑魔绝望最低 MP 800 的执行边界，旧状态 bank 不得复用。
+CACHE_FORMAT = "raw_json_compiled_samples_v24_no_cumulative_state"
 # v11：C# 状态机把硬读条的服务器效果结算与完整读条锁结束拆开；转换请求时刻
 # 仍按统一滑步窗口恢复，日志抖动只由容量一动作队列吸收。旧缓存的效果状态时序不可复用。
 # v10：硬读条请求时刻改由 `cast − 实际读条时长 + 0.5 秒滑步窗口` 解析，
@@ -57,7 +59,9 @@ CACHE_FORMAT = "raw_json_compiled_samples_v23_state_skill_availability"
 # v24：归一化前保留状态原值与差分，窗口与时间尺度只属于模型读取侧。
 # v25：使用共享场景执行视图与同刻事实批次，在请求/效果时冻结技能接受能力。
 # v26：从完整坐标观测提取移动区间，先按实测 GCD 合并，再剔除短于 GCD 减滑步时间的窗口。
-DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v26_gcd_movement_windows"
+# v27：按无累计威力的模型状态契约重建完整 raw history bank。
+#      黑魔绝望最低 MP 改为 800，旧合法性与状态转移结果必须重编译。
+DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v27_no_cumulative_state"
 # `weights_only=True` 的安全 unpickler 对 protocol 2 支持最稳定；compiled
 # cache 的样本数据只需要普通 mapping 和 tensor，不需要更高协议。
 CACHE_PICKLE_PROTOCOL = 2

@@ -57,6 +57,7 @@ class JobConfig:
     name: str
     timing: dict[str, float]
     resource_limits: dict[str, float]
+    resource_time_fields: tuple[str, ...]
     statuses: dict[str, StatusDefinition]
     skills: tuple[SkillDefinition, ...]
 
@@ -278,6 +279,7 @@ def load_project_config(
         name=job_payload["job"]["name"],
         timing={key: float(value) for key, value in timing.items()},
         resource_limits=_build_resource_limits(job_payload.get("resources", {})),
+        resource_time_fields=_build_resource_time_fields(job_payload.get("resources", {})),
         statuses=_build_status_definitions(job_payload.get("statuses", {})),
         skills=_build_skill_definitions(job_payload.get("skills", {})),
     )
@@ -345,6 +347,18 @@ def _build_resource_limits(raw_resources: object) -> dict[str, float]:
             )
         limits[str(key)] = max_value
     return limits
+
+
+def _build_resource_time_fields(raw_resources: object) -> tuple[str, ...]:
+    """从职业 YAML 的单位声明区分时间量谱和计数，避免依据字段名称猜测。"""
+    result = []
+    for key, payload in (raw_resources or {}).items():
+        unit = payload.get("unit", "count")
+        if unit not in {"count", "seconds"}:
+            raise ValueError(f"job resource {key!r}: unit must be count or seconds")
+        if unit == "seconds":
+            result.append(str(key))
+    return tuple(result)
 
 
 def _validate_timing_resource_contracts(job: JobConfig) -> None:

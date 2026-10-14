@@ -91,7 +91,7 @@ def test_model_input_contract_rejects_checkpoint_without_contract():
 def test_model_input_contract_describes_post_role_parameterless_rms():
     """保存精确编码位置与参数，避免将归一化放在 role 相加之前。"""
     payload = _build_contract().to_dict()
-    assert payload["version"] == 22
+    assert payload["version"] == INPUT_CONTRACT_VERSION
     encoding = payload["token_encoding"]
     assert encoding["skill"] == "E[id] + Linear(skill_features)"
     assert encoding["state"] == "Linear(state_values) + Linear(null_mask, bias=False) + Linear(state_reset_mask, bias=False)"
@@ -365,6 +365,31 @@ def test_current_input_contract_rejects_removed_skill_time(location):
     else:
         payload["schema"]["skill_history_fields"] = ("skill_key", "time_seconds")
     with pytest.raises(ValueError, match="removed skill time_seconds"):
+        ModelInputContract.from_dict(payload)
+
+
+def test_current_input_contract_rejects_previous_cumulative_input_version():
+    payload = _build_contract().to_dict()
+    payload["version"] = 22
+    with pytest.raises(ValueError, match="unsupported input contract version"):
+        ModelInputContract.from_dict(payload)
+
+
+@pytest.mark.parametrize("field", ["cumulative_potency", "cumulative_dot_potency"])
+@pytest.mark.parametrize("location", ["state", "skill_features", "skill_fields"])
+def test_current_input_contract_rejects_cumulative_potency_in_model_fields(field, location):
+    """冒用新版契约也不能把累计统计重新送进模型。"""
+    payload = _build_contract().to_dict()
+    if location == "state":
+        group = payload["schema"]["state_groups"][0]
+        group["feature_keys"] = (*group["feature_keys"], f"request_state.target.{field}")
+        payload["data_spec"]["base_state_dim"] += 1
+        payload["data_spec"]["state_dim"] += 1
+    elif location == "skill_features":
+        payload["data_spec"]["skill_feature_names"] = (field,)
+    else:
+        payload["schema"]["skill_history_fields"] = (field,)
+    with pytest.raises(ValueError, match="removed cumulative potency model fields"):
         ModelInputContract.from_dict(payload)
 
 

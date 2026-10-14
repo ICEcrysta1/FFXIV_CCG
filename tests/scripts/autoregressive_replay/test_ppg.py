@@ -20,6 +20,7 @@ from common.policy.data import Normalizer
 from common.policy.config import ModelConfig
 from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION, TrainingSchema, SceneWindowSchema, StateFeatureGroup, StateFeatureLayout
 from scripts.autoregressive_replay.context import LiveBatchBuilder
+from scripts.autoregressive_replay.replay import read_replay_cumulative_potency
 
 
 class _FakeState:
@@ -45,18 +46,8 @@ class _FakeBackend:
         if format == "vector":
             context = {
                 "current_state_context": {
-                    "target_buff_state_feature_keys": [
-                        "request_state.target.cumulative_potency",
-                        "request_state.target.cumulative_dot_potency",
-                    ],
-                    "tokens": [
-                        {
-                            "target_buff_state": [
-                                self.state.cumulative_potency,
-                                self.state.cumulative_dot_potency,
-                            ]
-                        }
-                    ],
+                    "target_buff_state_feature_keys": [],
+                    "tokens": [{"target_buff_state": []}],
                 }
             }
         else:
@@ -67,6 +58,10 @@ class _FakeBackend:
                 "gcd_remaining_seconds": self.state.gcd_remaining,
                 "cast_remaining_seconds": getattr(self.state, "cast_remaining", 0.0),
                 "fight_remaining_seconds": self.state.fight_remaining,
+                "execution_metrics": {
+                    "cumulative_potency": self.state.cumulative_potency,
+                    "cumulative_dot_potency": self.state.cumulative_dot_potency,
+                },
             }
         return SimpleNamespace(
             timestamp=self.state.time,
@@ -109,6 +104,49 @@ class _FakeBatcher:
             {"action_legal_mask": torch.tensor([[True, False]])},
             ["gcd", "illegal"],
         )
+
+
+def test_cumulative_ppg_reads_independent_execution_metadata_without_model_state():
+    """PPG 不依赖模型特征或历史保留长度，读取最终真实统计。"""
+    calls = []
+
+    class Backend:
+        def observe_at(self, timestamp, *, format):
+            calls.append((timestamp, format))
+            return SimpleNamespace(context={
+                "execution_metrics": {"cumulative_potency": 300.0, "cumulative_dot_potency": 60.0},
+            })
+
+    assert read_replay_cumulative_potency(Backend(), 8.0) == (300.0, 60.0)
+    assert calls == [(8.0, "seconds")]
+
+
+@pytest.mark.parametrize("metrics", [None, {}, {"cumulative_potency": 1.0}])
+def test_cumulative_ppg_requires_independent_execution_metadata(metrics):
+    class Backend:
+        def observe_at(self, _timestamp, *, format):
+            assert format == "seconds"
+            return SimpleNamespace(context={"execution_metrics": metrics})
+
+    with pytest.raises(RuntimeError, match="cumulative potency execution metrics"):
+        read_replay_cumulative_potency(Backend(), 0.0)
+
+
+def test_real_cumulative_ppg_tracks_dot_ticks_without_cumulative_model_fields(cs_backend):
+    """Python.NET 真实观测能取得最后一次请求之后的 DoT 结算。"""
+    assert cs_backend.submit_action(0.0, "fire_iii").accepted
+    cs_backend.advance_to(4.0)
+    assert cs_backend.submit_action(4.0, "high_thunder").accepted
+    before = read_replay_cumulative_potency(cs_backend, 4.25)
+    after = read_replay_cumulative_potency(cs_backend, 8.0)
+    assert after[0] > 0.0
+    assert after[1] > before[1]
+    canonical = cs_backend.observe_at(8.0, format="vector", next_observation_timestamp=8.0).context
+    for key in ("current_state_context", "state_history_context"):
+        fields = canonical[key]["target_buff_state_feature_keys"]
+        assert not any("cumulative" in field for field in fields)
+    metrics = canonical["state_history_context"]["execution_metrics"]
+    assert all("cumulative_potency" in metric and "cumulative_dot_potency" in metric for metric in metrics)
 
 
 class _FakeModel:
@@ -465,7 +503,7 @@ def test_validation_ppg_reads_history_capacity_from_model_config(
                 timestamp=self.state.time,
                 next_scheduled_event_time=None,
                 context=(
-                    {"current_state_context": {"target_buff_state_feature_keys": ["request_state.target.cumulative_potency", "request_state.target.cumulative_dot_potency"], "tokens": [{"target_buff_state": [0.0, 0.0]}]}}
+                    {"current_state_context": {"target_buff_state_feature_keys": [], "tokens": [{"target_buff_state": []}]}}
                     if format == "vector"
                     else {
                         "time_seconds": self.state.time,
@@ -474,6 +512,7 @@ def test_validation_ppg_reads_history_capacity_from_model_config(
                         "fight_remaining_seconds": self.state.fight_remaining,
                         "gcd_remaining_seconds": self.state.gcd_remaining,
                         "cast_remaining_seconds": getattr(self.state, "cast_remaining", 0.0),
+                        "execution_metrics": {"cumulative_potency": 0.0, "cumulative_dot_potency": 0.0},
                     }
                 ),
             )

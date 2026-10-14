@@ -1,7 +1,7 @@
-# 训练数据归一化配置。
+# 训练、回放和部署共用的输入归一化尺度。
+# 职业资源/层数/充能上限继续来自职业定义和冻结技能记录，不在这里重复声明。
 normalizer:
   mp_max: 10000
-  fight_time_max: 1800
-  target_count_max: 3
-  current_potency_max: 2500
-  cumulative_potency_mode: log1p  # log1p | divide
+  time_scale: 270
+  target_count_max: 5
+  current_potency_max: 2000

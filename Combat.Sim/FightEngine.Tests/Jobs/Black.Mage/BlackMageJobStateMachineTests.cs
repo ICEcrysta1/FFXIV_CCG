@@ -522,6 +522,47 @@ public class BlackMageJobStateMachineTests
         Assert.Equal(0, nextState.Mp);
     }
 
+    [Theory]
+    [InlineData("despair", 1, 799, false)]
+    [InlineData("despair", 1, 800, true)]
+    [InlineData("despair", 3, 799, false)]
+    [InlineData("despair", 3, 800, true)]
+    [InlineData("flare", 1, 799, false)]
+    [InlineData("flare", 1, 800, true)]
+    [InlineData("flare", 3, 799, false)]
+    [InlineData("flare", 3, 800, true)]
+    public void 绝望和核爆的校验可用性与提交统一遵守800MP下限(
+        string skillKey, int astralFire, int mp, bool accepted)
+    {
+        var machine = BuildMachine();
+        Assert.Equal(800, machine.SkillBook.Get(skillKey).MpCostFloor);
+        var simulator = new JobSimulator(machine);
+        var snapshot = simulator.CreateSnapshot();
+        snapshot.State.SetJobResource("astral_fire", astralFire);
+        snapshot.State.Mp = mp;
+        simulator.RestoreSnapshot(snapshot);
+
+        var validation = simulator.ValidateActionAt(0, skillKey);
+        Assert.Equal(accepted, validation.Ok);
+        Assert.Equal(accepted, simulator.AvailableActionKeysAt(0).Contains(skillKey));
+        var submitted = simulator.SubmitAction(0, skillKey);
+        Assert.Equal(accepted, submitted.Accepted);
+        Assert.False(submitted.Queued);
+        if (accepted)
+        {
+            simulator.AdvanceTo(submitted.EffectTimestamp!.Value);
+            Assert.Equal(0, simulator.GetState().Mp);
+            Assert.Equal(3, Int(simulator.GetState(), "astral_fire"));
+        }
+        else
+        {
+            Assert.Equal("not_enough_mp", validation.Reason);
+            Assert.Equal("not_enough_mp", submitted.Reason);
+            Assert.Equal(mp, simulator.GetState().Mp);
+            Assert.Empty(simulator.GetState().History);
+        }
+    }
+
     [Fact]
     public void PolyglotGrowsOverTimeWhenElementalStateIsActive()
     {

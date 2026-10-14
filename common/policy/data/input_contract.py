@@ -41,7 +41,9 @@ from .spec import DataSpec
 #     字段 ABS 重置标识；旧归一化输入和旧 checkpoint 必须重新构建。
 # 22：有序状态布局追加两段冻结技能表，基础 mask 保持原宽；同刻场景事实、
 #     执行时间精度和状态场景合成采用共享契约，旧输入和执行产物均不可复用。
-INPUT_CONTRACT_VERSION = 22
+# 23：模型状态移除累计威力，资源/充能/时间/单次威力采用统一的显式缩放契约。
+#     黑魔绝望最低 MP 修正为 800；旧 checkpoint 的输入与执行语义均不可复用。
+INPUT_CONTRACT_VERSION = 23
 
 RESIDUAL_MIX_CONFIG_FIELDS = (
     "residual_mix_r_start", "residual_mix_r_end",
@@ -150,7 +152,6 @@ TOKEN_ENCODING_CONTRACT = {
         "boolean_delta": "minus_one_zero_plus_one",
         "unknown_recovery": "per_field_ABS_reset_mask",
         "delta_linear": "raw_delta / saved_field_divisor_without_clipping",
-        "delta_logarithmic": "sign(raw_delta) * log1p(abs(raw_delta))",
         "reset_projection": "zero_initialized_input_encoder.state_reset_proj",
         "scene": "clip_at_state_anchor_then_stable_start_end_type_order",
         "scene_time": "first_anchor_offset_then_separate_start_end_DELTA",
@@ -198,6 +199,15 @@ class ModelInputContract:
             raise ValueError("input contract output actions exceed the saved skill vocab")
         if "time_seconds" in self.schema.skill_history_fields:
             raise ValueError("removed skill time_seconds field; rebuild model input")
+        # 真实累计统计可保存在 metadata 中，但禁止重新混入 checkpoint 的模型字段。
+        model_fields = (
+            *data_spec.skill_feature_names,
+            *self.schema.skill_history_fields,
+            *(key for group in self.schema.state_groups for key in group.feature_keys),
+        )
+        if any(key.rsplit(".", 1)[-1] in {"cumulative_potency", "cumulative_dot_potency"}
+               for key in model_fields):
+            raise ValueError("removed cumulative potency model fields; rebuild model input")
 
     @classmethod
     def from_training(cls, *, data_spec, schema: TrainingSchema, normalizer: Normalizer, skill_vocab: SkillVocab):

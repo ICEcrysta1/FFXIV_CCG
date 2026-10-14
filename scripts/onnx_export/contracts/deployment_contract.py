@@ -43,7 +43,10 @@ from ..runtime.tensor_runtime import GOLDEN_FORMAT, golden_encoding
 # 22：RoPE 后逐 head 归一化 Q/K，尺度由 checkpoint 保存的 model_config 提供。
 # 23：独立无 bias 动作输出头与 FP32 softcap，尺度由 checkpoint 保存的配置提供。
 # 24：宿主 FP32 重锚 ABS/DELTA 与场景裁剪差分，增加逐字段 reset mask。
-DEPLOYMENT_CONTRACT_VERSION = 25
+# 25：固定动作的两段冻结技能表进入状态输入，null/reset mask 只覆盖基础状态。
+# 26：模型状态删除累计威力，并使用统一的资源/充能/时间/单次威力缩放契约。
+#     黑魔绝望最低 MP 修正为 800，拒绝旧输入与旧状态机规则的部署产物。
+DEPLOYMENT_CONTRACT_VERSION = 26
 DEPLOYMENT_MANIFEST_VERSION = 16
 MANIFEST_SCHEMA_FILENAME = "manifest.schema.json"
 

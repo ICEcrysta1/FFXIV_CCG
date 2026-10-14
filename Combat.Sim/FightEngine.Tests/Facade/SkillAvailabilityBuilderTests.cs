@@ -162,7 +162,7 @@ public sealed class SkillAvailabilityBuilderTests
     }
 
     [Fact]
-    public void 完整策略布局扩为136且真实和策略输出缓存不串列()
+    public void 完整策略布局为132且真实和策略输出缓存不串列()
     {
         var simulator = new JobSimulator(CombatStateMachine.FromDefaultConfig(RepoRootLocator.Find(), "black_mage"));
         var policy = PolicySession.Create(RepoRootLocator.Find(), simulator);
@@ -182,7 +182,7 @@ public sealed class SkillAvailabilityBuilderTests
             Assert.Equal(SchemaConfigLoader.Instance.StateSnapshots.SelectMany(prefix => keys.Select(key => $"{prefix}.{key}")), featureKeys);
             foreach (var token in Assert.IsType<List<Dictionary<string, double[]>>>(context["tokens"]))
             {
-                Assert.Equal(136, token.Values.Sum(values => values.Length));
+                Assert.Equal(132, token.Values.Sum(values => values.Length));
                 Assert.All(token["skill_availability"], value => Assert.True(value is 0 or 1));
                 Assert.Equal(1, token["skill_availability"][featureKeys.IndexOf("request_state.ogcd_wait")]);
             }

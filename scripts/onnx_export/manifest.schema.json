@@ -273,7 +273,7 @@
       ],
       "properties": {
         "contract_version": {
-          "const": 25
+          "const": 26
         },
         "job_tag": {
           "type": "string",
@@ -322,7 +322,7 @@
           ],
           "properties": {
             "version": {
-              "const": 22
+              "const": 23
             },
             "token_encoding": {
               "const": {
@@ -406,7 +406,6 @@
                   "state_abs_time_origin": "first_visible_request_state.time_seconds",
                   "boolean_delta": "minus_one_zero_plus_one",
                   "delta_linear": "raw_delta / saved_field_divisor_without_clipping",
-                  "delta_logarithmic": "sign(raw_delta) * log1p(abs(raw_delta))",
                   "unknown_recovery": "per_field_ABS_reset_mask",
                   "reset_projection": "zero_initialized_input_encoder.state_reset_proj",
                   "scene": "clip_at_state_anchor_then_stable_start_end_type_order",

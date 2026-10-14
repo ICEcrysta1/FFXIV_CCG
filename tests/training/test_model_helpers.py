@@ -1188,7 +1188,7 @@ def test_training_helpers_and_epoch_metrics(tmp_path, monkeypatch):
     assert saved["job_tag"] == "black_mage"
     assert saved["model_variant"] == "artzip"
     assert saved["data_spec"]["num_actions"] == 2
-    assert saved["input_contract"]["normalizer"]["config"]["fight_time_max"] == 1800.0
+    assert saved["input_contract"]["normalizer"]["config"]["time_scale"] == 270.0
 
 
 def test_checkpoint_save_rejects_missing_model_variant(tmp_path):

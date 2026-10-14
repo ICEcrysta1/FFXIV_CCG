@@ -129,33 +129,33 @@ def test_compiled_history_and_current_state_use_compact_state_contract(tmp_path)
     assert len(dataset.skill_feature_names) == 18
     assert "time_seconds" not in dataset.skill_feature_names
     assert "job_resources_consumed.polyglot" in dataset.skill_feature_names
-    assert dataset.base_state_dim == 86
-    assert dataset.state_dim == 136
+    assert dataset.base_state_dim == 82
+    assert dataset.state_dim == 132
     groups = {group.group_key: group.feature_keys for group in dataset.schema.state_groups}
     player_keys = groups["player_state"]
     assert len(player_keys) == 18
     assert "previous_action_after.current_gcd_seconds" in player_keys
     assert "request_state.downtime_remaining_seconds" in player_keys
     assert len(groups["buff_state"]) == 40
-    assert len(groups["target_buff_state"]) == 14
+    assert len(groups["target_buff_state"]) == 10
     resource_keys = groups["resource_state"]
     assert len(resource_keys) == 14
     assert all(key.startswith("previous_action_after.") for key in resource_keys[:7])
     assert all(key.startswith("request_state.") for key in resource_keys[7:])
     assert not any(
         key.rsplit(".", 1)[-1] in removed_fields or key.endswith("_gcds")
-        or key.startswith("consumed.") or ".manaward." in key or ".surecast." in key
+        or key.startswith("consumed.") or ".manaward." in key or ".surecast." in key or "cumulative" in key
         for group in dataset.state_layout.base_groups
         for key in group.feature_keys
     )
     assert sample["history_bank_skill_features"].shape[-1] == 18
     for prefix in ("history_bank", "current"):
-        assert sample[f"{prefix}_state_abs_values"].shape[-1] == 86
+        assert sample[f"{prefix}_state_abs_values"].shape[-1] == 82
         assert sample[f"{prefix}_state_skill_availability"].shape[-1] == 50
         assert sample[f"{prefix}_state_null_mask"].shape == sample[f"{prefix}_state_abs_values"].shape
 
 
-@pytest.mark.parametrize("old_contract", ["cache_format", "conversion_version", "unstable_history_order", "movement_windows", "skill_time"])
+@pytest.mark.parametrize("old_contract", ["cache_format", "conversion_version", "unstable_history_order", "movement_windows", "cumulative_state_format", "cumulative_state_conversion", "skill_time"])
 def test_previous_state_layout_cache_is_rejected(tmp_path, old_contract):
     """旧输入字段缓存不可复用，即使 raw 文件身份和其余编译参数一致。"""
     torch = pytest.importorskip("torch")
@@ -177,6 +177,10 @@ def test_previous_state_layout_cache_is_rejected(tmp_path, old_contract):
     elif old_contract == "movement_windows":
         # 布局未变，但旧版本的移动点和历史状态不能用于新的坐标聚合规则。
         payload["cache_signature"]["conversion_version"] = "raw_json_to_compiled_v25_state_skill_availability"
+    elif old_contract == "cumulative_state_format":
+        payload["cache_format"] = "raw_json_compiled_samples_v23_state_skill_availability"
+    elif old_contract == "cumulative_state_conversion":
+        payload["cache_signature"]["conversion_version"] = "raw_json_to_compiled_v26_gcd_movement_windows"
     else:
         # 即使格式和签名冒用新版，旧技能时间列仍必须明确拒绝。
         payload["skill_feature_names"] = (*payload["skill_feature_names"], "time_seconds")

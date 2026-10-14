@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 import os
 from pathlib import Path
@@ -127,6 +127,13 @@ def _parse_time_delta_scale(value: object) -> float:
     return scale
 
 
+def _default_time_delta_scale() -> float:
+    """模型读侧默认继承公共归一化 YAML，显式覆盖仍随 checkpoint 保存。"""
+    from .data.normalization import load_normalizer_config
+
+    return load_normalizer_config().time_scale
+
+
 @dataclass(frozen=True)
 class ModelConfig:
     """只保存策略模型架构超参数，数据维度由 DataSpec 提供。"""
@@ -149,7 +156,7 @@ class ModelConfig:
     logit_softcap: float = 15.0
     history_capacity: int = 128
     history_reset_keep: int = 8
-    time_delta_scale: float = 120.0
+    time_delta_scale: float = field(default_factory=_default_time_delta_scale)
     scene_capacity: int = 160
 
     def __post_init__(self) -> None:
@@ -265,7 +272,7 @@ class ModelConfig:
                 field_name="model.history_reset_keep",
             ),
             time_delta_scale=_parse_time_delta_scale(
-                values.get("time_delta_scale", cls.time_delta_scale),
+                values["time_delta_scale"] if "time_delta_scale" in values else _default_time_delta_scale(),
             ),
             scene_capacity=int(values.get("scene_capacity", cls.scene_capacity)),
         )

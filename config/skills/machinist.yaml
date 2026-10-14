@@ -20,12 +20,14 @@ resources:
     max_value: 2
   combo_remaining:
     max_value: 30
+    unit: seconds
   wildfire_active:
     max_value: 1
   # 上限必须与 timing.wildfire_duration 一致；配置加载器会 fail-fast 校验，避免
   # duration 变更后通用资源归一化仍按旧上限静默截断。
   wildfire_remaining:
     max_value: 10
+    unit: seconds
   wildfire_hits:
     max_value: 6
 

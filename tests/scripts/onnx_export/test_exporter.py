@@ -148,7 +148,7 @@ def test_manifest_schema_strictly_rejects_fused_capacity_metadata(field, value):
         validator.validate(payload)
 
 
-@pytest.mark.parametrize("previous_version", (18, 19, 20, 21, 22))
+@pytest.mark.parametrize("previous_version", (18, 19, 20, 21, 22, 23, 24, 25))
 def test_manifest_schema_rejects_previous_deployment_versions(previous_version):
     jsonschema = pytest.importorskip("jsonschema")
     schema_path = Path(export_module.__file__).parents[1] / "manifest.schema.json"

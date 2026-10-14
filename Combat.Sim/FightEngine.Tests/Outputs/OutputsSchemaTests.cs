@@ -50,15 +50,11 @@ public class OutputsSchemaTests
             "previous_action_after.target.high_thunder.active",
             "previous_action_after.target.high_thunder.remaining_seconds",
             "previous_action_after.target.high_thunder.stacks",
-            "previous_action_after.target.cumulative_dot_potency",
-            "previous_action_after.target.cumulative_potency",
             "previous_action_after.target.current_potency",
             "previous_action_after.target.current_gcd_dot_potency",
             "request_state.target.high_thunder.active",
             "request_state.target.high_thunder.remaining_seconds",
             "request_state.target.high_thunder.stacks",
-            "request_state.target.cumulative_dot_potency",
-            "request_state.target.cumulative_potency",
             "request_state.target.current_potency",
             "request_state.target.current_gcd_dot_potency",
         }, historyState["target_buff_state_feature_keys"]);
@@ -100,11 +96,12 @@ public class OutputsSchemaTests
                 "player_state_feature_keys", "buff_state_feature_keys",
                 "target_buff_state_feature_keys", "resource_state_feature_keys",
             }.SelectMany(key => (List<string>)context[key]).ToArray();
-            Assert.Equal(86, allFeatureKeys.Length);
+            Assert.Equal(82, allFeatureKeys.Length);
             Assert.DoesNotContain(allFeatureKeys, key => key.EndsWith("_gcds", StringComparison.Ordinal));
             Assert.DoesNotContain(allFeatureKeys, key => key.StartsWith("consumed.", StringComparison.Ordinal));
             Assert.DoesNotContain(allFeatureKeys, key => key.Contains(".manaward.", StringComparison.Ordinal)
                 || key.Contains(".surecast.", StringComparison.Ordinal));
+            Assert.DoesNotContain(allFeatureKeys, key => key.Contains("cumulative", StringComparison.Ordinal));
             Assert.Equal(40, ((List<string>)context["buff_state_feature_keys"]).Count);
             var resourceKeys = (List<string>)context["resource_state_feature_keys"];
             Assert.Equal(14, resourceKeys.Count);
@@ -118,6 +115,37 @@ public class OutputsSchemaTests
             var tokens = (List<Dictionary<string, object?>>)payload[contextKey];
             Assert.All(tokens, token => Assert.DoesNotContain("gcd_index", token.Keys));
         }
+    }
+
+    [Fact]
+    public void 累计威力仅从真实执行Metadata输出且后续DoT仍会更新()
+    {
+        var simulator = new JobSimulator(OutputsTestKit.BuildMachine());
+        Assert.True(simulator.SubmitAction(0, "fire_iii").Accepted);
+        simulator.AdvanceTo(4);
+        Assert.True(simulator.SubmitAction(4, "high_thunder").Accepted);
+        simulator.AdvanceTo(4.25);
+        var before = JsonSerializer.Serialize(simulator.FormatVectorState()["state_history_context"]);
+        var initialMetrics = Assert.IsType<Dictionary<string, double>>(simulator.FormatState("seconds")["execution_metrics"]);
+        simulator.AdvanceTo(8);
+        var seconds = simulator.FormatState("seconds");
+        var metrics = Assert.IsType<Dictionary<string, double>>(seconds["execution_metrics"]);
+        Assert.Equal(simulator.GetState().CumulativePotency, metrics["cumulative_potency"]);
+        Assert.Equal(simulator.GetState().CumulativeDotPotency, metrics["cumulative_dot_potency"]);
+        Assert.True(metrics["cumulative_potency"] > 0);
+        Assert.True(metrics["cumulative_dot_potency"] > initialMetrics["cumulative_dot_potency"]);
+        var payload = simulator.FormatVectorState();
+        Assert.Equal(before, JsonSerializer.Serialize(payload["state_history_context"]));
+        foreach (var key in new[] { "state_history_context", "current_state_context" })
+        {
+            var context = Assert.IsType<Dictionary<string, object?>>(payload[key]);
+            var fields = Assert.IsType<List<string>>(context["target_buff_state_feature_keys"]);
+            Assert.DoesNotContain(fields, field => field.Contains("cumulative", StringComparison.Ordinal));
+        }
+        var history = Assert.IsType<Dictionary<string, object?>>(payload["state_history_context"]);
+        var historyMetrics = Assert.IsType<List<Dictionary<string, double>>>(history["execution_metrics"]);
+        Assert.All(historyMetrics, metric => Assert.Contains("cumulative_potency", metric.Keys));
+        Assert.All(historyMetrics, metric => Assert.Contains("cumulative_dot_potency", metric.Keys));
     }
 
     [Fact]

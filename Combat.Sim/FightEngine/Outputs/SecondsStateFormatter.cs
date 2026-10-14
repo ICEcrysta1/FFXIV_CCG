@@ -31,6 +31,12 @@ public sealed class SecondsStateFormatter
             ["mp"] = player.Mp,
             ["max_mp"] = player.MaxMp,
             ["mp_ratio"] = player.MpRatio,
+            // 真实执行累计值独立输出，回放指标不依赖冻结的模型请求状态。
+            ["execution_metrics"] = new Dictionary<string, double>
+            {
+                ["cumulative_potency"] = stateContext.Target.CumulativePotency,
+                ["cumulative_dot_potency"] = stateContext.Target.CumulativeDotPotency,
+            },
         };
         foreach (var (key, value) in stateContext.Resources)
         {

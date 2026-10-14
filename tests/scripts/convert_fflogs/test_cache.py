@@ -909,7 +909,10 @@ def test_scene_execution_view_survives_real_compiled_cache_roundtrip(tmp_path, m
 
 
 def test_non_state_tokens_match_frozen_pre_refactor_baseline():
-    """旧源码与旧 DLL 在独立进程生成的基线不可由当前实现重录覆盖。"""
+    """保留旧基线，仅允许本次明确修改的威力、场景时间和目标数尺度变化。"""
+    from copy import deepcopy
+
+    import torch
     from tests.scripts.conftest import _require_inprocess_backend
     from tests.scripts.convert_fflogs._non_state_baseline import capture_cases
 
@@ -918,4 +921,33 @@ def test_non_state_tokens_match_frozen_pre_refactor_baseline():
     baseline = read_json(baseline_path)
     assert len(baseline["origin_commit"]) == 40
     assert len(baseline["source_sha256"]) == 5
-    assert capture_cases() == baseline["cases"]
+    actual = capture_cases()
+    expected = deepcopy(baseline["cases"])
+
+    def check_scaled_values(current, saved, *, scene_types=None):
+        assert current["shape"] == saved["shape"]
+        assert current["dtype"] == saved["dtype"]
+        values = torch.tensor(saved["values"], dtype=torch.float32).reshape(saved["shape"])
+        if scene_types is None:
+            # 固定技能字段按名称排序，末列为 potency；旧基线技能的充能上限均为 1。
+            values[..., -1] = (values[..., -1] * (2500 / 2000)).clamp(max=1)
+        else:
+            # 三个时间列从 /120 改为 /270；target_count 类型的第四列从 /3 改为 /5。
+            values[..., :3] *= 120 / 270
+            types = torch.tensor(scene_types["values"], dtype=torch.long).reshape(scene_types["shape"])
+            values[..., 3] = torch.where(types == 3, values[..., 3] * (3 / 5), values[..., 3])
+        new_values = torch.tensor(current["values"], dtype=torch.float32).reshape(current["shape"])
+        torch.testing.assert_close(new_values, values, rtol=1e-6, atol=1e-7)
+        # 浮点重新除法允许末位舍入差异，其余结构与原始记录仍逐项精确比较。
+        saved["values"] = current["values"]
+
+    for name, saved_case in expected.items():
+        current_case = actual[name]
+        check_scaled_values(current_case["raw"]["skill_features"], saved_case["raw"]["skill_features"])
+        assert len(current_case["model"]) == len(saved_case["model"])
+        for current_batch, saved_batch in zip(current_case["model"], saved_case["model"], strict=True):
+            current_inputs, saved_inputs = current_batch["inputs"], saved_batch["inputs"]
+            check_scaled_values(current_inputs["history_skill_features"], saved_inputs["history_skill_features"])
+            check_scaled_values(current_inputs["scene_vectors"], saved_inputs["scene_vectors"],
+                                scene_types=saved_inputs["scene_types"])
+    assert actual == expected

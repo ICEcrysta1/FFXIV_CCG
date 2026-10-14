@@ -69,7 +69,6 @@ class ContextEncoder(nn.Module):
             ("state_divisors", divisors, torch.float32),
             ("state_absolute_lower", lower, torch.float32),
             ("state_absolute_upper", upper, torch.float32),
-            ("state_logarithmic", metadata.logarithmic, torch.bool),
             ("state_time_mask", time_mask, torch.bool),
         ):
             self.register_buffer(name, torch.tensor(values, dtype=dtype), persistent=False)
@@ -182,8 +181,7 @@ class ContextEncoder(nn.Module):
         absolute = torch.where(self.state_time_mask, absolute - anchor, absolute)
         bounded = torch.minimum(torch.maximum(absolute, self.state_absolute_lower), self.state_absolute_upper)
         values = torch.where(reset, bounded, delta)
-        signed_log = values.sign() * torch.log1p(values.abs())
-        values = torch.where(self.state_logarithmic, signed_log, values / self.state_divisors)
+        values = values / self.state_divisors
         return values.masked_fill(nulls, -1.0), reset
 
     def _encode_scene(self, batch, anchor):
