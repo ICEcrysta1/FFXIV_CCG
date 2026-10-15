@@ -206,11 +206,9 @@ class ContextEncoder(nn.Module):
         values = values.gather(1, order[..., None].expand(-1, -1, self.scene_dim)).clone()
         types, mask = types.gather(1, order), mask.gather(1, order)
         starts, ends = starts.gather(1, order) - anchor[:, None], ends.gather(1, order) - anchor[:, None]
-        previous_start = torch.cat((torch.zeros_like(starts[:, :1]), starts[:, :-1]), dim=1)
-        previous_end = torch.cat((torch.zeros_like(ends[:, :1]), ends[:, :-1]), dim=1)
         for indices, encoded in (
-            (self.scene_start_indices, (starts - previous_start) / self.time_delta_scale),
-            (self.scene_end_indices, (ends - previous_end) / self.time_delta_scale),
+            (self.scene_start_indices, torch.diff(starts, dim=1, prepend=torch.zeros_like(starts[:, :1])) / self.time_delta_scale),
+            (self.scene_end_indices, torch.diff(ends, dim=1, prepend=torch.zeros_like(ends[:, :1])) / self.time_delta_scale),
             (self.scene_duration_indices, (ends - starts) / self.time_delta_scale),
         ):
             values.scatter_(-1, indices[types][..., None], encoded[..., None])

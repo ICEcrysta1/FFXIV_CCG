@@ -126,13 +126,14 @@ def _collate_quality_supervision(
         for sample in samples
     ]
     quality_lengths = [int(levels.numel()) for levels in quality_levels]
-    quality_width = max(quality_lengths)
-    padded_quality_levels = torch.zeros((len(samples), quality_width), dtype=int_dtype)
-    quality_label_mask = torch.zeros((len(samples), quality_width), dtype=torch.bool)
-    for index, levels in enumerate(quality_levels):
-        length = quality_lengths[index]
-        padded_quality_levels[index, :length] = levels
-        quality_label_mask[index, :length] = True
+    padded_quality_levels = torch.nn.utils.rnn.pad_sequence(
+        # 保留切片赋值对标量和前导单例维度的广播规则，以及目标 dtype/默认设备。
+        [levels.squeeze(tuple(range(levels.ndim - 1))).expand(levels.numel()).to(
+            dtype=int_dtype, device=torch.get_default_device(),
+        ) for levels in quality_levels],
+        batch_first=True,
+    )
+    quality_label_mask = _build_length_mask(quality_lengths, torch=torch)
     quality_statuses = [sample["metadata"].get("quality_label_status", "unannotated") for sample in samples]
     return {
         "quality_label_levels": padded_quality_levels,

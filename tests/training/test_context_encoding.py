@@ -265,11 +265,14 @@ def test_window_reanchors_from_selected_absolute_row_and_preserves_later_delta()
     assert output["scene_vectors"][0, 0, 1] == pytest.approx(97 / 270)
 
 
-def test_empty_history_anchors_current_state_and_keeps_padded_scene_width():
+@pytest.mark.parametrize("scene_width", (0, 4))
+def test_empty_history_anchors_current_state_and_keeps_padded_scene_width(scene_width):
     batch = _raw_batch()
     for key in tuple(batch):
         if key.startswith("history_") and key != "history_cursor":
             batch[key] = batch[key][:, :0]
+    for key in ("scene_abs_values", "scene_types", "scene_mask"):
+        batch[key] = batch[key][:, :scene_width]
     batch["scene_abs_values"][:, :, 1] = 0  # 所有 combat 窗口均已结束。
     batch["scene_mask"].fill_(False)
     output = _encoder().encode(batch)
@@ -278,7 +281,9 @@ def test_empty_history_anchors_current_state_and_keeps_padded_scene_width():
     torch.testing.assert_close(output["current_state_vectors"][0, :6], torch.tensor(
         [0.7, 1, 0, 1050 / 2000, -2 / 270, 0.6],
     ))
-    assert output["scene_vectors"].shape == (1, 4, 4)
+    assert output["scene_vectors"].shape == (1, scene_width, 4)
+    assert output["scene_types"].dtype == torch.long
+    assert output["scene_mask"].dtype == torch.bool
     assert not output["scene_mask"].any()
     assert torch.count_nonzero(output["scene_vectors"]) == 0
 
@@ -415,11 +420,16 @@ def test_model_context_defaults_and_no_history_boundary():
 
 
 @pytest.mark.parametrize("compact", [False, True])
-def test_cuda_encoding_matches_cpu_without_device_scalar_reads(monkeypatch, compact):
+@pytest.mark.parametrize("scene_width, all_masked", [(0, False), (1, False), (4, False), (4, True)])
+def test_cuda_encoding_matches_cpu_without_device_scalar_reads(monkeypatch, compact, scene_width, all_masked):
     if not torch.cuda.is_available():
         pytest.skip("需要 CUDA 验证共享编码热路径")
     batch = _raw_batch()
     batch["scene_types"] = batch["scene_types"].to(torch.int32)
+    for key in ("scene_abs_values", "scene_types", "scene_mask"):
+        batch[key] = batch[key][:, :scene_width]
+    if all_masked:
+        batch["scene_mask"].fill_(False)
     if compact:
         for name in ("skill_ids", "skill_features", "state_abs_values", "state_delta_values",
                      "state_null_mask", "state_delta_reset_mask", "state_skill_availability"):
