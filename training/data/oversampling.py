@@ -167,7 +167,6 @@ def load_sequence_oversampler(config_path: Path | None) -> SequenceOversampler |
             _parse_action_pattern(action, config_path=config_path)
             for action in raw_rule.get("sequence", ())
         )
-        sequence = tuple(pattern for pattern in sequence if pattern.action_key)
         if not sequence:
             raise ValueError(f"oversampling rule sequence must not be empty: {config_path}")
         if sequence in seen_sequences:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import yaml
+import pytest
 
 from training import ShardBatchSampler, WeightedShardBatchSampler, build_sample_weights, load_sequence_oversampler
 from tests.training._common_fixtures import enabled_black_mage_config
@@ -23,6 +24,8 @@ def test_shard_batch_sampler_keeps_batches_local_and_shuffles_each_epoch():
     assert sorted(index for batch in first_epoch for index in batch) == list(range(8))
     assert all(len({index // 4 for index in batch}) == 1 for batch in first_epoch)
     assert first_epoch != second_epoch
+    assert first_epoch == [[7, 5], [6, 4], [3, 2], [0, 1]]
+    assert second_epoch == [[5, 4], [7, 6], [2, 0], [1, 3]]
 
 
 def test_weighted_shard_batch_sampler_repeats_rare_samples_without_crossing_shards():
@@ -39,6 +42,33 @@ def test_weighted_shard_batch_sampler_repeats_rare_samples_without_crossing_shar
     assert sum(len(batch) for batch in batches) == 6
     assert sum(index == 1 for batch in batches for index in batch) == 3
     assert all(len({0 if index < 2 else 1 for index in batch}) == 1 for batch in batches)
+
+
+def test_weighted_shard_batch_sampler_preserves_seeded_epoch_order():
+    """固定权重和种子时，重复样本的两轮顺序保持不变。"""
+    sampler = WeightedShardBatchSampler(
+        [(0, 1), (2, 3)],
+        (1, 3, 1, 1),
+        batch_size=2,
+        seed=42,
+        shuffle=True,
+    )
+
+    assert list(sampler) == [[3, 2], [1, 1], [0, 1]]
+    assert list(sampler) == [[2, 3], [0, 1], [1, 1]]
+
+
+@pytest.mark.parametrize("action", ["", " "])
+def test_oversampling_rejects_empty_action_in_sequence(tmp_path, action):
+    """规则中的空动作必须在解析边界拒绝，不能靠后续过滤忽略。"""
+    config_path = tmp_path / "oversampling.yaml"
+    config_path.write_text(
+        yaml.safe_dump({"oversampling": {"rules": [{"sequence": ["a", action], "weight": 2}]}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="action pattern must not be empty"):
+        load_sequence_oversampler(config_path)
 
 
 def test_black_mage_oversampling_strengthens_entire_matched_sequence(tmp_path):

@@ -286,7 +286,7 @@ def test_muon_fails_clearly_without_native_support(monkeypatch):
 def test_train_epoch_updates_both_parameter_groups_with_real_gradients(
     name, precision, fp32_gradients, full_attention_residuals,
 ):
-    from training.loop.training_loop import train_epoch
+    from training.loop.epochs import train_epoch
 
     if precision == "bf16" and not torch.cuda.is_available():
         pytest.skip("需要 CUDA 验证正式 BF16 训练路径")

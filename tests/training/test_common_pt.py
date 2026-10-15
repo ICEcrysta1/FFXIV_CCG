@@ -6,12 +6,13 @@ import pytest
 
 from common.config import load_precision_config
 from scripts.convert_fflogs.utils import build_skill_book, load_job_project_config
-from common.policy.data import ActionSpace, CompiledCacheReader, Normalizer
+from common.policy.data import ActionSpace, CompiledCacheReader, Normalizer, SkillVocab
 from common.policy.data.prepared_sources import select_prepared_validation_sources
-from training import ShardBatchSampler, TrainingCollator, WeightedShardBatchSampler
+from training import ShardBatchSampler, TrainingCollator, TrainingDataset, WeightedShardBatchSampler
 from training.config import RunConfig
 from tests.training._causal_fixtures import make_data_spec, make_input_contract, make_state_groups
 from training.loop import build_dataloaders
+from training.loop.dataloaders import _build_batch_sampler
 from tests.training._common_fixtures import (
     enabled_black_mage_config,
     make_dataset,
@@ -22,6 +23,8 @@ from tests.training._common_fixtures import (
 from common.policy.data.compiled_cache import (
     CACHE_FORMAT,
     CompiledShardCache,
+    build_cache_signature,
+    cache_path_for_source,
     load_compiled_cache,
 )
 
@@ -109,6 +112,23 @@ def test_training_dataset_compiles_and_reuses_disk_cache(tmp_path):
     restored.__setstate__(first.__getstate__())
     assert isinstance(restored._readers[0], CompiledCacheReader)
     assert restored[1]["current_state_abs_values"].equal(first_sample["current_state_abs_values"])
+
+
+def test_training_dataset_requires_existing_compiled_cache(tmp_path):
+    """只读数据集入口必须拒绝缺失缓存，不能回退为在线转换。"""
+    torch = pytest.importorskip("torch")
+    source_path = tmp_path / "source.json"
+    source_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(FileNotFoundError, match="compiled cache not found or stale for raw source"):
+        TrainingDataset(
+            [source_path],
+            expected_action_space=ActionSpace.from_job_tag("black_mage"),
+            normalizer=Normalizer(),
+            int_dtype=torch.int32,
+            float_dtype=torch.float32,
+            cache_dir=tmp_path / "cache",
+        )
 
 
 def test_compiled_history_and_current_state_use_compact_state_contract(tmp_path):
@@ -373,15 +393,22 @@ def test_empty_compiled_cache_accepts_sentinel_history_bank(tmp_path, monkeypatc
     import importlib
 
     compiled_cache_module = importlib.import_module("common.policy.data.compiled_cache")
-    cache_path = tmp_path / "empty.compiled.pt"
+    source_path = tmp_path / "source.json"
+    source_path.write_text("{}", encoding="utf-8")
+    cache_path = cache_path_for_source(tmp_path, source_path)
     cache_path.write_bytes(b"empty manifest")
+    normalizer = Normalizer()
+    signature = build_cache_signature(
+        source_path, int_dtype=torch.int32, float_dtype=torch.float32,
+        normalizer=normalizer, shard_size=1,
+    )
     space = ActionSpace.from_job_tag("black_mage")
     schema = make_input_contract(make_data_spec(num_actions=len(space.action_keys), action_keys=space.action_keys,
                                                action_to_vocab_id=space.action_to_vocab_id, action_is_gcd=space.action_is_gcd)).schema
     state_dim = schema.state_layout(space.action_keys).base_state_dim
     payload = {
         "cache_format": CACHE_FORMAT,
-        "cache_signature": {},
+        "cache_signature": signature,
         "schema": schema,
         "job_tag": "black_mage",
         "num_samples": 0,
@@ -390,6 +417,7 @@ def test_empty_compiled_cache_accepts_sentinel_history_bank(tmp_path, monkeypatc
         "action_keys": space.action_keys,
         "action_to_vocab_id": space.action_to_vocab_id,
         "action_is_gcd": space.action_is_gcd,
+        "vocab_signature": tuple(SkillVocab.build_from_job_tag("black_mage")),
         "shard_size": 1,
         "shard_files": [],
         "history_bank": {
@@ -413,8 +441,8 @@ def test_empty_compiled_cache_accepts_sentinel_history_bank(tmp_path, monkeypatc
 
     reader = load_compiled_cache(
         cache_path,
-        tmp_path / "source.json",
-        signature={},
+        source_path,
+        signature=signature,
         expected_action_space=ActionSpace.from_job_tag("black_mage"),
         shard_cache=CompiledShardCache(),
     )
@@ -422,6 +450,16 @@ def test_empty_compiled_cache_accepts_sentinel_history_bank(tmp_path, monkeypatc
     assert reader is not None
     assert reader.num_samples == 0
     assert reader.history_bank["action_keys"] == ("",)
+
+    dataset = TrainingDataset(
+        [source_path], expected_action_space=space,
+        normalizer=normalizer,
+        int_dtype=torch.int32, float_dtype=torch.float32,
+        cache_dir=tmp_path, compiled_cache_shard_size=1,
+    )
+    assert len(dataset) == 0
+    assert dataset.compiled_shard_indices() == ()
+    assert _build_batch_sampler(dataset, batch_size=2, seed=42, shuffle=False) is None
 
 
 @pytest.mark.parametrize("null_anchor", [False, True])

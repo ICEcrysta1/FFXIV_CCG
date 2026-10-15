@@ -1028,7 +1028,7 @@ def test_training_helpers_and_epoch_metrics(tmp_path, monkeypatch):
     assert cache_module.select_training_raw_paths(tmp_path, max_files=0) == [direct_raw]
 
     config = RunConfig(raw_data_dir=tmp_path, output_dir=tmp_path, job_tag="black_mage")
-    assert training_module._dataloader_options(config) == {"num_workers": 0, "pin_memory": True}
+    assert dataloaders_module._dataloader_options(config) == {"num_workers": 0, "pin_memory": True}
     worker_config = RunConfig(
         raw_data_dir=tmp_path,
         output_dir=tmp_path,
@@ -1037,7 +1037,7 @@ def test_training_helpers_and_epoch_metrics(tmp_path, monkeypatch):
         prefetch_factor=3,
         persistent_workers=False,
     )
-    assert training_module._dataloader_options(worker_config) == {
+    assert dataloaders_module._dataloader_options(worker_config) == {
         "num_workers": 2,
         "pin_memory": True,
         "prefetch_factor": 3,
@@ -1053,8 +1053,8 @@ def test_training_helpers_and_epoch_metrics(tmp_path, monkeypatch):
         pass
     with pytest.raises(ValueError, match="requires a CUDA device"):
         autocast_context(torch.device("cpu"), "float16")
-    assert training_module._lr_lambda(0, 2, 10) == pytest.approx(0.5)
-    assert 0.0 <= training_module._lr_lambda(5, 2, 10) <= 1.0
+    assert training_loop_impl._lr_lambda(0, 2, 10) == pytest.approx(0.5)
+    assert 0.0 <= training_loop_impl._lr_lambda(5, 2, 10) <= 1.0
 
     batch = {"tensor": torch.ones(1), "metadata": "keep"}
     moved = move_batch(batch, torch.device("cpu"))
@@ -1065,7 +1065,7 @@ def test_training_helpers_and_epoch_metrics(tmp_path, monkeypatch):
         def compiled_shard_indices(self):
             return []
 
-    assert training_module._build_batch_sampler(
+    assert dataloaders_module._build_batch_sampler(
         EmptyShards(), batch_size=2, seed=1, shuffle=True
     ) is None
 
@@ -1075,10 +1075,10 @@ def test_training_helpers_and_epoch_metrics(tmp_path, monkeypatch):
 
     monkeypatch.setattr(dataloaders_module, "ShardBatchSampler", lambda *args, **kwargs: ("plain", args, kwargs))
     monkeypatch.setattr(dataloaders_module, "WeightedShardBatchSampler", lambda *args, **kwargs: ("weighted", args, kwargs))
-    assert training_module._build_batch_sampler(
+    assert dataloaders_module._build_batch_sampler(
         HasShards(), batch_size=2, seed=1, shuffle=False
     )[0] == "plain"
-    assert training_module._build_batch_sampler(
+    assert dataloaders_module._build_batch_sampler(
         HasShards(), batch_size=2, seed=1, shuffle=True, sample_weights=(1, 2)
     )[0] == "weighted"
 
@@ -1173,7 +1173,7 @@ def test_training_helpers_and_epoch_metrics(tmp_path, monkeypatch):
         schema=schema,
         normalizer=normalizer,
     )
-    training_module._save_checkpoint(
+    checkpoint_module._save_checkpoint(
         checkpoint,
         model,
         optimizer,
@@ -1195,7 +1195,7 @@ def test_checkpoint_save_rejects_missing_model_variant(tmp_path):
     config = RunConfig(raw_data_dir=tmp_path, output_dir=tmp_path, job_tag=None)
 
     with pytest.raises(ValueError, match="checkpoint model_variant must be configured"):
-        training_module._save_checkpoint(
+        checkpoint_module._save_checkpoint(
             tmp_path / "checkpoint.pt",
             None,
             None,
@@ -1485,7 +1485,7 @@ def test_compose_training_loss_and_autocast_success_paths(monkeypatch):
         called.update(kwargs)
         return nullcontext()
 
-    monkeypatch.setattr(training_module.torch, "autocast", fake_autocast)
+    monkeypatch.setattr(torch, "autocast", fake_autocast)
     with autocast_context(torch.device("cuda"), "bf16"):
         pass
     assert called == {"device_type": "cuda", "dtype": torch.bfloat16}
@@ -1498,14 +1498,14 @@ def test_run_training_rejects_device_and_data_contract_errors(tmp_path, monkeypa
         job_tag="black_mage",
         model_variant="artzip",
     )
-    monkeypatch.setattr(training_module.torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     with pytest.raises(RuntimeError, match="CUDA is required"):
         training_module.run_training(config, raw_paths=[tmp_path / "one.json"], validation_paths=[tmp_path / "val.json"], device_name="cuda")
 
     dataset = _fake_training_dataset(job_tag="machinist")
-    monkeypatch.setattr(training_module.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(
-        training_module,
+        training_loop_impl,
         "build_dataloaders",
         lambda *_args, **_kwargs: ([0], [0], dataset, dataset),
     )
@@ -1519,11 +1519,11 @@ def test_run_training_rejects_device_and_data_contract_errors(tmp_path, monkeypa
 
     unknown_dataset = _fake_training_dataset(job_tag="unknown")
     monkeypatch.setattr(
-        training_module,
+        training_loop_impl,
         "build_dataloaders",
         lambda *_args, **_kwargs: ([0], [0], unknown_dataset, unknown_dataset),
     )
-    monkeypatch.setattr(training_module, "resolve_registered_job_tags", lambda _root: ("black_mage",))
+    monkeypatch.setattr(training_loop_impl, "resolve_registered_job_tags", lambda _root: ("black_mage",))
     with pytest.raises(ValueError, match="has no registered combat state-machine route"):
         training_module.run_training(
             replace(config, job_tag=None),
@@ -1690,13 +1690,13 @@ def test_run_training_orchestrates_checkpoint_saving(
         assert best_val_metrics is not None
         calls["checkpoints"].append((Path(path), epoch, metrics["top1_accuracy"]))
 
-    monkeypatch.setattr(training_module, "build_dataloaders", fake_build_dataloaders)
-    monkeypatch.setattr(training_module, "resolve_policy_cache_dir", lambda job: tmp_path / "cache")
-    monkeypatch.setattr(training_module, "resolve_registered_job_tags", lambda _root: ("black_mage",))
-    monkeypatch.setattr(training_module, "CausalPolicyModel", FakeModel)
-    monkeypatch.setattr(training_module, "train_epoch", fake_train_epoch)
-    monkeypatch.setattr(training_module, "validate", fake_validate)
-    monkeypatch.setattr(training_module, "_save_checkpoint", fake_save_checkpoint)
+    monkeypatch.setattr(training_loop_impl, "build_dataloaders", fake_build_dataloaders)
+    monkeypatch.setattr(training_loop_impl, "resolve_policy_cache_dir", lambda job: tmp_path / "cache")
+    monkeypatch.setattr(training_loop_impl, "resolve_registered_job_tags", lambda _root: ("black_mage",))
+    monkeypatch.setattr(training_loop_impl, "CausalPolicyModel", FakeModel)
+    monkeypatch.setattr(training_loop_impl, "train_epoch", fake_train_epoch)
+    monkeypatch.setattr(training_loop_impl, "validate", fake_validate)
+    monkeypatch.setattr(training_loop_impl, "_save_checkpoint", fake_save_checkpoint)
     monkeypatch.setattr(
         training_loop_impl,
         "create_tensorboard_writer",
@@ -1979,26 +1979,25 @@ def test_run_training_closes_tensorboard_writer_when_monitoring_or_validation_ra
         "top3_accuracy": 0.9,
     }
 
+    monkeypatch.setattr(
+        training_loop_impl, "build_dataloaders",
+        lambda *_args, **_kwargs: ([0], [0], dataset, dataset),
+    )
+    monkeypatch.setattr(training_loop_impl, "train_epoch", lambda *_args, **_kwargs: metrics)
+    monkeypatch.setattr(training_loop_impl, "validate", lambda *_args, **_kwargs: metrics)
+    monkeypatch.setattr(training_loop_impl, "resolve_policy_cache_dir", lambda _job: tmp_path / "cache")
+    monkeypatch.setattr(training_loop_impl, "resolve_registered_job_tags", lambda _root: ("black_mage",))
+    monkeypatch.setattr(training_loop_impl, "CausalPolicyModel", FakeModel)
+    monkeypatch.setattr(training_loop_impl, "_save_checkpoint", lambda *_args, **_kwargs: None)
+
     expected_error = "validation callback failed" if failure_stage == "validation_callback" else "hparams failed"
     with pytest.raises(RuntimeError, match=expected_error):
-        training_loop_impl.run_training(
+        training_module.run_training(
             config,
             raw_paths=[tmp_path / "scene.json"],
             validation_paths=[tmp_path / "val.json"],
             device_name="cpu",
             validation_metrics_callback=fail_validation_callback,
-            _build_dataloaders=lambda *_args, **_kwargs: (
-                [0],
-                [0],
-                dataset,
-                dataset,
-            ),
-            _train_epoch=lambda *_args, **_kwargs: metrics,
-            _validate=lambda *_args, **_kwargs: metrics,
-            _resolve_cache_dir=lambda _job: tmp_path / "cache",
-            _registered_job_tags=lambda: ("black_mage",),
-            _model_class=FakeModel,
-            _save_checkpoint=lambda *_args, **_kwargs: None,
         )
 
     assert writer.closed
@@ -2018,14 +2017,14 @@ def test_best_metric_key_uses_requested_tie_break_order():
     better_top3 = {**base, "top3_accuracy": 0.95}
     better_value_loss = {**better_top3, "value_preference_loss": 0.1}
 
-    assert training_module._best_metric_key(
+    assert checkpoint_module._best_metric_key(
         better_top3,
         ppg_enabled=True,
-    ) > training_module._best_metric_key(base, ppg_enabled=True)
-    assert training_module._best_metric_key(
+    ) > checkpoint_module._best_metric_key(base, ppg_enabled=True)
+    assert checkpoint_module._best_metric_key(
         better_value_loss,
         ppg_enabled=True,
-    ) > training_module._best_metric_key(better_top3, ppg_enabled=True)
+    ) > checkpoint_module._best_metric_key(better_top3, ppg_enabled=True)
 
 
 def test_run_training_rejects_empty_prepared_paths(tmp_path):
@@ -2108,12 +2107,12 @@ def _resume_validation_context(tmp_path: Path, *, max_epochs: int = 3):
 
 def test_load_resume_checkpoint_rejects_missing_and_non_mapping(tmp_path):
     with pytest.raises(FileNotFoundError, match="resume checkpoint not found"):
-        training_module._load_resume_checkpoint(tmp_path / "missing.pt")
+        checkpoint_module._load_resume_checkpoint(tmp_path / "missing.pt")
 
     invalid = tmp_path / "invalid.pt"
     torch.save([], invalid)
     with pytest.raises(ValueError, match="resume checkpoint must be a mapping"):
-        training_module._load_resume_checkpoint(invalid)
+        checkpoint_module._load_resume_checkpoint(invalid)
 
 
 @pytest.mark.parametrize(
@@ -2141,7 +2140,7 @@ def test_validate_resume_checkpoint_rejects_contract_mismatches(
         checkpoint[field] = value
 
     with pytest.raises(ValueError, match=message):
-        training_module._validate_resume_checkpoint(
+        checkpoint_module._validate_resume_checkpoint(
             checkpoint,
             data_spec=context.data_spec,
             dataset=context.dataset,
@@ -2170,7 +2169,7 @@ def test_validate_resume_checkpoint_rejects_model_variant_mismatch(
         checkpoint["model_variant"] = model_variant
 
     with pytest.raises(ValueError, match=message):
-        training_module._validate_resume_checkpoint(
+        checkpoint_module._validate_resume_checkpoint(
             checkpoint,
             data_spec=context.data_spec,
             dataset=context.dataset,
@@ -2193,7 +2192,7 @@ def test_validate_resume_checkpoint_rejects_max_files_mismatch(
     config = replace(context.config, max_files=1280 if checkpoint_max_files is None else None)
 
     with pytest.raises(ValueError, match="resume checkpoint max_files mismatch"):
-        training_module._validate_resume_checkpoint(
+        checkpoint_module._validate_resume_checkpoint(
             checkpoint,
             data_spec=context.data_spec,
             dataset=context.dataset,
@@ -2208,7 +2207,7 @@ def test_validate_resume_checkpoint_rejects_unknown_legacy_max_files(tmp_path):
     checkpoint.pop("run_config")
 
     with pytest.raises(ValueError, match="resume checkpoint max_files mismatch"):
-        training_module._validate_resume_checkpoint(
+        checkpoint_module._validate_resume_checkpoint(
             checkpoint,
             data_spec=context.data_spec,
             dataset=context.dataset,
@@ -2225,7 +2224,7 @@ def test_validate_resume_checkpoint_accepts_explicit_unlimited_max_files(tmp_pat
         "validation_files": context.config.validation_files,
     }
 
-    training_module._validate_resume_checkpoint(
+    checkpoint_module._validate_resume_checkpoint(
         checkpoint,
         data_spec=context.data_spec,
         dataset=context.dataset,
@@ -2242,7 +2241,7 @@ def test_validate_resume_checkpoint_rejects_validation_count_mismatch(tmp_path):
         "validation_files": context.config.validation_files + 1,
     }
     with pytest.raises(ValueError, match="resume checkpoint validation_files mismatch"):
-        training_module._validate_resume_checkpoint(
+        checkpoint_module._validate_resume_checkpoint(
             checkpoint,
             data_spec=context.data_spec,
             dataset=context.dataset,
@@ -2262,7 +2261,7 @@ def test_validate_resume_checkpoint_allows_max_files_mismatch_when_forced(
         "max_files": 1280,
     }
     with caplog.at_level(logging.WARNING):
-        training_module._validate_resume_checkpoint(
+        checkpoint_module._validate_resume_checkpoint(
             checkpoint,
             data_spec=context.data_spec,
             dataset=context.dataset,
@@ -2286,7 +2285,7 @@ def test_validate_resume_checkpoint_allows_unknown_legacy_max_files_when_forced(
     checkpoint.pop("run_config")
 
     with caplog.at_level(logging.WARNING):
-        training_module._validate_resume_checkpoint(
+        checkpoint_module._validate_resume_checkpoint(
             checkpoint,
             data_spec=context.data_spec,
             dataset=context.dataset,
@@ -2311,7 +2310,7 @@ def test_validate_resume_checkpoint_rejects_legacy_false_raw_projection(tmp_path
     }
 
     with pytest.raises(ValueError, match="removed model options"):
-        training_module._validate_resume_checkpoint(
+        checkpoint_module._validate_resume_checkpoint(
             checkpoint,
             data_spec=context.data_spec,
             dataset=context.dataset,
@@ -2327,7 +2326,7 @@ def test_validate_resume_checkpoint_rejects_removed_candidate_shared_semantics(t
     checkpoint["model_config"]["position_id_semantics"] = "candidate_block_shared"
 
     with pytest.raises(ValueError, match="removed model options"):
-        training_module._validate_resume_checkpoint(
+        checkpoint_module._validate_resume_checkpoint(
             checkpoint,
             data_spec=context.data_spec,
             dataset=context.dataset,
@@ -2351,7 +2350,7 @@ def test_validate_resume_checkpoint_rejects_invalid_epoch(tmp_path, epoch, messa
     checkpoint["epoch"] = epoch
 
     with pytest.raises(ValueError, match=message):
-        training_module._validate_resume_checkpoint(
+        checkpoint_module._validate_resume_checkpoint(
             checkpoint,
             data_spec=context.data_spec,
             dataset=context.dataset,
@@ -2366,7 +2365,7 @@ def test_run_training_rejects_resume_at_configured_epoch_limit(tmp_path, monkeyp
     checkpoint_path = tmp_path / "resume.pt"
     torch.save(context.checkpoint, checkpoint_path)
     monkeypatch.setattr(
-        training_module,
+        training_loop_impl,
         "build_dataloaders",
         lambda *_args, **_kwargs: ([0], [0], context.dataset, context.dataset),
     )
@@ -2510,7 +2509,7 @@ def test_restore_best_state_uses_checkpoint_metadata_and_best_fallback(tmp_path)
         "best_key": (0.8, 0.8, 0.95, -0.2),
         "best_val_metrics": best_metrics,
     }
-    key, metrics = training_module._restore_best_state(
+    key, metrics = checkpoint_module._restore_best_state(
         checkpoint,
         tmp_path / "resume.pt",
         ppg_enabled=False,
@@ -2522,12 +2521,12 @@ def test_restore_best_state_uses_checkpoint_metadata_and_best_fallback(tmp_path)
     best_path = tmp_path / "best.pt"
     torch.save(context.checkpoint, resume_path)
     torch.save({"metrics": best_metrics}, best_path)
-    key, metrics = training_module._restore_best_state(
+    key, metrics = checkpoint_module._restore_best_state(
         context.checkpoint,
         resume_path,
         ppg_enabled=False,
     )
-    assert key == training_module._best_metric_key(best_metrics, ppg_enabled=False)
+    assert key == checkpoint_module._best_metric_key(best_metrics, ppg_enabled=False)
     assert metrics == best_metrics
 
 
@@ -2545,7 +2544,7 @@ def test_restore_scheduler_state_loads_saved_state():
         restored_optimizer,
         lambda step: 1.0 / (step + 1),
     )
-    training_module._restore_scheduler_state(
+    checkpoint_module._restore_scheduler_state(
         restored_scheduler,
         {"scheduler_state_dict": saved_state},
         completed_steps=99,
@@ -2557,17 +2556,17 @@ def test_restore_scheduler_state_loads_saved_state():
 def test_restore_rng_state_restores_matching_cuda_state_and_rejects_count_mismatch(monkeypatch):
     cuda_states = [torch.tensor([1]), torch.tensor([2])]
     calls = []
-    monkeypatch.setattr(training_module.torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(training_module.torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
     monkeypatch.setattr(
-        training_module.torch.cuda,
+        torch.cuda,
         "set_rng_state_all",
         lambda state: calls.append(state),
     )
 
-    training_module._restore_rng_state({"rng_state": {"cuda": cuda_states}})
+    checkpoint_module._restore_rng_state({"rng_state": {"cuda": cuda_states}})
     assert calls == [cuda_states]
 
-    monkeypatch.setattr(training_module.torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
     with pytest.raises(ValueError, match="CUDA RNG state device count mismatch"):
-        training_module._restore_rng_state({"rng_state": {"cuda": cuda_states}})
+        checkpoint_module._restore_rng_state({"rng_state": {"cuda": cuda_states}})

@@ -46,7 +46,7 @@ from common.policy.data import ActionSpace, DataSpec, ModelInputContract, Normal
 from common.policy.data.schema import TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
 from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
 from tests.training._causal_fixtures import make_state_groups
-from training.loop import _save_checkpoint
+from training.loop.checkpoint import _save_checkpoint
 
 
 def test_analysis_scene_uses_independent_env_and_cli_override(monkeypatch, tmp_path):

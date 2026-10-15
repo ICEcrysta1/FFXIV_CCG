@@ -67,17 +67,13 @@ class TrainingDataset(Dataset):
             raise ValueError("compiled_cache_max_shards must be >= 1")
         self._compiled_cache_shard_size = int(compiled_cache_shard_size)
         self._compiled_cache_max_shards = int(compiled_cache_max_shards)
-        self._cache_dir = None if cache_dir is None else Path(cache_dir).resolve()
+        self._cache_dir = Path(cache_dir).resolve()
         self._shard_cache = CompiledShardCache(self._compiled_cache_max_shards)
 
         self._readers: list[CompiledCacheReader] = []
         reference_reader = None
         for source_path in self._source_paths:
-            reader = self._load_reader(source_path)
-            if reader is None:
-                raise FileNotFoundError(
-                    f"compiled cache not found or stale for raw source: {source_path}"
-                )
+            reader = self._load_required_reader(source_path)
             if reference_reader is None:
                 reference_reader = reader
                 self._schema = reader.schema
@@ -92,9 +88,6 @@ class TrainingDataset(Dataset):
             self._assert_reader_compatible(reader)
             self._skill_vocab.assert_matches(reader.vocab_signature, context=f"compiled cache {source_path}")
             self._readers.append(reader)
-
-        if reference_reader is None:
-            raise RuntimeError("TrainingDataset could not initialize a compiled reader")
 
         self._sample_offsets = [0]
         for reader in self._readers:
@@ -170,12 +163,8 @@ class TrainingDataset(Dataset):
 
     def compiled_shard_indices(self) -> tuple[tuple[int, ...], ...]:
         """返回按源缓存 shard 分组的全局样本索引。"""
-        if not all(isinstance(reader, CompiledCacheReader) for reader in self._readers):
-            return ()
-
         groups: list[tuple[int, ...]] = []
         for reader_index, reader in enumerate(self._readers):
-            assert isinstance(reader, CompiledCacheReader)
             base_index = self._sample_offsets[reader_index]
             for shard_index in range((reader.num_samples + reader.shard_size - 1) // reader.shard_size):
                 start = shard_index * reader.shard_size
