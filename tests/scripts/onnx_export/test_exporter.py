@@ -563,6 +563,7 @@ def test_ort_session_failure_reports_dependency_reinstall(tmp_path):
 @pytest.mark.parametrize("activation", ("gelu", "swiglu"))
 def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activation):
     onnx = pytest.importorskip("onnx")
+    jsonschema = pytest.importorskip("jsonschema")
     pytest.importorskip("onnxruntime")
     pytest.importorskip("onnxscript")
     checkpoint = tmp_path / "checkpoint.pt"
@@ -641,6 +642,24 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
     ] == ["raw_logits"]
     loaded = DeploymentManifest.load(output / "manifest.json")
     assert loaded.contract.data_spec == data_spec
+
+    # 结构与固定格式统一由 JSON Schema 拒绝，编码和部署精度仍需跨字段校验。
+    invalid_manifests = (
+        {key: value for key, value in manifest.items() if key != "format"},
+        {**manifest, "unexpected": True},
+        {**manifest, "format": "unsupported"},
+        {**manifest, "golden": {**manifest["golden"], "format": "unsupported"}},
+    )
+    invalid_path = output / "invalid-schema-manifest.json"
+    for invalid in invalid_manifests:
+        invalid_path.write_text(json.dumps(invalid), encoding="utf-8")
+        with pytest.raises(jsonschema.ValidationError):
+            DeploymentManifest.load(invalid_path, verify_files=False)
+    wrong_encoding = deepcopy(manifest)
+    wrong_encoding["golden"]["float_encoding"] = GOLDEN_BF16_ENCODING
+    invalid_path.write_text(json.dumps(wrong_encoding), encoding="utf-8")
+    with pytest.raises(ValueError, match="golden encoding differs from contract precision"):
+        DeploymentManifest.load(invalid_path, verify_files=False)
 
     # 机制、初始化元数据及版本均由 checkpoint 权威配置决定。
     for missing_field in ("residual_mix_r_start", "residual_mix_r_end", "residual_mix_a_start", "residual_mix_a_end"):

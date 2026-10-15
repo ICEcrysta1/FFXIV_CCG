@@ -24,7 +24,7 @@ from ..runtime.precision import (
     precision_onnx_dtype,
     validate_deployment_logit_softcap,
 )
-from ..runtime.tensor_runtime import GOLDEN_FORMAT, golden_encoding
+from ..runtime.tensor_runtime import golden_encoding
 
 
 # 输入与状态机执行语义变化后，旧导出包不得继续被部署侧接受。
@@ -458,30 +458,10 @@ class DeploymentManifest:
                 "manifest validation requires requirements-onnx.txt"
             ) from exc
         jsonschema.Draft202012Validator(schema).validate(payload)
-        _require_exact_keys(
-            payload,
-            {
-                "$schema",
-                "manifest_version",
-                "format",
-                "opset",
-                "contract",
-                "checkpoint",
-                "model",
-                "capacity_report",
-                "golden",
-                "exporter",
-            },
-            path="manifest",
-        )
-        if payload["format"] != "onnx":
-            raise ValueError("deployment manifest format must be onnx")
         contract = DeploymentContract.from_dict(
             _mapping(payload["contract"], "manifest.contract")
         )
         golden = _mapping(payload["golden"], "manifest.golden")
-        if golden["format"] != GOLDEN_FORMAT:
-            raise ValueError("deployment golden format is unsupported")
         if golden["float_encoding"] != golden_encoding(contract.precision):
             raise ValueError(
                 "deployment golden encoding differs from contract precision"

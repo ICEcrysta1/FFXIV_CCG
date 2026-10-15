@@ -298,6 +298,47 @@ def test_compute_grpo_loss_is_finite_and_differentiable(monkeypatch):
     assert torch.isfinite(policy.logits.grad).all()
 
 
+@pytest.mark.parametrize("log_ratio", [-1e-4, -1e-5, 1e-5, 1e-4])
+def test_compute_grpo_loss_preserves_near_zero_kl(log_ratio):
+    """近零正负对数比的 KL 对齐双精度参考，且保留可用梯度。"""
+    class ToyPolicy(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.logits = torch.nn.Parameter(torch.zeros(3))
+
+        def forward(self, batch):
+            return {"logits": self.logits.unsqueeze(0)}
+
+    policy = ToyPolicy()
+    old_logprobs = torch.log(torch.tensor([1.0 / 3.0])) + log_ratio
+    diagnostics = {}
+    loss, metrics = compute_grpo_loss(
+        policy,
+        {"action_legal_mask": torch.ones((1, 3), dtype=torch.bool)},
+        action_indices=torch.tensor([0]),
+        old_logprobs=old_logprobs,
+        advantages=torch.zeros(1),
+        grpo=GrpoConfig(temperature=1.0, kl_coefficient=1.0),
+        repetition=SimpleNamespace(enabled=False),
+        device=torch.device("cpu"),
+        precision="float32",
+        diagnostics=diagnostics,
+    )
+
+    # 用实际 FP32 对数比构造双精度参考，排除输入量化误差。
+    actual_log_ratio = (
+        old_logprobs - torch.log(diagnostics["policy/selected_probability"])
+    ).double()
+    expected_kl = (torch.exp(actual_log_ratio) - actual_log_ratio - 1.0).mean()
+    assert metrics["kl"] > 0.0
+    torch.testing.assert_close(metrics["kl"].double(), expected_kl, rtol=0.01, atol=0.0)
+    torch.testing.assert_close(loss.double(), expected_kl, rtol=0.01, atol=0.0)
+    loss.backward()
+    assert policy.logits.grad is not None
+    assert torch.isfinite(policy.logits.grad).all()
+    assert policy.logits.grad.abs().sum() > 0.0
+
+
 def test_collate_grpo_decisions_preserves_all_empty_sequences():
     batch = collate_grpo_decisions((
         _decision(history_length=0, scene_length=0, action_index=0),

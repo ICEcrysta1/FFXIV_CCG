@@ -24,12 +24,33 @@ def test_state_reset_projection_preserves_common_initialization(monkeypatch, ful
         transformer_activation="swiglu", history_capacity=300,
         full_attention_residuals=full_attention_residuals,
     )
+    projection_rng = {}
+
+    def capture_projection_rng(module, name, child):
+        if isinstance(module, input_encoder.CausalInputEncoder) and name in {
+            "role_embed", "state_reset_proj",
+        }:
+            projection_rng[name] = torch.random.get_rng_state()
+
     with torch.random.fork_rng(devices=[]):
         torch.random.default_generator.manual_seed(42)
-        actual = CausalPolicyModel(spec, config, vocab_size=10)
+        hook = nn.modules.module.register_module_module_registration_hook(capture_projection_rng)
+        try:
+            actual = CausalPolicyModel(spec, config, vocab_size=10)
+        finally:
+            hook.remove()
         actual_rng = torch.random.get_rng_state()
-        # 用无参数槽替代新增投影，重建此前拥有相同公共模块的模型。
-        monkeypatch.setattr(input_encoder, "_StateResetProjection", lambda *args, **kwargs: nn.Identity())
+        # 投影构造不能消耗随机数；参考模型在公共权重初始化前移除该投影。
+        torch.testing.assert_close(
+            projection_rng["role_embed"], projection_rng["state_reset_proj"], rtol=0, atol=0,
+        )
+        initialize_input_encoder = input_encoder.CausalInputEncoder.__init__
+
+        def initialize_without_reset(self, *args, **kwargs):
+            initialize_input_encoder(self, *args, **kwargs)
+            del self.state_reset_proj
+
+        monkeypatch.setattr(input_encoder.CausalInputEncoder, "__init__", initialize_without_reset)
         torch.random.default_generator.manual_seed(42)
         without_reset_projection = CausalPolicyModel(spec, config, vocab_size=10)
         expected_rng = torch.random.get_rng_state()

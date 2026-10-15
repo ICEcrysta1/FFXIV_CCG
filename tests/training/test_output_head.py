@@ -26,20 +26,49 @@ def _model(*, actions=(3, 1, 4), softcap=15.0, dtype=torch.float32, repetition=N
     return CausalPolicyModel(spec, config, vocab_size=6, repetition=repetition).to(dtype=dtype)
 
 
-def test_output_head_copies_action_row_order_without_extra_rng_or_shared_changes():
-    models, states = [], []
-    for actions in ((3, 1, 4), (5, 2)):
-        torch.manual_seed(317)
-        model = _model(actions=actions)
-        models.append(model)
-        states.append(torch.get_rng_state().clone())
-        assert isinstance(model.output_head, torch.nn.Linear)
-        assert model.output_head.bias is None
-        assert model.output_head.weight.shape == (len(actions), model.config.d_model)
-        selected = model.input_encoder.skill_embed.weight[torch.tensor(actions)]
-        torch.testing.assert_close(model.output_head.weight, selected, atol=0, rtol=0)
-    # 只改变动作表和独立头形状，不应消费额外初始化随机数或改变任何共享权重。
-    assert torch.equal(states[0], states[1])
+@pytest.mark.parametrize("default_dtype", (torch.float32, torch.float64, torch.bfloat16))
+@pytest.mark.parametrize("device", (
+    "cpu", pytest.param("cuda", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="需要 CUDA")),
+))
+def test_output_head_copies_action_row_order_without_extra_rng_or_shared_changes(monkeypatch, default_dtype, device):
+    models, states, before_head_states = [], [], []
+
+    def rng_states():
+        return (torch.get_rng_state().clone(), *(
+            [torch.cuda.get_rng_state().clone()] if device == "cuda" else []
+        ))
+
+    initialize_weights = CausalPolicyModel._init_weights
+
+    def initialize_before_output_head(self):
+        initialize_weights(self)
+        before_head_states.append(rng_states())
+
+    monkeypatch.setattr(CausalPolicyModel, "_init_weights", initialize_before_output_head)
+    previous_dtype = torch.get_default_dtype()
+    try:
+        torch.set_default_dtype(default_dtype)
+        with torch.device(device):
+            for actions in ((3, 1, 4), (5, 2, 1)):
+                torch.manual_seed(317)
+                model = _model(actions=actions, dtype=default_dtype)
+                models.append(model)
+                states.append(rng_states())
+                assert isinstance(model.output_head, torch.nn.Linear)
+                assert model.output_head.bias is None
+                assert model.output_head.weight.shape == (len(actions), model.config.d_model)
+                for projection in (model.output_head, model.input_encoder.state_reset_proj):
+                    assert projection.weight.device.type == device
+                    assert projection.weight.dtype == default_dtype
+                assert torch.count_nonzero(model.input_encoder.state_reset_proj.weight) == 0
+                selected = model.input_encoder.skill_embed.weight[torch.tensor(actions)]
+                torch.testing.assert_close(model.output_head.weight, selected, atol=0, rtol=0)
+    finally:
+        torch.set_default_dtype(previous_dtype)
+    # 固定动作数以保留相同的状态输入维度，只调整动作行映射。
+    assert all(torch.equal(left, right) for left, right in zip(states[0], states[1], strict=True))
+    for before, after in zip(before_head_states, states, strict=True):
+        assert all(torch.equal(left, right) for left, right in zip(before, after, strict=True))
     shared = [dict(model.named_parameters()) for model in models]
     assert shared[0].keys() == shared[1].keys()
     for name in shared[0]:

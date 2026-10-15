@@ -114,7 +114,7 @@ def compute_grpo_loss(
     policy_loss = -surrogate.mean()
 
     log_ratio_ref_to_policy = old_logprobs - new_logprobs
-    kl = torch.exp(log_ratio_ref_to_policy) - log_ratio_ref_to_policy - 1.0
+    kl = torch.expm1(log_ratio_ref_to_policy) - log_ratio_ref_to_policy
     loss = policy_loss + grpo.kl_coefficient * kl.mean()
 
     positive_probabilities = probabilities.clamp_min(LOG_PROB_EPSILON)
