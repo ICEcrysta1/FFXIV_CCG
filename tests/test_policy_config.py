@@ -184,19 +184,24 @@ def test_residual_mix_endpoints_preserve_finite_numeric_values_and_round_trip(va
 
 
 @pytest.mark.parametrize("value", [1, 15.0, 30.0, "7.5", 1e-30, 1e38])
-def test_logit_softcap_normalizes_and_round_trips(value):
-    config = ModelConfig.from_mapping({"logit_softcap": value})
-    assert config.logit_softcap == float(value)
-    assert isinstance(config.logit_softcap, float)
-    assert ModelConfig(logit_softcap=value) == config
+@pytest.mark.parametrize("field", ["logit_softcap", "time_delta_scale"])
+def test_positive_fp32_model_parameters_normalize_and_round_trip(value, field):
+    config = ModelConfig.from_mapping({field: value})
+    assert getattr(config, field) == float(value)
+    assert isinstance(getattr(config, field), float)
+    assert ModelConfig(**{field: value}) == config
     assert ModelConfig.from_mapping(yaml.safe_load(yaml.safe_dump(asdict(config)))) == config
 
 
 @pytest.mark.parametrize("value", [True, False, 0, -1, float("nan"), float("inf"),
                                   -float("inf"), "invalid", None, [], {},
                                   1e-46, 1e-300, 1e39, 1e300])
-def test_logit_softcap_rejects_invalid_values(value):
-    with pytest.raises(ValueError, match="logit_softcap must be finite and positive"):
-        ModelConfig.from_mapping({"logit_softcap": value})
-    with pytest.raises(ValueError, match="logit_softcap must be finite and positive"):
-        ModelConfig(logit_softcap=value)
+@pytest.mark.parametrize("field", ["logit_softcap", "time_delta_scale"])
+def test_positive_fp32_model_parameters_reject_invalid_values(value, field):
+    message = f"model.{field} must be finite and positive within the FP32 normal range"
+    with pytest.raises(ValueError) as mapping_error:
+        ModelConfig.from_mapping({field: value})
+    assert str(mapping_error.value) == message
+    with pytest.raises(ValueError) as direct_error:
+        ModelConfig(**{field: value})
+    assert str(direct_error.value) == message

@@ -287,6 +287,7 @@ def test_compiled_cache_manifest_uses_mmap_for_history_bank(tmp_path, monkeypatc
         "nonzero_sentinel",
         "missing_request_time",
         "null_bank_request_time",
+        "nonempty_sentinel_action",
     ],
 )
 def test_corrupt_history_bank_manifest_falls_back_to_recompile(
@@ -345,6 +346,8 @@ def test_corrupt_history_bank_manifest_falls_back_to_recompile(
         object.__setattr__(schema, "state_groups", make_state_groups({"player_state": tuple(f"field_{i}" for i in range(state_dim))}, space.action_keys))
     elif corruption == "null_bank_request_time":
         history_bank["state_null_mask"][1, 0] = True
+    elif corruption == "nonempty_sentinel_action":
+        history_bank["action_keys"] = ("fire_iv", "fire_iii")
     payload = {
         "cache_format": CACHE_FORMAT,
         "cache_signature": {},
@@ -385,6 +388,38 @@ def test_corrupt_history_bank_manifest_falls_back_to_recompile(
         shard_cache=CompiledShardCache(),
     )
     assert (reader is not None) is (corruption == "none")
+
+
+@pytest.mark.parametrize("scene_case", ["empty", "missing_values", "missing_types"])
+def test_compiled_scene_reader_keeps_empty_scenes_and_rejects_missing_fields(tmp_path, scene_case):
+    """空场景保留宽度和请求 dtype；缺字段必须在读取 shard 时拒绝。"""
+    torch = pytest.importorskip("torch")
+    from common.pytorch.serialization import safe_torch_load
+    from common.policy.data.compiled_cache import CACHE_PICKLE_PROTOCOL
+
+    source_path = make_demo_pt(tmp_path, ["fire_iii"], fight_id="scene_reader_boundary")
+    dataset = make_dataset([source_path])
+    reader = next(dataset.iter_source_readers())
+    shard_path = reader.shard_paths[0]
+    payload = safe_torch_load(shard_path)
+    sample = payload["samples"][0]
+    if scene_case == "empty":
+        sample["scene_vectors"] = torch.empty((0, dataset.scene_dim), dtype=torch.float32)
+        sample["scene_types"] = torch.empty((0,), dtype=torch.int32)
+    else:
+        sample.pop("scene_vectors" if scene_case == "missing_values" else "scene_types")
+    torch.save(payload, shard_path, pickle_protocol=CACHE_PICKLE_PROTOCOL)
+
+    if scene_case == "empty":
+        values, types = reader.scene_tokens(0, float_dtype=torch.float16, int_dtype=torch.int64)
+        assert values.shape == (0, dataset.scene_dim)
+        assert types.shape == (0,)
+        assert values.dtype == torch.float16
+        assert types.dtype == torch.int64
+    else:
+        message = "scene_vectors must be raw finite FP32 values" if scene_case == "missing_values" else "scene_types shape or dtype mismatch"
+        with pytest.raises(ValueError, match=message):
+            reader.scene_tokens(0, float_dtype=torch.float16, int_dtype=torch.int64)
 
 
 def test_empty_compiled_cache_accepts_sentinel_history_bank(tmp_path, monkeypatch):

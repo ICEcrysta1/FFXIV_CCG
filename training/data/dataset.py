@@ -194,7 +194,7 @@ class TrainingDataset(Dataset):
         self._shard_cache = CompiledShardCache(self._compiled_cache_max_shards)
         self._readers = [self._load_required_reader(source_path) for source_path in self._source_paths]
 
-    def _load_reader(self, source_path: Path) -> CompiledCacheReader | None:
+    def _load_required_reader(self, source_path: Path) -> CompiledCacheReader:
         signature = build_cache_signature(
             source_path,
             int_dtype=self._int_dtype,
@@ -202,7 +202,7 @@ class TrainingDataset(Dataset):
             normalizer=self._normalizer,
             shard_size=self._compiled_cache_shard_size,
         )
-        return load_compiled_cache_for_source(
+        reader = load_compiled_cache_for_source(
             self._cache_dir,
             source_path,
             signature=signature,
@@ -210,8 +210,6 @@ class TrainingDataset(Dataset):
             shard_cache=self._shard_cache,
         )
 
-    def _load_required_reader(self, source_path: Path) -> CompiledCacheReader:
-        reader = self._load_reader(source_path)
         if reader is None:
             raise FileNotFoundError(
                 f"compiled cache not found or stale for raw source: {source_path}"

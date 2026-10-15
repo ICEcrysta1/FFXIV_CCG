@@ -201,7 +201,7 @@ def test_grpo_sampling_is_independent_of_worker_count(dataset, tmp_path):
     from common.policy.data import ModelInputContract
     from common.policy.model.repetition import RepetitionConfig
     from common.policy.replay import AutoregressiveReplayConfig
-    from grpo.trainer import _run_scene_rollout
+    from grpo.rollout import _run_scene_rollout
     from scripts.autoregressive_replay.replay import AutoregressiveReplaySession, ReplayCacheStore
 
     spec = DataSpec.from_dataset(dataset)

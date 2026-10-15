@@ -90,20 +90,25 @@ def _parse_residual_mix_endpoint(value: object, *, field_name: str) -> float:
     return endpoint
 
 
-def _parse_logit_softcap(value: object) -> float:
-    """解析输出分数的正有限 softcap，禁止布尔值隐式变成数值。"""
-    message = "model.logit_softcap must be finite and positive within the FP32 normal range"
+def _parse_positive_fp32(value: object, *, field_name: str) -> float:
+    """解析以 FP32 使用的正常正数，禁止布尔值和非有限数值。"""
+    message = f"{field_name} must be finite and positive within the FP32 normal range"
     if isinstance(value, bool):
         raise ValueError(message)  # noqa: TRY004
     try:
-        cap = float(value)
+        number = float(value)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(message) from exc
-    # softcap 固定以 FP32 执行；排除上溢、下溢及 GPU 可能冲零的非规格化尺度。
+    # 排除上溢、下溢及 GPU 可能冲零的非规格化尺度。
     minimum, maximum = float.fromhex("0x1p-126"), float.fromhex("0x1.fffffep+127")
-    if not math.isfinite(cap) or not minimum <= cap <= maximum:
+    if not math.isfinite(number) or not minimum <= number <= maximum:
         raise ValueError(message)
-    return cap
+    return number
+
+
+def _parse_logit_softcap(value: object) -> float:
+    """解析输出分数的正有限 softcap，禁止布尔值隐式变成数值。"""
+    return _parse_positive_fp32(value, field_name="model.logit_softcap")
 
 
 def _parse_history_integer(value: object, *, field_name: str) -> int:
@@ -115,16 +120,7 @@ def _parse_history_integer(value: object, *, field_name: str) -> int:
 
 def _parse_time_delta_scale(value: object) -> float:
     """单步时间尺度以 FP32 计算，必须是可表示的正常正数。"""
-    message = "model.time_delta_scale must be finite and positive within the FP32 normal range"
-    if isinstance(value, bool):
-        raise ValueError(message)  # noqa: TRY004
-    try:
-        scale = float(value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(message) from exc
-    if not math.isfinite(scale) or not float.fromhex("0x1p-126") <= scale <= float.fromhex("0x1.fffffep+127"):
-        raise ValueError(message)
-    return scale
+    return _parse_positive_fp32(value, field_name="model.time_delta_scale")
 
 
 def _default_time_delta_scale() -> float:
