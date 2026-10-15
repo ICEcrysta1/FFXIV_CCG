@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING
 
-from common.numeric import flatten_numeric_mapping
+from scripts.common.numeric import flatten_numeric_mapping
 
 if TYPE_CHECKING:
     from .source_reader import TrainingSourceReader
@@ -57,7 +57,7 @@ def extract_execution_metric(
 
 def derive_skill_feature_names(reader: "TrainingSourceReader") -> tuple[str, ...]:
     """由稳定技能字段和职业资源定义推导，空历史也有同一宽度。"""
-    from common.config import load_project_config
+    from common.game.config import load_project_config
 
     config = load_project_config(job_tag=reader.job_tag)
     resource_names = tuple(

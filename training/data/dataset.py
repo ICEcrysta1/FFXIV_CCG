@@ -67,17 +67,13 @@ class TrainingDataset(Dataset):
             raise ValueError("compiled_cache_max_shards must be >= 1")
         self._compiled_cache_shard_size = int(compiled_cache_shard_size)
         self._compiled_cache_max_shards = int(compiled_cache_max_shards)
-        self._cache_dir = None if cache_dir is None else Path(cache_dir).resolve()
+        self._cache_dir = Path(cache_dir).resolve()
         self._shard_cache = CompiledShardCache(self._compiled_cache_max_shards)
 
         self._readers: list[CompiledCacheReader] = []
         reference_reader = None
         for source_path in self._source_paths:
-            reader = self._load_reader(source_path)
-            if reader is None:
-                raise FileNotFoundError(
-                    f"compiled cache not found or stale for raw source: {source_path}"
-                )
+            reader = self._load_required_reader(source_path)
             if reference_reader is None:
                 reference_reader = reader
                 self._schema = reader.schema
@@ -92,9 +88,6 @@ class TrainingDataset(Dataset):
             self._assert_reader_compatible(reader)
             self._skill_vocab.assert_matches(reader.vocab_signature, context=f"compiled cache {source_path}")
             self._readers.append(reader)
-
-        if reference_reader is None:
-            raise RuntimeError("TrainingDataset could not initialize a compiled reader")
 
         self._sample_offsets = [0]
         for reader in self._readers:
@@ -170,12 +163,8 @@ class TrainingDataset(Dataset):
 
     def compiled_shard_indices(self) -> tuple[tuple[int, ...], ...]:
         """返回按源缓存 shard 分组的全局样本索引。"""
-        if not all(isinstance(reader, CompiledCacheReader) for reader in self._readers):
-            return ()
-
         groups: list[tuple[int, ...]] = []
         for reader_index, reader in enumerate(self._readers):
-            assert isinstance(reader, CompiledCacheReader)
             base_index = self._sample_offsets[reader_index]
             for shard_index in range((reader.num_samples + reader.shard_size - 1) // reader.shard_size):
                 start = shard_index * reader.shard_size
@@ -205,7 +194,7 @@ class TrainingDataset(Dataset):
         self._shard_cache = CompiledShardCache(self._compiled_cache_max_shards)
         self._readers = [self._load_required_reader(source_path) for source_path in self._source_paths]
 
-    def _load_reader(self, source_path: Path) -> CompiledCacheReader | None:
+    def _load_required_reader(self, source_path: Path) -> CompiledCacheReader:
         signature = build_cache_signature(
             source_path,
             int_dtype=self._int_dtype,
@@ -213,7 +202,7 @@ class TrainingDataset(Dataset):
             normalizer=self._normalizer,
             shard_size=self._compiled_cache_shard_size,
         )
-        return load_compiled_cache_for_source(
+        reader = load_compiled_cache_for_source(
             self._cache_dir,
             source_path,
             signature=signature,
@@ -221,8 +210,6 @@ class TrainingDataset(Dataset):
             shard_cache=self._shard_cache,
         )
 
-    def _load_required_reader(self, source_path: Path) -> CompiledCacheReader:
-        reader = self._load_reader(source_path)
         if reader is None:
             raise FileNotFoundError(
                 f"compiled cache not found or stale for raw source: {source_path}"

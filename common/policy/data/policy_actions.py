@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from common.yaml_config import load_yaml_mapping
+from common.configuration.yaml import load_yaml_mapping
 
 
 @dataclass(frozen=True)

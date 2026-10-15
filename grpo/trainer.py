@@ -1,4 +1,4 @@
-"""基于真实状态机 rollout 的 GRPO 后训练。"""
+"""GRPO 后训练编排：采样、策略更新、贪心保护与 checkpoint 生命周期。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import logging
 import random
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import torch
@@ -16,15 +16,8 @@ from common.policy.config import (
     resolve_policy_grpo_dir,
     validate_policy_model_variant,
 )
-from common.policy.data import ActionSpace, DataSpec
-from common.policy.model.repetition import (
-    apply_repetition_penalty,
-    prepare_repetition_penalty,
-)
+from common.policy.data import ActionSpace
 from common.policy.replay import AutoregressiveReplayConfig
-from common.torch_runtime import autocast_context, move_batch
-from common.torch_serialization import safe_torch_load, stringify_paths
-from common.training.metrics import MetricAccumulator
 from common.training.optimizer import build_optimizer
 from common.training.tensorboard import (
     TensorBoardMonitor,
@@ -33,615 +26,25 @@ from common.training.tensorboard import (
     write_scalar_metrics,
 )
 from scripts.autoregressive_replay.backends import PyTorchPolicyBackend
-from scripts.autoregressive_replay.parallel import ParallelRollouts, collate_live_batches
-from scripts.autoregressive_replay.replay import (
-    AutoregressiveReplay,
-    AutoregressiveReplaySession,
-    NoLegalActionError,
-    ReplayCacheStore,
-    _apply_top_p,
+from scripts.autoregressive_replay.parallel import ParallelRollouts
+from scripts.autoregressive_replay.replay import AutoregressiveReplaySession, ReplayCacheStore
+
+from .checkpoint import (
+    _restore_grpo_rollback_state,
+    _save_grpo_checkpoint,
+    _snapshot_optimizer_state,
+)
+from .config import GrpoConfig, GrpoRunConfig
+from .rollout import _ppg_from_result, _run_scene_rollout
+from .storage import GrpoRolloutStore, StoredGrpoTrajectory
+from .update import (
+    _update_policy,
+    _weighted_advantage_mean,
+    _weighted_advantage_std,
+    compute_baseline_relative_advantages,
 )
 
-from .config import GrpoConfig, GrpoRunConfig
-from .storage import GrpoDecision, GrpoRolloutStore
-
 logger = logging.getLogger(__name__)
-ADVANTAGE_EPSILON = 1e-4
-LOG_PROB_EPSILON = 1e-12
-
-
-@dataclass(frozen=True)
-class GrpoTrajectory:
-    """一条已落盘状态机执行轨迹及其相对贪心基准的奖励。"""
-
-    scene_json_path: Path
-    decision_path: Path
-    decision_count: int
-    ppg: float
-    greedy_ppg: float
-    reward: float
-
-
-class _TrainableRolloutReplay(AutoregressiveReplay):
-    """复用生产回放时序，只把策略采样换成共享训练模型。"""
-
-    def __init__(
-        self,
-        config,
-        *,
-        record_decisions: bool,
-        session: AutoregressiveReplaySession,
-    ):
-        self.decisions: list[GrpoDecision] = []
-        self._record_decisions = bool(record_decisions)
-        super().__init__(config, session=session)
-
-    def _reset_for_trajectory(self, *, initial_timestamp: float = 0.0):
-        """重置共享 replay session，并丢弃上一条轨迹的决策记录。"""
-        self.decisions.clear()
-        return super()._reset_for_trajectory(initial_timestamp=initial_timestamp)
-
-    def _score_row(
-        self,
-        batch,
-        action_keys: list[str],
-        *,
-        gcd_step: int,
-    ):
-        """按生产 replay 的合法性规则采样，并保留训练所需行为概率。"""
-        raw_logits = self.backend.raw_logits(batch, action_keys)
-        logits = apply_repetition_penalty(
-            raw_logits,
-            batch,
-            self.backend.repetition,
-        )[0].float()
-
-        legal_mask = batch["action_legal_mask"][0].bool()
-        legal_indices = legal_mask.nonzero(as_tuple=True)[0]
-        if legal_indices.numel() == 0:
-            raise NoLegalActionError("live state has no legal action")
-
-        legal_logits = logits.masked_fill(~legal_mask, float("-inf"))
-        order = torch.argsort(legal_logits, descending=True)
-        if self.config.temperature == 0.0:
-            probabilities = torch.softmax(legal_logits, dim=-1)
-            selected_index = int(order[0].item())
-        else:
-            probabilities = torch.softmax(
-                legal_logits / self.config.temperature,
-                dim=-1,
-            )
-            probabilities = _apply_top_p(
-                probabilities,
-                order,
-                self.config.top_p,
-            )
-            selected_index = int(torch.multinomial(
-                probabilities, 1, generator=getattr(self, "_sampling_generator", None),
-            ).item())
-
-        selected_probability = probabilities[selected_index].clamp_min(
-            LOG_PROB_EPSILON
-        )
-        if self._record_decisions:
-            recorded_batch = _detach_batch_to_cpu(batch)
-            recorded_batch["action_legal_mask"] = legal_mask.unsqueeze(0).cpu()
-            self.decisions.append(
-                GrpoDecision(
-                    batch=recorded_batch,
-                    context_metadata=self.batcher.context_metadata,
-                    action_keys=tuple(str(key) for key in action_keys),
-                    action_index=selected_index,
-                    old_logprob=float(torch.log(selected_probability).item()),
-                )
-            )
-
-        return self._make_replay_row(
-            gcd_step=gcd_step,
-            action_keys=action_keys,
-            logits=logits,
-            probabilities=probabilities,
-            legal_mask=legal_mask,
-            order=order,
-            selected_index=selected_index,
-        )
-
-    def _make_replay_row(
-        self,
-        *,
-        gcd_step: int,
-        action_keys: list[str],
-        logits: torch.Tensor,
-        probabilities: torch.Tensor,
-        legal_mask: torch.Tensor,
-        order: torch.Tensor,
-        selected_index: int,
-    ):
-        # 延迟导入避免复制 ReplayRow 的生产数据结构定义。
-        from scripts.autoregressive_replay.replay import ReplayRow
-
-        return ReplayRow(
-            gcd_step=gcd_step,
-            action_key=action_keys[selected_index],
-            probability=float(probabilities[selected_index].item()),
-            top_actions=tuple(
-                (
-                    action_keys[index],
-                    float(logits[index].item()),
-                    float(probabilities[index].item()),
-                    bool(legal_mask[index].item()),
-                )
-                for index in order[: self.config.top_k].tolist()
-            ),
-        )
-
-
-def _detach_batch_to_cpu(batch: Mapping[str, object]) -> dict[str, object]:
-    """把 rollout 输入脱离 GPU/推理 tensor，等待后续 minibatch 重组。
-
-    ``torch.inference_mode`` 产生的 tensor 即使调用 ``clone`` 仍会保留
-    inference 标记；这里显式关闭该模式，保证后续 GRPO 训练前向可以为
-    collated batch 构建正常的 autograd 图。
-    """
-    with torch.inference_mode(False):
-        return {
-            key: value.detach().cpu().clone()
-            if isinstance(value, torch.Tensor)
-            else deepcopy(value)
-            for key, value in batch.items()
-        }
-
-
-def compute_baseline_relative_advantages(
-    reward_deltas: Sequence[Sequence[float]],
-    *,
-    scale_floor_ratio: float = 0.1,
-    advantage_clip: float = 5.0,
-) -> tuple[torch.Tensor, ...]:
-    """按贪心零点计算优势，保留高于/低于基准的正负号。
-
-    组内标准差只负责反映相对离散程度；当采样结果几乎相同时，使用
-    奖励绝对量级的相对下限并限制最终优势，避免小方差把梯度放大到失真。
-    """
-    if not reward_deltas:
-        raise ValueError("GRPO requires at least one prompt group")
-    if scale_floor_ratio < 0.0:
-        raise ValueError("scale_floor_ratio must be >= 0")
-    if advantage_clip <= 0.0:
-        raise ValueError("advantage_clip must be > 0")
-    result: list[torch.Tensor] = []
-    for group in reward_deltas:
-        if not group:
-            raise ValueError("GRPO reward group must not be empty")
-        values = torch.tensor(tuple(float(value) for value in group), dtype=torch.float32)
-        std_scale = values.std(unbiased=False)
-        relative_scale_floor = values.abs().mean() * float(scale_floor_ratio)
-        scale = torch.maximum(std_scale, relative_scale_floor).clamp_min(
-            ADVANTAGE_EPSILON
-        )
-        result.append((values / scale).clamp(-float(advantage_clip), float(advantage_clip)))
-    return tuple(result)
-
-
-def collate_grpo_decisions(
-    decisions: Sequence[GrpoDecision],
-) -> dict[str, object]:
-    return collate_live_batches([decision.batch for decision in decisions])
-
-
-def _top_p_probabilities_for_actions(
-    probabilities: torch.Tensor,
-    order: torch.Tensor,
-    selected_indices: torch.Tensor,
-    top_p: float,
-) -> torch.Tensor:
-    """应用 rollout 的 top-p，并强制保留已采样 action 以定义 ratio。"""
-    if top_p >= 1.0:
-        return probabilities
-    sorted_probabilities = probabilities.gather(1, order)
-    cumulative_probabilities = torch.cumsum(sorted_probabilities, dim=-1)
-    keep_sorted = torch.ones_like(sorted_probabilities, dtype=torch.bool)
-    keep_sorted[:, 1:] = cumulative_probabilities[:, :-1] < top_p
-    keep = torch.zeros_like(keep_sorted)
-    keep.scatter_(1, order, keep_sorted)
-    keep.scatter_(1, selected_indices.unsqueeze(1), True)
-    filtered = probabilities * keep
-    return filtered / filtered.sum(dim=-1, keepdim=True).clamp_min(LOG_PROB_EPSILON)
-
-
-def compute_grpo_loss(
-    model,
-    batch: dict[str, object],
-    *,
-    action_indices: torch.Tensor,
-    old_logprobs: torch.Tensor,
-    advantages: torch.Tensor,
-    grpo: GrpoConfig,
-    repetition,
-    device: torch.device,
-    precision: str,
-    diagnostics: dict[str, torch.Tensor] | None = None,
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    """计算 token-level clipped GRPO loss，指标保留为脱离计算图的设备 tensor。"""
-    with autocast_context(device, precision):
-        model_logits = model(batch)["logits"]
-    logits = apply_repetition_penalty(model_logits, batch, repetition).float()
-    legal_mask = batch["action_legal_mask"].bool()
-    masked_logits = logits.masked_fill(~legal_mask, float("-inf"))
-    scaled_logits = masked_logits / grpo.temperature
-    probabilities = torch.softmax(scaled_logits, dim=-1)
-    order = torch.argsort(masked_logits, descending=True)
-    probabilities = _top_p_probabilities_for_actions(
-        probabilities,
-        order,
-        action_indices,
-        grpo.top_p,
-    )
-    selected = probabilities.gather(1, action_indices.unsqueeze(1)).squeeze(1)
-    new_logprobs = torch.log(selected.clamp_min(LOG_PROB_EPSILON))
-
-    ratio = torch.exp(new_logprobs - old_logprobs)
-    clipped_ratio = ratio.clamp(1.0 - grpo.clip_low, 1.0 + grpo.clip_high)
-    unclipped = ratio * advantages
-    clipped = clipped_ratio * advantages
-    surrogate = torch.minimum(unclipped, clipped)
-    policy_loss = -surrogate.mean()
-
-    log_ratio_ref_to_policy = old_logprobs - new_logprobs
-    kl = torch.exp(log_ratio_ref_to_policy) - log_ratio_ref_to_policy - 1.0
-    loss = policy_loss + grpo.kl_coefficient * kl.mean()
-
-    positive_probabilities = probabilities.clamp_min(LOG_PROB_EPSILON)
-    entropy = -(
-        probabilities * torch.log(positive_probabilities)
-    ).sum(dim=-1)
-    clipped_fraction = (
-        (ratio < 1.0 - grpo.clip_low) | (ratio > 1.0 + grpo.clip_high)
-    ).float()
-    if diagnostics is not None:
-        # 复用损失的同一次前向；行为分布只保留合法动作，所有数据均脱离计算图。
-        diagnostics.update({
-            "model_logits": model_logits.detach(),
-            "policy/legal_logits": logits.detach()[legal_mask],
-            "policy/legal_probabilities": probabilities.detach()[legal_mask],
-            "policy/selected_probability": selected.detach(),
-            "policy/ratio": ratio.detach(),
-            "policy/kl": kl.detach(),
-            "policy/entropy": entropy.detach(),
-            "rollout/advantages": advantages.detach(),
-            "rollout/old_logprob": old_logprobs.detach(),
-            "rollout/action_index": action_indices.detach(),
-        })
-    return loss, {
-        "loss": loss.detach(),
-        "policy_loss": policy_loss.detach(),
-        "kl": kl.detach().mean(),
-        "entropy": entropy.detach().mean(),
-        "clip_fraction": clipped_fraction.detach().mean(),
-        "mean_ratio": ratio.detach().mean(),
-    }
-
-
-def _ppg_from_result(result) -> float:
-    """读取状态机执行轨迹的 PPG，禁止退回动作预演或单步威力。"""
-    if result.ppg is None:
-        raise RuntimeError("GRPO rollout did not produce PPG")
-    return float(result.ppg)
-
-
-def _run_scene_rollout(
-    replay_config: AutoregressiveReplayConfig,
-    *,
-    scene_json_path: Path,
-    temperature: float,
-    record_decisions: bool,
-    session: AutoregressiveReplaySession,
-    sampling_seed: int | None = None,
-):
-    config = replace(
-        replay_config,
-        scene_json_path=Path(scene_json_path),
-        temperature=float(temperature),
-    )
-    replay = _TrainableRolloutReplay(
-        config,
-        record_decisions=record_decisions,
-        session=session,
-    )
-    if sampling_seed is not None:
-        # 每条轨迹的随机流由 YAML seed 与稳定任务编号决定，不依赖线程调度。
-        replay._sampling_generator = torch.Generator(device=session.device)
-        replay._sampling_generator.manual_seed(sampling_seed)
-    # 自回归阶段只负责执行状态机、采样和记录标注；禁止构建任何反向图。
-    # backend.raw_logits 本身也使用 no_grad，这里再用 inference_mode
-    # 覆盖整条轨迹，避免 16 条样本把激活留在显存中。
-    with torch.inference_mode():
-        result = replay.run()
-    decisions = tuple(replay.decisions)
-    return result, decisions
-
-
-def _update_policy(
-    model,
-    optimizer,
-    scheduler,
-    decisions: Sequence[GrpoDecision] | GrpoRolloutStore,
-    advantages: torch.Tensor | None,
-    *,
-    grpo: GrpoConfig,
-    repetition,
-    device: torch.device,
-    precision: str,
-    tensorboard_writer=None,
-    tensorboard_monitor: TensorBoardMonitor | None = None,
-    tensorboard_log_every_steps: int = 50,
-    global_step_offset: int = 0,
-) -> dict[str, float]:
-    """对当前 rollout buffer 执行 GRPO 的 inner updates。"""
-    if isinstance(decisions, GrpoRolloutStore):
-        if advantages is not None:
-            raise ValueError("disk-backed GRPO rollouts must provide advantages on disk")
-        decision_count = decisions.total_decisions
-        if decision_count < 1:
-            raise ValueError("GRPO rollout produced no trainable decisions")
-    else:
-        if not decisions:
-            raise ValueError("GRPO rollout produced no trainable decisions")
-        if advantages is None:
-            raise ValueError("in-memory GRPO decisions require advantages")
-        if len(decisions) != int(advantages.shape[0]):
-            raise ValueError("GRPO decisions and advantages length mismatch")
-        decision_count = len(decisions)
-
-    totals = MetricAccumulator(
-        ("loss", "policy_loss", "kl", "entropy", "clip_fraction", "mean_ratio"),
-        device=device,
-    )
-    update_count = 0
-    interval_metrics = (
-        MetricAccumulator((*totals.names, "grad_norm"), device=device)
-        if tensorboard_writer is not None else None
-    )
-    interval_learning_rate_total = 0.0
-
-    def flush_interval(global_step: int) -> None:
-        nonlocal interval_metrics, interval_learning_rate_total
-        if interval_metrics is None or interval_metrics.weight == 0:
-            return
-        write_scalar_metrics(
-            tensorboard_writer,
-            {
-                **interval_metrics.mean(),
-                "learning_rate": interval_learning_rate_total / interval_metrics.weight,
-                "next_learning_rate": optimizer.param_groups[0]["lr"],
-            },
-            prefix="grpo/update",
-            global_step=global_step,
-        )
-        interval_metrics = MetricAccumulator((*totals.names, "grad_norm"), device=device)
-        interval_learning_rate_total = 0.0
-
-    # rollout 行为策略和训练前向必须使用同一确定性分布；GRPO 不需要
-    # BC 阶段的 dropout 噪声，否则零优势组会被 KL 项的随机 dropout 误更新。
-    model.eval()
-    def update_minibatch(
-        selected_decisions: list[GrpoDecision],
-        minibatch_advantages: torch.Tensor,
-    ) -> None:
-        nonlocal update_count, interval_learning_rate_total
-        global_step = global_step_offset + update_count + 1
-        batch = move_batch(
-            prepare_repetition_penalty(
-                collate_grpo_decisions(selected_decisions), repetition,
-            ),
-            device,
-            non_blocking=device.type == "cuda",
-        )
-        action_indices = torch.tensor(
-            [decision.action_index for decision in selected_decisions],
-            dtype=torch.long,
-            device=device,
-        )
-        old_logprobs = torch.tensor(
-            [decision.old_logprob for decision in selected_decisions],
-            dtype=torch.float32,
-            device=device,
-        )
-        minibatch_advantages = minibatch_advantages.to(device=device)
-        diagnostics = (
-            {} if tensorboard_monitor is not None
-            and tensorboard_monitor.should_log_histograms(global_step) else None
-        )
-        if tensorboard_monitor is not None:
-            tensorboard_monitor.log_graph(batch)
-        optimizer.zero_grad(set_to_none=True)
-        loss, metrics = compute_grpo_loss(
-            model,
-            batch,
-            action_indices=action_indices,
-            old_logprobs=old_logprobs,
-            advantages=minibatch_advantages,
-            grpo=grpo,
-            repetition=repetition,
-            device=device,
-            precision=precision,
-            **({"diagnostics": diagnostics} if diagnostics is not None else {}),
-        )
-        loss.backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        if tensorboard_monitor is not None:
-            tensorboard_monitor.log_gradients(global_step, grad_norm=grad_norm)
-        if diagnostics is not None and tensorboard_monitor is not None:
-            model_logits = diagnostics.pop("model_logits", None)
-            if model_logits is not None:
-                tensorboard_monitor.log_step(
-                    model_logits, global_step=global_step, prefix="grpo/model",
-                )
-            tensorboard_monitor.log_distributions(
-                diagnostics, global_step=global_step, prefix="grpo/update",
-            )
-        # 当前更新使用的是 scheduler 推进之前的学习率。
-        learning_rate = float(optimizer.param_groups[0]["lr"])
-        optimizer.step()
-        if scheduler is not None:
-            scheduler.step()
-        minibatch_size = len(selected_decisions)
-        totals.update(metrics, weight=minibatch_size)
-        if interval_metrics is not None:
-            interval_metrics.update({**metrics, "grad_norm": grad_norm}, weight=minibatch_size)
-            interval_learning_rate_total += learning_rate * minibatch_size
-        update_count += 1
-        if global_step == 1 or global_step % tensorboard_log_every_steps == 0:
-            flush_interval(global_step)
-
-    for _ in range(grpo.inner_updates):
-        if isinstance(decisions, GrpoRolloutStore):
-            minibatches = decisions.iter_minibatches(grpo.minibatch_size)
-            for selected_decisions, minibatch_advantages in minibatches:
-                update_minibatch(selected_decisions, minibatch_advantages)
-            continue
-
-        permutation = torch.randperm(decision_count)
-        for start in range(0, decision_count, grpo.minibatch_size):
-            indices = permutation[start : start + grpo.minibatch_size]
-            selected_decisions = [decisions[int(index)] for index in indices.tolist()]
-            assert advantages is not None
-            minibatch_advantages = advantages[indices]
-            update_minibatch(selected_decisions, minibatch_advantages)
-    flush_interval(global_step_offset + update_count)
-    return totals.mean() | {"optimizer_updates": float(update_count)}
-
-
-def _weighted_advantage_mean(
-    store: GrpoRolloutStore,
-    advantages: Sequence[float],
-) -> float:
-    """按决策数量计算与旧内存实现一致的 advantage 均值。"""
-    if len(advantages) != len(store.entries) or store.total_decisions < 1:
-        raise ValueError("GRPO advantage summary is not aligned with rollout store")
-    weighted_total = sum(
-        float(advantage) * entry.decision_count
-        for entry, advantage in zip(store.entries, advantages, strict=True)
-    )
-    return weighted_total / store.total_decisions
-
-
-def _weighted_advantage_std(
-    store: GrpoRolloutStore,
-    advantages: Sequence[float],
-) -> float:
-    """按决策数量计算磁盘流式 rollout 的 advantage 标准差。"""
-    mean = _weighted_advantage_mean(store, advantages)
-    weighted_squared = sum(
-        (float(advantage) - mean) ** 2 * entry.decision_count
-        for entry, advantage in zip(store.entries, advantages, strict=True)
-    )
-    return (weighted_squared / store.total_decisions) ** 0.5
-
-
-def _save_grpo_checkpoint(
-    path: Path,
-    *,
-    model,
-    optimizer,
-    scheduler,
-    iteration: int,
-    config: GrpoRunConfig,
-    grpo: GrpoConfig,
-    data_spec: DataSpec,
-    input_contract,
-    precision: str,
-    metrics: Mapping[str, float],
-) -> None:
-    """保存可被现有 replay/ONNX 流程读取的自描述 GRPO checkpoint。"""
-    model_variant = getattr(config, "model_variant", None)
-    if not isinstance(model_variant, str) or not model_variant.strip():
-        raise ValueError("GRPO checkpoint model_variant must be configured before saving")
-    model_variant = model_variant.strip()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "epoch": int(iteration),
-        "grpo_iteration": int(iteration),
-        "grpo_checkpoint": True,
-        "model_state_dict": model.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict(),
-        "scheduler_state_dict": None if scheduler is None else scheduler.state_dict(),
-        "model_config": asdict(config.model),
-        "data_spec": asdict(data_spec),
-        "job_tag": data_spec.job_tag,
-        "model_variant": model_variant,
-        "input_contract": input_contract.to_dict(),
-        "training_precision": precision,
-        "run_config": stringify_paths(asdict(config)),
-        "grpo_config": asdict(grpo),
-        "metrics": dict(metrics),
-        "rng_state": {
-            "python": random.getstate(),
-            "torch": torch.get_rng_state(),
-            "cuda": (
-                torch.cuda.get_rng_state_all()
-                if torch.cuda.is_available()
-                else None
-            ),
-        },
-    }
-    torch.save(payload, path)
-
-
-def _snapshot_optimizer_state(optimizer) -> dict:
-    """首轮回滚状态放在 CPU，包含主权重时也不额外常驻一份 GPU 副本。"""
-    def copy_to_cpu(value):
-        if isinstance(value, torch.Tensor):
-            return value.detach().to(device="cpu", copy=True)
-        if isinstance(value, Mapping):
-            return {key: copy_to_cpu(item) for key, item in value.items()}
-        if isinstance(value, list):
-            return [copy_to_cpu(item) for item in value]
-        if isinstance(value, tuple):
-            return tuple(copy_to_cpu(item) for item in value)
-        return deepcopy(value)
-
-    return copy_to_cpu(optimizer.state_dict())
-
-
-def _restore_grpo_rollback_state(
-    *,
-    checkpoint_path: Path | None,
-    initial_model_state: Mapping[str, object],
-    initial_optimizer_state: Mapping[str, object] | None,
-    initial_scheduler_state: Mapping[str, object] | None,
-    model,
-    optimizer,
-    scheduler,
-) -> None:
-    """从上一轮磁盘 checkpoint 恢复回滚状态，避免常驻一份 GPU 权重副本。"""
-    if checkpoint_path is None:
-        model.load_state_dict(initial_model_state, strict=True)
-        if initial_optimizer_state is not None:
-            optimizer.load_state_dict(initial_optimizer_state)
-        if scheduler is not None and initial_scheduler_state is not None:
-            scheduler.load_state_dict(initial_scheduler_state)
-        return
-
-    if not checkpoint_path.is_file():
-        raise FileNotFoundError(
-            f"GRPO rollback checkpoint not found: {checkpoint_path}"
-        )
-    payload = safe_torch_load(checkpoint_path)
-    if not isinstance(payload, Mapping):
-        raise ValueError(f"GRPO rollback checkpoint must be a mapping: {checkpoint_path}")
-    model_state = payload.get("model_state_dict")
-    optimizer_state = payload.get("optimizer_state_dict")
-    if not isinstance(model_state, Mapping) or not isinstance(optimizer_state, Mapping):
-        raise ValueError(
-            "GRPO rollback checkpoint is missing model/optimizer state: "
-            f"{checkpoint_path}"
-        )
-    model.load_state_dict(model_state, strict=True)
-    optimizer.load_state_dict(optimizer_state)
-    scheduler_state = payload.get("scheduler_state_dict")
-    if scheduler is not None and isinstance(scheduler_state, Mapping):
-        scheduler.load_state_dict(scheduler_state)
 
 
 def _unique_grpo_output_path(base_path: Path, suffix: str) -> Path:
@@ -843,8 +246,7 @@ def run_grpo_training(
                 for offset in range(grpo.prompt_batch_size)
             ]
             model.eval()
-            trajectories: list[GrpoTrajectory] = []
-            group_trajectories: list[list[GrpoTrajectory]] = []
+            trajectories: list[StoredGrpoTrajectory] = []
             reward_groups: list[list[float]] = []
             baseline_ppgs: list[float] = []
             rollout_store = GrpoRolloutStore(rollout_root, iteration=iteration, input_contract=input_contract)
@@ -853,7 +255,6 @@ def run_grpo_training(
             baseline_tasks = ((path, 0.0, False, None) for path in selected_scenes)
             for result, _ in rollouts.map(run_rollout_task, baseline_tasks, prepare=prepare_rollouts):
                 baseline_ppgs.append(_ppg_from_result(result))
-            group_trajectories = [[] for _ in selected_scenes]
             reward_groups = [[] for _ in selected_scenes]
             sampling_tasks = (
                 (path, grpo.temperature, True,
@@ -876,13 +277,7 @@ def run_grpo_training(
                     ppg=sampled_ppg, greedy_ppg=greedy_ppg, reward=delta,
                 )
                 del decisions, sampled_result
-                trajectory = GrpoTrajectory(
-                    scene_json_path=scene_path, decision_path=stored_trajectory.path,
-                    decision_count=stored_trajectory.decision_count,
-                    ppg=sampled_ppg, greedy_ppg=greedy_ppg, reward=delta,
-                )
-                group_trajectories[scene_index].append(trajectory)
-                trajectories.append(trajectory)
+                trajectories.append(stored_trajectory)
 
             # 阶段二：所有场景/样本均已标注后，才组装优势并执行真实 GRPO 反向更新。
             group_advantages = compute_baseline_relative_advantages(
@@ -890,12 +285,11 @@ def run_grpo_training(
                 scale_floor_ratio=grpo.advantage_scale_floor_ratio,
                 advantage_clip=grpo.advantage_clip,
             )
-            trajectory_advantages: list[float] = []
-            for group_index, scene_trajectories in enumerate(group_trajectories):
-                for sample_index, _trajectory in enumerate(scene_trajectories):
-                    trajectory_advantages.append(
-                        float(group_advantages[group_index][sample_index].item())
-                    )
+            trajectory_advantages = [
+                float(advantage.item())
+                for group in group_advantages
+                for advantage in group
+            ]
             rollout_store.set_advantages(trajectory_advantages)
             if rollout_store.total_decisions < 1:
                 raise RuntimeError("GRPO produced no decisions; inspect the scene time window")
@@ -916,7 +310,6 @@ def run_grpo_training(
                 optimizer,
                 scheduler,
                 rollout_store,
-                None,
                 grpo=grpo,
                 repetition=backend.repetition,
                 device=device,

@@ -10,8 +10,8 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from common.config import load_project_config  # noqa: E402
-from common.skills import SkillBook  # noqa: E402
+from common.game.config import load_project_config  # noqa: E402
+from common.game.skills import SkillBook  # noqa: E402
 
 
 def load_job_project_config(job_tag: str):

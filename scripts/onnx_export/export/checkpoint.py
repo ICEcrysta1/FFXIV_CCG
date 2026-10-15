@@ -14,7 +14,7 @@ from common.policy.model import (
     CausalPolicyModel,
     repetition_config_from_checkpoint,
 )
-from common.torch_serialization import safe_torch_load
+from common.pytorch.serialization import safe_torch_load
 
 from ..contracts.contract import CapacityContract
 from ..contracts.deployment_contract import DeploymentContract

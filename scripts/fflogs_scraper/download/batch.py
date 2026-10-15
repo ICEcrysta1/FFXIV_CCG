@@ -6,14 +6,14 @@ import os
 import sys
 from pathlib import Path
 
-from common.dataset_layout import percentile_directory
+from common.data.layout import percentile_directory
 from common.policy.config import (
     PROJECT_ROOT,
     load_policy_config,
     resolve_policy_model_config_path,
     resolve_policy_model_job_tag,
 )
-from common.project_config import resolve_project_path
+from common.configuration.environment import resolve_project_path
 from scripts.common.file_inventory import FileInventory
 from scripts.common.json_io import atomic_write_json, read_json
 

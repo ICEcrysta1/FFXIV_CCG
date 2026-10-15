@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from common.models import ActionKind
+from common.game.models import ActionKind
 from scripts.common.inprocess_backend import InProcessEngine
 from scripts.convert_fflogs import build_training_samples
 from scripts.convert_fflogs.cache.cache_writer import write_compiled_cache_stream
@@ -38,7 +38,7 @@ def _build_training_samples(fight_payload: dict[str, object]) -> dict[str, objec
 
 
 def make_dataset(source_paths: list[Path], **kwargs) -> TrainingDataset:
-    from common.config import load_precision_config
+    from common.pytorch.precision import load_precision_config
 
     precision = load_precision_config()
     kwargs.setdefault("int_dtype", precision.resolve_int_dtype())

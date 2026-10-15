@@ -6,16 +6,16 @@ from copy import deepcopy
 import pytest
 import torch
 
-from common.torch_runtime import move_batch
+from common.pytorch.runtime import move_batch
 from training.data.collator import TrainingCollator
 from common.policy.model import repetition as repetition_module
 from common.policy.model import attention_variants as attention_variants_module
 from common.policy.model.attention_residual import FullAttentionResidual
 from common.policy.model.position_encoding import RotaryPositionEncoding
 from common.policy.model import causal_encoder as causal
-from common.policy.model.trace import TraceableTransformerEncoderLayer
+from common.policy.model.transformer import TraceableTransformerEncoderLayer
 from common.training.metrics import MetricAccumulator
-from training.loop import training_loop
+from training.loop import epochs
 from tests.training._causal_fixtures import make_batch, make_data_spec, make_input_contract
 from common.policy.config import ModelConfig
 from common.policy.data.context_encoding import ContextEncoder, raw_state_delta
@@ -419,7 +419,7 @@ def test_epoch_metrics_keep_sample_weighting_and_prepare_repetition(train, monke
                 "action_legal_mask": torch.ones((count, 2), dtype=torch.bool)} for count in (3, 1)]
     monkeypatch.setattr(torch.Tensor, "item", reject_item)
     if train:
-        metrics = training_loop.train_epoch(model, batches, optimizer, scheduler, torch.device("cpu"))
+        metrics = epochs.train_epoch(model, batches, optimizer, scheduler, torch.device("cpu"))
     else:
-        metrics = training_loop.validate(model, batches, torch.device("cpu"))
+        metrics = epochs.validate(model, batches, torch.device("cpu"))
     assert metrics == pytest.approx({"loss": 2.5, "cross_entropy_loss": 2.5, "value_preference_loss": 0.0, "top1_accuracy": 0.625, "top3_accuracy": 1.0})

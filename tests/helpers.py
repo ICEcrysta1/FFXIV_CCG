@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from common.scene_context_schema import (
+from common.context.scene import (
     FORCED_MOVEMENT_CONTEXT_KEY,
     RAID_BUFF_WINDOW_CONTEXT_KEY,
     TARGET_COUNT_WINDOW_CONTEXT_KEY,

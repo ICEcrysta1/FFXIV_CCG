@@ -129,7 +129,7 @@ def resolve_registered_job_tags(project_root: Path) -> tuple[str, ...]:
     与状态机注册层解耦：职业是否可用由 `config/default.yaml` 的
     `runtime.job_configs` 声明，不依赖运行时状态机注册中心。
     """
-    from .yaml_config import load_yaml_mapping
+    from .yaml import load_yaml_mapping
 
     payload = load_yaml_mapping(project_root / "config" / "default.yaml")
     job_configs = payload.get("runtime", {}).get("job_configs", {})

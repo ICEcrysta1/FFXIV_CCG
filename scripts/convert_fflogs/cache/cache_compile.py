@@ -27,7 +27,7 @@ from common.policy.data.source_selection import (
     select_training_raw_path_groups,
     select_validation_raw_path_groups,
 )
-from common.torch_dependencies import import_torch
+from common.pytorch.dependencies import import_torch
 from scripts.common.inprocess_backend import MAX_QUEUE_CAPACITY, InProcessEngine
 
 from ..config.constants import DEFAULT_DOWNTIME_GAP_SECONDS

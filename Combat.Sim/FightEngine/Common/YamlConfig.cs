@@ -11,7 +11,7 @@ using YamlDotNet.RepresentationModel;
 namespace Combat.Sim.Common;
 
 /// <summary>
-/// YAML mapping 加载（对照 common/yaml_config.py）：按 UTF-8 读取，
+/// YAML mapping 加载（对照 common/configuration/yaml.py）：按 UTF-8 读取，
 /// 顶层必须是 mapping；空文档 / null 归一化为空 mapping，其他非 mapping 值抛错。
 /// 解析树由 YamlDotNet 承担；Plain（未加引号）标量按 PyYAML 顺序做类型提升
 /// （null → bool → int → float → string），数值统一使用 .NET 原生

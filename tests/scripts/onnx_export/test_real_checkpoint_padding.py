@@ -11,7 +11,7 @@ import torch
 
 from common.policy.config import ModelConfig
 from common.policy.data.input_contract import INPUT_CONTRACT_VERSION
-from common.torch_serialization import safe_torch_load
+from common.pytorch.serialization import safe_torch_load
 from scripts.onnx_export import CapacityContract, DeploymentManifest
 from scripts.onnx_export.contracts.deployment_profile import DeploymentProfile
 from scripts.onnx_export.export import export_package, load_policy

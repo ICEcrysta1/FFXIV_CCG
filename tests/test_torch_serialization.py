@@ -8,7 +8,7 @@ from pathlib import Path, PureWindowsPath, WindowsPath
 import pytest
 import torch
 
-from common.torch_serialization import safe_torch_load, stringify_paths
+from common.pytorch.serialization import safe_torch_load, stringify_paths
 
 
 _EXECUTED: list[bool] = []

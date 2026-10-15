@@ -7,7 +7,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from common.contracts import SLIDECAST_WINDOW_SECONDS
+from common.context.contracts import SLIDECAST_WINDOW_SECONDS
 from scripts.convert_fflogs import (
     build_skill_book,
     convert_report_payload,

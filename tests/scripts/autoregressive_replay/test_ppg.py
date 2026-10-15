@@ -15,7 +15,7 @@ from scripts.autoregressive_replay.ppg import (
     _run_rollout_until_time,
     _select_legal_action,
 )
-from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
+from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
 from common.policy.data import Normalizer
 from common.policy.config import ModelConfig
 from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION, TrainingSchema, SceneWindowSchema, StateFeatureGroup, StateFeatureLayout

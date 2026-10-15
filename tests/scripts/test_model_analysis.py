@@ -15,9 +15,9 @@ import torch
 from matplotlib.colors import Normalize
 from torch import nn
 
-import common.cache_compilation as cache_compilation
-from common.torch_serialization import safe_torch_load
-from common.torch_runtime import model_dtype
+import scripts.model_analysis.cache_compilation as cache_compilation
+from common.pytorch.serialization import safe_torch_load
+from common.pytorch.runtime import model_dtype
 from common.policy.model.input_encoder import (
     ROLE_SCENE, ROLE_STATE, ROLE_SKILL, build_position_ids, build_role_ids,
 )
@@ -41,12 +41,12 @@ from common.policy.config import (
     resolve_policy_model_job_tag,
 )
 from training.config import RunConfig
-from common.project_config import load_root_dotenv
+from common.configuration.environment import load_root_dotenv
 from common.policy.data import ActionSpace, DataSpec, ModelInputContract, Normalizer, SkillVocab
 from common.policy.data.schema import TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
-from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
+from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
 from tests.training._causal_fixtures import make_state_groups
-from training.loop import _save_checkpoint
+from training.loop.checkpoint import _save_checkpoint
 
 
 def test_analysis_scene_uses_independent_env_and_cli_override(monkeypatch, tmp_path):

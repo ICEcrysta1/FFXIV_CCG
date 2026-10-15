@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from common.contracts import SLIDECAST_WINDOW_SECONDS
+from common.context.contracts import SLIDECAST_WINDOW_SECONDS
 from scripts.convert_fflogs import build_fight_payload, extract_supported_actions, load_convert_fflogs_config
 from tests.helpers import DEFAULT_BASE_GCD
 

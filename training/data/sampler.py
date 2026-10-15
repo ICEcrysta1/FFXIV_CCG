@@ -70,14 +70,14 @@ class WeightedShardBatchSampler(ShardBatchSampler):
         max_index = max(index for shard in shard_indices for index in shard)
         if len(sample_weights) <= max_index:
             raise ValueError("sample_weights must cover every shard sample index")
-        self._weighted_shard_indices = tuple(
+        weighted_shard_indices = tuple(
             tuple(index for index in shard for _ in range(int(sample_weights[index])))
             for shard in shard_indices
         )
-        if any(not indices for indices in self._weighted_shard_indices):
+        if any(not indices for indices in weighted_shard_indices):
             raise ValueError("weighted shard indices must not contain empty shards")
         super().__init__(
-            self._weighted_shard_indices,
+            weighted_shard_indices,
             batch_size=batch_size,
             seed=seed,
             shuffle=shuffle,

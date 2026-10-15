@@ -7,7 +7,9 @@ from pathlib import Path
 import pytest
 
 from common.training import tensorboard, tensorboard_server
+from grpo import config as grpo_config_module
 from grpo.config import load_grpo_config
+from training import config as training_config_module
 from training.config import load_run_config
 
 
@@ -129,7 +131,7 @@ def test_server_uses_dotenv_selected_model_tensorboard_root(
     monkeypatch.setattr(policy_config, "POLICY_MODEL_ROOT", model_root)
     monkeypatch.setattr(tensorboard_server, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(
-        tensorboard_server,
+        training_config_module,
         "load_run_config",
         lambda _path: SimpleNamespace(
             output_dir=tmp_path
@@ -182,7 +184,7 @@ def test_server_uses_dotenv_selected_model_tensorboard_root(
     assert opened == ["http://127.0.0.1:6017"]
 
     monkeypatch.setattr(
-        tensorboard_server,
+        training_config_module,
         "load_run_config",
         lambda _path: SimpleNamespace(tensorboard=SimpleNamespace(enabled=False)),
     )
@@ -190,12 +192,12 @@ def test_server_uses_dotenv_selected_model_tensorboard_root(
     assert len(started) == 1
 
     monkeypatch.setattr(
-        tensorboard_server,
+        grpo_config_module,
         "load_grpo_run_config",
         lambda _path: SimpleNamespace(output_dir=expected_root.parent / "artzip_bc"),
     )
     monkeypatch.setattr(
-        tensorboard_server,
+        grpo_config_module,
         "load_grpo_config",
         lambda _path: SimpleNamespace(tensorboard=SimpleNamespace(enabled=False)),
     )
@@ -215,13 +217,52 @@ def test_server_uses_dotenv_selected_model_tensorboard_root(
     assert len(started) == 1
 
     monkeypatch.setattr(
-        tensorboard_server,
+        grpo_config_module,
         "load_grpo_config",
         lambda _path: SimpleNamespace(tensorboard=SimpleNamespace(enabled=True)),
     )
     assert tensorboard_server.main() == 0
     assert len(started) == 2
     assert opened[-1] == "http://127.0.0.1:6017"
+
+
+@pytest.mark.parametrize("scope", ["bc", "grpo"])
+def test_server_loads_only_selected_training_config(monkeypatch, tmp_path, scope):
+    """监控入口只加载当前训练阶段，导入服务模块本身不加载任何阶段配置。"""
+    import builtins
+    import importlib.util
+    import sys
+    from types import SimpleNamespace
+
+    original_import = builtins.__import__
+    selected_namespace = None
+    imported_stages = []
+
+    def stage_import(name, *args, **kwargs):
+        namespace = name.split(".", 1)[0]
+        if namespace in {"training", "grpo"}:
+            assert namespace == selected_namespace, f"unexpected training dependency: {name}"
+            imported_stages.append(namespace)
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", stage_import)
+    spec = importlib.util.spec_from_file_location("_tensorboard_scope_test", tensorboard_server.__file__)
+    server = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(server)
+    selected_namespace = "training" if scope == "bc" else "grpo"
+    config = SimpleNamespace(output_dir=tmp_path, tensorboard=SimpleNamespace(enabled=False))
+    if scope == "bc":
+        monkeypatch.setattr(training_config_module, "load_run_config", lambda _path: config)
+    else:
+        monkeypatch.setattr(grpo_config_module, "load_grpo_run_config", lambda _path: config)
+        monkeypatch.setattr(grpo_config_module, "load_grpo_config", lambda _path: config)
+    monkeypatch.setattr(server, "load_root_dotenv", lambda _root: None)
+    monkeypatch.setattr(server, "resolve_tensorboard_port", lambda **_kwargs: 6017)
+    monkeypatch.setattr(server, "resolve_policy_model_config_path", lambda _path: tmp_path / "config.yaml")
+    monkeypatch.setattr(sys, "argv", ["tensorboard_server", "--if-enabled", "--scope", scope])
+
+    assert server.main() == 0
+    assert imported_stages == [selected_namespace]
 
 
 def test_background_server_waits_for_readiness(monkeypatch, tmp_path):

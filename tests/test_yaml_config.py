@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from common.yaml_config import load_yaml_mapping
+from common.configuration.yaml import load_yaml_mapping
 
 
 @pytest.mark.parametrize("payload", [0, False, "", [], "scalar", [1]])

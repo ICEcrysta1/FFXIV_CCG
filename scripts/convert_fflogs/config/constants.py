@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import logging
 
-from common.contracts import SCENE_EPSILON
+from common.context.contracts import SCENE_EPSILON
 
-from common.scene_context_schema import (
+from common.context.scene import (
     FORCED_MOVEMENT_CONTEXT_KEY,
     FORCED_MOVEMENT_FEATURE_KEYS,
     RAID_BUFF_WINDOW_CONTEXT_KEY,

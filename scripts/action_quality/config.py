@@ -11,12 +11,12 @@ from common.policy.config import (
     load_policy_config,
     resolve_policy_model_config_path,
 )
-from common.project_config import (
+from common.configuration.environment import (
     load_root_dotenv,
     resolve_positive_worker_count,
     resolve_project_path,
 )
-from common.yaml_config import load_yaml_mapping
+from common.configuration.yaml import load_yaml_mapping
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 

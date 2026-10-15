@@ -12,7 +12,7 @@ import torch
 
 from common.policy.data import DataSpec, ModelInputContract
 from common.policy.model import CausalPolicyModel
-from common.torch_serialization import safe_torch_load, stringify_paths
+from common.pytorch.serialization import safe_torch_load, stringify_paths
 
 from ..config import RunConfig
 

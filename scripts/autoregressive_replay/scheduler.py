@@ -9,7 +9,7 @@ import math
 from pathlib import Path
 from types import SimpleNamespace
 
-from common.yaml_config import load_yaml_mapping
+from common.configuration.yaml import load_yaml_mapping
 
 
 DECISION_TIME_EPSILON = 1e-6

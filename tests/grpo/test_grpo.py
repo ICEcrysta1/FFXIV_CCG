@@ -17,18 +17,19 @@ from common.policy.config import resolve_policy_grpo_dir
 from common.policy.data import ActionSpace, DataSpec, SkillVocab
 from common.policy.model import repetition as repetition_module
 from grpo.config import GrpoConfig, GrpoRunConfig, load_grpo_config
-from grpo.storage import GrpoRolloutStore
+from grpo.storage import GrpoDecision, GrpoRolloutStore
 from tests.training._causal_fixtures import make_data_spec, make_input_contract
-from grpo.trainer import (
-    GrpoDecision,
-    _detach_batch_to_cpu,
+from grpo.checkpoint import (
     _restore_grpo_rollback_state,
     _save_grpo_checkpoint,
+)
+from grpo.rollout import _detach_batch_to_cpu
+from grpo.trainer import run_grpo_training
+from grpo.update import (
     _update_policy,
     collate_grpo_decisions,
     compute_baseline_relative_advantages,
     compute_grpo_loss,
-    run_grpo_training,
 )
 
 
@@ -125,6 +126,22 @@ def _decision(*, history_length: int, scene_length: int, action_index: int) -> G
         action_index=action_index,
         old_logprob=-1.0986122886681098,
     )
+
+
+def _store_decisions(tmp_path, decisions, advantages):
+    """将每条决策作为独立轨迹落盘，保留逐决策的测试优势。"""
+    store = GrpoRolloutStore(
+        tmp_path / "grpo", input_contract=_rollout_contract(), iteration=1,
+        run_id="decisions",
+    )
+    for index, (decision, advantage) in enumerate(zip(decisions, advantages, strict=True)):
+        store.write_trajectory(
+            scene_json_path=tmp_path / f"scene-{index}.json",
+            decisions=(decision,), ppg=float(advantage), greedy_ppg=0.0,
+            reward=float(advantage),
+        )
+    store.set_advantages(advantages)
+    return store
 
 
 def test_baseline_relative_advantages_preserve_greedy_zero_point():
@@ -345,7 +362,7 @@ def test_grpo_checkpoint_preserves_complete_input_vocab(tmp_path):
     from common.policy.config import ModelConfig
     from common.policy.data import ModelInputContract
     from common.policy.model import CausalPolicyModel
-    from common.torch_serialization import safe_torch_load
+    from common.pytorch.serialization import safe_torch_load
     from scripts.autoregressive_replay.backends import PyTorchPolicyBackend
     from tests.training._causal_fixtures import make_data_spec, make_input_contract
 
@@ -1024,10 +1041,11 @@ def test_grpo_rollout_store_rejects_previous_input_format(tmp_path, previous_for
         store._load_decisions(entry.path)
 
 
-def test_grpo_update_weights_metrics_by_decisions_and_defers_host_reads(monkeypatch):
+def test_grpo_update_weights_metrics_by_decisions_and_defers_host_reads(monkeypatch, tmp_path):
     policy = torch.nn.Linear(1, 1)
     optimizer = torch.optim.SGD(policy.parameters(), lr=0)
     decisions = [_decision(history_length=i, scene_length=i, action_index=0) for i in range(3)]
+    store = _store_decisions(tmp_path, decisions, (1.0, 1.0, 1.0))
     config = GrpoConfig(minibatch_size=2, inner_updates=2)
 
     def loss_fn(model, batch, **kwargs):
@@ -1036,10 +1054,18 @@ def test_grpo_update_weights_metrics_by_decisions_and_defers_host_reads(monkeypa
         loss = model.weight.sum() * size
         return loss, {key: loss.detach() * 0 + size for key in ("loss", "policy_loss", "kl", "entropy", "clip_fraction", "mean_ratio")}
 
-    monkeypatch.setattr("grpo.trainer.compute_grpo_loss", loss_fn)
-    monkeypatch.setattr(torch.Tensor, "item", lambda *_args, **_kwargs: pytest.fail("GRPO metrics must not call item"))
+    monkeypatch.setattr("grpo.update.compute_grpo_loss", loss_fn)
+    original_item = torch.Tensor.item
+
+    def reject_metric_scalar_read(tensor, *args, **kwargs):
+        # 磁盘输入校验会读取 CPU 整数历史游标；浮点训练指标仍须集中搬回 CPU。
+        if tensor.device.type != "cpu" or tensor.dtype != torch.int64:
+            pytest.fail("GRPO metrics must not call item")
+        return original_item(tensor, *args, **kwargs)
+
+    monkeypatch.setattr(torch.Tensor, "item", reject_metric_scalar_read)
     metrics = _update_policy(
-        policy, optimizer, None, decisions, torch.ones(3), grpo=config,
+        policy, optimizer, None, store, grpo=config,
         repetition=repetition_module.RepetitionConfig("blacklist", ("fire_iii",), 1.0),
         device=torch.device("cpu"), precision="float32",
     )
@@ -1069,13 +1095,12 @@ def test_grpo_update_streams_disk_rollouts_without_full_decision_buffer(monkeypa
             for key in ("loss", "policy_loss", "kl", "entropy", "clip_fraction", "mean_ratio")
         }
 
-    monkeypatch.setattr("grpo.trainer.compute_grpo_loss", loss_fn)
+    monkeypatch.setattr("grpo.update.compute_grpo_loss", loss_fn)
     metrics = _update_policy(
         policy,
         optimizer,
         None,
         store,
-        None,
         grpo=GrpoConfig(minibatch_size=2, inner_updates=2),
         repetition=repetition_module.RepetitionConfig("blacklist", ("fire_iii",), 1.0),
         device=torch.device("cpu"),
@@ -1085,10 +1110,11 @@ def test_grpo_update_streams_disk_rollouts_without_full_decision_buffer(monkeypa
     assert metrics["optimizer_updates"] == 4.0
 
 
-def test_grpo_update_logs_optimizer_metrics_to_tensorboard(monkeypatch):
+def test_grpo_update_logs_optimizer_metrics_to_tensorboard(monkeypatch, tmp_path):
     policy = torch.nn.Linear(1, 1)
     optimizer = torch.optim.SGD(policy.parameters(), lr=0.0)
     decision = _decision(history_length=1, scene_length=1, action_index=0)
+    store = _store_decisions(tmp_path, (decision,), (1.0,))
 
     def loss_fn(model, _batch, **_kwargs):
         loss = model.weight.sum() * 0.0 + 1.0
@@ -1103,13 +1129,12 @@ def test_grpo_update_logs_optimizer_metrics_to_tensorboard(monkeypatch):
             self.values.append((tag, value, step))
 
     writer = ScalarRecorder()
-    monkeypatch.setattr("grpo.trainer.compute_grpo_loss", loss_fn)
+    monkeypatch.setattr("grpo.update.compute_grpo_loss", loss_fn)
     _update_policy(
         policy,
         optimizer,
         None,
-        [decision],
-        torch.ones(1),
+        store,
         grpo=GrpoConfig(minibatch_size=1, inner_updates=1),
         repetition=repetition_module.RepetitionConfig("blacklist", ("fire_iii",), 1.0),
         device=torch.device("cpu"),
@@ -1122,10 +1147,15 @@ def test_grpo_update_logs_optimizer_metrics_to_tensorboard(monkeypatch):
     assert any(tag == "GRPO/优化更新/总损失" and step == 6 for tag, _value, step in writer.values)
 
 
-def test_grpo_tensorboard_interval_uses_sample_weights_and_applied_learning_rate(monkeypatch):
+def test_grpo_tensorboard_interval_uses_sample_weights_and_applied_learning_rate(monkeypatch, tmp_path):
     policy = torch.nn.Linear(1, 1)
     optimizer = torch.optim.SGD(policy.parameters(), lr=0.1)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.5)
+    store = _store_decisions(
+        tmp_path,
+        [_decision(history_length=0, scene_length=0, action_index=0) for _ in range(3)],
+        (1.0, 1.0, 1.0),
+    )
 
     def loss_fn(model, batch, **_kwargs):
         size = batch["current_state_vectors"].shape[0]
@@ -1141,13 +1171,12 @@ def test_grpo_tensorboard_interval_uses_sample_weights_and_applied_learning_rate
             self.values[(tag, step)] = value
 
     writer = ScalarRecorder()
-    monkeypatch.setattr("grpo.trainer.compute_grpo_loss", loss_fn)
+    monkeypatch.setattr("grpo.update.compute_grpo_loss", loss_fn)
     _update_policy(
         policy,
         optimizer,
         scheduler,
-        [_decision(history_length=0, scene_length=0, action_index=0) for _ in range(3)],
-        torch.ones(3),
+        store,
         grpo=GrpoConfig(minibatch_size=2, inner_updates=1),
         repetition=SimpleNamespace(enabled=False),
         device=torch.device("cpu"),
@@ -1163,7 +1192,7 @@ def test_grpo_tensorboard_interval_uses_sample_weights_and_applied_learning_rate
     assert ("GRPO/优化更新/裁剪前梯度范数", 6) in writer.values
 
 
-def test_grpo_monitor_reads_existing_forward_and_live_gradients():
+def test_grpo_monitor_reads_existing_forward_and_live_gradients(tmp_path):
     class ToyPolicy(torch.nn.Module):
         def __init__(self):
             super().__init__()
@@ -1176,6 +1205,11 @@ def test_grpo_monitor_reads_existing_forward_and_live_gradients():
 
     policy = ToyPolicy()
     optimizer = torch.optim.SGD(policy.parameters(), lr=0.01)
+    store = _store_decisions(
+        tmp_path,
+        [_decision(history_length=0, scene_length=0, action_index=index) for index in range(2)],
+        (1.0, -1.0),
+    )
 
     class MonitorRecorder:
         def __init__(self):
@@ -1207,8 +1241,7 @@ def test_grpo_monitor_reads_existing_forward_and_live_gradients():
         policy,
         optimizer,
         None,
-        [_decision(history_length=0, scene_length=0, action_index=index) for index in range(2)],
-        torch.tensor([1.0, -1.0]),
+        store,
         grpo=GrpoConfig(minibatch_size=1, inner_updates=1),
         repetition=SimpleNamespace(enabled=False),
         device=torch.device("cpu"),
@@ -1239,7 +1272,7 @@ def test_grpo_store_rejects_incomplete_anchored_input_before_write(tmp_path, fie
 
 @pytest.mark.parametrize("raw_field", ("current_state_abs_values", "scene_abs_values", "history_state_delta_reset_mask", "history_bank_skill_ids"))
 def test_grpo_store_rejects_raw_states_and_old_rollout_format(tmp_path, raw_field):
-    from common.torch_serialization import safe_torch_load
+    from common.pytorch.serialization import safe_torch_load
 
     decision = _decision(history_length=1, scene_length=1, action_index=0)
     decision.batch[raw_field] = torch.zeros((1, 3))
@@ -1281,7 +1314,7 @@ def test_grpo_store_validates_independent_window_metadata(tmp_path, metadata, er
 
 def test_grpo_cursor_roundtrips_after_history_reset_without_entering_model_batch(tmp_path):
     from dataclasses import replace
-    from common.torch_serialization import safe_torch_load
+    from common.pytorch.serialization import safe_torch_load
 
     decision = replace(_decision(history_length=8, scene_length=1, action_index=0),
                        context_metadata={"history_cursor": 301})
@@ -1314,7 +1347,7 @@ def test_grpo_store_rejects_window_metadata_inside_model_batch(tmp_path):
 
 @pytest.mark.parametrize("location", ["batch", "decision", "contract"])
 def test_grpo_store_rejects_same_width_action_order_drift_on_read(tmp_path, location):
-    from common.torch_serialization import safe_torch_load
+    from common.pytorch.serialization import safe_torch_load
 
     contract = _rollout_contract()
     store = GrpoRolloutStore(tmp_path, iteration=1, input_contract=contract)

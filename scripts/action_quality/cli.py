@@ -8,7 +8,7 @@ from concurrent.futures import CancelledError, FIRST_COMPLETED, ThreadPoolExecut
 from pathlib import Path
 from threading import Event
 
-from common.dataset_layout import find_dataset_json_files
+from common.data.layout import find_dataset_json_files
 from scripts.common.json_io import is_json_file
 
 from .config import annotation_worker_count, default_raw_root, load_bridge_config

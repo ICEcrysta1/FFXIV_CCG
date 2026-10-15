@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from scripts.common.inprocess_backend import InProcessEngine
-from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION, build_output_context_schema_metadata
+from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION, build_output_context_schema_metadata
 from tests.scripts.conftest import _require_inprocess_backend
 
 

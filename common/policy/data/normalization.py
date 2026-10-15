@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import math
 from pathlib import Path
 
-from common.yaml_config import load_yaml_mapping
+from common.configuration.yaml import load_yaml_mapping
 
 
 DEFAULT_CONFIG_PATH = (

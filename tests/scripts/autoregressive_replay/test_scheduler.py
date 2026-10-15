@@ -98,7 +98,7 @@ def test_no_weave_candidate_advances_to_gcd_request_then_next_event():
 @pytest.mark.parametrize("request_time", [0.1, 1.7])
 def test_scene_fp32_boundary_below_decision_epsilon_still_advances(request_time):
     import struct
-    from common.contracts import FORCED_MOVEMENT_CONTEXT_KEY
+    from common.context.contracts import FORCED_MOVEMENT_CONTEXT_KEY
     from scripts.common.scene_state import SceneFactScheduler
 
     boundary = struct.unpack("f", struct.pack("f", request_time))[0]

@@ -5,7 +5,7 @@ from __future__ import annotations
 from decimal import Decimal
 from pathlib import Path
 
-from common.yaml_config import load_yaml_mapping
+from common.configuration.yaml import load_yaml_mapping
 
 CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "fflogs_scraper" / "batch.yaml"
 

@@ -15,7 +15,7 @@ from common.policy.config import ModelConfig
 from common.training.optimizer import build_optimizer
 from common.training.optimizer_config import OptimizerConfig
 from grpo.config import GrpoConfig, GrpoRunConfig
-from grpo.trainer import _restore_grpo_rollback_state, _snapshot_optimizer_state
+from grpo.checkpoint import _restore_grpo_rollback_state, _snapshot_optimizer_state
 
 
 class _TinyPolicy(nn.Module):

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from common.torch_runtime import autocast_context, model_dtype
+from common.pytorch.runtime import autocast_context, model_dtype
 from common.policy.data import SkillVocab
 from common.policy.model import RepetitionConfig
 from common.policy.replay import AutoregressiveReplayConfig
@@ -171,12 +171,12 @@ def test_default_precast_replay_accepts_negative_scene_facts(tmp_path, scene_mod
 def test_checkpoint_restores_history_embedding_and_logits_after_yaml_vocab_drift(tmp_path, monkeypatch, drift, use_kv_cache):
     """真实模型、回放会话和 batcher 使用训练时词表，当前 YAML 改变不影响行身份。"""
     from dataclasses import asdict
-    from common.config import load_project_config
+    from common.game.config import load_project_config
     from common.policy.config import ModelConfig
     from common.policy.data import ActionSpace, DataSpec, ModelInputContract, Normalizer
     from common.policy.data import skill_vocab as vocab_module
     from common.policy.data.schema import SceneWindowSchema, StateFeatureGroup, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
-    from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
+    from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
     from common.policy.model import CausalPolicyModel
     from scripts.autoregressive_replay.backends import PyTorchPolicyBackend
     from scripts.autoregressive_replay.context import LiveBatchBuilder

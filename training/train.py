@@ -22,7 +22,7 @@ from common.policy.config import (
     resolve_policy_model_job_tag,
     resolve_policy_model_variant,
 )
-from common.config import load_precision_config
+from common.pytorch.precision import load_precision_config
 from common.policy.data.prepared_sources import (
     select_prepared_training_sources,
     select_prepared_validation_sources,
@@ -153,7 +153,7 @@ def main() -> None:
     }
     if args.force_resume_data_mismatch:
         training_kwargs["force_resume_data_mismatch"] = True
-    if getattr(config, "ppg", None) is not None and config.ppg.enabled:
+    if config.ppg.enabled:
         training_kwargs["validation_metrics_callback"] = _evaluate_training_metrics
     result = run_training(config, **training_kwargs)
     spec = result["data_spec"]

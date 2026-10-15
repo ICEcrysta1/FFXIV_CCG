@@ -8,10 +8,10 @@ from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
-from common.dataset_layout import map_dataset_output_path
-from common.torch_dependencies import import_torch
-from common.torch_serialization import safe_torch_load
-from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
+from common.data.layout import map_dataset_output_path
+from common.pytorch.dependencies import import_torch
+from common.pytorch.serialization import safe_torch_load
+from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
 
 from .schema import SceneWindowSchema, StateFeatureGroup, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
 from .spec import DataSpec
@@ -162,12 +162,6 @@ class CompiledCacheReader:
             action_is_gcd=self._action_is_gcd,
         )
         self._state_layout.assert_matches_data_spec(self._data_spec)
-        if self._num_actions < 1 or len(self._action_keys) != self._num_actions or len(set(self._action_keys)) != self._num_actions:
-            raise ValueError("compiled cache action_keys must match the fixed output space")
-        if len(self._action_to_vocab_id) != self._num_actions or any(value <= 0 for value in self._action_to_vocab_id) or len(set(self._action_to_vocab_id)) != self._num_actions:
-            raise ValueError("compiled cache output mapping must contain distinct non-padding vocabulary rows")
-        if len(self._action_is_gcd) != self._num_actions or any(type(value) is not bool for value in self._action_is_gcd):
-            raise ValueError("compiled cache action_is_gcd must contain one boolean per output action")
         self._vocab_signature = tuple(payload.get("vocab_signature", ()))
         self._shard_size = int(payload["shard_size"])
         self._history_bank_id = str(
@@ -206,8 +200,6 @@ class CompiledCacheReader:
             if key == "skill_features":
                 # 旧低精度技能 bank 交给上层重编译，不能在读取时转型掩盖精度损失。
                 spec.validate_tensor(field, dimensions, torch=torch, stage="cache")
-        if history_bank["skill_features"].shape != (bank_size, len(self._skill_feature_names)):
-            raise ValueError("compiled cache history_bank skill feature width mismatch")
         for spec in STATE_BANK_FIELDS:
             key = spec.name
             value = history_bank[key]
@@ -219,7 +211,7 @@ class CompiledCacheReader:
                 raise ValueError(f"compiled cache history_bank sentinel {key} must be zero")
         if bool(history_bank["state_null_mask"][1:, self._request_time_index].any()):
             raise ValueError("compiled cache history_bank request_state.time_seconds must be known")
-        if bank_size < 1 or action_keys[0] != "":
+        if action_keys[0] != "":
             raise ValueError("compiled cache history_bank must start with an empty sentinel row")
         self._history_bank = history_bank
         self._shard_paths = tuple(
@@ -305,16 +297,9 @@ class CompiledCacheReader:
     def scene_tokens(self, sample_idx: int, *, float_dtype, int_dtype):
         torch = import_torch()
         sample = self.sample(sample_idx)
-        scene_vectors = sample.get("scene_vectors")
-        scene_types = sample.get("scene_types")
-        if scene_vectors is None or scene_types is None:
-            return (
-                torch.zeros((0, self.schema.scene_feature_dim()), dtype=float_dtype),
-                torch.zeros((0,), dtype=int_dtype),
-            )
         return (
-            torch.as_tensor(scene_vectors, dtype=float_dtype),
-            torch.as_tensor(scene_types, dtype=int_dtype),
+            torch.as_tensor(sample["scene_vectors"], dtype=float_dtype),
+            torch.as_tensor(sample["scene_types"], dtype=int_dtype),
         )
 
     def sample(self, sample_idx: int) -> dict[str, object]:
@@ -369,7 +354,7 @@ class CompiledCacheReader:
                 value = sample.get(key)
                 spec.validate_tensor(value, tensor_dimensions(self._data_spec), torch=torch, stage="cache")
                 dtype = spec.torch_dtype(torch)
-                if value.dtype != dtype or (dtype == torch.float32 and not bool(torch.isfinite(value).all())):
+                if dtype == torch.float32 and not bool(torch.isfinite(value).all()):
                     raise ValueError(f"compiled sample {key} must have dtype {dtype} and finite values")
             if bool(sample["current_state_null_mask"][self._request_time_index]):
                 raise ValueError("compiled sample request_state.time_seconds must be known")

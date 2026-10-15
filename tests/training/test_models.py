@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from common.torch_runtime import autocast_context, model_dtype, move_batch
+from common.pytorch.runtime import autocast_context, model_dtype, move_batch
 from scripts.convert_fflogs.cache import select_training_raw_paths
 from tests.training._common_fixtures import make_dataset as _make_dataset
 from tests.training._common_fixtures import make_demo_pt as _make_demo_pt

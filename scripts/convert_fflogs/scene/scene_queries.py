@@ -6,13 +6,13 @@
 
 from __future__ import annotations
 
-from common.scene_context_schema import (
+from common.context.scene import (
     FORCED_MOVEMENT_CONTEXT_KEY,
     RAID_BUFF_WINDOW_CONTEXT_KEY,
     SCENE_CONTEXT_KEYS,
     TARGETABLE_WINDOW_CONTEXT_KEY,
 )
-from common.scene_window import (
+from common.context.window import (
     feature_index_map,
 )
 

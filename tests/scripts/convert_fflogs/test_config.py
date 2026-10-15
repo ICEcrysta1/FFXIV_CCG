@@ -3,7 +3,7 @@
 import pytest
 import yaml
 
-from common.project_config import resolve_positive_worker_count
+from common.configuration.environment import resolve_positive_worker_count
 from scripts.convert_fflogs.config import (
     load_convert_fflogs_config,
     load_convert_fflogs_job_config,

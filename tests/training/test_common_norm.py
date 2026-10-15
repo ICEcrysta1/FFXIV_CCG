@@ -86,7 +86,7 @@ def test_state_encoder_reanchors_player_time_and_preserves_small_deltas():
 def test_normalizer_keeps_configured_time_scale_when_job_cooldowns_change(monkeypatch):
     from dataclasses import replace
 
-    import common.config as config_module
+    import common.game.config as config_module
 
     project_config = config_module.load_project_config(job_tag="black_mage")
     custom_skills = (replace(project_config.job.skills[0], cooldown=135.0), *project_config.job.skills[1:])
@@ -227,7 +227,7 @@ def test_time_resources_share_time_scale_in_state_skill_and_saved_contract(job, 
     normalizer.configure_job_resources(job)
     contract = normalizer.normalization_contract
     assert resource in contract["resource_time_fields"]
-    import common.config as config_module
+    import common.game.config as config_module
     monkeypatch.setattr(config_module, "load_project_config", lambda **_kwargs: pytest.fail("恢复不得读取本机配置"))
     restored = Normalizer.from_contract(contract)
     restored.ensure_job_resources(job)

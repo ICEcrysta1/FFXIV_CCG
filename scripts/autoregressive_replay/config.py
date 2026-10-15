@@ -9,7 +9,7 @@ from pathlib import Path
 from scripts.common.json_io import is_json_file
 from scripts.common.scene_source import find_prepared_scene_source
 
-from common.project_config import (
+from common.configuration.environment import (
     PROJECT_JOB_TAG_ENV,
     load_root_dotenv,
     resolve_project_path,
@@ -28,7 +28,7 @@ from common.policy.config import (
 )
 from common.policy.replay import AutoregressiveReplayConfig
 from common.policy.data import ActionSpace, DataSpec, ModelInputContract
-from common.torch_serialization import safe_torch_load
+from common.pytorch.serialization import safe_torch_load
 from scripts.onnx_export.config.config import (
     AUTOREGRESSIVE_REPLAY_CHECKPOINT_ENV,
     AUTOREGRESSIVE_REPLAY_ORT_PROVIDER_ENV,

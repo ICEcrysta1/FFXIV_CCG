@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from common import config as project_config
+from common.game import config as project_config
 from common.policy.data.compiled_cache import changed_config_dependencies
-from common.yaml_config import load_yaml_mapping
+from common.configuration.yaml import load_yaml_mapping
 from scripts.convert_fflogs.cache import cache_config
 from scripts.convert_fflogs.config import config as convert_config
 
@@ -183,7 +183,7 @@ def test_policy_action_order_requires_rebuild(config_root):
 
 def test_normalizer_and_precision_are_checked_by_existing_cache_signature(config_root):
     """精度和归一化仍由正式签名校验，配置快照不重复保存第二份。"""
-    from common.config import load_precision_config
+    from common.pytorch.precision import load_precision_config
     from common.policy.data.compiled_cache import build_cache_signature
     from common.policy.data.normalizer import Normalizer
 

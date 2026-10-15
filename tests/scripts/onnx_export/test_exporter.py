@@ -16,9 +16,9 @@ from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, ModelInputContract, Normalizer, SkillVocab
 from common.policy.data.schema import SceneWindowSchema, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
 from common.policy.data.input_contract import INPUT_CONTRACT_VERSION, TOKEN_ENCODING_CONTRACT
-from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
+from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
 from common.policy.model import CausalPolicyModel
-from common.torch_serialization import safe_torch_load
+from common.pytorch.serialization import safe_torch_load
 from scripts.autoregressive_replay.backends import (
     OrtPolicyBackend,
     PyTorchPolicyBackend,
@@ -1316,7 +1316,7 @@ def test_deployment_state_masks_use_base_width_and_outer_layout_cannot_override_
 
 @pytest.mark.parametrize("full_attention_residuals", [False, True])
 def test_load_policy_preserves_saved_readout_and_qk_scale_without_project_yaml(tmp_path, monkeypatch, full_attention_residuals):
-    import common.config as config_module
+    import common.game.config as config_module
 
     checkpoint = tmp_path / "checkpoint.pt"
     _write_small_checkpoint(

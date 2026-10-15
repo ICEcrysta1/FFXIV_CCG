@@ -18,12 +18,13 @@ import torch
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
-from common.config import PROJECT_ROOT, load_precision_config, load_project_config
-from common.cache_compilation import compile_raw_training_caches
-from common.project_config import resolve_project_job_tag, resolve_project_path
+from common.game.config import PROJECT_ROOT, load_project_config
+from common.pytorch.precision import load_precision_config
+from scripts.model_analysis.cache_compilation import compile_raw_training_caches
+from common.configuration.environment import resolve_project_job_tag, resolve_project_path
 from scripts.common.scene_source import find_prepared_scene_source
-from common.torch_runtime import autocast_context, model_dtype, move_batch
-from common.torch_serialization import safe_torch_load
+from common.pytorch.runtime import autocast_context, model_dtype, move_batch
+from common.pytorch.serialization import safe_torch_load
 from common.policy.data import ModelInputContract, Normalizer, SkillVocab
 from common.policy.data.context_encoding import ContextEncoder
 from training import TrainingCollator, TrainingDataset

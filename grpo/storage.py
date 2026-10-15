@@ -11,7 +11,7 @@ import uuid
 
 import torch
 
-from common.torch_serialization import safe_torch_load
+from common.pytorch.serialization import safe_torch_load
 from common.policy.data import DataSpec, ModelInputContract
 from common.policy.data.context_fields import MODEL_INPUT_FIELDS, RAW_ONLY_FIELD_NAMES, tensor_dimensions
 
@@ -124,9 +124,6 @@ def _validate_encoded_context(batch: Mapping[str, object], metadata: object, dat
     cursor = metadata["history_cursor"]
     if type(cursor) is not int or cursor < 0:
         raise ValueError("GRPO history_cursor metadata must be a nonnegative integer")
-    history_mask = batch.get("history_mask")
-    if not isinstance(history_mask, torch.Tensor) or history_mask.dtype != torch.bool or history_mask.ndim != 2 or history_mask.shape[0] != 1:
-        raise ValueError("GRPO history_mask must be boolean with one decision row")
     if int(history_mask.sum().item()) > cursor:
         raise ValueError("GRPO history_cursor cannot be smaller than encoded history")
 

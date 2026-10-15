@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from common.config import load_project_config
+from common.game.config import load_project_config
 from common.policy.data.policy_actions import load_policy_actions
-from common.skills import SkillBook
+from common.game.skills import SkillBook
 
 
 def load_skill_values(job_tag: str) -> dict[str, float]:

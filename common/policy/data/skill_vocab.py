@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Iterator
 
-from common.config import load_project_config
+from common.game.config import load_project_config
 
 from .policy_actions import load_policy_actions
 

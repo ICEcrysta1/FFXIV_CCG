@@ -12,7 +12,7 @@ from pathlib import Path
 from threading import Event
 from typing import TYPE_CHECKING
 
-from common.dataset_layout import map_dataset_output_path
+from common.data.layout import map_dataset_output_path
 from scripts.common.json_io import atomic_write_json, read_json_bytes
 
 from .config import BridgeConfig

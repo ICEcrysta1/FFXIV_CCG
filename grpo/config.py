@@ -12,7 +12,7 @@ from common.policy.config import (
     load_model_config,
     load_policy_config,
 )
-from common.project_config import resolve_project_path
+from common.configuration.environment import resolve_project_path
 from common.training.tensorboard import TensorBoardConfig
 from common.training.optimizer_config import OptimizerConfig, parse_optimizer_settings
 

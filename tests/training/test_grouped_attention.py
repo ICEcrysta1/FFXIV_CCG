@@ -10,12 +10,13 @@ from common.policy.model.grouped_attention import (
     GroupedQueryAttention,
     scaled_dot_product_attention,
 )
+from common.policy.model.attention_variants import manual_attention
 from common.policy.model.position_encoding import RotaryPositionEncoding
 from common.policy.model.causal_encoder import (
     project_qkv,
     run_causal_encoder,
 )
-from common.policy.model.trace import TraceableTransformerEncoderLayer
+from common.policy.model.transformer import TraceableTransformerEncoderLayer
 
 
 def _make_encoder(
@@ -239,3 +240,33 @@ def test_mqa_trace_expands_only_the_explicit_attention_weight_result():
 
     assert len(attentions) == 1
     assert attentions[0].shape == (1, 4, 4, 4)
+
+
+@pytest.mark.parametrize("dtype", (torch.float32, torch.float64, torch.bfloat16))
+def test_trace_attention_zeroes_blocked_rows_and_gradients_without_scalar_reads(dtype, monkeypatch):
+    """全屏蔽行应输出零且不传播梯度，单列可见行只聚合该列。"""
+    query = torch.ones((1, 4, 2, 4), dtype=dtype, requires_grad=True)
+    key = torch.ones((1, 2, 2, 4), dtype=dtype, requires_grad=True)
+    value = torch.arange(16, dtype=dtype).reshape(1, 2, 2, 4).requires_grad_()
+    allowed = torch.tensor([[[[False, False], [True, False]]]])
+
+    def reject_scalar_read(_tensor):
+        pytest.fail("trace attention 不应把设备 tensor 转为 Python 布尔值")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(torch.Tensor, "__bool__", reject_scalar_read)
+        output, weights = manual_attention(query, key, value, allowed)
+    output.sum().backward()
+
+    expected = value.detach().repeat_interleave(2, dim=1).clone()
+    expected[:, :, 0] = 0
+    expected[:, :, 1] = value.detach()[:, :, 0].repeat_interleave(2, dim=1)
+    expected_weights = torch.zeros((1, 4, 2, 2), dtype=dtype)
+    expected_weights[:, :, 1, 0] = 1
+    expected_value_gradient = torch.zeros_like(value)
+    expected_value_gradient[:, :, 0] = 2
+    torch.testing.assert_close(output, expected, rtol=0, atol=0)
+    torch.testing.assert_close(weights, expected_weights, rtol=0, atol=0)
+    torch.testing.assert_close(query.grad, torch.zeros_like(query), rtol=0, atol=0)
+    torch.testing.assert_close(key.grad, torch.zeros_like(key), rtol=0, atol=0)
+    torch.testing.assert_close(value.grad, expected_value_gradient, rtol=0, atol=0)

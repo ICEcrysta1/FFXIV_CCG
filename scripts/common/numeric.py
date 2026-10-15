@@ -1,4 +1,4 @@
-"""跨模块复用的嵌套数值映射辅助。"""
+"""转换与回放共用的嵌套数值映射辅助。"""
 
 from __future__ import annotations
 
@@ -40,7 +40,5 @@ def _flatten_numeric_mapping(
                 ignored_keys=ignored_keys,
             )
         return
-    if isinstance(value, bool):
-        output[prefix] = 1.0 if value else 0.0
-    elif isinstance(value, (int, float)):
+    if isinstance(value, (int, float)):
         output[prefix] = float(value)

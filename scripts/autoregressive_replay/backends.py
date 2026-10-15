@@ -21,8 +21,8 @@ from common.policy.model import (
     parse_repetition_config,
     repetition_config_from_checkpoint,
 )
-from common.torch_runtime import autocast_context, model_dtype
-from common.torch_serialization import safe_torch_load
+from common.pytorch.runtime import autocast_context, model_dtype
+from common.pytorch.serialization import safe_torch_load
 from scripts.onnx_export import TENSOR_INPUT_NAMES, DeploymentManifest
 from scripts.onnx_export.release.release import RELEASE_REPORT_FILENAME, verify_release
 from scripts.onnx_export.runtime.ort_runtime import (

@@ -379,7 +379,7 @@ def test_real_native_replay_rejected_frame_keeps_public_error_step_and_reason(cs
 
 
 def _batch_source():
-    from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
+    from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
     from common.policy.data import ActionSpace
     from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION
 

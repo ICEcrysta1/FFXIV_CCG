@@ -11,12 +11,12 @@ using Combat.Sim.Common;
 namespace Combat.Sim.Config;
 
 /// <summary>
-/// 状态向量分组 schema（对照 common/output_context_schema.py 的 StateVectorGroupSchema）。
+/// 状态向量分组 schema（对照 common/context/output.py 的 StateVectorGroupSchema）。
 /// </summary>
 public sealed record StateVectorGroupSchema(string GroupKey, string FeatureKeysField, string? ContextKey, string Encoding);
 
 /// <summary>
-/// 共享 schema 定义（对照 common/schema_config.py 的 config/schema.yaml）。
+/// 共享 schema 定义（对照 common/context/schema.py 的 config/schema.yaml）。
 /// 承载共享常量、scene context schema、canonical 输出 schema 与状态向量字段模板；
 /// C# 与 Python 以 `config/schema.yaml` 为单一事实来源。
 /// </summary>
@@ -40,7 +40,7 @@ public sealed class SchemaConfig
 }
 
 /// <summary>
-/// 共享 schema 加载层（对照 common/schema_config.py）。
+/// 共享 schema 加载层（对照 common/context/schema.py）。
 /// 进程内单例；调用方（状态机构造/导出器）先按项目根 Load 一次。
 /// </summary>
 public static class SchemaConfigLoader

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .schema_config import load_schema_config
+from .schema import load_schema_config
 
 _output = load_schema_config()["canonical_output"]
 

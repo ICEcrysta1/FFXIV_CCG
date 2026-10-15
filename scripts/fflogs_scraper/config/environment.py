@@ -3,7 +3,7 @@
 import logging
 from pathlib import Path
 
-from common.project_config import load_root_dotenv
+from common.configuration.environment import load_root_dotenv
 
 logger = logging.getLogger(__name__)
 

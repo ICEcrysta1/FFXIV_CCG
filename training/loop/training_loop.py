@@ -1,25 +1,22 @@
-"""训练初始化、epoch 循环、验证和调度器推进。"""
+"""BC 训练编排：初始化、逐轮调用、监控和 checkpoint 生命周期。"""
 
 from __future__ import annotations
 
 import logging
 import math
 import random
-from contextlib import nullcontext
 from dataclasses import asdict, replace
 from pathlib import Path
 
 import torch
 
-from common.config import load_precision_config
+from common.pytorch.precision import load_precision_config
 from common.policy.config import PROJECT_ROOT, resolve_policy_cache_dir
 from common.policy.data import DataSpec, ModelInputContract
 from common.policy.model import CausalPolicyModel
 from common.policy.data.context_encoding import ContextEncoder
-from common.policy.model.repetition import RepetitionConfig, prepare_repetition_penalty
-from common.project_config import resolve_registered_job_tags
-from common.torch_runtime import autocast_context, model_dtype, move_batch
-from common.training.metrics import MetricAccumulator
+from common.configuration.environment import resolve_registered_job_tags
+from common.pytorch.runtime import model_dtype
 from common.training.optimizer import build_optimizer
 from common.training.tensorboard import (
     TensorBoardMonitor,
@@ -28,7 +25,7 @@ from common.training.tensorboard import (
     write_scalar_metrics,
 )
 
-from ..config import ActionQualityLossConfig, RunConfig, ValuePreferenceConfig
+from ..config import RunConfig
 from ..runtime.runtime_debug import RuntimeDebugRecorder
 from .checkpoint import (
     _best_metric_key,
@@ -44,24 +41,16 @@ from .checkpoint import (
     _validate_resume_checkpoint,
 )
 from .dataloaders import build_dataloaders
-from .loss import compose_training_loss, configured_auxiliary_losses
+from .epochs import train_epoch, validate
 
 logger = logging.getLogger(__name__)
-_EPOCH_METRICS = ("loss", "cross_entropy_loss", "top1_accuracy", "top3_accuracy")
-
-
-def _debug_stage(recorder: RuntimeDebugRecorder | None, name: str):
-    """在关闭调试时返回零开销的空上下文。"""
-    if recorder is None:
-        return nullcontext()
-    return recorder.stage(name)
 
 
 def run_training(
     config: RunConfig,
     *,
     raw_paths: list[Path],
-    validation_paths: list[Path] | None = None,
+    validation_paths: list[Path],
     output_dir: Path | None = None,
     max_epochs: int | None = None,
     batch_size: int | None = None,
@@ -70,23 +59,8 @@ def run_training(
     validation_metrics_callback=None,
     resume_path: Path | None = None,
     force_resume_data_mismatch: bool = False,
-    _build_dataloaders=None,
-    _train_epoch=None,
-    _validate=None,
-    _save_checkpoint=None,
-    _resolve_cache_dir=None,
-    _registered_job_tags=None,
-    _model_class=None,
 ) -> dict[str, object]:
     """执行完整 BC 训练并保存逐轮、best/final checkpoint。"""
-    build_dataloaders_fn = _build_dataloaders or build_dataloaders
-    train_epoch_fn = _train_epoch or train_epoch
-    validate_fn = _validate or validate
-    save_checkpoint_fn = _save_checkpoint or _save_checkpoint_default
-    resolve_cache_dir_fn = _resolve_cache_dir or resolve_policy_cache_dir
-    registered_job_tags_fn = _registered_job_tags or (lambda: resolve_registered_job_tags(PROJECT_ROOT))
-    model_cls = _model_class or CausalPolicyModel
-
     tensorboard_output_dir = config.output_dir
     if output_dir is not None:
         config = replace(config, output_dir=Path(output_dir))
@@ -114,18 +88,18 @@ def run_training(
         raise FileNotFoundError("no prepared VAL compiled caches supplied for validation")
 
     precision = load_precision_config()
-    train_loader, val_loader, train_dataset, val_dataset = build_dataloaders_fn(
+    train_loader, val_loader, train_dataset, val_dataset = build_dataloaders(
         raw_paths,
         config,
         validation_paths=validation_paths,
         int_dtype=precision.resolve_int_dtype(),
         float_dtype=precision.resolve_float_dtype(),
-        cache_dir=(resolve_cache_dir_fn(config.job_tag) if config.job_tag else None),
+        cache_dir=(resolve_policy_cache_dir(config.job_tag) if config.job_tag else None),
     )
     data_spec = DataSpec.from_dataset(train_dataset)
     if config.job_tag is not None and config.job_tag != data_spec.job_tag:
         raise ValueError(f"config job_tag {config.job_tag!r} != cache job_tag {data_spec.job_tag!r}")
-    if data_spec.job_tag not in registered_job_tags_fn():
+    if data_spec.job_tag not in resolve_registered_job_tags(PROJECT_ROOT):
         raise ValueError(
             f"cache job_tag {data_spec.job_tag!r} has no registered combat state-machine route"
         )
@@ -161,7 +135,7 @@ def run_training(
         )
     context_encoder = ContextEncoder(normalizer, input_contract.schema, config.model, layout=input_contract.schema.state_layout(data_spec.action_keys)).to(device=device)
     vocab = train_dataset.skill_vocab
-    model = model_cls(
+    model = CausalPolicyModel(
         data_spec,
         config.model,
         vocab_size=vocab.size(),
@@ -306,7 +280,7 @@ def run_training(
                     tensorboard_log_every_steps=config.tensorboard.log_every_steps,
                     global_step_offset=global_step,
                 )
-            train_metrics = train_epoch_fn(
+            train_metrics = train_epoch(
                 model,
                 train_loader,
                 optimizer,
@@ -326,7 +300,7 @@ def run_training(
                     tensorboard_monitor=tensorboard_monitor,
                     global_step=global_step,
                 )
-            val_metrics = validate_fn(
+            val_metrics = validate(
                 model,
                 val_loader,
                 device,
@@ -380,7 +354,6 @@ def run_training(
                     tensorboard_writer, {"index": epoch}, prefix="epoch", global_step=epoch_step,
                 )
                 tensorboard_monitor.log_epoch(global_step=epoch_step)
-            last_val_metrics = val_metrics
             logger.info(
                 "Epoch %3d | train loss=%.4f ce=%.4f value_aux=%.4f top1=%.4f top3=%.4f | "
                 "val loss=%.4f ce=%.4f value_aux=%.4f top1=%.4f top3=%.4f val_ppg=%.2f none_ppg=%.2f",
@@ -406,7 +379,7 @@ def run_training(
                 best_val_metrics = dict(val_metrics)
 
             epoch_checkpoint_name = _epoch_checkpoint_name(epoch, val_metrics)
-            save_checkpoint_fn(
+            _save_checkpoint(
                 config.output_dir / epoch_checkpoint_name,
                 model,
                 optimizer,
@@ -420,7 +393,7 @@ def run_training(
                 best_val_metrics=best_val_metrics,
             )
             if is_best:
-                save_checkpoint_fn(
+                _save_checkpoint(
                     config.output_dir / "best.pt",
                     model,
                     optimizer,
@@ -434,7 +407,7 @@ def run_training(
                     best_val_metrics=best_val_metrics,
                 )
 
-        save_checkpoint_fn(
+        _save_checkpoint(
             config.output_dir / "final.pt",
             model,
             optimizer,
@@ -467,169 +440,6 @@ def run_training(
                 )
         finally:
             close_tensorboard_writer(tensorboard_writer)
-
-
-def train_epoch(
-    model,
-    loader,
-    optimizer,
-    scheduler,
-    device,
-    precision: str = "float32",
-    *,
-    action_quality: ActionQualityLossConfig | None = None,
-    value_preference: ValuePreferenceConfig | None = None,
-    runtime_debug: RuntimeDebugRecorder | None = None,
-    epoch: int = 0,
-    tensorboard_writer=None,
-    tensorboard_monitor: TensorBoardMonitor | None = None,
-    tensorboard_log_every_steps: int = 50,
-    global_step_offset: int = 0,
-    context_encoder: ContextEncoder | None = None,
-) -> dict[str, float]:
-    model.train()
-    auxiliary_losses = configured_auxiliary_losses(value_preference=value_preference)
-    totals = MetricAccumulator(
-        (*_EPOCH_METRICS, *(term.metric_name for term in auxiliary_losses)),
-        device=device,
-    )
-    if tensorboard_writer is not None and tensorboard_log_every_steps < 1:
-        raise ValueError("tensorboard_log_every_steps must be >= 1")
-    interval_totals = (
-        MetricAccumulator((*totals.names, "learning_rate", "gradient_norm"), device=device)
-        if tensorboard_writer is not None
-        else None
-    )
-    repetition = getattr(model, "repetition", RepetitionConfig())
-    for step, batch in enumerate(loader, start=1):
-        optimizer.zero_grad(set_to_none=True)
-        if runtime_debug is not None:
-            runtime_debug.begin_step(epoch=epoch, step=step, batch=batch)
-        try:
-            with _debug_stage(runtime_debug, "batch_to_device"):
-                batch = prepare_repetition_penalty(batch, repetition)
-                batch = move_batch(batch, device, non_blocking=device.type == "cuda")
-            if context_encoder is not None:
-                with _debug_stage(runtime_debug, "context_encoding"):
-                    batch = context_encoder.encode(batch)
-            if tensorboard_monitor is not None:
-                with autocast_context(device, precision):
-                    tensorboard_monitor.log_graph(batch)
-            with _debug_stage(runtime_debug, "forward"):
-                with autocast_context(device, precision):
-                    output = model(batch)
-            with _debug_stage(runtime_debug, "training_loss"):
-                losses = compose_training_loss(
-                    output,
-                    batch,
-                    auxiliary_losses,
-                    action_quality=action_quality,
-                )
-            with _debug_stage(runtime_debug, "backward"):
-                losses.total.backward()
-            with _debug_stage(runtime_debug, "clip_grad_norm"):
-                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            global_step = global_step_offset + step
-            if tensorboard_monitor is not None:
-                tensorboard_monitor.log_gradients(global_step, grad_norm=grad_norm)
-            # 记录这次更新真正使用的学习率，调度器推进后的值属于下一次更新。
-            learning_rate = optimizer.param_groups[0]["lr"]
-            with _debug_stage(runtime_debug, "optimizer_step"):
-                optimizer.step()
-            with _debug_stage(runtime_debug, "scheduler_step"):
-                scheduler.step()
-        finally:
-            if runtime_debug is not None:
-                runtime_debug.end_step()
-        count = batch["label_index"].shape[0]
-        step_metrics = {
-            "loss": losses.total,
-            "cross_entropy_loss": losses.primary,
-            **losses.auxiliary,
-            "top1_accuracy": output["top1_accuracy"],
-            "top3_accuracy": output["top3_accuracy"],
-        }
-        totals.update(step_metrics, weight=count)
-        if interval_totals is not None:
-            interval_totals.update(
-                {
-                    **step_metrics,
-                    "learning_rate": torch.tensor(learning_rate, dtype=torch.float64, device=device),
-                    "gradient_norm": torch.as_tensor(grad_norm, device=device),
-                },
-                weight=count,
-            )
-        if tensorboard_monitor is not None:
-            tensorboard_monitor.log_step(
-                output["logits"], global_step=global_step, labels=batch["label_index"],
-            )
-        if tensorboard_writer is not None and (
-            step % tensorboard_log_every_steps == 0 or step == len(loader)
-        ):
-            write_scalar_metrics(
-                tensorboard_writer,
-                interval_totals.mean(),
-                prefix="train/step",
-                global_step=global_step_offset + step,
-            )
-            # 每个点汇总本日志区间的所有样本，末尾不足一个区间也会写入。
-            interval_totals = MetricAccumulator(interval_totals.names, device=device)
-    return totals.mean()
-
-
-@torch.no_grad()
-def validate(
-    model,
-    loader,
-    device,
-    precision: str = "float32",
-    *,
-    value_preference: ValuePreferenceConfig | None = None,
-    context_encoder: ContextEncoder | None = None,
-    tensorboard_monitor: TensorBoardMonitor | None = None,
-    global_step: int = 0,
-) -> dict[str, float]:
-    model.eval()
-    auxiliary_losses = configured_auxiliary_losses(value_preference=value_preference)
-    totals = MetricAccumulator(
-        (*_EPOCH_METRICS, *(term.metric_name for term in auxiliary_losses)),
-        device=device,
-    )
-    repetition = getattr(model, "repetition", RepetitionConfig())
-    if tensorboard_monitor is not None:
-        tensorboard_monitor.begin_validation()
-    for batch in loader:
-        batch = prepare_repetition_penalty(batch, repetition)
-        batch = move_batch(batch, device, non_blocking=device.type == "cuda")
-        if context_encoder is not None:
-            batch = context_encoder.encode(batch)
-        with autocast_context(device, precision):
-            output = model(batch)
-        if tensorboard_monitor is not None:
-            tensorboard_monitor.update_validation(output["logits"], batch["label_index"])
-        losses = compose_training_loss(
-            output,
-            batch,
-            auxiliary_losses,
-        )
-        count = batch["label_index"].shape[0]
-        totals.update(
-            {
-                "loss": losses.total,
-                "cross_entropy_loss": losses.primary,
-                **losses.auxiliary,
-                "top1_accuracy": output["top1_accuracy"],
-                "top3_accuracy": output["top3_accuracy"],
-            },
-            weight=count,
-        )
-    if tensorboard_monitor is not None:
-        tensorboard_monitor.end_validation(global_step=global_step)
-    return totals.mean()
-
-
-def _save_checkpoint_default(*args, **kwargs):
-    return _save_checkpoint(*args, **kwargs)
 
 
 def _seed_everything(seed: int) -> None:

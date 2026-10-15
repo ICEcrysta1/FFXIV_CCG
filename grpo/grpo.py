@@ -16,7 +16,7 @@ if __package__ in {None, ""}:
 
 import torch
 
-from common.config import load_precision_config
+from common.pytorch.precision import load_precision_config
 from common.policy.data.prepared_sources import select_prepared_training_sources
 from common.policy.config import (
     PROJECT_ROOT,
@@ -27,7 +27,7 @@ from common.policy.config import (
     resolve_policy_model_job_tag,
     resolve_policy_model_variant,
 )
-from common.project_config import resolve_project_path
+from common.configuration.environment import resolve_project_path
 from grpo.config import load_grpo_config, load_grpo_run_config
 from grpo.trainer import run_grpo_training
 

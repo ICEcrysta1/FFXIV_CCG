@@ -10,8 +10,8 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 import json
 
-from common.config import load_project_config
-from common.skills import SkillBook
+from common.game.config import load_project_config
+from common.game.skills import SkillBook
 from scripts.common.inprocess_backend import InProcessEngine
 
 

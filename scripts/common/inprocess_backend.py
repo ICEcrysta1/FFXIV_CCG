@@ -9,7 +9,7 @@ import threading
 from pathlib import Path
 from typing import Any, Self
 
-from common.contracts import SIDECAR_CONTRACT_VERSION
+from common.context.contracts import SIDECAR_CONTRACT_VERSION
 from scripts.common.state_machine_types import (
     ActionSubmissionResult,
     ExternalEventResult,

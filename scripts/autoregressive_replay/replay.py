@@ -11,8 +11,9 @@ from threading import RLock
 
 import torch
 
-from common.config import load_precision_config, load_project_config
-from common.skills import SkillBook
+from common.pytorch.precision import load_precision_config
+from common.game.config import load_project_config
+from common.game.skills import SkillBook
 from scripts.common.inprocess_backend import InProcessBackend, InProcessEngine
 from scripts.common.json_io import read_json
 from scripts.convert_fflogs.cache import (

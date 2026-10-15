@@ -139,7 +139,7 @@ def _initialize_worker(connection_queue, job_tag: str) -> None:
     if not connection.poll(10):
         raise RuntimeError("parent simulation bridge did not acknowledge worker initialization")
     _receive_control(connection)
-    from common.torch_dependencies import import_torch
+    from common.pytorch.dependencies import import_torch
 
     torch = import_torch()
     torch.set_num_threads(1)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from training.loop.training_loop import train_epoch, validate
+from training.loop.epochs import train_epoch, validate
 
 
 class _ScalarRecorder:

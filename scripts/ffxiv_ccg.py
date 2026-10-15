@@ -123,7 +123,7 @@ def interactive_checkpoint(target: dict, *, resumable_only: bool) -> dict | None
 
 def configured_checkpoint(requested: Path | None) -> dict:
     from common.policy.config import resolve_policy_checkpoint_path, resolve_policy_model_config_path
-    from common.torch_serialization import safe_torch_load
+    from common.pytorch.serialization import safe_torch_load
 
     path = requested or resolve_policy_checkpoint_path(resolve_policy_model_config_path())
     path = Path(path)

@@ -9,7 +9,7 @@ from common.policy.data import DataSpec, SkillVocab
 from common.policy.model import CausalPolicyModel
 from common.policy.config import ModelConfig
 from common.policy.data.context_encoding import ContextEncoder
-from common.torch_runtime import move_batch
+from common.pytorch.runtime import move_batch
 from scripts.autoregressive_replay.parallel import ParallelRollouts, TrainingPolicyBackend
 from scripts.autoregressive_replay.ppg import evaluate_validation_ppg
 from tests.training._common_fixtures import make_dataset, make_demo_pt
@@ -201,7 +201,7 @@ def test_grpo_sampling_is_independent_of_worker_count(dataset, tmp_path):
     from common.policy.data import ModelInputContract
     from common.policy.model.repetition import RepetitionConfig
     from common.policy.replay import AutoregressiveReplayConfig
-    from grpo.trainer import _run_scene_rollout
+    from grpo.rollout import _run_scene_rollout
     from scripts.autoregressive_replay.replay import AutoregressiveReplaySession, ReplayCacheStore
 
     spec = DataSpec.from_dataset(dataset)

@@ -4,8 +4,8 @@ import logging
 import pickle
 from pathlib import Path
 
-from common.config import load_precision_config
-from common.dataset_layout import PERCENTILE_BUCKETS, find_dataset_json_files
+from common.pytorch.precision import load_precision_config
+from common.data.layout import PERCENTILE_BUCKETS, find_dataset_json_files
 from common.policy.data import ActionSpace, Normalizer, SkillVocab
 from common.policy.data.compiled_cache import (
     CompiledShardCache,

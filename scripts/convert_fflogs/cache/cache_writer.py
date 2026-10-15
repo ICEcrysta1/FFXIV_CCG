@@ -6,7 +6,7 @@ from collections.abc import Iterable
 import os
 from pathlib import Path
 
-from common.torch_dependencies import import_torch
+from common.pytorch.dependencies import import_torch
 from common.policy.data.compiled_cache import (
     CACHE_FORMAT,
     CACHE_PICKLE_PROTOCOL,

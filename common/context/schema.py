@@ -10,9 +10,9 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from .yaml_config import load_yaml_mapping
+from common.configuration.yaml import load_yaml_mapping
 
-SCHEMA_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "schema.yaml"
+SCHEMA_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "schema.yaml"
 
 
 @lru_cache(maxsize=1)

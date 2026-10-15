@@ -2,7 +2,7 @@
 
 import pytest
 
-from common.dataset_layout import (
+from common.data.layout import (
     PERCENTILE_BUCKETS,
     find_dataset_json_files,
     map_dataset_output_path,

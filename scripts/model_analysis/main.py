@@ -17,7 +17,7 @@ from common.policy.config import (
     resolve_policy_model_variant,
     validate_policy_model_variant,
 )
-from common.torch_serialization import safe_torch_load
+from common.pytorch.serialization import safe_torch_load
 from training.config import load_run_config
 
 from .common import (
