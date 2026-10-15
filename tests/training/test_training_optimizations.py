@@ -13,7 +13,7 @@ from common.policy.model import attention_variants as attention_variants_module
 from common.policy.model.attention_residual import FullAttentionResidual
 from common.policy.model.position_encoding import RotaryPositionEncoding
 from common.policy.model import causal_encoder as causal
-from common.policy.model.trace import TraceableTransformerEncoderLayer
+from common.policy.model.transformer import TraceableTransformerEncoderLayer
 from common.training.metrics import MetricAccumulator
 from training.loop import epochs
 from tests.training._causal_fixtures import make_batch, make_data_spec, make_input_contract

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import importlib.util
 import logging
 import runpy
@@ -28,6 +28,7 @@ class StubRunConfig:
     model_variant: str | None = None
     max_files: int | None = None
     validation_files: int = 100
+    ppg: SimpleNamespace = field(default_factory=lambda: SimpleNamespace(enabled=False))
 
 
 def _install_fake_training_modules(monkeypatch):
@@ -213,7 +214,8 @@ def test_train_main_forwards_cli_overrides(monkeypatch, caplog, tmp_path):
     )
 
 
-def test_train_main_uses_config_and_environment_defaults(monkeypatch):
+@pytest.mark.parametrize("ppg_enabled", [False, True])
+def test_train_main_uses_config_and_environment_defaults(monkeypatch, ppg_enabled):
     """未提供 CLI 覆盖时，应把 None 和解析出的默认设备交给训练层。"""
     train_cli = _load_train_cli(monkeypatch)
 
@@ -222,6 +224,7 @@ def test_train_main_uses_config_and_environment_defaults(monkeypatch):
         raw_data_dir=Path("configured-data"),
         output_dir=Path("configured-checkpoints"),
         job_tag=None,
+        ppg=SimpleNamespace(enabled=ppg_enabled),
     )
     calls: dict[str, object] = {}
 
@@ -281,6 +284,7 @@ def test_train_main_uses_config_and_environment_defaults(monkeypatch):
         "learning_rate": None,
         "device_name": "cuda",
         "resume_path": None,
+        **({"validation_metrics_callback": train_cli._evaluate_training_metrics} if ppg_enabled else {}),
     }
 
 

@@ -10,7 +10,7 @@ from training.runtime.runtime_debug import (
     RuntimeDebugRecorder,
     aggregate_events,
 )
-from common.policy.model.trace import TraceableTransformerEncoderLayer
+from common.policy.model.transformer import TraceableTransformerEncoderLayer
 from common.policy.model.position_encoding import RotaryPositionEncoding
 
 

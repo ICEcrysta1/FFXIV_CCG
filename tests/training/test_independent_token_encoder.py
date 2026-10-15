@@ -22,12 +22,18 @@ def _model(*, full_attention_residuals=False, history_capacity=4, scene_capacity
 
 
 @pytest.mark.parametrize("field", ["current_state_null_mask", "history_state_null_mask"])
-def test_model_requires_explicit_state_null_masks(field):
+@pytest.mark.parametrize("entrypoint", ["model", "input_encoder", "embed_history"])
+def test_model_requires_explicit_state_null_masks(field, entrypoint):
     model = _model()
     batch = make_batch(model.data_spec)
     del batch[field]
+    encode = {
+        "model": model,
+        "input_encoder": model.input_encoder,
+        "embed_history": model.input_encoder.embed_history,
+    }[entrypoint]
     with pytest.raises(ValueError, match=f"missing model input: {field}"):
-        model(batch)
+        encode(batch)
 
 
 @pytest.mark.parametrize("changed_field", ["history_skill_ids", "history_skill_features",

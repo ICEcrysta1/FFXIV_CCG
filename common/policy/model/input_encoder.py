@@ -62,12 +62,6 @@ class CausalInputEncoder(nn.Module):
         # 物理 token 布局仍按 batch 的最大 scene/history 宽度补齐；
         # RoPE 使用的逻辑位置由有效长度单独生成，不再把 padding 当成时间步。
         history_token_length = 2 * history_length
-        total_length = scene_length + history_token_length + 1
-        if total_length > self.max_token_count:
-            raise ValueError(
-                "physical token sequence length exceeds computed model capacity: "
-                f"{total_length} > {self.max_token_count}"
-            )
         device = scene_vectors.device
         d_model = self.config.d_model
 
@@ -85,7 +79,7 @@ class CausalInputEncoder(nn.Module):
             dim=2,
             index=scene_type_indices.expand(-1, -1, 1, d_model),
         ).squeeze(2)
-        history = self.embed_history(batch)
+        history = self._embed_history(batch)
         # 请求时冻结的状态位于该次技能之前；技能只能读取此前已知的状态。
         history_tokens = torch.stack((history["state"], history["skill"]), dim=2).reshape(
             batch_size, history_token_length, d_model,
@@ -157,6 +151,10 @@ class CausalInputEncoder(nn.Module):
     def embed_history(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """返回历史技能、状态的原始 content；role 和 RMSNorm 由 forward 统一施加。"""
         self._validate_batch(batch)
+        return self._embed_history(batch)
+
+    def _embed_history(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        """编码已经过入口校验的历史，避免完整前向重复检查同一批数据。"""
         with torch.autocast(device_type=batch["history_skill_features"].device.type, enabled=False):
             return {
                 "skill": self.skill_embed(batch["history_skill_ids"]).float()

@@ -35,7 +35,8 @@ from common.policy.model.repetition import (
     parse_repetition_config,
     repetition_config_from_checkpoint,
 )
-from common.policy.model.trace import TraceableTransformerEncoderLayer, trace_encoder
+from common.policy.model.trace import trace_encoder
+from common.policy.model.transformer import TraceableTransformerEncoderLayer
 from common.torch_runtime import autocast_context, model_dtype, move_batch
 from common.torch_serialization import safe_torch_load
 from common.training.tensorboard import TensorBoardConfig
@@ -905,7 +906,7 @@ def test_full_attention_residual_preserves_independent_sublayer_checkpoints(
         "common.policy.model.causal_encoder.checkpoint",
         wraps=__import__("torch.utils.checkpoint", fromlist=["checkpoint"]).checkpoint,
     ) as block_checkpoint, patch(
-        "common.policy.model.trace.checkpoint",
+        "common.policy.model.transformer.checkpoint",
         wraps=__import__("torch.utils.checkpoint", fromlist=["checkpoint"]).checkpoint,
     ) as ffn_checkpoint, patch(
         "common.policy.model.attention_variants.checkpoint",
@@ -975,7 +976,7 @@ def test_full_attention_residual_checkpoint_preserves_partial_layer_granularity(
         "common.policy.model.causal_encoder.checkpoint",
         wraps=__import__("torch.utils.checkpoint", fromlist=["checkpoint"]).checkpoint,
     ) as block_checkpoint, patch(
-        "common.policy.model.trace.checkpoint",
+        "common.policy.model.transformer.checkpoint",
         wraps=__import__("torch.utils.checkpoint", fromlist=["checkpoint"]).checkpoint,
     ) as ffn_checkpoint, patch(
         "common.policy.model.attention_variants.checkpoint",

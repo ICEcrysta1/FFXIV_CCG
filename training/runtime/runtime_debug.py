@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from dataclasses import dataclass
 import json
 import logging
@@ -84,14 +84,12 @@ class RuntimeDebugRecorder:
     def stage(self, name: str) -> Iterator[None]:
         """记录一个阶段；未启用或未处于采集 step 时完全退化为空上下文。"""
         if not self._active:
-            with nullcontext():
-                yield
+            yield
             return
 
         self._synchronize()
         started_at = time.perf_counter()
         allocated_before = self._current_allocated_bytes()
-        reserved_before = self._current_reserved_bytes()
         try:
             yield
         finally:

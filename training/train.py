@@ -153,7 +153,7 @@ def main() -> None:
     }
     if args.force_resume_data_mismatch:
         training_kwargs["force_resume_data_mismatch"] = True
-    if getattr(config, "ppg", None) is not None and config.ppg.enabled:
+    if config.ppg.enabled:
         training_kwargs["validation_metrics_callback"] = _evaluate_training_metrics
     result = run_training(config, **training_kwargs)
     spec = result["data_spec"]

@@ -6,6 +6,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .attention_utils import merge_heads, split_heads
+
 
 class GroupedQueryAttention(nn.Module):
     """Q 头与 K/V 头数量可不同的 self-attention 投影模块。
@@ -98,9 +100,9 @@ class GroupedQueryAttention(nn.Module):
             value = value.transpose(0, 1)
 
         query_projection, key_projection, value_projection = self.project_qkv(query)
-        query_heads = _split_heads(query_projection, self.num_heads)
-        key_heads = _split_heads(key_projection, self.num_kv_heads)
-        value_heads = _split_heads(value_projection, self.num_kv_heads)
+        query_heads = split_heads(query_projection, self.num_heads)
+        key_heads = split_heads(key_projection, self.num_kv_heads)
+        value_heads = split_heads(value_projection, self.num_kv_heads)
         attention_mask, use_causal = _prepare_attention_mask(
             attn_mask,
             key_padding_mask,
@@ -135,7 +137,7 @@ class GroupedQueryAttention(nn.Module):
             )
             weights = None
 
-        output = _merge_heads(attended)
+        output = merge_heads(attended)
         output = self.out_proj(output)
         if not is_batched:
             output = output.squeeze(0)
@@ -157,20 +159,6 @@ def expand_kv_heads(values: torch.Tensor, query_head_count: int) -> torch.Tensor
             f"{query_head_count} % {value_head_count} != 0"
         )
     return values.repeat_interleave(query_head_count // value_head_count, dim=1)
-
-
-def _split_heads(values: torch.Tensor, head_count: int) -> torch.Tensor:
-    batch_size, sequence_length, model_dim = values.shape
-    head_dim = model_dim // head_count
-    return values.reshape(batch_size, sequence_length, head_count, head_dim).transpose(1, 2)
-
-
-def _merge_heads(values: torch.Tensor) -> torch.Tensor:
-    return values.transpose(1, 2).contiguous().reshape(
-        values.shape[0],
-        values.shape[2],
-        values.shape[1] * values.shape[3],
-    )
 
 
 def scaled_dot_product_attention(

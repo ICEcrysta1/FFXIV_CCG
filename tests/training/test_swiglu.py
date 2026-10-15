@@ -17,7 +17,7 @@ from common.policy.model.activation import (
 )
 from common.policy.model.input_encoder import CausalInputEncoder
 from common.policy.model.model import CausalPolicyModel
-from common.policy.model.trace import TraceableTransformerEncoderLayer
+from common.policy.model.transformer import TraceableTransformerEncoderLayer
 from tests.training._causal_fixtures import make_checkpoint
 
 

@@ -59,39 +59,16 @@ class TrainingCollator:
         scene_lengths = [sample["scene_abs_values"].shape[0] for sample in samples]
         history_action_batches = [_compact_history_action_keys(sample) for sample in samples]
 
-        quality_levels = [
-            sample.get("quality_label_levels", torch.empty(0, dtype=self._int_dtype))
-            for sample in samples
-        ]
-        quality_lengths = [int(levels.numel()) for levels in quality_levels]
-        quality_width = max(quality_lengths)
-        padded_quality_levels = torch.zeros((len(samples), quality_width), dtype=self._int_dtype)
-        quality_label_mask = torch.zeros((len(samples), quality_width), dtype=torch.bool)
-        for index, levels in enumerate(quality_levels):
-            length = quality_lengths[index]
-            padded_quality_levels[index, :length] = levels
-            quality_label_mask[index, :length] = True
-        quality_statuses = [sample["metadata"].get("quality_label_status", "unannotated") for sample in samples]
+        quality_supervision = _collate_quality_supervision(
+            samples, torch=torch, int_dtype=self._int_dtype, float_dtype=self._float_dtype,
+        )
 
         batch = {
             "metadata": [sample["metadata"] for sample in samples],
             "history_action_keys": history_action_batches,
             "action_keys": [sample["action_keys"] for sample in samples],
             "label_action_key": [sample["label_action_key"] for sample in samples],
-            "quality_label_levels": padded_quality_levels,
-            "quality_label_mask": quality_label_mask,
-            "quality_annotation_available": torch.tensor(
-                [status in {"attributed_label", "no_attributed_label"} for status in quality_statuses],
-                dtype=torch.bool,
-            ),
-            "source_quality": torch.tensor(
-                [
-                    -1.0 if sample["metadata"].get("percentile") is None
-                    else float(sample["metadata"]["percentile"]) / 100.0
-                    for sample in samples
-                ],
-                dtype=self._float_dtype,
-            ),
+            **quality_supervision,
             "label_index": torch.tensor(
                 [sample["label_index"] for sample in samples],
                 dtype=self._index_dtype,
@@ -139,6 +116,42 @@ class TrainingCollator:
         truncated["history_length"] = keep_length
         return truncated
 
+
+def _collate_quality_supervision(
+    samples: list[dict[str, object]], *, torch, int_dtype, float_dtype,
+) -> dict[str, object]:
+    """统一组装可变长质量标签、标注可用性和来源排名。"""
+    quality_levels = [
+        sample.get("quality_label_levels", torch.empty(0, dtype=int_dtype))
+        for sample in samples
+    ]
+    quality_lengths = [int(levels.numel()) for levels in quality_levels]
+    quality_width = max(quality_lengths)
+    padded_quality_levels = torch.zeros((len(samples), quality_width), dtype=int_dtype)
+    quality_label_mask = torch.zeros((len(samples), quality_width), dtype=torch.bool)
+    for index, levels in enumerate(quality_levels):
+        length = quality_lengths[index]
+        padded_quality_levels[index, :length] = levels
+        quality_label_mask[index, :length] = True
+    quality_statuses = [sample["metadata"].get("quality_label_status", "unannotated") for sample in samples]
+    return {
+        "quality_label_levels": padded_quality_levels,
+        "quality_label_mask": quality_label_mask,
+        "quality_annotation_available": torch.tensor(
+            [status in {"attributed_label", "no_attributed_label"} for status in quality_statuses],
+            dtype=torch.bool,
+        ),
+        "source_quality": torch.tensor(
+            [
+                -1.0 if sample["metadata"].get("percentile") is None
+                else float(sample["metadata"]["percentile"]) / 100.0
+                for sample in samples
+            ],
+            dtype=float_dtype,
+        ),
+    }
+
+
 def _validate_quality_supervision(
     batch: Mapping[str, object], *, torch, require_percentile: bool,
 ) -> None:
@@ -171,7 +184,7 @@ def _build_length_mask(lengths: list[int], *, torch):
 
 def _merge_history_banks(samples: list[dict[str, object]], *, torch):
     """按显式 source bank ID 合并；同 source 即使样本被复制也只合并一次。"""
-    groups: dict[str, tuple[dict[str, object], int]] = {}
+    groups: dict[str, int] = {}
     ordered: list[dict[str, object]] = []
     sample_offsets: list[int] = []
     total_rows = 0
@@ -181,14 +194,12 @@ def _merge_history_banks(samples: list[dict[str, object]], *, torch):
         bank_id = sample.get("history_bank_id")
         if bank_id is None or not str(bank_id):
             raise ValueError("compact history sample is missing history_bank_id")
-        existing = groups.get(str(bank_id))
-        if existing is None:
+        offset = groups.get(str(bank_id))
+        if offset is None:
             offset = total_rows
-            groups[str(bank_id)] = (bank, offset)
+            groups[str(bank_id)] = offset
             ordered.append(bank)
             total_rows += bank["skill_ids"].shape[0]
-        else:
-            offset = existing[1]
         sample_offsets.append(offset)
 
     if len(ordered) == 1:

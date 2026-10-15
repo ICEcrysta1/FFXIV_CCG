@@ -18,7 +18,8 @@ from .residual_mix import LearnedResidualMix
 from .causal_encoder import run_causal_encoder
 from ..data.input_contract import ModelInputContract
 from ..data.spec import DataSpec
-from .trace import ModelTrace, TraceableTransformerEncoderLayer, trace_encoder
+from .trace import ModelTrace, trace_encoder
+from .transformer import TraceableTransformerEncoderLayer
 
 
 class _CopiedActionHead(nn.Linear):
@@ -174,22 +175,21 @@ class CausalPolicyModel(nn.Module):
         """执行前向传播；没有 label 时只返回 logits。"""
         with self._debug_stage("input_encoder"):
             encoded = self.input_encoder(batch)
-        if self.training or not self._kv_cache_enabled:
-            with self._debug_stage("encoder"):
+        with self._debug_stage("encoder"):
+            if self.training or not self._kv_cache_enabled:
                 hidden, _, _ = run_causal_encoder(
                     self.encoder,
                     encoded,
                 )
                 current_hidden = hidden[:, encoded["current_state_position"], :]
-        else:
-            with self._debug_stage("encoder"):
+            else:
                 with torch.no_grad():
                     hidden, self._kv_cache = encode_with_kv_cache(
                         self.encoder,
                         encoded,
                         self._kv_cache,
                     )
-            current_hidden = hidden[:, 0, :]
+                current_hidden = hidden[:, 0, :]
         with self._debug_stage("lm_head"):
             logits = self._score_current_hidden(current_hidden, batch)
         output: dict[str, torch.Tensor] = {"logits": logits}

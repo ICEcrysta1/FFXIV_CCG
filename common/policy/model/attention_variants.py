@@ -29,35 +29,6 @@ def run_head_attention(
     segment_mask: SegmentAttentionMask | None = None,
 ):
     """执行单段 attention 并投影，供 prefix/KV-cache 路径复用。"""
-    attended, weights = _attend_heads(
-        layer,
-        query_heads,
-        key_heads,
-        value_heads,
-        key_valid=key_valid,
-        causal=causal,
-        causal_offset=causal_offset,
-        collect_attention=collect_attention,
-        force_explicit_mask=force_explicit_mask,
-        segment_mask=segment_mask,
-    )
-    return layer.self_attn.out_proj(merge_heads(attended)), weights
-
-
-def _attend_heads(
-    layer,
-    query_heads: torch.Tensor,
-    key_heads: torch.Tensor,
-    value_heads: torch.Tensor,
-    *,
-    key_valid: torch.Tensor | None = None,
-    causal: bool,
-    causal_offset: int = 0,
-    collect_attention: bool,
-    force_explicit_mask: bool = False,
-    segment_mask: SegmentAttentionMask | None = None,
-):
-    """执行分头 attention；输出投影由整段或 KV-cache 调用方统一执行。"""
     if key_heads.shape[1] != value_heads.shape[1]:
         raise ValueError(
             "key and value head counts must match: "
@@ -130,7 +101,7 @@ def _attend_heads(
             attended = attended.masked_fill(fully_blocked.unsqueeze(-1), 0.0)
         weights = None
 
-    return attended, weights
+    return layer.self_attn.out_proj(merge_heads(attended)), weights
 
 
 def manual_attention(
@@ -154,6 +125,4 @@ def manual_attention(
             dim=-1,
         )
         weights = weights.masked_fill(~allowed, 0.0)
-        if bool(fully_blocked.any()):
-            weights = weights.masked_fill(fully_blocked.unsqueeze(-1), 0.0)
     return torch.matmul(weights, value_heads), weights

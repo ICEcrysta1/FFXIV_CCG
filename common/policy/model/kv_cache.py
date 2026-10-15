@@ -164,12 +164,7 @@ def _append_prefix(
 ) -> TransformerKVCache:
     cached_length = cache.prefix_tokens.shape[1]
     new_tokens = prefix_tokens[:, cached_length:]
-    new_valid = prefix_valid[:, cached_length:]
     new_position_ids = prefix_position_ids[:, cached_length:]
-    if new_tokens.shape[1] == 0:
-        return cache
-
-    working_valid = torch.cat((cache.prefix_valid, new_valid), dim=1)
     hidden = new_tokens
     residual_mix = getattr(encoder, "residual_mix", None)
     sources = [new_tokens] if attention_residual is not None else None
@@ -182,7 +177,7 @@ def _append_prefix(
         hidden, new_key, new_value, _ = run_causal_layer(
             layer,
             hidden,
-            key_valid=working_valid,
+            key_valid=prefix_valid,
             position_ids=new_position_ids,
             rotary_position_encoding=rotary_position_encoding,
             existing_key=key_cache[layer_index],

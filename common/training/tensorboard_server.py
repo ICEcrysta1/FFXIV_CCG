@@ -25,8 +25,6 @@ from common.project_config import (
     resolve_tensorboard_port,
 )
 from common.training.tensorboard import resolve_tensorboard_root
-from grpo.config import load_grpo_config, load_grpo_run_config
-from training.config import load_run_config
 
 
 def _is_ready(port: int) -> bool:
@@ -377,11 +375,14 @@ def main() -> int:
     load_root_dotenv(PROJECT_ROOT)
     port = resolve_tensorboard_port(project_root=PROJECT_ROOT)
     config_path = resolve_policy_model_config_path(args.config)
-    config = (
-        load_run_config(config_path)
-        if args.scope == "bc"
-        else load_grpo_run_config(config_path)
-    )
+    if args.scope == "bc":
+        from training.config import load_run_config
+
+        config = load_run_config(config_path)
+    else:
+        from grpo.config import load_grpo_config, load_grpo_run_config
+
+        config = load_grpo_run_config(config_path)
     if args.if_enabled:
         tensorboard_config = (
             config.tensorboard

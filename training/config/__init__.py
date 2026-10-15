@@ -114,6 +114,61 @@ def _parse_val_ppg_use_kv_cache() -> bool:
     )
 
 
+def _parse_value_preference_config(training: dict[str, object]) -> ValuePreferenceConfig:
+    """读取技能价值辅助排序项，保留既有转换与校验顺序。"""
+    raw = training.get("value_preference", {}) or {}
+    if not isinstance(raw, dict):
+        raise ValueError("training.value_preference must be a mapping")
+    config = ValuePreferenceConfig(
+        enabled=bool(raw.get("enabled", ValuePreferenceConfig.enabled)),
+        loss_weight=float(raw.get("loss_weight", ValuePreferenceConfig.loss_weight)),
+        margin_scale=float(raw.get("margin_scale", ValuePreferenceConfig.margin_scale)),
+    )
+    if config.loss_weight < 0.0:
+        raise ValueError("training.value_preference.loss_weight must be >= 0")
+    if config.margin_scale <= 0.0:
+        raise ValueError("training.value_preference.margin_scale must be > 0")
+    return config
+
+
+def _parse_ppg_config(training: dict[str, object]) -> PpgConfig:
+    """读取 PPG 评估参数及验证回放的机器本地 KV 开关。"""
+    raw = training.get("ppg", {}) or {}
+    if not isinstance(raw, dict):
+        raise ValueError("training.ppg must be a mapping")
+    config = PpgConfig(
+        enabled=bool(raw.get("enabled", PpgConfig.enabled)),
+        gcd_count=int(raw.get("gcd_count", PpgConfig.gcd_count)),
+        normalization=float(raw.get("normalization", PpgConfig.normalization)),
+        use_kv_cache=_parse_val_ppg_use_kv_cache(),
+    )
+    if config.gcd_count < 1:
+        raise ValueError("training.ppg.gcd_count must be >= 1")
+    if config.normalization <= 0.0:
+        raise ValueError("training.ppg.normalization must be > 0")
+    return config
+
+
+def _parse_runtime_debug_config(training: dict[str, object]) -> RuntimeDebugConfig:
+    """读取运行时调试参数，不改变未启用时的配置校验。"""
+    raw = training.get("runtime_debug", {}) or {}
+    if not isinstance(raw, dict):
+        raise ValueError("training.runtime_debug must be a mapping")
+    config = RuntimeDebugConfig(
+        enabled=bool(raw.get("enabled", RuntimeDebugConfig.enabled)),
+        max_steps=int(raw.get("max_steps", RuntimeDebugConfig.max_steps)),
+        synchronize=bool(raw.get("synchronize", RuntimeDebugConfig.synchronize)),
+        output_filename=str(
+            raw.get("output_filename", RuntimeDebugConfig.output_filename)
+        ).strip(),
+    )
+    if config.max_steps < 1:
+        raise ValueError("training.runtime_debug.max_steps must be >= 1")
+    if not config.output_filename:
+        raise ValueError("training.runtime_debug.output_filename must not be empty")
+    return config
+
+
 def load_run_config(path: Path) -> RunConfig:
     """读取职业 YAML，并把相对路径解析到项目根目录。"""
     load_root_dotenv(PROJECT_ROOT)
@@ -181,59 +236,9 @@ def load_run_config(path: Path) -> RunConfig:
     removed = {"candidate_order_file", "candidate_shuffle"}.intersection(training_raw)
     if removed:
         raise ValueError("removed training options: " + ", ".join(sorted(removed)))
-    value_preference_raw = training_raw.get("value_preference", {}) or {}
-    if not isinstance(value_preference_raw, dict):
-        raise ValueError("training.value_preference must be a mapping")
-    value_preference = ValuePreferenceConfig(
-        enabled=bool(value_preference_raw.get("enabled", ValuePreferenceConfig.enabled)),
-        loss_weight=float(
-            value_preference_raw.get("loss_weight", ValuePreferenceConfig.loss_weight)
-        ),
-        margin_scale=float(
-            value_preference_raw.get("margin_scale", ValuePreferenceConfig.margin_scale)
-        ),
-    )
-    if value_preference.loss_weight < 0.0:
-        raise ValueError("training.value_preference.loss_weight must be >= 0")
-    if value_preference.margin_scale <= 0.0:
-        raise ValueError("training.value_preference.margin_scale must be > 0")
-
-    ppg_raw = training_raw.get("ppg", {}) or {}
-    if not isinstance(ppg_raw, dict):
-        raise ValueError("training.ppg must be a mapping")
-    ppg = PpgConfig(
-        enabled=bool(ppg_raw.get("enabled", PpgConfig.enabled)),
-        gcd_count=int(ppg_raw.get("gcd_count", PpgConfig.gcd_count)),
-        normalization=float(
-            ppg_raw.get("normalization", PpgConfig.normalization)
-        ),
-        use_kv_cache=_parse_val_ppg_use_kv_cache(),
-    )
-    if ppg.gcd_count < 1:
-        raise ValueError("training.ppg.gcd_count must be >= 1")
-    if ppg.normalization <= 0.0:
-        raise ValueError("training.ppg.normalization must be > 0")
-
-    runtime_debug_raw = training_raw.get("runtime_debug", {}) or {}
-    if not isinstance(runtime_debug_raw, dict):
-        raise ValueError("training.runtime_debug must be a mapping")
-    runtime_debug = RuntimeDebugConfig(
-        enabled=bool(runtime_debug_raw.get("enabled", RuntimeDebugConfig.enabled)),
-        max_steps=int(runtime_debug_raw.get("max_steps", RuntimeDebugConfig.max_steps)),
-        synchronize=bool(
-            runtime_debug_raw.get("synchronize", RuntimeDebugConfig.synchronize)
-        ),
-        output_filename=str(
-            runtime_debug_raw.get(
-                "output_filename",
-                RuntimeDebugConfig.output_filename,
-            )
-        ).strip(),
-    )
-    if runtime_debug.max_steps < 1:
-        raise ValueError("training.runtime_debug.max_steps must be >= 1")
-    if not runtime_debug.output_filename:
-        raise ValueError("training.runtime_debug.output_filename must not be empty")
+    value_preference = _parse_value_preference_config(training_raw)
+    ppg = _parse_ppg_config(training_raw)
+    runtime_debug = _parse_runtime_debug_config(training_raw)
 
     tensorboard = TensorBoardConfig.from_mapping(
         training_raw.get("tensorboard", {}) or {}
