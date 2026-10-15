@@ -102,7 +102,7 @@ public static class YamlValues
     }
 
     /// <summary>
-    /// 对应 common/project_config.py 的 resolve_project_path：
+    /// 对应 common/configuration/environment.py 的 resolve_project_path：
     /// 绝对路径原样保留，相对路径解析到项目根目录。
     /// </summary>
     public static string ResolveProjectPath(object? value, string projectRoot)

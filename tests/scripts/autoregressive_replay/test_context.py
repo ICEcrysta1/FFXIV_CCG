@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from common.contracts import SLIDECAST_WINDOW_SECONDS
+from common.context.contracts import SLIDECAST_WINDOW_SECONDS
 from common.policy.data import Normalizer
 from common.policy.config import ModelConfig
 from common.policy.data.schema import (
@@ -20,7 +20,7 @@ from common.policy.data.schema import (
     StateFeatureGroup,
     TRAINING_SAMPLE_SCHEMA_VERSION,
 )
-from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
+from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
 from scripts.autoregressive_replay.context import (
     LiveBatchBuilder,
     SceneTemplateProvider,

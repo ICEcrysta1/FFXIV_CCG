@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from common.config import load_project_config
-from common.models import ActionKind
+from common.game.config import load_project_config
+from common.game.models import ActionKind
 
 from .policy_actions import load_policy_actions
 from .skill_vocab import SkillVocab

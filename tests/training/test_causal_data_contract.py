@@ -7,7 +7,7 @@ from copy import deepcopy
 import pytest
 import torch
 
-from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
+from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
 from common.policy.data import ActionSpace, SkillVocab
 from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION
 from scripts.convert_fflogs.source.source_reader import TrainingSourceReader

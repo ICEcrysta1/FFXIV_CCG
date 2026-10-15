@@ -5,13 +5,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from common.contracts import (
+from common.context.contracts import (
     FORCED_MOVEMENT_CONTEXT_KEY,
     RAID_BUFF_WINDOW_CONTEXT_KEY,
     TARGET_COUNT_WINDOW_CONTEXT_KEY,
     TARGETABLE_WINDOW_CONTEXT_KEY,
 )
-from common.scene_window import resolve_scene_window_indices
+from common.context.window import resolve_scene_window_indices
 
 SCENE_TYPE_TARGETABLE = 0
 SCENE_TYPE_MOVEMENT = 1

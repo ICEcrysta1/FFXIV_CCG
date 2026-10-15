@@ -15,7 +15,7 @@ import torch
 import yaml
 from torch import nn
 
-import common.project_config as project_config_module
+import common.configuration.environment as project_config_module
 import training.config as config_module
 import training.loop as training_module
 import training.loop.checkpoint as checkpoint_module
@@ -37,8 +37,8 @@ from common.policy.model.repetition import (
 )
 from common.policy.model.trace import trace_encoder
 from common.policy.model.transformer import TraceableTransformerEncoderLayer
-from common.torch_runtime import autocast_context, model_dtype, move_batch
-from common.torch_serialization import safe_torch_load
+from common.pytorch.runtime import autocast_context, model_dtype, move_batch
+from common.pytorch.serialization import safe_torch_load
 from common.training.tensorboard import TensorBoardConfig
 from scripts.convert_fflogs import cache as cache_module
 from scripts.convert_fflogs.cache import cache_compile as cache_compile_module

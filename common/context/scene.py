@@ -11,7 +11,7 @@ from .contracts import (
     TARGETABLE_WINDOW_CONTEXT_KEY,
     TARGET_COUNT_WINDOW_CONTEXT_KEY,
 )
-from .schema_config import load_schema_config
+from .schema import load_schema_config
 
 _schema = load_schema_config()
 _scene = _schema["scene_context"]

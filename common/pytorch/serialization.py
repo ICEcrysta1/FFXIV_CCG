@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from pathlib import Path, PosixPath, PurePath, PureWindowsPath
 from typing import Any
 
-from .torch_dependencies import import_torch
+from .dependencies import import_torch
 
 
 # WindowsPath 在 Linux 上不能实例化；显式映射成只解析路径的纯路径类，

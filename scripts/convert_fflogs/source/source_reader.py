@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import math
 
-from common.contracts import SCENE_CONTEXT_ABSOLUTE_MODE
-from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION, STATE_SNAPSHOTS, STATE_VECTOR_GROUP_SCHEMAS, build_output_context_schema_metadata
+from common.context.contracts import SCENE_CONTEXT_ABSOLUTE_MODE
+from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION, STATE_SNAPSHOTS, STATE_VECTOR_GROUP_SCHEMAS, build_output_context_schema_metadata
 from common.policy.data.state_features import StateTokenTensors, read_state_tokens, validate_state_feature_keys
-from common.torch_dependencies import import_torch
+from common.pytorch.dependencies import import_torch
 from common.policy.data.action_space import ActionSpace
 
 from .source_helpers import (

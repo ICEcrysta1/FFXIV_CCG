@@ -12,7 +12,7 @@ from common.policy.model.repetition import RepetitionConfig as _RepetitionConfig
 from common.policy.model.repetition import (
     parse_repetition_config as _parse_repetition_config,
 )
-from common.project_config import (
+from common.configuration.environment import (
     load_root_dotenv,
     resolve_project_path,
 )

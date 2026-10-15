@@ -22,7 +22,7 @@ from tests.helpers import build_test_scene_context
 def test_scene_lookup_cache_preserves_boundaries_is_bounded_and_releases_owner():
     import weakref
     from scripts.common import scene_state as module
-    from common.contracts import FORCED_MOVEMENT_CONTEXT_KEY, SCENE_EPSILON
+    from common.context.contracts import FORCED_MOVEMENT_CONTEXT_KEY, SCENE_EPSILON
 
     scene = build_test_scene_context(targetable_tokens=[
         build_targetable_window_token(0, 10, targetable=True, segment_kind="combat"),
@@ -161,7 +161,7 @@ def _target_count_facts(scene_context: dict[str, object]):
 
 
 def _state_rewrite_context(previous_time=9.0, request_time=12.0):
-    from common.schema_config import load_schema_config
+    from common.context.schema import load_schema_config
     fields = load_schema_config()["state_vector_fields"]["player_state"]
     keys = [f"{prefix}.{field}" for prefix in ("previous_action_after", "request_state") for field in fields]
     vector = [0.0] * len(keys)
@@ -322,7 +322,7 @@ def test_scene_rewrite_only_copies_changed_state_fields_and_is_idempotent():
     (20.0, 10.0, "start <= end"),
 ])
 def test_scene_execution_rejects_invalid_bounds_before_scheduling(start, end, error):
-    from common.contracts import FORCED_MOVEMENT_CONTEXT_KEY
+    from common.context.contracts import FORCED_MOVEMENT_CONTEXT_KEY
     from scripts.common.scene_state import SceneStateLookup
     scene = {FORCED_MOVEMENT_CONTEXT_KEY: {
         "feature_keys": ["start_offset_seconds", "end_offset_seconds"], "tokens": [[start, end]],

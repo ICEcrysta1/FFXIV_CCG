@@ -10,7 +10,7 @@ from torch import nn
 
 from common.policy.config import ModelConfig
 from common.policy.model.input_encoder import CausalInputEncoder
-from common.torch_runtime import autocast_context, move_batch
+from common.pytorch.runtime import autocast_context, move_batch
 from tests.training._causal_fixtures import make_batch, make_data_spec
 
 

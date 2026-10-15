@@ -17,7 +17,7 @@ from torch.nn import functional as F
 from common.policy.model import CausalPolicyModel
 from common.policy.model.repetition import build_repetition_penalty_mask
 from common.policy.model.causal_encoder import run_causal_layer
-from common.torch_runtime import model_dtype
+from common.pytorch.runtime import model_dtype
 from training import TrainingCollator
 
 from ..common import (

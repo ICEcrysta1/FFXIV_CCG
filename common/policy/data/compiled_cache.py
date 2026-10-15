@@ -8,10 +8,10 @@ from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
-from common.dataset_layout import map_dataset_output_path
-from common.torch_dependencies import import_torch
-from common.torch_serialization import safe_torch_load
-from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
+from common.data.layout import map_dataset_output_path
+from common.pytorch.dependencies import import_torch
+from common.pytorch.serialization import safe_torch_load
+from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
 
 from .schema import SceneWindowSchema, StateFeatureGroup, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
 from .spec import DataSpec

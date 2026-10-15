@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-from common.contracts import SCENE_EPSILON
+from common.context.contracts import SCENE_EPSILON
 from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION
 
 from scripts.common.scene_state import SceneFactScheduler, rewrite_scene_player_state

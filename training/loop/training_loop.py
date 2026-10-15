@@ -10,13 +10,13 @@ from pathlib import Path
 
 import torch
 
-from common.config import load_precision_config
+from common.pytorch.precision import load_precision_config
 from common.policy.config import PROJECT_ROOT, resolve_policy_cache_dir
 from common.policy.data import DataSpec, ModelInputContract
 from common.policy.model import CausalPolicyModel
 from common.policy.data.context_encoding import ContextEncoder
-from common.project_config import resolve_registered_job_tags
-from common.torch_runtime import model_dtype
+from common.configuration.environment import resolve_registered_job_tags
+from common.pytorch.runtime import model_dtype
 from common.training.optimizer import build_optimizer
 from common.training.tensorboard import (
     TensorBoardMonitor,

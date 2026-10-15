@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from .schema_config import load_schema_config
+from .schema import load_schema_config
 
 _contracts = load_schema_config()["contracts"]
 _scene_context_keys = _contracts["scene_context_keys"]

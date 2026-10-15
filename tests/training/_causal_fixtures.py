@@ -11,7 +11,7 @@ from common.policy.data import DataSpec, ModelInputContract, Normalizer, SkillVo
 from common.policy.data.normalization import NormalizerConfig
 from common.policy.data.normalizer import NORMALIZER_CONTRACT_VERSION
 from common.policy.data.schema import SceneWindowSchema, StateFeatureGroup, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
-from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
+from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
 
 
 def make_data_spec(**overrides) -> DataSpec:

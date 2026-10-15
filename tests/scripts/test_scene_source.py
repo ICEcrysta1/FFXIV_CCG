@@ -9,8 +9,8 @@ import io
 import pytest
 import torch
 
-from common.config import load_precision_config
-from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
+from common.pytorch.precision import load_precision_config
+from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
 from common.policy.data import DataSpec, ModelInputContract, Normalizer, SkillVocab
 from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION, TRAINING_SOURCE_FORMAT, TrainingSchema, StateFeatureGroup
 from common.policy.data.action_space import ActionSpace
@@ -19,7 +19,7 @@ from common.policy.data.compiled_cache import (
     build_cache_signature,
     cache_path_for_source,
 )
-from common.torch_serialization import safe_torch_load
+from common.pytorch.serialization import safe_torch_load
 from scripts.common.json_io import atomic_write_json
 from scripts.common.scene_source import find_prepared_scene_source
 
@@ -590,7 +590,7 @@ def test_conversion_quota_rejects_stale_config_before_counting_cached_sources(sc
 
 
 def test_conversion_rebuilds_legacy_and_changed_maps_but_reuses_comment_changes(scene_cache, tmp_path, monkeypatch):
-    from common.yaml_config import load_yaml_mapping
+    from common.configuration.yaml import load_yaml_mapping
     from scripts.convert_fflogs.cache import cache_compile
 
     _, cache_dir, create = scene_cache

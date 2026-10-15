@@ -7,8 +7,8 @@ import statistics
 
 from collections import Counter
 
-from common.contracts import SCENE_EPSILON, SLIDECAST_WINDOW_SECONDS
-from common.models import ActionKind
+from common.context.contracts import SCENE_EPSILON, SLIDECAST_WINDOW_SECONDS
+from common.game.models import ActionKind
 
 from ..config import GcdDetectionConfig
 from ..config.constants import MOVE_DIST_THRESHOLD, POTION_BUFF_ID, POTION_SKILL_ID, _round_time

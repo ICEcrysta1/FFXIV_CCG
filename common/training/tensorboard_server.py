@@ -19,7 +19,7 @@ from common.policy.config import (
     resolve_policy_model_config_path,
     resolve_policy_model_variant,
 )
-from common.project_config import (
+from common.configuration.environment import (
     load_root_dotenv,
     resolve_project_path,
     resolve_tensorboard_port,

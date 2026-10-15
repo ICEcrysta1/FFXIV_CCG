@@ -22,7 +22,7 @@ from common.policy.config import (
     resolve_policy_model_job_tag,
     resolve_policy_model_variant,
 )
-from common.config import load_precision_config
+from common.pytorch.precision import load_precision_config
 from common.policy.data.prepared_sources import (
     select_prepared_training_sources,
     select_prepared_validation_sources,

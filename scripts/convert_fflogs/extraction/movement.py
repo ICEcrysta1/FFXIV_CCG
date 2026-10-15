@@ -6,7 +6,7 @@ import math
 from collections import defaultdict
 from statistics import median
 
-from common.contracts import SCENE_EPSILON, SLIDECAST_WINDOW_SECONDS
+from common.context.contracts import SCENE_EPSILON, SLIDECAST_WINDOW_SECONDS
 
 from ..config import MovementDetectionConfig
 from .movement_curve import sample_bezier_speed, threshold_windows

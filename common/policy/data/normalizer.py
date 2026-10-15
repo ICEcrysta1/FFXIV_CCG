@@ -57,7 +57,7 @@ class Normalizer:
         if self._configured_job_tag == normalized_job_tag:
             return
 
-        from common.config import load_project_config
+        from common.game.config import load_project_config
 
         project_config = load_project_config(job_tag=normalized_job_tag)
         status_limits = {

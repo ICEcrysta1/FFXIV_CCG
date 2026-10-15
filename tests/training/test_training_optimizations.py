@@ -6,7 +6,7 @@ from copy import deepcopy
 import pytest
 import torch
 
-from common.torch_runtime import move_batch
+from common.pytorch.runtime import move_batch
 from training.data.collator import TrainingCollator
 from common.policy.model import repetition as repetition_module
 from common.policy.model import attention_variants as attention_variants_module

@@ -8,7 +8,7 @@ import math
 
 import torch
 
-from common.torch_runtime import autocast_context
+from common.pytorch.runtime import autocast_context
 from scripts.common.inprocess_backend import InProcessBackend
 from scripts.common.scene_state import SceneStateLookup
 from common.policy.data import Normalizer
@@ -268,7 +268,7 @@ def _infer_initial_base_gcd(
         if status_feature not in groups.get("buff_state", ()):
             raise ValueError("validation PPG initial state is missing Ley Lines status")
         if initial_value("buff_state", status_feature) >= 0.5:
-            from common.config import load_project_config
+            from common.game.config import load_project_config
 
             multiplier = float(load_project_config(job_tag=job_tag).job.timing["ley_lines_haste_multiplier"])
             if not math.isfinite(multiplier) or multiplier <= 0.0:

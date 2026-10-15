@@ -11,7 +11,7 @@ import uuid
 
 import torch
 
-from common.torch_serialization import safe_torch_load
+from common.pytorch.serialization import safe_torch_load
 from common.policy.data import DataSpec, ModelInputContract
 from common.policy.data.context_fields import MODEL_INPUT_FIELDS, RAW_ONLY_FIELD_NAMES, tensor_dimensions
 

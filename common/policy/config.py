@@ -8,7 +8,7 @@ import math
 import os
 from pathlib import Path
 
-from common.project_config import (
+from common.configuration.environment import (
     PROJECT_JOB_TAG_ENV,
     PROJECT_MODEL_VARIANT_ENV,
     load_root_dotenv,
@@ -16,7 +16,7 @@ from common.project_config import (
     resolve_project_model_variant,
     resolve_project_path,
 )
-from common.yaml_config import load_yaml_mapping
+from common.configuration.yaml import load_yaml_mapping
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]

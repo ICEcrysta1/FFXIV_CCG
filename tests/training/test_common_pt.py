@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from common.config import load_precision_config
+from common.pytorch.precision import load_precision_config
 from scripts.convert_fflogs.utils import build_skill_book, load_job_project_config
 from common.policy.data import ActionSpace, CompiledCacheReader, Normalizer, SkillVocab
 from common.policy.data.prepared_sources import select_prepared_validation_sources
@@ -181,7 +181,7 @@ def test_previous_state_layout_cache_is_rejected(tmp_path, old_contract):
     torch = pytest.importorskip("torch")
     from common.policy.data.compiled_cache import cache_path_for_source
     from common.policy.data.schema import SceneWindowSchema, StateFeatureGroup, TrainingSchema
-    from common.torch_serialization import safe_torch_load
+    from common.pytorch.serialization import safe_torch_load
 
     source_path = make_demo_pt(tmp_path, ["fire_iii", "fire_iv"], fight_id="old_progress_cache")
     cache_path = cache_path_for_source(tmp_path / ".cache", source_path)

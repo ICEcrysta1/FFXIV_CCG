@@ -9,8 +9,8 @@ from dataclasses import replace
 import pytest
 import torch
 
-from common.config import load_project_config
-from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
+from common.game.config import load_project_config
+from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
 from common.policy.data import ActionSpace, DataSpec, SkillVocab
 from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION, TRAINING_SOURCE_FORMAT, TrainingSchema
 from training.data.dataset import TrainingDataset

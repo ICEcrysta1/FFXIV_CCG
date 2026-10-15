@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 
-from common.scene_context_schema import (
+from common.context.scene import (
     FORCED_MOVEMENT_CONTEXT_KEY,
     FORCED_MOVEMENT_FEATURE_KEYS,
     RAID_BUFF_WINDOW_CONTEXT_KEY,

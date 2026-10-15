@@ -8,7 +8,7 @@ import pickle
 from collections.abc import Callable
 from pathlib import Path
 
-from common.torch_serialization import safe_torch_load
+from common.pytorch.serialization import safe_torch_load
 
 from .action_space import ActionSpace
 from .compiled_cache import (

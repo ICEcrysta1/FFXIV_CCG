@@ -11,7 +11,7 @@ import torch
 from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, ModelInputContract, Normalizer, SkillVocab
 from common.policy.data.schema import TrainingSchema
-from common.torch_serialization import safe_torch_load
+from common.pytorch.serialization import safe_torch_load
 from common.training.optimizer_config import OptimizerConfig
 from tests.training._causal_fixtures import make_state_groups
 from training.config import RunConfig

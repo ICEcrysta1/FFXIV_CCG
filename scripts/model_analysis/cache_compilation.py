@@ -1,4 +1,4 @@
-"""跨脚本复用的 raw JSON 到 compiled cache 调用入口。"""
+"""模型分析缺失缓存时，委托正式转换入口补齐 compiled cache。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from common.policy.data.skill_vocab import SkillVocab
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def compile_raw_training_caches(
@@ -23,9 +23,9 @@ def compile_raw_training_caches(
 ) -> None:
     """调用正式转换 API，多文件共享引擎；允许宿主提供现有引擎。"""
     # 延迟导入，避免公共配置加载时初始化转换器或 PyTorch。
-    from common.config import load_precision_config
+    from common.pytorch.precision import load_precision_config
     from common.policy.data import Normalizer
-    from common.project_config import resolve_positive_worker_count
+    from common.configuration.environment import resolve_positive_worker_count
     from scripts.convert_fflogs.cache import precompile_raw_training_caches
 
     if normalizer is None:

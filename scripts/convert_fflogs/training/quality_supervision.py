@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from common.dataset_layout import PERCENTILE_BUCKETS, percentile_bucket
+from common.data.layout import PERCENTILE_BUCKETS, percentile_bucket
 
 
 def source_ranking(source_path: Path, ranking: dict[str, object] | None) -> dict[str, object]:

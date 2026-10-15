@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from common.config import PrecisionConfig, load_precision_config
+from common.pytorch.precision import PrecisionConfig, load_precision_config
 
 from .data import (
     TrainingCollator,

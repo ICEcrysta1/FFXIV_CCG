@@ -6,8 +6,12 @@
 
 from __future__ import annotations
 
-from .config import ProjectConfig
+from typing import TYPE_CHECKING
+
 from .models import ActionKind, SkillDefinition
+
+if TYPE_CHECKING:
+    from .config import ProjectConfig
 
 
 class SkillBook:

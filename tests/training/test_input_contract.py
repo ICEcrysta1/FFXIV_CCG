@@ -13,7 +13,7 @@ from common.policy.data.input_contract import (
     INPUT_CONTRACT_VERSION, TOKEN_ENCODING_CONTRACT, RESIDUAL_MIX_CONFIG_FIELDS,
     residual_composition_contract,
 )
-from common.output_context_schema import CANONICAL_CONTEXT_SCHEMA_VERSION
+from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
 
 
 def _build_contract() -> ModelInputContract:
@@ -60,7 +60,7 @@ def _build_contract() -> ModelInputContract:
 
 def test_model_input_contract_round_trips_without_project_yaml(monkeypatch):
     contract = _build_contract()
-    import common.config as config_module
+    import common.game.config as config_module
 
     monkeypatch.setattr(
         config_module,

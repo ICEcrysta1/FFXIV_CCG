@@ -22,8 +22,8 @@ from common.policy.model.repetition import (
     prepare_repetition_penalty,
 )
 from common.policy.replay import AutoregressiveReplayConfig
-from common.torch_runtime import autocast_context, move_batch
-from common.torch_serialization import safe_torch_load, stringify_paths
+from common.pytorch.runtime import autocast_context, move_batch
+from common.pytorch.serialization import safe_torch_load, stringify_paths
 from common.training.metrics import MetricAccumulator
 from common.training.optimizer import build_optimizer
 from common.training.tensorboard import (

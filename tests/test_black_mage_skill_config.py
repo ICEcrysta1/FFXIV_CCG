@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from common.config import load_project_config
-from common.models import SkillDefinition
-from common.yaml_config import load_yaml_mapping
+from common.game.config import load_project_config
+from common.game.models import SkillDefinition
+from common.configuration.yaml import load_yaml_mapping
 
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config/skills/black_mage.yaml"

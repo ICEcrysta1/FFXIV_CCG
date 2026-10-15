@@ -7,7 +7,7 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
-from common.dataset_layout import (
+from common.data.layout import (
     DATASET_STAGES,
     PERCENTILE_BUCKETS,
     find_dataset_json_files,

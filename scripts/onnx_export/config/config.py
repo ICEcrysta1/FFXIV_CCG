@@ -7,7 +7,7 @@ import math
 import os
 from pathlib import Path
 
-from common.project_config import load_root_dotenv, resolve_project_path
+from common.configuration.environment import load_root_dotenv, resolve_project_path
 from common.policy.config import (
     PROJECT_ROOT,
     resolve_policy_checkpoint_path,

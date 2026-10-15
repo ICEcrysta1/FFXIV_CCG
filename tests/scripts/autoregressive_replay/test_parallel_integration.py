@@ -9,7 +9,7 @@ from common.policy.data import DataSpec, SkillVocab
 from common.policy.model import CausalPolicyModel
 from common.policy.config import ModelConfig
 from common.policy.data.context_encoding import ContextEncoder
-from common.torch_runtime import move_batch
+from common.pytorch.runtime import move_batch
 from scripts.autoregressive_replay.parallel import ParallelRollouts, TrainingPolicyBackend
 from scripts.autoregressive_replay.ppg import evaluate_validation_ppg
 from tests.training._common_fixtures import make_dataset, make_demo_pt

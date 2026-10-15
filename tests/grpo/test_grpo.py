@@ -345,7 +345,7 @@ def test_grpo_checkpoint_preserves_complete_input_vocab(tmp_path):
     from common.policy.config import ModelConfig
     from common.policy.data import ModelInputContract
     from common.policy.model import CausalPolicyModel
-    from common.torch_serialization import safe_torch_load
+    from common.pytorch.serialization import safe_torch_load
     from scripts.autoregressive_replay.backends import PyTorchPolicyBackend
     from tests.training._causal_fixtures import make_data_spec, make_input_contract
 
@@ -1239,7 +1239,7 @@ def test_grpo_store_rejects_incomplete_anchored_input_before_write(tmp_path, fie
 
 @pytest.mark.parametrize("raw_field", ("current_state_abs_values", "scene_abs_values", "history_state_delta_reset_mask", "history_bank_skill_ids"))
 def test_grpo_store_rejects_raw_states_and_old_rollout_format(tmp_path, raw_field):
-    from common.torch_serialization import safe_torch_load
+    from common.pytorch.serialization import safe_torch_load
 
     decision = _decision(history_length=1, scene_length=1, action_index=0)
     decision.batch[raw_field] = torch.zeros((1, 3))
@@ -1281,7 +1281,7 @@ def test_grpo_store_validates_independent_window_metadata(tmp_path, metadata, er
 
 def test_grpo_cursor_roundtrips_after_history_reset_without_entering_model_batch(tmp_path):
     from dataclasses import replace
-    from common.torch_serialization import safe_torch_load
+    from common.pytorch.serialization import safe_torch_load
 
     decision = replace(_decision(history_length=8, scene_length=1, action_index=0),
                        context_metadata={"history_cursor": 301})
@@ -1314,7 +1314,7 @@ def test_grpo_store_rejects_window_metadata_inside_model_batch(tmp_path):
 
 @pytest.mark.parametrize("location", ["batch", "decision", "contract"])
 def test_grpo_store_rejects_same_width_action_order_drift_on_read(tmp_path, location):
-    from common.torch_serialization import safe_torch_load
+    from common.pytorch.serialization import safe_torch_load
 
     contract = _rollout_contract()
     store = GrpoRolloutStore(tmp_path, iteration=1, input_contract=contract)

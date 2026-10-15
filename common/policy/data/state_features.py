@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 import math
 
-from common.torch_dependencies import import_torch
+from common.pytorch.dependencies import import_torch
 from .schema import StateFeatureLayout
 
 

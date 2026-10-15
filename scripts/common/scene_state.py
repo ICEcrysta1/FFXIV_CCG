@@ -8,11 +8,11 @@ from bisect import bisect_right
 from dataclasses import asdict, dataclass
 from functools import lru_cache
 
-from common.contracts import (
+from common.context.contracts import (
     FORCED_MOVEMENT_CONTEXT_KEY, RAID_BUFF_WINDOW_CONTEXT_KEY, SCENE_EPSILON,
     SLIDECAST_WINDOW_SECONDS, TARGETABLE_WINDOW_CONTEXT_KEY, TARGET_COUNT_WINDOW_CONTEXT_KEY,
 )
-from common.output_context_schema import STATE_SNAPSHOTS
+from common.context.output import STATE_SNAPSHOTS
 
 BOSS_TARGETABLE_CHANGED = "boss_targetable_changed"
 MOVEMENT_CHANGED = "movement_changed"

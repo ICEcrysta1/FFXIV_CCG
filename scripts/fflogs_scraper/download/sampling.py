@@ -4,7 +4,7 @@ import logging
 from collections import deque
 from collections.abc import Iterator
 
-from common.dataset_layout import PERCENTILE_BUCKETS
+from common.data.layout import PERCENTILE_BUCKETS
 
 from ..api.client import FFLogsV2Client
 from ..config.validation import _validate_integer

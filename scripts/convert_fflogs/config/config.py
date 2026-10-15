@@ -6,8 +6,8 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
-from common.project_config import load_root_dotenv, resolve_project_job_tag
-from common.yaml_config import load_yaml_mapping
+from common.configuration.environment import load_root_dotenv, resolve_project_job_tag
+from common.configuration.yaml import load_yaml_mapping
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
