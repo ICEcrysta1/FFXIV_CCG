@@ -8,7 +8,8 @@ import torch
 from common.policy.config import ModelConfig
 from common.policy.model import CausalPolicyModel, RepetitionConfig
 from common.policy.model.repetition import prepare_repetition_penalty
-from common.training.tensorboard import TensorBoardConfig, TensorBoardMonitor
+from common.training.tensorboard import TensorBoardConfig
+from common.training.tensorboard_monitor import TensorBoardMonitor
 from tests.training._causal_fixtures import make_batch, make_data_spec
 
 

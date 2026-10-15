@@ -1,6 +1,1 @@
-"""预训练与 GRPO 共同使用的训练辅助组件。"""
-
-from .metrics import MetricAccumulator
-from .tensorboard import TensorBoardConfig
-
-__all__ = ["MetricAccumulator", "TensorBoardConfig"]
+"""预训练与 GRPO 共用的训练组件；包入口不加载计算或监控依赖。"""

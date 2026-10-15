@@ -52,9 +52,36 @@ def test_resume_confirm_passes_force_and_reaps_monitor_on_training_error(monkeyp
     with pytest.raises(RuntimeError, match="训练失败"):
         menu.invoke_tool("resume", interactive=True)
     assert "--force-resume-data-mismatch" in calls[1][1]
+    assert calls[0][0] == calls[-1][0] == "scripts.tensorboard_server"
     assert calls[0][1][:3] == ("--background", "--open-browser", "--if-enabled")
+    assert calls[0][1][3:5] == ("--scope", "bc")
     assert calls[-1][1][0] == "--stop-owned"
     assert calls[0][1][-1] == calls[-1][1][-1]
+
+
+@pytest.mark.parametrize("action, scope, training_module", [
+    ("train", "bc", "training.train"),
+    ("grpo", "grpo", "grpo"),
+])
+def test_training_menu_uses_script_monitor_with_selected_scope(
+    monkeypatch, action, scope, training_module
+):
+    monkeypatch.setattr(menu, "configured_checkpoint", lambda _path: selected_checkpoint())
+    calls = []
+    monkeypatch.setattr(
+        menu, "run_module",
+        lambda module, *args: calls.append((module, args)) or 0,
+    )
+
+    assert menu.invoke_tool(action) == 0
+
+    owner = str(menu.os.getpid())
+    assert calls[0] == ("scripts.tensorboard_server", (
+        "--background", "--open-browser", "--if-enabled",
+        "--scope", scope, "--owner-pid", owner,
+    ))
+    assert calls[1][0] == training_module
+    assert calls[2] == ("scripts.tensorboard_server", ("--stop-owned", "--owner-pid", owner))
 
 
 def test_resume_unchanged_data_does_not_prompt_or_force(monkeypatch):

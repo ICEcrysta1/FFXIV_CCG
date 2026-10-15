@@ -1,4 +1,4 @@
-"""公共模型与训练配置。"""
+"""预训练运行配置及其解析。"""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from common.configuration.environment import (
 from common.training.tensorboard import TensorBoardConfig
 from common.training.optimizer_config import OptimizerConfig, parse_optimizer_settings
 
-from ..runtime.runtime_debug import RuntimeDebugConfig
+from ..runtime import RuntimeDebugConfig
 from .action_quality import ActionQualityLossConfig, parse_action_quality_loss_config
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]

@@ -206,7 +206,7 @@ def invoke_tool(action: str, *, checkpoint: Path | None = None, interactive: boo
     try:
         if monitor:
             scope = "grpo" if action == "grpo" else "bc"
-            if run_module("common.training.tensorboard_server", "--background", "--open-browser", "--if-enabled", "--scope", scope, "--owner-pid", owner):
+            if run_module("scripts.tensorboard_server", "--background", "--open-browser", "--if-enabled", "--scope", scope, "--owner-pid", owner):
                 print("TensorBoard Web 监控启动失败；训练仍会继续。", file=sys.stderr)
         status = run_module(module, *arguments)
         if action == "export" and status == 2:
@@ -217,7 +217,7 @@ def invoke_tool(action: str, *, checkpoint: Path | None = None, interactive: boo
     finally:
         if monitor:
             try:
-                if run_module("common.training.tensorboard_server", "--stop-owned", "--owner-pid", owner):
+                if run_module("scripts.tensorboard_server", "--stop-owned", "--owner-pid", owner):
                     print("TensorBoard Web 监控关闭失败，请检查占用端口的进程。", file=sys.stderr)
             except OSError as error:
                 print(f"TensorBoard Web 监控关闭失败：{error}", file=sys.stderr)

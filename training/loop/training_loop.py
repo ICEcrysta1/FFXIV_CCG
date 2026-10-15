@@ -18,15 +18,15 @@ from common.policy.data.context_encoding import ContextEncoder
 from common.configuration.environment import resolve_registered_job_tags
 from common.pytorch.runtime import model_dtype
 from common.training.optimizer import build_optimizer
+from common.training.tensorboard_monitor import TensorBoardMonitor
 from common.training.tensorboard import (
-    TensorBoardMonitor,
     close_tensorboard_writer,
     create_tensorboard_writer,
     write_scalar_metrics,
 )
 
 from ..config import RunConfig
-from ..runtime.runtime_debug import RuntimeDebugRecorder
+from ..runtime import RuntimeDebugRecorder
 from .checkpoint import (
     _best_metric_key,
     _checkpoint_metrics,

@@ -10,10 +10,11 @@ from common.policy.data.context_encoding import ContextEncoder
 from common.policy.model.repetition import RepetitionConfig, prepare_repetition_penalty
 from common.pytorch.runtime import autocast_context, move_batch
 from common.training.metrics import MetricAccumulator
-from common.training.tensorboard import TensorBoardMonitor, write_scalar_metrics
+from common.training.tensorboard import write_scalar_metrics
+from common.training.tensorboard_monitor import TensorBoardMonitor
 
 from ..config import ActionQualityLossConfig, ValuePreferenceConfig
-from ..runtime.runtime_debug import RuntimeDebugRecorder
+from ..runtime import RuntimeDebugRecorder
 from .loss import LossBreakdown, compose_training_loss, configured_auxiliary_losses
 
 _EPOCH_METRICS = ("loss", "cross_entropy_loss", "top1_accuracy", "top3_accuracy")

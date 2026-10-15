@@ -20,11 +20,11 @@ from common.policy.data import ActionSpace
 from common.policy.replay import AutoregressiveReplayConfig
 from common.training.optimizer import build_optimizer
 from common.training.tensorboard import (
-    TensorBoardMonitor,
     close_tensorboard_writer,
     create_tensorboard_writer,
     write_scalar_metrics,
 )
+from common.training.tensorboard_monitor import TensorBoardMonitor
 from scripts.autoregressive_replay.backends import PyTorchPolicyBackend
 from scripts.autoregressive_replay.parallel import ParallelRollouts
 from scripts.autoregressive_replay.replay import AutoregressiveReplaySession, ReplayCacheStore

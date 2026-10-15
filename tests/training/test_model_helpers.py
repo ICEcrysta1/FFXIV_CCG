@@ -1267,7 +1267,7 @@ def test_build_dataloaders_covers_single_file_empty_shard_and_value_paths(
     monkeypatch.setattr(dataloaders_module, "TrainingDataset", lambda *_args, **_kwargs: dataset)
     monkeypatch.setattr(dataloaders_module, "load_sequence_oversampler", lambda *_args: None)
     monkeypatch.setattr(dataloaders_module, "build_sample_weights", lambda *_args: None)
-    monkeypatch.setattr(dataloaders_module, "load_skill_values", lambda _job: {"a": 1.0, "b": 2.0})
+    monkeypatch.setattr(dataloaders_module, "_load_skill_values", lambda _job: {"a": 1.0, "b": 2.0})
 
     class FakeCollator:
         def __init__(self, **kwargs):
@@ -1443,7 +1443,7 @@ def test_build_dataloaders_rejects_empty_inputs_and_missing_skill_values(tmp_pat
     monkeypatch.setattr(dataloaders_module, "TrainingDataset", lambda *_args, **_kwargs: dataset)
     monkeypatch.setattr(dataloaders_module, "load_sequence_oversampler", lambda *_args: None)
     monkeypatch.setattr(dataloaders_module, "build_sample_weights", lambda *_args: None)
-    monkeypatch.setattr(dataloaders_module, "load_skill_values", lambda _job: {"a": 1.0})
+    monkeypatch.setattr(dataloaders_module, "_load_skill_values", lambda _job: {"a": 1.0})
 
     config = RunConfig(
         raw_data_dir=tmp_path,

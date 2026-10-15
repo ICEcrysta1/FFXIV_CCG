@@ -6,9 +6,6 @@ from dataclasses import dataclass
 
 import torch
 
-# 保留旧模块的层导入路径；模型层的实现由 transformer 独立承载。
-from .transformer import TraceableTransformerEncoderLayer
-
 
 @dataclass(frozen=True)
 class ModelTrace:

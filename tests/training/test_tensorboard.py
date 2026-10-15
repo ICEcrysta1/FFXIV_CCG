@@ -6,9 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from common.training import tensorboard, tensorboard_server
+from common.training import tensorboard
 from grpo import config as grpo_config_module
 from grpo.config import load_grpo_config
+from scripts import tensorboard_server
 from training import config as training_config_module
 from training.config import load_run_config
 
@@ -298,6 +299,53 @@ def test_background_server_waits_for_readiness(monkeypatch, tmp_path):
     assert len(calls) == 1
     assert calls[0][1]["cwd"] == tmp_path
     assert records == [(6017, tmp_path, 42)]
+
+
+def test_owned_background_server_starts_script_worker(monkeypatch, tmp_path):
+    """托管服务从脚本层启动 worker，保留进程归属和事件目录参数。"""
+    monkeypatch.setattr(tensorboard_server, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(tensorboard_server.tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(
+        tensorboard_server, "_check_existing_service", lambda _port, _log_dir: False
+    )
+    spawner_pid = os.getpid()
+    monkeypatch.setattr(
+        tensorboard_server,
+        "_read_record",
+        lambda _port: {"pid": 42, "spawner_pid": spawner_pid},
+    )
+    monkeypatch.setattr(tensorboard_server, "_pid_is_alive", lambda pid: pid == 42)
+    monkeypatch.setattr(tensorboard_server, "_is_ready", lambda _port: True)
+    records = []
+    monkeypatch.setattr(
+        tensorboard_server,
+        "_write_record",
+        lambda *args, **kwargs: records.append((args, kwargs)),
+    )
+    calls = []
+    monkeypatch.setattr(
+        tensorboard_server.subprocess,
+        "Popen",
+        lambda command, **kwargs: calls.append((command, kwargs)),
+    )
+
+    tensorboard_server._start_background(
+        ["python", "-m", "tensorboard.main"],
+        port=6017, log_dir=tmp_path, owner_pid=11,
+    )
+
+    assert len(calls) == 1
+    command, options = calls[0]
+    assert command == [
+        tensorboard_server.sys.executable, "-m", "scripts.tensorboard_server",
+        "--owned-worker", "--owner-pid", "11", "--spawner-pid", str(spawner_pid),
+        "--internal-port", "6017", "--logdir", str(tmp_path),
+    ]
+    assert options["cwd"] == tmp_path
+    assert options["start_new_session"] is True
+    assert records == [
+        ((6017, tmp_path, 42), {"owner_pid": 11, "spawner_pid": spawner_pid, "ready": True})
+    ]
 
 
 def test_existing_server_must_match_event_directory(monkeypatch, tmp_path):

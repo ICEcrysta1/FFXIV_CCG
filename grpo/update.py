@@ -9,7 +9,8 @@ import torch
 from common.policy.model.repetition import apply_repetition_penalty, prepare_repetition_penalty
 from common.pytorch.runtime import autocast_context, move_batch
 from common.training.metrics import MetricAccumulator
-from common.training.tensorboard import TensorBoardMonitor, write_scalar_metrics
+from common.training.tensorboard import write_scalar_metrics
+from common.training.tensorboard_monitor import TensorBoardMonitor
 from scripts.autoregressive_replay.parallel import collate_live_batches
 
 from .config import GrpoConfig

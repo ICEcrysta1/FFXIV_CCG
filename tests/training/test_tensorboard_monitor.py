@@ -11,7 +11,8 @@ from torch.utils.tensorboard import SummaryWriter
 from common.policy.config import ModelConfig
 from common.policy.data import SkillVocab
 from common.policy.model import CausalPolicyModel
-from common.training.tensorboard import TensorBoardConfig, TensorBoardMonitor, write_scalar_metrics
+from common.training.tensorboard import TensorBoardConfig, write_scalar_metrics
+from common.training.tensorboard_monitor import TensorBoardMonitor
 from common.training.tensorboard_labels import tensorboard_tag
 from tests.training._causal_fixtures import make_batch, make_data_spec
 
