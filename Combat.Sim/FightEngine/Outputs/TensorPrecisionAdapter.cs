@@ -23,12 +23,10 @@ public enum TensorDtype
 /// </summary>
 public sealed class TensorPrecisionAdapter
 {
-    private readonly TensorDtype _intDtype;
     private readonly TensorDtype _floatDtype;
 
     public TensorPrecisionAdapter(TensorDtype intDtype, TensorDtype floatDtype)
     {
-        _intDtype = intDtype;
         _floatDtype = floatDtype;
     }
 

@@ -48,52 +48,22 @@ public sealed class PendingSettlementQueue
     }
 
     /// <summary>查看最早的一条待结算事实，不改变队列内容。</summary>
-    internal bool TryPeek(out TimelineEvent settlement, out TimelineEventOrder order)
-    {
-        while (_queue.TryPeek(out var candidate, out var candidateOrder))
-        {
-            if (_byTarget.TryGetValue(SettlementTarget.From(candidate), out var current) &&
-                ReferenceEquals(current, candidate))
-            {
-                settlement = candidate;
-                order = candidateOrder;
-                return true;
-            }
-
-            // 已被替换或重复入队的陈旧条目，丢弃后继续。
-            _queue.Dequeue();
-        }
-
-        settlement = null!;
-        order = default;
-        return false;
-    }
+    internal bool TryPeek(out TimelineEvent settlement, out TimelineEventOrder order) =>
+        _queue.TryPeek(out settlement!, out order);
 
     /// <summary>取出不晚于 <paramref name="timestamp"/> 的最早一条待结算事实。</summary>
     public bool TryDequeue(double timestamp, out TimelineEvent settlement)
     {
-        while (_queue.TryDequeue(out var candidate, out var order))
+        if (!_queue.TryPeek(out var candidate, out var order) || order.Timestamp > timestamp)
         {
-            var target = SettlementTarget.From(candidate);
-            if (!_byTarget.TryGetValue(target, out var current) || !ReferenceEquals(current, candidate))
-            {
-                continue;
-            }
-
-            if (order.Timestamp > timestamp)
-            {
-                _queue.Enqueue(candidate, order);
-                settlement = null!;
-                return false;
-            }
-
-            _byTarget.Remove(target);
-            settlement = candidate;
-            return true;
+            settlement = null!;
+            return false;
         }
 
-        settlement = null!;
-        return false;
+        _queue.Dequeue();
+        _byTarget.Remove(SettlementTarget.From(candidate));
+        settlement = candidate;
+        return true;
     }
 
     public IReadOnlyList<TimelineEvent> Snapshot() =>

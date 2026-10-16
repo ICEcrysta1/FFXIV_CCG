@@ -10,8 +10,8 @@ namespace Combat.Sim.Jobs.Black.Mage;
 
 public sealed partial class BlackMageJobStateMachine
 {
-    /// <summary>爆炎：火苗触发时免费，否则按元素折算耗蓝（对照 _validate_fire_iii）。</summary>
-    private ValidationResult ValidateFireIii(CombatState state, SkillDefinition skill)
+    /// <summary>只校验折算后的 MP，适用于火冰极性切换技能。</summary>
+    private ValidationResult ValidateMp(CombatState state, SkillDefinition skill)
     {
         if (state.Mp < ActualMpCost(state, skill))
         {
@@ -29,43 +29,11 @@ public sealed partial class BlackMageJobStateMachine
             return new ValidationResult(false, "requires_af");
         }
 
-        if (state.Mp < ActualMpCost(state, skill))
-        {
-            return new ValidationResult(false, "not_enough_mp");
-        }
-
-        return new ValidationResult(true);
+        return ValidateMp(state, skill);
     }
 
-    /// <summary>高烈炎：只有耗蓝校验（对照 _validate_high_fire_ii）。</summary>
-    private ValidationResult ValidateHighFireIi(CombatState state, SkillDefinition skill)
-    {
-        if (state.Mp < ActualMpCost(state, skill))
-        {
-            return new ValidationResult(false, "not_enough_mp");
-        }
-
-        return new ValidationResult(true);
-    }
-
-    /// <summary>绝望：需要 AF，且 MP 不得低于技能定义的消耗下限（对照 _validate_despair）。</summary>
-    private ValidationResult ValidateDespair(CombatState state, SkillDefinition skill)
-    {
-        if (!InAstralFire(state))
-        {
-            return new ValidationResult(false, "requires_af");
-        }
-
-        if (state.Mp < skill.MpCostFloor)
-        {
-            return new ValidationResult(false, "not_enough_mp");
-        }
-
-        return new ValidationResult(true);
-    }
-
-    /// <summary>核爆：需要 AF，且 MP 不得低于技能定义的消耗下限（对照 _validate_flare）。</summary>
-    private ValidationResult ValidateFlare(CombatState state, SkillDefinition skill)
+    /// <summary>绝望与核爆：需要 AF，且 MP 不得低于技能定义的消耗下限。</summary>
+    private ValidationResult ValidateFireFinisher(CombatState state, SkillDefinition skill)
     {
         if (!InAstralFire(state))
         {
@@ -91,58 +59,15 @@ public sealed partial class BlackMageJobStateMachine
         return new ValidationResult(true);
     }
 
-    /// <summary>冰封：只有耗蓝校验（对照 _validate_blizzard_iii）。</summary>
-    private ValidationResult ValidateBlizzardIii(CombatState state, SkillDefinition skill)
-    {
-        if (state.Mp < ActualMpCost(state, skill))
-        {
-            return new ValidationResult(false, "not_enough_mp");
-        }
-
-        return new ValidationResult(true);
-    }
-
-    /// <summary>冰澈：需要 UI，命中后回满灵极魂与 MP（对照 _validate_blizzard_iv）。</summary>
-    private ValidationResult ValidateBlizzardIv(CombatState state, SkillDefinition skill)
+    /// <summary>冰澈与玄冰：需要 UI，命中后回满灵极魂并回复 MP。</summary>
+    private ValidationResult ValidateIceRefill(CombatState state, SkillDefinition skill)
     {
         if (!InUmbralIce(state))
         {
             return new ValidationResult(false, "requires_ui");
         }
 
-        if (state.Mp < ActualMpCost(state, skill))
-        {
-            return new ValidationResult(false, "not_enough_mp");
-        }
-
-        return new ValidationResult(true);
-    }
-
-    /// <summary>玄冰：需要 UI，命中后回满灵极魂与 MP（对照 _validate_freeze）。</summary>
-    private ValidationResult ValidateFreeze(CombatState state, SkillDefinition skill)
-    {
-        if (!InUmbralIce(state))
-        {
-            return new ValidationResult(false, "requires_ui");
-        }
-
-        if (state.Mp < ActualMpCost(state, skill))
-        {
-            return new ValidationResult(false, "not_enough_mp");
-        }
-
-        return new ValidationResult(true);
-    }
-
-    /// <summary>高冰冻：只有耗蓝校验（对照 _validate_high_blizzard_ii）。</summary>
-    private ValidationResult ValidateHighBlizzardIi(CombatState state, SkillDefinition skill)
-    {
-        if (state.Mp < ActualMpCost(state, skill))
-        {
-            return new ValidationResult(false, "not_enough_mp");
-        }
-
-        return new ValidationResult(true);
+        return ValidateMp(state, skill);
     }
 
     /// <summary>悖论：需要悖论就绪且 MP 充足（对照 _validate_paradox）。</summary>
@@ -153,12 +78,7 @@ public sealed partial class BlackMageJobStateMachine
             return new ValidationResult(false, "requires_paradox");
         }
 
-        if (state.Mp < ActualMpCost(state, skill))
-        {
-            return new ValidationResult(false, "not_enough_mp");
-        }
-
-        return new ValidationResult(true);
+        return ValidateMp(state, skill);
     }
 
     /// <summary>通晓消耗技能：需要至少 1 层通晓（对照 _validate_polyglot_spender）。</summary>
@@ -183,8 +103,8 @@ public sealed partial class BlackMageJobStateMachine
         return new ValidationResult(true);
     }
 
-    /// <summary>星灵移位：需要当前处于任意元素态（对照 _validate_transpose）。</summary>
-    private ValidationResult ValidateTranspose(CombatState state, SkillDefinition _skill)
+    /// <summary>星灵移位与详述：需要当前处于任意元素态。</summary>
+    private ValidationResult ValidateElementalState(CombatState state, SkillDefinition _skill)
     {
         if (!EnochianActive(state))
         {
@@ -216,17 +136,6 @@ public sealed partial class BlackMageJobStateMachine
         if (!InAstralFire(state))
         {
             return new ValidationResult(false, "requires_af");
-        }
-
-        return new ValidationResult(true);
-    }
-
-    /// <summary>详述：需要当前处于任意元素态（对照 _validate_amplifier）。</summary>
-    private ValidationResult ValidateAmplifier(CombatState state, SkillDefinition _skill)
-    {
-        if (!EnochianActive(state))
-        {
-            return new ValidationResult(false, "requires_elemental_state");
         }
 
         return new ValidationResult(true);

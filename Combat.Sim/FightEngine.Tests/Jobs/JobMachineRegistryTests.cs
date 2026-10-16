@@ -1,3 +1,4 @@
+using System.Reflection;
 using Combat.Sim.Jobs;
 using Xunit;
 
@@ -52,6 +53,31 @@ public class JobMachineRegistryTests
         var ex = Assert.Throws<InvalidOperationException>(
             () => JobMachineRegistry.Register("registry_factory_job", () => new RegistryJobA()));
         Assert.Contains("duplicate job state machine tag: registry_factory_job", ex.Message);
+    }
+
+    [Fact]
+    public void 类型先占标签后工厂注册抛错()
+    {
+        JobMachineRegistry.Register<RegistryJobA>();
+        Assert.Throws<InvalidOperationException>(() =>
+            JobMachineRegistry.Register("registry_job_a", () => new RegistryJobB()));
+        Assert.IsType<RegistryJobA>(JobMachineRegistry.Get("registry_job_a"));
+    }
+
+    [Fact]
+    public void 职业契约与注册中心不提供配置校验扩展点()
+    {
+        Assert.Null(typeof(IJobStateMachine).GetMethod("ValidateConfig"));
+        Assert.Null(typeof(JobMachineRegistry).GetMethod(
+            "ValidateConfig", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic));
+    }
+
+    [Fact]
+    public void 注册中心不暴露程序集扫描入口()
+    {
+        Assert.DoesNotContain(
+            typeof(JobMachineRegistry).GetMethods(BindingFlags.Public | BindingFlags.Static),
+            method => method.GetParameters().Any(parameter => parameter.ParameterType == typeof(Assembly)));
     }
 
     [Fact]

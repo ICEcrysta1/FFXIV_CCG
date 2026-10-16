@@ -20,8 +20,9 @@ public static class JobMachineRegistry
         RegisterBuiltInJobMachines();
     }
 
-    private static readonly Dictionary<string, Type> _types = new(StringComparer.Ordinal);
-    private static readonly Dictionary<string, Func<IJobStateMachine>> _factories = new(StringComparer.Ordinal);
+    private sealed record Registration(Type? Type, Func<IJobStateMachine> Factory);
+
+    private static readonly Dictionary<string, Registration> _registrations = new(StringComparer.Ordinal);
 
     /// <summary>
     /// 自动发现并注册当前程序集内的全部职业状态机（对照 jobs/__init__.py 的模块自动发现）。
@@ -34,7 +35,8 @@ public static class JobMachineRegistry
     {
         foreach (var type in typeof(JobMachineRegistry).Assembly.GetTypes())
         {
-            if (type.IsAbstract || type.IsInterface || !typeof(IJobStateMachine).IsAssignableFrom(type))
+            if (type.IsAbstract || type.IsInterface || type.ContainsGenericParameters ||
+                !typeof(IJobStateMachine).IsAssignableFrom(type))
             {
                 continue;
             }
@@ -65,31 +67,27 @@ public static class JobMachineRegistry
     /// </summary>
     private static void RegisterType(string tag, Type type)
     {
-        if (_types.TryGetValue(tag, out var existing))
+        if (_registrations.TryGetValue(tag, out var existing))
         {
-            if (existing == type)
+            if (existing.Type == type)
             {
                 return;
             }
             throw new InvalidOperationException($"duplicate job state machine tag: {tag}");
         }
-        if (_factories.ContainsKey(tag))
-        {
-            throw new InvalidOperationException($"duplicate job state machine tag: {tag}");
-        }
-        _types[tag] = type;
-        _factories[tag] = () => (IJobStateMachine)Activator.CreateInstance(type)!;
+        _registrations.Add(tag, new(type, () => (IJobStateMachine)Activator.CreateInstance(type)!));
     }
 
     /// <summary>
     /// 注册一个职业子状态机类型；同一类型重复注册幂等，注册路径不构造实例。
     /// </summary>
-    public static void Register<T>() where T : IJobStateMachine, new() => RegisterType(T.Tag, typeof(T));
+    public static void Register<T>() where T : IJobStateMachine, new() =>
+        RegisterType(T.Tag, typeof(T));
 
     /// <summary>按标签注册职业工厂；标签已被占用时抛错（工厂无法比较类型，不做幂等）。</summary>
     public static void Register(string tag, Func<IJobStateMachine> factory)
     {
-        if (!_factories.TryAdd(tag, factory))
+        if (!_registrations.TryAdd(tag, new(null, factory)))
         {
             throw new InvalidOperationException($"duplicate job state machine tag: {tag}");
         }
@@ -97,9 +95,9 @@ public static class JobMachineRegistry
 
     /// <summary>按职业标签取工厂；未注册返回 null（对照 get_job_state_machine_type）。</summary>
     public static IJobStateMachine? Get(string jobTag) =>
-        _factories.TryGetValue(jobTag, out var factory) ? factory() : null;
+        _registrations.TryGetValue(jobTag, out var registration) ? registration.Factory() : null;
 
     /// <summary>返回当前已注册的职业标签（排序，对照 registered_job_tags）。</summary>
     public static IReadOnlyList<string> RegisteredTags() =>
-        _factories.Keys.OrderBy(k => k, StringComparer.Ordinal).ToList();
+        _registrations.Keys.OrderBy(k => k, StringComparer.Ordinal).ToList();
 }

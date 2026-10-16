@@ -270,4 +270,38 @@ public class CombatStateMachineTests
         Assert.Equal(10000, entry.MpBefore);
         Assert.Equal(10000, entry.MpAfter);
     }
+
+    [Fact]
+    public void 历史威力和价值读取请求态而冷却读取效果态()
+    {
+        var project = ProjectConfigLoader.LoadProjectConfig(Combat.Sim.Common.RepoRootLocator.Find(), "machinist");
+        // 为连击技能设置冷却，区分请求前和效果后的充能快照。
+        project = project with
+        {
+            Job = project.Job with
+            {
+                Skills = project.Job.Skills.Select(skill => skill.Key == "heated_slug_shot"
+                    ? skill with { Cooldown = 30.0 }
+                    : skill).ToArray(),
+            },
+        };
+        var machine = new CombatStateMachine(project, "machinist");
+        var simulator = new JobSimulator(machine);
+
+        Assert.True(simulator.SubmitAction(0, "heated_split_shot").Accepted);
+        Assert.True(simulator.SubmitAction(2.5, "reassemble").Accepted);
+        Assert.True(simulator.SubmitAction(2.5, "heated_slug_shot").Accepted);
+
+        var state = simulator.GetState();
+        var skill = machine.ResolveSkill("heated_slug_shot");
+        var history = state.History.Last();
+        Assert.Equal(320.0, history.Potency, 9);
+        Assert.Equal(2.0, history.Value, 9);
+        Assert.False(state.HasStatus("reassemble"));
+        Assert.NotEqual(history.Potency, machine.JobMachine.ResolvePotency(state, skill, skill.Potency));
+        Assert.NotEqual(history.Value, machine.JobMachine.ResolveActionValue(state, skill, skill.Value));
+        Assert.Equal(30.0, history.NextCooldownSeconds, 9);
+        Assert.Equal(0, history.AvailableCharges);
+        Assert.Equal(1, history.MaxCharges);
+    }
 }

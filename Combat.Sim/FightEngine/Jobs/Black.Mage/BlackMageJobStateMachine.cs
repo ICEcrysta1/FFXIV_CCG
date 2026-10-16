@@ -29,27 +29,36 @@ public sealed partial class BlackMageJobStateMachine : JobResourceAccessors, IJo
 
     private ProjectConfig? _project;
     private JobConfig? _job;
-    /// <summary>黑魔负责的行为集合（对照 _behaviors 字典的键）。</summary>
-    private static readonly HashSet<string> Behaviors = new(StringComparer.Ordinal)
+    private sealed record BehaviorHandler(
+        Func<CombatState, SkillDefinition, ValidationResult> Validate,
+        Action<CombatState, CombatState, SkillDefinition> Apply);
+
+    private readonly Dictionary<string, BehaviorHandler> _behaviors;
+
+    /// <summary>行为名、校验与效果在职业内只登记一次，不保存战斗过程状态。</summary>
+    public BlackMageJobStateMachine()
     {
-        "fire_iii",
-        "high_fire_ii",
-        "fire_iv",
-        "despair",
-        "flare",
-        "flare_star",
-        "blizzard_iii",
-        "blizzard_iv",
-        "freeze",
-        "high_blizzard_ii",
-        "paradox",
-        "polyglot_spender",
-        "thundercloud_dot",
-        "transpose",
-        "umbral_soul",
-        "manafont",
-        "amplifier",
-    };
+        _behaviors = new(StringComparer.Ordinal)
+        {
+            ["fire_iii"] = new(ValidateMp, ApplyFireStanceTransition),
+            ["high_fire_ii"] = new(ValidateMp, ApplyFireStanceTransition),
+            ["fire_iv"] = new(ValidateFireIv, ApplyFireIv),
+            ["despair"] = new(ValidateFireFinisher, (_, next, _) => ApplyDespair(next)),
+            ["flare"] = new(ValidateFireFinisher, (_, next, _) => ApplyFlare(next)),
+            ["flare_star"] = new(ValidateFlareStar, (_, next, _) => ApplyFlareStar(next)),
+            ["blizzard_iii"] = new(ValidateMp, ApplyIceStanceTransition),
+            ["blizzard_iv"] = new(ValidateIceRefill, ApplyIceRefill),
+            ["freeze"] = new(ValidateIceRefill, ApplyIceRefill),
+            ["high_blizzard_ii"] = new(ValidateMp, ApplyIceStanceTransition),
+            ["paradox"] = new(ValidateParadox, ApplyParadox),
+            ["polyglot_spender"] = new(ValidatePolyglotSpender, (_, next, _) => ApplyPolyglotSpender(next)),
+            ["thundercloud_dot"] = new(ValidateThundercloudDot, ApplyThundercloudDot),
+            ["transpose"] = new(ValidateElementalState, (previous, next, _) => ApplyTranspose(previous, next)),
+            ["umbral_soul"] = new(ValidateUmbralSoul, (_, next, _) => ApplyUmbralSoul(next)),
+            ["manafont"] = new(ValidateManafont, (_, next, _) => ApplyManafont(next)),
+            ["amplifier"] = new(ValidateElementalState, (_, next, _) => ApplyAmplifier(next)),
+        };
+    }
 
     private JobConfig Job => _job ?? throw new InvalidOperationException(
         "black mage job state machine is not bound; Bind(project, system) must be called before use");
@@ -87,100 +96,28 @@ public sealed partial class BlackMageJobStateMachine : JobResourceAccessors, IJo
             new Dictionary<string, StatusDefinition>(Job.Statuses, StringComparer.Ordinal));
 
     /// <summary>返回黑魔职业机是否负责这个行为名（对照 supports_behavior）。</summary>
-    public bool SupportsBehavior(string behavior) => Behaviors.Contains(behavior);
+    public bool SupportsBehavior(string behavior) => behavior is not null && _behaviors.ContainsKey(behavior);
 
     /// <summary>
     /// 校验黑魔职业专属动作合法性（对照 validate_action）。
     /// 系统层行为也会路由到这里，不是职业负责的行为直接放行，由上游继续走系统层校验；
-    /// 行为已注册但没有对应校验规则时返回 unknown_behavior。
     /// </summary>
-    public ValidationResult ValidateAction(CombatState state, SkillDefinition skill)
-    {
-        if (!SupportsBehavior(skill.Behavior))
-        {
-            return new ValidationResult(true);
-        }
-
-        return skill.Behavior switch
-        {
-            "fire_iii" => ValidateFireIii(state, skill),
-            "high_fire_ii" => ValidateHighFireIi(state, skill),
-            "fire_iv" => ValidateFireIv(state, skill),
-            "despair" => ValidateDespair(state, skill),
-            "flare" => ValidateFlare(state, skill),
-            "flare_star" => ValidateFlareStar(state, skill),
-            "blizzard_iii" => ValidateBlizzardIii(state, skill),
-            "blizzard_iv" => ValidateBlizzardIv(state, skill),
-            "freeze" => ValidateFreeze(state, skill),
-            "high_blizzard_ii" => ValidateHighBlizzardIi(state, skill),
-            "paradox" => ValidateParadox(state, skill),
-            "polyglot_spender" => ValidatePolyglotSpender(state, skill),
-            "thundercloud_dot" => ValidateThundercloudDot(state, skill),
-            "transpose" => ValidateTranspose(state, skill),
-            "umbral_soul" => ValidateUmbralSoul(state, skill),
-            "manafont" => ValidateManafont(state, skill),
-            "amplifier" => ValidateAmplifier(state, skill),
-            _ => new ValidationResult(false, $"unknown_behavior:{skill.Behavior}"),
-        };
-    }
+    public ValidationResult ValidateAction(CombatState state, SkillDefinition skill) =>
+        skill.Behavior is { } behavior && _behaviors.TryGetValue(behavior, out var handler)
+            ? handler.Validate(state, skill)
+            : new ValidationResult(true);
 
     /// <summary>应用黑魔职业专属动作效果（对照 apply_action）。</summary>
     public void ApplyAction(CombatState previousState, CombatState nextState, SkillDefinition skill)
     {
-        switch (skill.Behavior)
+        if (skill.Behavior is not { } behavior || !_behaviors.TryGetValue(behavior, out var handler))
         {
-            case "fire_iii":
-            case "high_fire_ii":
-                ApplyFireStanceTransition(previousState, nextState, skill);
-                break;
-            case "fire_iv":
-                ApplyFireIv(previousState, nextState, skill);
-                break;
-            case "despair":
-                ApplyDespair(nextState);
-                break;
-            case "flare":
-                ApplyFlare(nextState);
-                break;
-            case "flare_star":
-                ApplyFlareStar(nextState);
-                break;
-            case "blizzard_iii":
-            case "high_blizzard_ii":
-                ApplyIceStanceTransition(previousState, nextState, skill);
-                break;
-            case "blizzard_iv":
-                ApplyBlizzardIv(previousState, nextState, skill);
-                break;
-            case "freeze":
-                ApplyFreeze(previousState, nextState, skill);
-                break;
-            case "paradox":
-                ApplyParadox(previousState, nextState, skill);
-                break;
-            case "polyglot_spender":
-                ApplyPolyglotSpender(nextState);
-                break;
-            case "thundercloud_dot":
-                ApplyThundercloudDot(previousState, nextState, skill);
-                break;
-            case "transpose":
-                ApplyTranspose(previousState, nextState);
-                break;
-            case "umbral_soul":
-                ApplyUmbralSoul(nextState);
-                break;
-            case "manafont":
-                ApplyManafont(nextState);
-                break;
-            case "amplifier":
-                ApplyAmplifier(nextState);
-                break;
-            default:
-                throw new ArgumentOutOfRangeException(
-                    nameof(skill.Behavior), skill.Behavior,
-                    $"black mage does not support behavior: {skill.Behavior}");
+            throw new ArgumentOutOfRangeException(
+                nameof(skill.Behavior), skill.Behavior,
+                $"black mage does not support behavior: {skill.Behavior}");
         }
+
+        handler.Apply(previousState, nextState, skill);
     }
 
     public void RegisterTimeline(JobTimelineRegistry timeline)
