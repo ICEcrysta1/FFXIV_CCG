@@ -47,26 +47,24 @@ public static class JobMachineRegistry
                 continue;
             }
 
-            // 与泛型注册共用静态接口分派，显式接口实现也不会漏掉配置校验。
-            var validator = (Action<JobConfig>)typeof(JobMachineRegistry)
-                .GetMethod(nameof(CreateConfigValidator), BindingFlags.NonPublic | BindingFlags.Static)!
-                .MakeGenericMethod(type).Invoke(null, null)!;
-            RegisterType(ReadTag(type), type, validator);
+            // 与泛型注册共用静态接口分派，同时支持显式实现的标签与配置校验。
+            var register = typeof(JobMachineRegistry)
+                .GetMethod(nameof(RegisterDiscoveredType), BindingFlags.NonPublic | BindingFlags.Static)!
+                .MakeGenericMethod(type).CreateDelegate<Action>();
+            register();
         }
     }
 
-    private static Action<JobConfig> CreateConfigValidator<T>() where T : IJobStateMachine => T.ValidateConfig;
-
-    private static string ReadTag(Type type)
+    private static void RegisterDiscoveredType<T>() where T : IJobStateMachine
     {
-        var property = type.GetProperty(nameof(IJobStateMachine.Tag), BindingFlags.Public | BindingFlags.Static);
-        if (property is null || property.GetValue(null) is not string tag || tag.Length == 0)
+        var tag = T.Tag;
+        if (string.IsNullOrEmpty(tag))
         {
             throw new InvalidOperationException(
-                $"job state machine must define a non-empty static Tag: {type.FullName}");
+                $"job state machine must define a non-empty static Tag: {typeof(T).FullName}");
         }
 
-        return tag;
+        RegisterType(tag, typeof(T), T.ValidateConfig);
     }
 
     /// <summary>
@@ -94,7 +92,7 @@ public static class JobMachineRegistry
     /// 注册一个职业子状态机类型；同一类型重复注册幂等，注册路径不构造实例。
     /// </summary>
     public static void Register<T>() where T : IJobStateMachine, new() =>
-        RegisterType(T.Tag, typeof(T), T.ValidateConfig);
+        RegisterDiscoveredType<T>();
 
     /// <summary>按标签注册职业工厂；标签已被占用时抛错（工厂无法比较类型，不做幂等）。</summary>
     public static void Register(string tag, Func<IJobStateMachine> factory)

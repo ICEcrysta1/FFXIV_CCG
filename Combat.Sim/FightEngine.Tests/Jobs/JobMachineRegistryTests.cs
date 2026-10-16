@@ -86,6 +86,7 @@ public class JobMachineRegistryTests
         var assembly = AssemblyBuilder.DefineDynamicAssembly(new AssemblyName(tag), AssemblyBuilderAccess.Run);
         var type = assembly.DefineDynamicModule(tag).DefineType(
             "ExternalJob", TypeAttributes.Public, typeof(ValidatedRegistryJob));
+        type.AddInterfaceImplementation(typeof(IJobStateMachine));
         var getter = type.DefineMethod("get_Tag",
             MethodAttributes.Public | MethodAttributes.Static | MethodAttributes.SpecialName,
             typeof(string), Type.EmptyTypes);
@@ -93,6 +94,8 @@ public class JobMachineRegistryTests
         il.Emit(OpCodes.Ldstr, tag);
         il.Emit(OpCodes.Ret);
         type.DefineProperty("Tag", PropertyAttributes.None, typeof(string), null).SetGetMethod(getter);
+        // 派生类的新静态属性必须映射到接口，泛型 T.Tag 才会使用外部职业标签。
+        type.DefineMethodOverride(getter, typeof(IJobStateMachine).GetProperty(nameof(IJobStateMachine.Tag))!.GetMethod!);
 
         var constructor = type.DefineConstructor(MethodAttributes.Public, CallingConventions.Standard, Type.EmptyTypes);
         il = constructor.GetILGenerator();
@@ -110,6 +113,35 @@ public class JobMachineRegistryTests
         var error = Assert.Throws<InvalidOperationException>(() => JobMachineRegistry.ValidateConfig(EmptyJob(tag)));
         Assert.Equal("registry job config is invalid", error.Message);
         Assert.Throws<TargetInvocationException>(() => JobMachineRegistry.Get(tag));
+    }
+
+    [Fact]
+    public void 外部程序集识别显式静态接口标签且与泛型注册幂等()
+    {
+        var assemblyName = "external_explicit_registry_" + Guid.NewGuid().ToString("N");
+        var assembly = AssemblyBuilder.DefineDynamicAssembly(
+            new AssemblyName(assemblyName), AssemblyBuilderAccess.Run);
+        var type = assembly.DefineDynamicModule(assemblyName).DefineType(
+            "ExternalExplicitJob", TypeAttributes.Public, typeof(ExplicitTagRegistryJob));
+        type.DefineDefaultConstructor(MethodAttributes.Public);
+        var jobType = type.CreateType()!;
+        ExplicitTagRegistryJob.Constructions = 0;
+
+        // 动态职业继承显式接口映射，没有可供扫描器查找的 public Tag 属性。
+        JobMachineRegistry.RegisterAssembly(assembly);
+        JobMachineRegistry.RegisterAssembly(assembly);
+        typeof(JobMachineRegistry).GetMethods()
+            .Single(method => method.Name == nameof(JobMachineRegistry.Register) && method.IsGenericMethodDefinition)
+            .MakeGenericMethod(jobType).Invoke(null, null);
+
+        Assert.Contains(ExplicitTagRegistryJob.RegisteredTag, JobMachineRegistry.RegisteredTags());
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            JobMachineRegistry.ValidateConfig(EmptyJob(ExplicitTagRegistryJob.RegisteredTag)));
+        Assert.Equal("explicit registry job config is invalid", error.Message);
+        Assert.Equal(0, ExplicitTagRegistryJob.Constructions);
+
+        Assert.Equal(jobType, JobMachineRegistry.Get(ExplicitTagRegistryJob.RegisteredTag)?.GetType());
+        Assert.Equal(1, ExplicitTagRegistryJob.Constructions);
     }
 
     private static JobConfig EmptyJob(string key) => new(

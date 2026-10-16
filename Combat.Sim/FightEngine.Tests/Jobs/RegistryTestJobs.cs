@@ -118,3 +118,17 @@ public class ValidatedRegistryJob : RegistryJobA, IJobStateMachine
     static void IJobStateMachine.ValidateConfig(JobConfig job) =>
         throw new InvalidOperationException("registry job config is invalid");
 }
+
+/// <summary>显式实现静态接口成员的职业，供外部程序集扫描测试继承。</summary>
+public class ExplicitTagRegistryJob : RegistryJobA, IJobStateMachine
+{
+    public const string RegisteredTag = "registry_explicit_tag_job";
+    public static int Constructions;
+
+    public ExplicitTagRegistryJob() => Constructions++;
+
+    static string IJobStateMachine.Tag => RegisteredTag;
+
+    static void IJobStateMachine.ValidateConfig(JobConfig job) =>
+        throw new InvalidOperationException("explicit registry job config is invalid");
+}
