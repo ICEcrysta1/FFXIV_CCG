@@ -31,7 +31,7 @@ public static class JobMachineRegistry
     /// <summary>
     /// 自动发现并注册指定程序集内的全部职业状态机。
     /// 宿主加载独立职业 DLL 后可调用此入口，核心不引用具体职业程序集。
-    /// 实现类只需提供静态 Tag（注册路径不构造实例，标签直接读取）与无参构造
+    /// 实现类只需提供静态 Tag（注册路径不构造实例，标签直接读取）与公开无参构造
     /// （配置与系统层引用经 Bind 注入）；缺静态 Tag 的实现直接报错，避免静默漏注册。
     /// 与手动 <see cref="Register{T}"/> 共用同一写路径，幂等语义完全对称：
     /// 自动发现注册后再手动注册同一类型同样幂等返回。
@@ -45,6 +45,12 @@ public static class JobMachineRegistry
                 !typeof(IJobStateMachine).IsAssignableFrom(type))
             {
                 continue;
+            }
+
+            if (!type.IsValueType && type.GetConstructor(Type.EmptyTypes) is null)
+            {
+                throw new InvalidOperationException(
+                    $"job state machine must define a public parameterless constructor: {type.FullName}");
             }
 
             // 与泛型注册共用静态接口分派，同时支持显式实现的标签与配置校验。

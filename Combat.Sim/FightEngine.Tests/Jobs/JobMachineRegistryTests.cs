@@ -115,6 +115,82 @@ public class JobMachineRegistryTests
         Assert.Throws<TargetInvocationException>(() => JobMachineRegistry.Get(tag));
     }
 
+    [Theory]
+    [InlineData(MethodAttributes.Public, true)]
+    [InlineData(MethodAttributes.Private, false)]
+    [InlineData(MethodAttributes.Family, false)]
+    [InlineData(MethodAttributes.Assembly, false)]
+    public void 外部程序集拒绝缺少公开无参构造的职业且不登记标签(
+        MethodAttributes visibility, bool hasParameters)
+    {
+        var tag = "external_invalid_constructor_" + Guid.NewGuid().ToString("N");
+        var assembly = AssemblyBuilder.DefineDynamicAssembly(new AssemblyName(tag), AssemblyBuilderAccess.Run);
+        var type = assembly.DefineDynamicModule(tag).DefineType(
+            "ExternalInvalidConstructorJob", TypeAttributes.Public, typeof(ValidatedRegistryJob));
+        type.AddInterfaceImplementation(typeof(IJobStateMachine));
+        var getter = type.DefineMethod("get_Tag",
+            MethodAttributes.Public | MethodAttributes.Static | MethodAttributes.SpecialName,
+            typeof(string), Type.EmptyTypes);
+        var il = getter.GetILGenerator();
+        il.Emit(OpCodes.Ldstr, tag);
+        il.Emit(OpCodes.Ret);
+        type.DefineMethodOverride(getter, typeof(IJobStateMachine).GetProperty(nameof(IJobStateMachine.Tag))!.GetMethod!);
+
+        var constructor = type.DefineConstructor(visibility, CallingConventions.Standard,
+            hasParameters ? new[] { typeof(int) } : Type.EmptyTypes);
+        il = constructor.GetILGenerator();
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Call, typeof(ValidatedRegistryJob).GetConstructor(Type.EmptyTypes)!);
+        il.Emit(OpCodes.Ret);
+        var jobType = type.CreateType()!;
+        ValidatedRegistryJob.Constructions = 0;
+
+        var error = Assert.Throws<InvalidOperationException>(() => JobMachineRegistry.RegisterAssembly(assembly));
+
+        Assert.Contains("public parameterless constructor", error.Message);
+        Assert.Contains(jobType.FullName!, error.Message);
+        Assert.DoesNotContain(tag, JobMachineRegistry.RegisteredTags());
+        Assert.Null(JobMachineRegistry.Get(tag));
+        Assert.Equal(0, ValidatedRegistryJob.Constructions);
+    }
+
+    [Fact]
+    public void 外部程序集接受具有隐式无参构造的值类型职业()
+    {
+        var tag = "external_value_registry_" + Guid.NewGuid().ToString("N");
+        var assembly = AssemblyBuilder.DefineDynamicAssembly(new AssemblyName(tag), AssemblyBuilderAccess.Run);
+        var type = assembly.DefineDynamicModule(tag).DefineType(
+            "ExternalValueJob", TypeAttributes.Public | TypeAttributes.Sealed | TypeAttributes.SequentialLayout,
+            typeof(ValueType));
+        type.AddInterfaceImplementation(typeof(IJobStateMachine));
+        var getter = type.DefineMethod("get_Tag",
+            MethodAttributes.Public | MethodAttributes.Static | MethodAttributes.SpecialName,
+            typeof(string), Type.EmptyTypes);
+        var il = getter.GetILGenerator();
+        il.Emit(OpCodes.Ldstr, tag);
+        il.Emit(OpCodes.Ret);
+        type.DefineMethodOverride(getter, typeof(IJobStateMachine).GetProperty(nameof(IJobStateMachine.Tag))!.GetMethod!);
+
+        // 工厂只需创建值类型，职业行为不参与本次注册检查。
+        foreach (var method in typeof(IJobStateMachine).GetMethods().Where(method => method.IsAbstract))
+        {
+            var implementation = type.DefineMethod(method.Name, MethodAttributes.Public | MethodAttributes.Virtual,
+                method.ReturnType, method.GetParameters().Select(parameter => parameter.ParameterType).ToArray());
+            il = implementation.GetILGenerator();
+            il.Emit(OpCodes.Newobj, typeof(NotSupportedException).GetConstructor(Type.EmptyTypes)!);
+            il.Emit(OpCodes.Throw);
+            type.DefineMethodOverride(implementation, method);
+        }
+        var jobType = type.CreateType()!;
+        Assert.Null(jobType.GetConstructor(Type.EmptyTypes));
+
+        JobMachineRegistry.RegisterAssembly(assembly);
+        JobMachineRegistry.RegisterAssembly(assembly);
+
+        Assert.Contains(tag, JobMachineRegistry.RegisteredTags());
+        Assert.Equal(jobType, JobMachineRegistry.Get(tag)?.GetType());
+    }
+
     [Fact]
     public void 外部程序集识别显式静态接口标签且与泛型注册幂等()
     {
