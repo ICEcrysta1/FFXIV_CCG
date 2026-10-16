@@ -15,6 +15,8 @@ import torch
 
 logger = logging.getLogger(__name__)
 
+__all__ = ["RuntimeDebugConfig", "RuntimeDebugRecorder"]
+
 
 @dataclass(frozen=True)
 class RuntimeDebugConfig:

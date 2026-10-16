@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 import math
 from pathlib import Path
 
@@ -129,7 +129,7 @@ class Normalizer:
         config_payload = contract.get("config")
         if not isinstance(config_payload, Mapping):
             raise ValueError("normalizer contract config must be a mapping")
-        required_config_keys = tuple(asdict(NormalizerConfig()))
+        required_config_keys = tuple(field.name for field in fields(NormalizerConfig))
         missing_config_keys = [
             key for key in required_config_keys if key not in config_payload
         ]

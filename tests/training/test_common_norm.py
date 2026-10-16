@@ -69,6 +69,23 @@ def test_normalizer_contract_rejects_previous_gcd_time_unit_config():
         Normalizer.from_contract(contract)
 
 
+@pytest.mark.parametrize("missing, extra, message", [
+    (("time_scale", "mp_max"), {"unknown": 1},
+     "normalizer contract config is missing: mp_max, time_scale"),
+    ((), {"unknown": 1, "removed": 2},
+     "normalizer contract config has removed or unknown fields: removed, unknown"),
+])
+def test_normalizer_contract_preserves_config_field_validation(missing, extra, message):
+    """缺失字段按声明顺序报告，且优先于多余字段检查。"""
+    contract = Normalizer().normalization_contract
+    for key in missing:
+        contract["config"].pop(key)
+    contract["config"].update(extra)
+    with pytest.raises(ValueError) as exc:
+        Normalizer.from_contract(contract)
+    assert str(exc.value) == message
+
+
 def test_state_encoder_does_not_treat_midfield_seconds_name_as_time_rule():
     encoded = _encode_states(Normalizer(), (
         "previous_action_after.some_seconds_counter", "previous_action_after.real_remaining_seconds",

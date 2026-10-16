@@ -160,12 +160,8 @@ def close_tensorboard_writer(writer) -> None:
         writer.close()
 
 
-from .tensorboard_monitor import TensorBoardMonitor
-
-
 __all__ = [
     "TensorBoardConfig",
-    "TensorBoardMonitor",
     "close_tensorboard_writer",
     "create_tensorboard_writer",
     "resolve_tensorboard_root",

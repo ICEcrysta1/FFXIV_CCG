@@ -22,22 +22,6 @@ from .trace import ModelTrace, trace_encoder
 from .transformer import TraceableTransformerEncoderLayer
 
 
-class _CopiedActionHead(nn.Linear):
-    """复制动作 embedding 行作为独立权重，不消费额外初始化随机数。"""
-
-    def __init__(self, initial_weight: torch.Tensor):
-        super().__init__(
-            initial_weight.shape[1], initial_weight.shape[0], bias=False,
-            device=initial_weight.device, dtype=initial_weight.dtype,
-        )
-        with torch.no_grad():
-            self.weight.copy_(initial_weight)
-
-    def reset_parameters(self) -> None:
-        # 构造器随后完整复制来源权重，省去会被覆盖的随机初始化。
-        pass
-
-
 class CausalPolicyModel(nn.Module):
     """从最新状态预测固定动作词表，输出头与输入技能 embedding 独立训练。"""
 
@@ -109,9 +93,14 @@ class CausalPolicyModel(nn.Module):
                 a_end=config.residual_mix_a_end,
             )
         self._init_weights()
-        self.output_head = _CopiedActionHead(
-            self.input_encoder.skill_embed.weight[self.action_to_vocab_id],
+        initial_weight = self.input_encoder.skill_embed.weight[self.action_to_vocab_id]
+        # 复制输入动作行作为独立权重；跳过随后会被覆盖的默认随机初始化。
+        self.output_head = nn.utils.skip_init(
+            nn.Linear, initial_weight.shape[1], initial_weight.shape[0], bias=False,
+            device=initial_weight.device, dtype=initial_weight.dtype,
         )
+        with torch.no_grad():
+            self.output_head.weight.copy_(initial_weight)
         self._kv_cache_enabled = False
         self._kv_cache: TransformerKVCache | None = None
         self._runtime_debug = None

@@ -9,7 +9,8 @@ import torch
 from common.policy.model.repetition import apply_repetition_penalty, prepare_repetition_penalty
 from common.pytorch.runtime import autocast_context, move_batch
 from common.training.metrics import MetricAccumulator
-from common.training.tensorboard import TensorBoardMonitor, write_scalar_metrics
+from common.training.tensorboard import write_scalar_metrics
+from common.training.tensorboard_monitor import TensorBoardMonitor
 from scripts.autoregressive_replay.parallel import collate_live_batches
 
 from .config import GrpoConfig
@@ -113,7 +114,7 @@ def compute_grpo_loss(
     policy_loss = -surrogate.mean()
 
     log_ratio_ref_to_policy = old_logprobs - new_logprobs
-    kl = torch.exp(log_ratio_ref_to_policy) - log_ratio_ref_to_policy - 1.0
+    kl = torch.expm1(log_ratio_ref_to_policy) - log_ratio_ref_to_policy
     loss = policy_loss + grpo.kl_coefficient * kl.mean()
 
     positive_probabilities = probabilities.clamp_min(LOG_PROB_EPSILON)

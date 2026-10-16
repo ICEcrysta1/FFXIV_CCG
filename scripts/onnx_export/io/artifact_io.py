@@ -15,11 +15,8 @@ import numpy as np
 
 def file_sha256(path: Path) -> str:
     """流式计算部署产物的 SHA-256。"""
-    digest = hashlib.sha256()
     with Path(path).open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def json_payload_sha256(payload: Mapping[str, object]) -> str:

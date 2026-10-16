@@ -838,3 +838,66 @@ def test_training_collator_allows_unknown_percentile_for_untagged_samples(tmp_pa
     assert batch["quality_label_levels"].shape == (2, 0)
     assert batch["source_quality"][0].item() == -1.0
     assert torch.isnan(batch["source_quality"][1])
+
+
+@pytest.mark.parametrize("source_device, default_device", [
+    ("cpu", "cpu"), ("cuda", "cpu"), ("cpu", "cuda"),
+])
+@pytest.mark.parametrize("int_dtype_name", ["int16", "int32"])
+def test_quality_padding_preserves_cast_broadcast_and_device(
+    source_device, default_device, int_dtype_name,
+):
+    """padding 保留逐行转换，不能由首行 dtype 截断后续标签，也不改变广播输入。"""
+    torch = pytest.importorskip("torch")
+    from training.data.collator import _collate_quality_supervision
+
+    if "cuda" in (source_device, default_device) and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    samples = [
+        {"quality_label_levels": torch.tensor(value, dtype=dtype, device=source_device), "metadata": {}}
+        for value, dtype in (
+            ([1], torch.int8), ([257, 3], torch.int64),
+            (2, torch.int32), ([[[1, 3]]], torch.int32), ([], torch.int64),
+        )
+    ]
+    samples.append({"metadata": {}})
+    int_dtype = getattr(torch, int_dtype_name)
+    with torch.device(default_device):
+        batch = _collate_quality_supervision(
+            samples, torch=torch, int_dtype=int_dtype, float_dtype=torch.float32,
+        )
+
+    assert batch["quality_label_levels"].tolist() == [[1, 0], [257, 3], [2, 0], [1, 3], [0, 0], [0, 0]]
+    assert batch["quality_label_levels"].dtype == int_dtype
+    assert batch["quality_label_mask"].tolist() == [
+        [True, False], [True, True], [True, False], [True, True], [False, False], [False, False],
+    ]
+    assert batch["quality_label_mask"].dtype == torch.bool
+    assert all(value.device.type == default_device for value in batch.values())
+
+
+@pytest.mark.parametrize("shape", [(2, 1), (0, 2), (2, 0), (1, 2, 1), (0, 1, 0)])
+def test_quality_padding_rejects_shapes_that_cannot_broadcast_to_one_row(shape):
+    """不能通过 flatten 意外接受原先切片赋值拒绝的标签矩阵。"""
+    torch = pytest.importorskip("torch")
+    from training.data.collator import _collate_quality_supervision
+
+    samples = [{"quality_label_levels": torch.ones(shape, dtype=torch.int32), "metadata": {}}]
+    with pytest.raises(RuntimeError, match="expand"):
+        _collate_quality_supervision(
+            samples, torch=torch, int_dtype=torch.int32, float_dtype=torch.float32,
+        )
+
+
+def test_quality_padding_preserves_all_empty_and_missing_labels():
+    torch = pytest.importorskip("torch")
+    from training.data.collator import _collate_quality_supervision
+
+    batch = _collate_quality_supervision(
+        [{"quality_label_levels": torch.empty((1, 0), dtype=torch.int64), "metadata": {}},
+         {"metadata": {}}],
+        torch=torch, int_dtype=torch.int32, float_dtype=torch.float32,
+    )
+    assert batch["quality_label_levels"].shape == batch["quality_label_mask"].shape == (2, 0)
+    assert batch["quality_label_levels"].dtype == torch.int32
+    assert batch["quality_label_mask"].dtype == torch.bool

@@ -7,7 +7,10 @@ from pathlib import Path
 
 from torch.utils.data import DataLoader
 
+from common.game.config import load_project_config
+from common.game.skills import SkillBook
 from common.policy.data import ActionSpace, DataSpec, Normalizer
+from common.policy.data.policy_actions import load_policy_actions
 from training.data import (
     ShardBatchSampler,
     TrainingCollator,
@@ -16,7 +19,6 @@ from training.data import (
     build_sample_weights,
     load_sequence_oversampler,
 )
-from training.data.skill_values import load_skill_values
 
 from ..config import RunConfig
 
@@ -50,9 +52,8 @@ def build_dataloaders(
     val_dataset = _build_dataset(val_paths, config, normalizer, int_dtype, float_dtype, cache_dir)
     DataSpec.from_dataset(train_dataset).assert_compatible_with(DataSpec.from_dataset(val_dataset))
 
-    skill_values = None
     if config.value_preference.enabled and config.value_preference.loss_weight > 0.0:
-        skill_values = load_skill_values(train_dataset.job_tag)
+        skill_values = _load_skill_values(train_dataset.job_tag)
         missing_values = sorted(
             set(train_dataset.action_keys) - set(skill_values)
         )
@@ -131,6 +132,23 @@ def build_dataloaders(
     logger.info("训练文件: %d，验证文件: %d", len(train_paths), len(val_paths))
     logger.info("训练样本: %d，验证样本: %d", len(train_dataset), len(val_dataset))
     return train_loader, val_loader, train_dataset, val_dataset
+
+
+def _load_skill_values(job_tag: str) -> dict[str, float]:
+    """读取职业与策略动作的价值定义，供数据加载前完整性校验。"""
+    project_config = load_project_config(job_tag=job_tag)
+    skill_book = SkillBook.from_project_config(project_config)
+    values = {
+        skill.key: float(skill.value)
+        for skill in skill_book.enabled_skills()
+    }
+    for action in load_policy_actions():
+        if action.key in values:
+            raise ValueError(
+                f"policy action key conflicts with skill key: {action.key}"
+            )
+        values[action.key] = float(action.value)
+    return values
 
 
 def _build_dataset(paths, config, normalizer, int_dtype, float_dtype, cache_dir):

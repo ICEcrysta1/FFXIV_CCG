@@ -5,7 +5,7 @@ import json
 import pytest
 import torch
 
-from training.runtime.runtime_debug import (
+from training.runtime import (
     RuntimeDebugConfig,
     RuntimeDebugRecorder,
     aggregate_events,

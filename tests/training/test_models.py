@@ -28,7 +28,7 @@ from training.config import load_run_config
 from training.loop.losses.value_preference import (
     compute_value_preference_loss,
 )
-from training.data.skill_values import load_skill_values
+from training.loop.dataloaders import _load_skill_values
 from training.loop.losses.primary import primary_loss
 from common.policy.model.input_encoder import build_position_ids
 from common.policy.model.repetition import apply_repetition_penalty
@@ -986,7 +986,7 @@ def test_value_preference_requires_runtime_job_values():
 
 
 def test_value_preference_loads_values_from_job_yaml():
-    values = load_skill_values("machinist")
+    values = _load_skill_values("machinist")
 
     assert values["full_metal_field"] == pytest.approx(2.0)
     assert values["heated_split_shot"] == pytest.approx(1.0)

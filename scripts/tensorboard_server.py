@@ -197,7 +197,7 @@ def _start_owned_background(*, port: int, log_dir: Path, owner_pid: int) -> None
     worker_command = [
         sys.executable,
         "-m",
-        "common.training.tensorboard_server",
+        "scripts.tensorboard_server",
         "--owned-worker",
         "--owner-pid",
         str(owner_pid),

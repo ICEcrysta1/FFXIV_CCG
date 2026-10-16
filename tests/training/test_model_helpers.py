@@ -5,6 +5,7 @@ from __future__ import annotations
 from tests.training._causal_fixtures import make_state_groups
 
 import logging
+import random
 from contextlib import nullcontext
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -59,6 +60,23 @@ def _write_config(tmp_path: Path, payload: object) -> Path:
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(payload, allow_unicode=True), encoding="utf-8")
     return path
+
+
+@pytest.mark.parametrize("seed", (0, 42, -7))
+def test_seed_everything_seeds_python_cpu_and_available_cuda(seed):
+    """默认生成器与同种子的独立生成器一致，覆盖所有可用 GPU。"""
+    cuda_devices = list(range(torch.cuda.device_count())) if torch.cuda.is_available() else []
+    devices = [torch.device("cpu"), *(torch.device("cuda", index) for index in cuda_devices)]
+    python_state = random.getstate()
+    try:
+        with torch.random.fork_rng(devices=cuda_devices):
+            training_loop_impl._seed_everything(seed)
+            assert random.random() == random.Random(seed).random()
+            for device in devices:
+                expected = torch.rand(8, device=device, generator=torch.Generator(device=device).manual_seed(seed))
+                assert torch.equal(torch.rand(8, device=device), expected)
+    finally:
+        random.setstate(python_state)
 
 
 @pytest.mark.parametrize(
@@ -1267,7 +1285,7 @@ def test_build_dataloaders_covers_single_file_empty_shard_and_value_paths(
     monkeypatch.setattr(dataloaders_module, "TrainingDataset", lambda *_args, **_kwargs: dataset)
     monkeypatch.setattr(dataloaders_module, "load_sequence_oversampler", lambda *_args: None)
     monkeypatch.setattr(dataloaders_module, "build_sample_weights", lambda *_args: None)
-    monkeypatch.setattr(dataloaders_module, "load_skill_values", lambda _job: {"a": 1.0, "b": 2.0})
+    monkeypatch.setattr(dataloaders_module, "_load_skill_values", lambda _job: {"a": 1.0, "b": 2.0})
 
     class FakeCollator:
         def __init__(self, **kwargs):
@@ -1443,7 +1461,7 @@ def test_build_dataloaders_rejects_empty_inputs_and_missing_skill_values(tmp_pat
     monkeypatch.setattr(dataloaders_module, "TrainingDataset", lambda *_args, **_kwargs: dataset)
     monkeypatch.setattr(dataloaders_module, "load_sequence_oversampler", lambda *_args: None)
     monkeypatch.setattr(dataloaders_module, "build_sample_weights", lambda *_args: None)
-    monkeypatch.setattr(dataloaders_module, "load_skill_values", lambda _job: {"a": 1.0})
+    monkeypatch.setattr(dataloaders_module, "_load_skill_values", lambda _job: {"a": 1.0})
 
     config = RunConfig(
         raw_data_dir=tmp_path,

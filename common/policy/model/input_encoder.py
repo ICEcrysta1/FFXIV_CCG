@@ -16,13 +16,6 @@ ROLE_STATE = TOKEN_ENCODING_CONTRACT["role_ids"]["state"]
 ROLE_SKILL = TOKEN_ENCODING_CONTRACT["role_ids"]["skill"]
 
 
-class _StateResetProjection(nn.Linear):
-    """绝对值重置标识从零开始，不消耗公共参数的初始化随机数。"""
-
-    def reset_parameters(self) -> None:
-        nn.init.zeros_(self.weight)
-
-
 class CausalInputEncoder(nn.Module):
     """将场景、技能和状态独立编码到同一个因果上下文。"""
 
@@ -43,7 +36,12 @@ class CausalInputEncoder(nn.Module):
             for _ in range(data_spec.num_scene_types)
         )
         self.role_embed = nn.Embedding(3, d_model)
-        self.state_reset_proj = _StateResetProjection(data_spec.base_state_dim, d_model, bias=False)
+        # 跳过默认随机初始化，让重置标识从零开始且不改变公共参数的随机数序列。
+        self.state_reset_proj = nn.utils.skip_init(
+            nn.Linear, data_spec.base_state_dim, d_model, bias=False,
+            device=self.role_embed.weight.device, dtype=self.role_embed.weight.dtype,
+        )
+        nn.init.zeros_(self.state_reset_proj.weight)
 
     @property
     def max_token_count(self) -> int:

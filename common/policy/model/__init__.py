@@ -1,6 +1,6 @@
 """因果 Transformer 策略模型及其运行组件。"""
 
-from .attention import build_causal_attention_mask
+from .attention_masks import build_causal_attention_mask
 from .position_encoding import RotaryPositionEncoding
 from .repetition import (
     RepetitionConfig,
