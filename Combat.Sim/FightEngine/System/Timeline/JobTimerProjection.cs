@@ -13,7 +13,6 @@ namespace Combat.Sim.System.Timeline;
 /// </summary>
 internal sealed record JobTimerProjection(
     string OutputKey,
-    string DeadlineKey,
     bool IsAccumulated,
     double IntervalSeconds)
 {

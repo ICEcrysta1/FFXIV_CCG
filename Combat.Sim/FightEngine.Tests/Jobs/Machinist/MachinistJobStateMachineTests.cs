@@ -91,6 +91,49 @@ public class MachinistJobStateMachineTests
         Assert.False(state.HasStatus("reassemble"));
     }
 
+    [Theory]
+    [InlineData("drill", 3, false)]
+    [InlineData("double_check", 2, true)]
+    public void BehaviorsWithoutExtraEffectsStillApplyWeaponSkillRules(
+        string skillKey, int expectedWildfireHits, bool expectedReassemble)
+    {
+        var machine = BuildMachine();
+        var state = machine.InitialState();
+        state.SetJobResource("wildfire_active", true);
+        state.SetJobResource("wildfire_hits", 2);
+        machine.SystemMachine.GrantRegisteredStatus(state, "reassemble");
+        var next = state.Clone();
+
+        machine.JobMachine.ApplyAction(state, next, machine.SkillBook.Get(skillKey));
+
+        Assert.Equal(expectedWildfireHits, Int(next, "wildfire_hits"));
+        Assert.Equal(expectedReassemble, next.HasStatus("reassemble"));
+    }
+
+    [Theory]
+    [InlineData("_test_fake")]
+    [InlineData(null)]
+    public void UnregisteredBehaviorFailsBeforeWeaponSkillRules(string? behavior)
+    {
+        var machine = BuildMachine();
+        var state = machine.InitialState();
+        state.SetJobResource("wildfire_active", true);
+        state.SetJobResource("wildfire_hits", 2);
+        machine.SystemMachine.GrantRegisteredStatus(state, "reassemble");
+        var skill = machine.SkillBook.Get("drill") with { Behavior = behavior! };
+        var next = state.Clone();
+
+        Assert.False(machine.JobMachine.SupportsBehavior(behavior!));
+        Assert.True(machine.JobMachine.ValidateAction(state, skill).Ok);
+        var error = Assert.Throws<ArgumentOutOfRangeException>(() =>
+            machine.JobMachine.ApplyAction(state, next, skill));
+
+        Assert.Equal("Behavior", error.ParamName);
+        Assert.Equal(behavior, error.ActualValue);
+        Assert.Equal(2, Int(next, "wildfire_hits"));
+        Assert.True(next.HasStatus("reassemble"));
+    }
+
     [Fact]
     public void CombosResolvePotencyAndGenerateHeatAndBattery()
     {

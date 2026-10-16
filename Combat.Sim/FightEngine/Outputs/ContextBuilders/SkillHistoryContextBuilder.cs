@@ -16,8 +16,8 @@ namespace Combat.Sim.Outputs.ContextBuilders;
 public sealed class SkillHistoryContextBuilder
 {
     private readonly int? _historyLimit;
-    private readonly List<ActionHistoryEntry> _cachedEntries = new();
-    private readonly List<Dictionary<string, object?>> _cachedTokens = new();
+    private Dictionary<ActionHistoryEntry, Dictionary<string, object?>> _cachedTokens =
+        new(ReferenceEqualityComparer.Instance);
 
     public SkillHistoryContextBuilder(int? historyLimit = null)
     {
@@ -27,28 +27,21 @@ public sealed class SkillHistoryContextBuilder
     public List<Dictionary<string, object?>> Build(CombatState state)
     {
         var history = Limit(state.History);
-        var tokenByEntry = new Dictionary<ActionHistoryEntry, Dictionary<string, object?>>(
+        var retained = new Dictionary<ActionHistoryEntry, Dictionary<string, object?>>(
             ReferenceEqualityComparer.Instance);
-        for (var i = 0; i < _cachedEntries.Count; i++)
-        {
-            tokenByEntry[_cachedEntries[i]] = _cachedTokens[i];
-        }
-
         var tokens = new List<Dictionary<string, object?>>();
         foreach (var entry in history)
         {
-            if (!tokenByEntry.TryGetValue(entry, out var token))
+            if (!_cachedTokens.TryGetValue(entry, out var token))
             {
                 token = BuildFromEntry(entry);
             }
 
+            retained[entry] = token;
             tokens.Add(token);
         }
 
-        _cachedEntries.Clear();
-        _cachedEntries.AddRange(history);
-        _cachedTokens.Clear();
-        _cachedTokens.AddRange(tokens);
+        _cachedTokens = retained;
         return tokens;
     }
 

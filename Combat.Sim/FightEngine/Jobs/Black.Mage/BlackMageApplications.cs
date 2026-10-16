@@ -52,16 +52,8 @@ public sealed partial class BlackMageJobStateMachine
     private void ApplyFlareStar(CombatState nextState) =>
         SetResource(nextState, "astral_soul", 0);
 
-    /// <summary>冰澈：耗蓝、补满灵极魂并按当前 UI 命中回蓝（对照 _apply_blizzard_iv）。</summary>
-    private void ApplyBlizzardIv(CombatState previousState, CombatState nextState, SkillDefinition skill)
-    {
-        SpendMp(nextState, ActualMpCost(previousState, skill));
-        SetResource(nextState, "umbral_hearts", ResourceMax("umbral_hearts"));
-        RecoverMpForUmbralIce(nextState);
-    }
-
-    /// <summary>玄冰：耗蓝、补满灵极魂并按当前 UI 命中回蓝（对照 _apply_freeze）。</summary>
-    private void ApplyFreeze(CombatState previousState, CombatState nextState, SkillDefinition skill)
+    /// <summary>冰澈与玄冰：耗蓝、补满灵极魂并按当前 UI 命中回蓝。</summary>
+    private void ApplyIceRefill(CombatState previousState, CombatState nextState, SkillDefinition skill)
     {
         SpendMp(nextState, ActualMpCost(previousState, skill));
         SetResource(nextState, "umbral_hearts", ResourceMax("umbral_hearts"));

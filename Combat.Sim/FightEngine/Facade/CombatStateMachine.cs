@@ -111,9 +111,6 @@ public sealed class CombatStateMachine
 
     internal SkillDefinition ResolveSkill(int gameId) => SkillBook.Get(gameId);
 
-    /// <summary>返回当前状态下的有效基础 GCD 秒数（对照 current_gcd_duration）。</summary>
-    internal double CurrentGcdDuration(CombatState state) => JobMachine.CurrentGcdDuration(state);
-
     /// <summary>校验一次动作在当前状态下是否合法（对照 validate_action）。</summary>
     internal ValidationResult ValidateAction(CombatState state, string skillRef) =>
         ValidateAction(state, ResolveSkill(skillRef));
@@ -230,13 +227,6 @@ public sealed class CombatStateMachine
         return new(true, true, "", readyAt);
     }
 
-    /// <summary>
-    /// 职业量谱快照（含时间资源的对外视图投影）。宿主读职业资源必须走这里，
-    /// 不能直接读 <see cref="CombatState.JobResources"/>——那里不再保存计时器的真值。
-    /// </summary>
-    internal Dictionary<string, object> BuildJobResourceSnapshot(CombatState state) =>
-        SystemMachine.BuildJobResourceSnapshot(state);
-
     /// <summary>应用动作占用、冷却和职业时序资源消耗（对照 _apply_action_timing）。</summary>
     internal void ApplyActionTiming(
         CombatState state,
@@ -310,36 +300,6 @@ public sealed class CombatStateMachine
         SystemMachine.SupportsBehavior(skill.Behavior) || JobMachine.SupportsBehavior(skill.Behavior);
 
     /// <summary>
-    /// 纯时序查询（对照转换脚本的强制预览时序，供回放/转换脚本编排用）：
-    /// 计算动作在当前状态下的读条、有效 GCD 与窗口元信息，不执行动作、不产生副作用。
-    /// 状态机只提供能力，不承担任何转换编排职责。
-    /// </summary>
-    internal (double GcdUnitSeconds, double ActualCastSeconds, double EffectiveGcdSeconds,
-        double GcdWindowSeconds, double GcdWindowGcd) BuildPreviewTiming(
-        CombatState state,
-        SkillDefinition skill)
-    {
-        var gcdUnitSeconds = JobMachine.CurrentGcdDuration(state);
-        var isInstant = JobMachine.IsInstant(state, skill);
-        var actualCastSeconds = BuildActualCastSeconds(
-            skill,
-            isInstant: isInstant,
-            gcdUnitSeconds: gcdUnitSeconds,
-            castTimeMultiplier: ResolveCastTimeMultiplier(state, skill));
-        var effectiveGcd = BuildEffectiveGcdSeconds(skill, gcdUnitSeconds: gcdUnitSeconds);
-        var (_, _, gcdWindowSeconds) = BuildActionMetrics(
-            skill,
-            actualCastSeconds: actualCastSeconds,
-            effectiveGcd: effectiveGcd);
-        return (
-            gcdUnitSeconds,
-            actualCastSeconds,
-            effectiveGcd,
-            gcdWindowSeconds,
-            GcdUnits.ToGcdUnits(gcdWindowSeconds, gcdUnitSeconds));
-    }
-
-    /// <summary>
     /// 构造一次绝对时间动作生命周期所需的纯时序计划。
     /// 该方法只读取状态，不推进时间、不写入动作效果，供动作时序校验和时间线执行复用。
     /// </summary>
@@ -397,26 +357,24 @@ public sealed class CombatStateMachine
     {
         var stateBefore = _stateContextBuilder.Build(requestState);
         var stateAfter = _stateContextBuilder.Build(effectState);
-        var snapshot = BuildSkillSnapshot(
-            effectState,
-            skill,
-            new ValidationResult(true),
-            potencyState: requestState);
+        // 威力和训练价值沿用请求快照，冷却反映动作消耗后的效果快照。
+        var (nextCooldownSeconds, availableCharges, maxCharges) =
+            SystemMachine.BuildCooldownSnapshot(effectState, skill);
         SystemMachine.RecordActionHistory(
             effectState,
             requestState,
             skill,
-            potency: snapshot.Potency,
-            value: snapshot.Value,
+            potency: ResolveJobAdjustedPotency(requestState, skill, skill.Potency),
+            value: JobMachine.ResolveActionValue(requestState, skill, skill.Value),
             castTimeSeconds: timing.ActualCastSeconds,
             castTimeGcds: GcdUnits.ToGcdUnits(timing.ActualCastSeconds, timing.GcdUnitSeconds),
             gcdWindowSeconds: timing.GcdWindowSeconds,
             gcdWindowGcds: GcdUnits.ToGcdUnits(timing.GcdWindowSeconds, timing.GcdUnitSeconds),
             isLegal: true,
             invalidReason: "",
-            nextCooldownSeconds: snapshot.NextCooldownSeconds,
-            availableCharges: snapshot.AvailableCharges,
-            maxCharges: snapshot.MaxCharges,
+            nextCooldownSeconds: nextCooldownSeconds,
+            availableCharges: availableCharges,
+            maxCharges: maxCharges,
             stateBefore,
             stateAfter,
             recordedTimeSeconds: effectState.Time,
@@ -473,40 +431,11 @@ public sealed class CombatStateMachine
         return Math.Max(0.0, state.GcdRemaining);
     }
 
-    /// <summary>技能快照元信息（对照 _build_skill_snapshot）。</summary>
-    internal sealed record SkillSnapshot(
-        double Potency,
-        double Value,
-        bool IsLegal,
-        string InvalidReason,
-        double NextCooldownSeconds,
-        int AvailableCharges,
-        int MaxCharges);
-
     internal sealed record ActionSubmissionPlan(
         bool Accepted,
         bool Queued,
         string Reason,
         double AcceptedTimestamp);
-
-    internal SkillSnapshot BuildSkillSnapshot(
-        CombatState state,
-        SkillDefinition skill,
-        ValidationResult? validation = null,
-        CombatState? potencyState = null)
-    {
-        var (nextCooldownSeconds, availableCharges, maxCharges) =
-            SystemMachine.BuildCooldownSnapshot(state, skill);
-        var resolvedValidation = validation ?? ValidateAction(state, skill.Key);
-        return new SkillSnapshot(
-            ResolveJobAdjustedPotency(potencyState ?? state, skill, basePotency: skill.Potency),
-            JobMachine.ResolveActionValue(potencyState ?? state, skill, skill.Value),
-            resolvedValidation.Ok,
-            resolvedValidation.Reason,
-            nextCooldownSeconds,
-            availableCharges,
-            maxCharges);
-    }
 
     private double ScaleNominalGcdSeconds(double nominalSeconds, double gcdUnitSeconds)
     {

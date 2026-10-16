@@ -285,6 +285,72 @@ public sealed class CombatTimelineRuntimeTests
     }
 
     [Fact]
+    public void 待结算队列恢复后仍按时间优先级和序号排序且未到期读取不改变内容()
+    {
+        var queue = new PendingSettlementQueue();
+        var events = new[]
+        {
+            new TimelineEvent(9, TimelineEventPriority.ExternalScene, TimelineEventKind.SceneChanged,
+                "later", Sequence: 1),
+            new TimelineEvent(5, TimelineEventPriority.ExpirationAndCooldown, TimelineEventKind.JobTimerExpired,
+                "expiration", Sequence: 2),
+            new TimelineEvent(5, TimelineEventPriority.PeriodicSettlement, TimelineEventKind.JobPeriodicTick,
+                "second", Sequence: 4),
+            new TimelineEvent(5, TimelineEventPriority.PeriodicSettlement, TimelineEventKind.JobPeriodicTick,
+                "first", Sequence: 3),
+        };
+        foreach (var item in events) Assert.True(queue.Enqueue(item));
+        var snapshot = queue.Snapshot();
+
+        // 恢复顺序不影响稳定排序；重复目标不替换最先保留的事件。
+        queue.Restore(snapshot.Reverse().Append(events[3] with { Sequence = 99 }));
+        Assert.Equal(4, queue.Count);
+        Assert.Equal(snapshot, queue.Snapshot());
+        for (var index = 0; index < 2; index++)
+        {
+            Assert.True(queue.TryPeek(out var first, out _));
+            Assert.Equal("first", first.OwnerKey);
+            Assert.False(queue.TryDequeue(4, out _));
+            Assert.Equal(snapshot, queue.Snapshot());
+        }
+
+        foreach (var expected in new[] { "first", "second", "expiration" })
+        {
+            Assert.True(queue.TryDequeue(5, out var actual));
+            Assert.Equal(expected, actual.OwnerKey);
+        }
+        Assert.Equal(1, queue.Count);
+        Assert.False(queue.TryDequeue(5, out _));
+        Assert.True(queue.TryDequeue(9, out var later));
+        Assert.Equal("later", later.OwnerKey);
+        Assert.Equal(0, queue.Count);
+        Assert.False(queue.TryPeek(out _, out _));
+    }
+
+    [Fact]
+    public void 未到期读取保留相同排序键的待结算事件队首()
+    {
+        var queue = new PendingSettlementQueue();
+        Assert.True(queue.Enqueue(new TimelineEvent(
+            5, TimelineEventPriority.PeriodicSettlement, TimelineEventKind.JobPeriodicTick,
+            "first", Sequence: 1)));
+        Assert.True(queue.Enqueue(new TimelineEvent(
+            5, TimelineEventPriority.PeriodicSettlement, TimelineEventKind.JobPeriodicTick,
+            "second", Sequence: 1)));
+
+        Assert.True(queue.TryPeek(out var original, out _));
+        Assert.False(queue.TryDequeue(4, out _));
+        Assert.True(queue.TryPeek(out var unchanged, out _));
+        Assert.Same(original, unchanged);
+        Assert.Equal(2, queue.Count);
+
+        Assert.True(queue.TryDequeue(5, out var taken));
+        Assert.Same(original, taken);
+        Assert.True(queue.TryDequeue(5, out _));
+        Assert.Equal(0, queue.Count);
+    }
+
+    [Fact]
     public void 恢复快照会带回待结算事实()
     {
         var runtime = new CombatTimelineRuntime(new CombatState { Mp = 0 });

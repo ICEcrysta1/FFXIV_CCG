@@ -17,8 +17,6 @@ namespace Combat.Sim.Outputs;
 /// </summary>
 public sealed class StateOutputRouter
 {
-    private readonly SystemStateMachine _systemMachine;
-    private readonly IJobStateMachine _jobMachine;
     private readonly OutputContextBuilder _contextBuilder;
     private readonly string? _precisionConfigRoot;
     private readonly SecondsStateFormatter _secondsFormatter;
@@ -32,8 +30,6 @@ public sealed class StateOutputRouter
         string? precisionConfigRoot = null,
         int? historyLimit = null)
     {
-        _systemMachine = systemMachine;
-        _jobMachine = jobMachine;
         _precisionConfigRoot = precisionConfigRoot;
         _contextBuilder = new OutputContextBuilder(project, systemMachine, jobMachine, historyLimit);
         _secondsFormatter = new SecondsStateFormatter();

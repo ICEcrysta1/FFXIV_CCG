@@ -315,11 +315,14 @@ public class ProjectConfigLoaderTests
             BaseJobYaml.Replace("max_value: 3", "max_value: 0"),
             "max_value must be positive and finite");
 
-    [Fact]
-    public void 野火持续时间与资源上限漂移抛错() =>
+    [Theory]
+    [InlineData("machinist")]
+    [InlineData("black_mage")]
+    [InlineData("_unregistered_job")]
+    public void 野火持续时间与资源上限漂移抛错(string jobKey) =>
         AssertLoadFails(
             BaseSystemYaml,
-            WildfireDriftJobYaml,
+            WildfireDriftJobYaml.Replace("key: machinist", $"key: {jobKey}"),
             "wildfire_duration and resources.wildfire_remaining.max_value must match");
 
     // ---------- 辅助 ----------
