@@ -4,6 +4,7 @@
 // See LICENSE and LICENSE-FightEngine-Linking-Exception in the repository root.
 
 using System.Reflection;
+using Combat.Sim.Config;
 
 namespace Combat.Sim.Jobs;
 
@@ -17,31 +18,44 @@ public static class JobMachineRegistry
 {
     static JobMachineRegistry()
     {
-        RegisterBuiltInJobMachines();
+        RegisterAssembly(typeof(JobMachineRegistry).Assembly);
     }
 
-    private static readonly Dictionary<string, Type> _types = new(StringComparer.Ordinal);
-    private static readonly Dictionary<string, Func<IJobStateMachine>> _factories = new(StringComparer.Ordinal);
+    private sealed record Registration(
+        Type? Type,
+        Func<IJobStateMachine> Factory,
+        Action<JobConfig>? ValidateConfig);
+
+    private static readonly Dictionary<string, Registration> _registrations = new(StringComparer.Ordinal);
 
     /// <summary>
-    /// 自动发现并注册当前程序集内的全部职业状态机（对照 jobs/__init__.py 的模块自动发现）。
+    /// 自动发现并注册指定程序集内的全部职业状态机。
+    /// 宿主加载独立职业 DLL 后可调用此入口，核心不引用具体职业程序集。
     /// 实现类只需提供静态 Tag（注册路径不构造实例，标签直接读取）与无参构造
     /// （配置与系统层引用经 Bind 注入）；缺静态 Tag 的实现直接报错，避免静默漏注册。
     /// 与手动 <see cref="Register{T}"/> 共用同一写路径，幂等语义完全对称：
     /// 自动发现注册后再手动注册同一类型同样幂等返回。
     /// </summary>
-    private static void RegisterBuiltInJobMachines()
+    public static void RegisterAssembly(Assembly assembly)
     {
-        foreach (var type in typeof(JobMachineRegistry).Assembly.GetTypes())
+        ArgumentNullException.ThrowIfNull(assembly);
+        foreach (var type in assembly.GetTypes())
         {
-            if (type.IsAbstract || type.IsInterface || !typeof(IJobStateMachine).IsAssignableFrom(type))
+            if (type.IsAbstract || type.IsInterface || type.ContainsGenericParameters ||
+                !typeof(IJobStateMachine).IsAssignableFrom(type))
             {
                 continue;
             }
 
-            RegisterType(ReadTag(type), type);
+            // 与泛型注册共用静态接口分派，显式接口实现也不会漏掉配置校验。
+            var validator = (Action<JobConfig>)typeof(JobMachineRegistry)
+                .GetMethod(nameof(CreateConfigValidator), BindingFlags.NonPublic | BindingFlags.Static)!
+                .MakeGenericMethod(type).Invoke(null, null)!;
+            RegisterType(ReadTag(type), type, validator);
         }
     }
+
+    private static Action<JobConfig> CreateConfigValidator<T>() where T : IJobStateMachine => T.ValidateConfig;
 
     private static string ReadTag(Type type)
     {
@@ -63,33 +77,29 @@ public static class JobMachineRegistry
     /// 注意：注册表是进程级全局空间，测试与宿主共享，测试专用职业 tag 需全局唯一；
     /// 注册本身不保证并发安全，应在进程启动期单线程完成注册。
     /// </summary>
-    private static void RegisterType(string tag, Type type)
+    private static void RegisterType(string tag, Type type, Action<JobConfig>? validateConfig)
     {
-        if (_types.TryGetValue(tag, out var existing))
+        if (_registrations.TryGetValue(tag, out var existing))
         {
-            if (existing == type)
+            if (existing.Type == type)
             {
                 return;
             }
             throw new InvalidOperationException($"duplicate job state machine tag: {tag}");
         }
-        if (_factories.ContainsKey(tag))
-        {
-            throw new InvalidOperationException($"duplicate job state machine tag: {tag}");
-        }
-        _types[tag] = type;
-        _factories[tag] = () => (IJobStateMachine)Activator.CreateInstance(type)!;
+        _registrations.Add(tag, new(type, () => (IJobStateMachine)Activator.CreateInstance(type)!, validateConfig));
     }
 
     /// <summary>
     /// 注册一个职业子状态机类型；同一类型重复注册幂等，注册路径不构造实例。
     /// </summary>
-    public static void Register<T>() where T : IJobStateMachine, new() => RegisterType(T.Tag, typeof(T));
+    public static void Register<T>() where T : IJobStateMachine, new() =>
+        RegisterType(T.Tag, typeof(T), T.ValidateConfig);
 
     /// <summary>按标签注册职业工厂；标签已被占用时抛错（工厂无法比较类型，不做幂等）。</summary>
     public static void Register(string tag, Func<IJobStateMachine> factory)
     {
-        if (!_factories.TryAdd(tag, factory))
+        if (!_registrations.TryAdd(tag, new(null, factory, null)))
         {
             throw new InvalidOperationException($"duplicate job state machine tag: {tag}");
         }
@@ -97,9 +107,16 @@ public static class JobMachineRegistry
 
     /// <summary>按职业标签取工厂；未注册返回 null（对照 get_job_state_machine_type）。</summary>
     public static IJobStateMachine? Get(string jobTag) =>
-        _factories.TryGetValue(jobTag, out var factory) ? factory() : null;
+        _registrations.TryGetValue(jobTag, out var registration) ? registration.Factory() : null;
+
+    /// <summary>由职业自己校验专属配置；公共加载器只按标签派发。</summary>
+    internal static void ValidateConfig(JobConfig job)
+    {
+        if (_registrations.TryGetValue(job.Key, out var registration))
+            registration.ValidateConfig?.Invoke(job);
+    }
 
     /// <summary>返回当前已注册的职业标签（排序，对照 registered_job_tags）。</summary>
     public static IReadOnlyList<string> RegisteredTags() =>
-        _factories.Keys.OrderBy(k => k, StringComparer.Ordinal).ToList();
+        _registrations.Keys.OrderBy(k => k, StringComparer.Ordinal).ToList();
 }

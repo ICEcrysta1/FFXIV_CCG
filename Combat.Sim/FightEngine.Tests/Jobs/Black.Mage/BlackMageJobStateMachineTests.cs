@@ -8,8 +8,7 @@ namespace FightEngine.Tests.Jobs.Black.Mage;
 
 /// <summary>
 /// 黑魔职业子状态机测试。
-/// 依赖输出层的断言（ui_mp_tick_progress）与操纵 Python 内部 _behaviors 的用例未迁移；
-/// unknown_behavior 分支在 C# 侧不可注入，以"未注册行为直接放行"等价替代。
+/// 覆盖资源、技能效果与职业行为的校验及应用契约。
 /// </summary>
 public class BlackMageJobStateMachineTests
 {
@@ -617,8 +616,10 @@ public class BlackMageJobStateMachineTests
         }
     }
 
-    [Fact]
-    public void UnregisteredBehaviorPassesThrough()
+    [Theory]
+    [InlineData("_test_fake")]
+    [InlineData(null)]
+    public void UnregisteredBehaviorPassesValidationButCannotBeApplied(string? behavior)
     {
         var machine = BuildMachine();
         var jobMachine = machine.JobMachine;
@@ -629,10 +630,33 @@ public class BlackMageJobStateMachineTests
             GameId: -1,
             Name: "test",
             Kind: ActionKind.Gcd,
-            Behavior: "_test_fake");
+            Behavior: behavior!);
 
-        var result = jobMachine.ValidateAction(machine.InitialState(), fakeSkill);
+        var state = machine.InitialState();
+        var result = jobMachine.ValidateAction(state, fakeSkill);
         Assert.True(result.Ok);
+        Assert.False(jobMachine.SupportsBehavior(behavior!));
+        var error = Assert.Throws<ArgumentOutOfRangeException>(() =>
+            jobMachine.ApplyAction(state, state.Clone(), fakeSkill));
+        Assert.Equal("Behavior", error.ParamName);
+        Assert.Equal(behavior, error.ActualValue);
+    }
+
+    [Theory]
+    [InlineData("fire_iv", "requires_af")]
+    [InlineData("despair", "requires_af")]
+    [InlineData("flare", "requires_af")]
+    [InlineData("blizzard_iv", "requires_ui")]
+    [InlineData("freeze", "requires_ui")]
+    [InlineData("paradox", "requires_paradox")]
+    public void JobPrerequisitesAreCheckedBeforeMp(string skillKey, string expectedReason)
+    {
+        var machine = BuildMachine();
+        var state = machine.InitialState();
+        state.Mp = 0;
+
+        Assert.Equal(expectedReason,
+            machine.JobMachine.ValidateAction(state, machine.SkillBook.Get(skillKey)).Reason);
     }
 
     [Fact]

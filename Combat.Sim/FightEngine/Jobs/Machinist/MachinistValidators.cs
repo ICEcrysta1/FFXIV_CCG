@@ -11,18 +11,6 @@ namespace Combat.Sim.Jobs.Machinist;
 
 public sealed partial class MachinistJobStateMachine
 {
-    private static ValidationResult ValidateComboOne(CombatState state, SkillDefinition skill) => new(true);
-
-    private static ValidationResult ValidateComboTwo(CombatState state, SkillDefinition skill) => new(true);
-
-    private static ValidationResult ValidateComboThree(CombatState state, SkillDefinition skill) => new(true);
-
-    private static ValidationResult ValidateTool(CombatState state, SkillDefinition skill) => new(true);
-
-    private static ValidationResult ValidateAirAnchor(CombatState state, SkillDefinition skill) => new(true);
-
-    private static ValidationResult ValidateChainSaw(CombatState state, SkillDefinition skill) => new(true);
-
     private ValidationResult ValidateExcavator(CombatState state, SkillDefinition skill) =>
         state.HasStatus("excavator_ready")
             ? new ValidationResult(true)
@@ -59,10 +47,6 @@ public sealed partial class MachinistJobStateMachine
         BoolResource(state, "wildfire_active")
             ? new ValidationResult(true)
             : new ValidationResult(false, "requires_wildfire");
-
-    private static ValidationResult ValidateBarrelStabilizer(CombatState state, SkillDefinition skill) => new(true);
-
-    private static ValidationResult ValidateDirectAbility(CombatState state, SkillDefinition skill) => new(true);
 
     private static ValidationResult ValidateReassemble(CombatState state, SkillDefinition skill) =>
         state.HasStatus("reassemble")

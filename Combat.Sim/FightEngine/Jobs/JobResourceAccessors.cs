@@ -4,6 +4,7 @@
 // See LICENSE and LICENSE-FightEngine-Linking-Exception in the repository root.
 
 using Combat.Sim.Models.Combat;
+using Combat.Sim.Models.Definitions;
 using Combat.Sim.System;
 
 namespace Combat.Sim.Jobs;
@@ -44,6 +45,10 @@ public abstract class JobResourceAccessors
 
     protected void SetResource(CombatState state, string key, object value) =>
         System.SetJobResource(state, key, value);
+
+    /// <summary>供独立职业程序集使用的冷却缩减入口，内部冷却实现仍由系统层封装。</summary>
+    protected void ApplyCooldownReduction(CombatState state, SkillDefinition skill, double seconds) =>
+        System.ApplyCooldownReduction(state, skill, seconds);
 
     /// <summary>读取职业时间资源的绝对截止时刻；null 表示当前不在计时。</summary>
     protected static double? TimelineDeadline(CombatState state, string key) =>

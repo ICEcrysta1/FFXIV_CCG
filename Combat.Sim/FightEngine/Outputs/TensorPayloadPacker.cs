@@ -57,7 +57,7 @@ public static class TensorPayloadPacker
     }
 
     /// <summary>
-    /// 数值序列打包：含 null 或浮点（或空）→ {values, is_null}；纯 bool → 布尔结构；纯 int → 整数结构。
+    /// 数值序列打包：含 null 或浮点→ {values, is_null}；纯 bool → 布尔结构；纯 int → 整数结构。
     /// null 位置用 0.0 占位而非 NaN：真正的"是否缺失"由 is_null 掩码表达，
     /// 避免 NaN 在下游归一化/前向计算里意外传播，也让同一份输入能稳定判等。
     /// </summary>
@@ -66,7 +66,7 @@ public static class TensorPayloadPacker
         NumericLayout layout,
         TensorPrecisionAdapter adapter)
     {
-        if (layout.HasNull || layout.ScalarKinds.Contains(typeof(double)) || layout.ScalarKinds.Count == 0)
+        if (layout.HasNull || layout.ScalarKinds.Contains(typeof(double)))
         {
             return new Dictionary<string, object?>
             {
@@ -121,10 +121,7 @@ public static class TensorPayloadPacker
             var scalarKinds = new HashSet<Type>();
             foreach (var layout in childLayouts)
             {
-                if (layout is not null)
-                {
-                    scalarKinds.UnionWith(layout.ScalarKinds);
-                }
+                scalarKinds.UnionWith(layout!.ScalarKinds);
             }
 
             return new NumericLayout(

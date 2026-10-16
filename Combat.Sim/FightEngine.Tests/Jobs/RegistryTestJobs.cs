@@ -1,4 +1,5 @@
 using Combat.Sim.Jobs;
+using Combat.Sim.Config;
 using Combat.Sim.Models.Combat;
 using Combat.Sim.Models.Definitions;
 using Xunit;
@@ -104,4 +105,16 @@ public sealed class CountingJob : IJobStateMachine
     {
     }
 
+}
+
+/// <summary>通过泛型注册挂载静态配置校验，不为配置加载构造职业实例。</summary>
+public class ValidatedRegistryJob : RegistryJobA, IJobStateMachine
+{
+    public static new string Tag => "registry_validated_job";
+    public static int Constructions;
+
+    public ValidatedRegistryJob() => Constructions++;
+
+    static void IJobStateMachine.ValidateConfig(JobConfig job) =>
+        throw new InvalidOperationException("registry job config is invalid");
 }

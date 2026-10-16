@@ -59,8 +59,8 @@ public sealed partial class MachinistJobStateMachine
     private void ApplyBlazingShot(CombatState nextState)
     {
         System.ConsumeRegisteredStatusStack(nextState, "overheated");
-        System.ApplyCooldownReduction(nextState, RequireSkill("double_check"), 15.0);
-        System.ApplyCooldownReduction(nextState, RequireSkill("checkmate"), 15.0);
+        ApplyCooldownReduction(nextState, RequireSkill("double_check"), 15.0);
+        ApplyCooldownReduction(nextState, RequireSkill("checkmate"), 15.0);
     }
 
     private void ApplyFullMetalField(CombatState nextState) =>
@@ -187,36 +187,27 @@ public sealed partial class MachinistJobStateMachine
         SetResource(state, "wildfire_hits", 0);
     }
 
-    private void GainHeat(CombatState state, int amount)
+    private void GainHeat(CombatState state, int amount) =>
+        GainResource(state, "heat", "wasted_heat", amount);
+
+    private void GainBattery(CombatState state, int amount) =>
+        GainResource(state, "battery", "wasted_battery", amount);
+
+    /// <summary>机工量谱增长与溢出统计使用相同结算顺序。</summary>
+    private void GainResource(CombatState state, string key, string wastedKey, int amount)
     {
-        var current = IntResource(state, "heat");
+        var current = IntResource(state, key);
         var raw = current + Math.Max(0, amount);
-        var max = ResourceMax("heat");
+        var max = ResourceMax(key);
         if (raw > max)
         {
             SetResource(
                 state,
-                "wasted_heat",
-                IntResource(state, "wasted_heat") + raw - max);
+                wastedKey,
+                IntResource(state, wastedKey) + raw - max);
         }
 
-        SetResource(state, "heat", Math.Min(max, raw));
-    }
-
-    private void GainBattery(CombatState state, int amount)
-    {
-        var current = IntResource(state, "battery");
-        var raw = current + Math.Max(0, amount);
-        var max = ResourceMax("battery");
-        if (raw > max)
-        {
-            SetResource(
-                state,
-                "wasted_battery",
-                IntResource(state, "wasted_battery") + raw - max);
-        }
-
-        SetResource(state, "battery", Math.Min(max, raw));
+        SetResource(state, key, Math.Min(max, raw));
     }
 
     private void SetCombo(CombatState state, int stage)

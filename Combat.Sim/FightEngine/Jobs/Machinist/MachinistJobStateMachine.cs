@@ -29,24 +29,51 @@ public sealed partial class MachinistJobStateMachine : JobResourceAccessors, IJo
     /// <summary>野火倒计时的注册 key，同时是它在 JobTimelineDeadlines 里的绝对到期键。</summary>
     private const string WildfireTimelineKey = "machinist.wildfire";
 
-    private static readonly HashSet<string> Behaviors = new(StringComparer.Ordinal)
+    private sealed record BehaviorHandler(
+        Func<CombatState, SkillDefinition, ValidationResult>? Validate = null,
+        Action<CombatState, CombatState, SkillDefinition>? Apply = null);
+
+    private readonly Dictionary<string, BehaviorHandler> _behaviors;
+
+    /// <summary>行为名、校验与效果在职业内只登记一次；空委托表示无需额外规则。</summary>
+    public MachinistJobStateMachine()
     {
-        "mch_combo_one",
-        "mch_combo_two",
-        "mch_combo_three",
-        "mch_tool",
-        "mch_air_anchor",
-        "mch_chain_saw",
-        "mch_excavator",
-        "mch_blazing_shot",
-        "mch_full_metal_field",
-        "mch_hypercharge",
-        "mch_wildfire",
-        "mch_detonator",
-        "mch_barrel_stabilizer",
-        "mch_reassemble",
-        "mch_direct_ability",
-    };
+        _behaviors = new(StringComparer.Ordinal)
+        {
+            ["mch_combo_one"] = new(Apply: (_, next, _) => ApplyComboOne(next)),
+            ["mch_combo_two"] = new(Apply: (previous, next, _) => ApplyComboTwo(previous, next)),
+            ["mch_combo_three"] = new(Apply: (previous, next, _) => ApplyComboThree(previous, next)),
+            ["mch_tool"] = new(),
+            ["mch_air_anchor"] = new(Apply: (_, next, _) => ApplyAirAnchor(next)),
+            ["mch_chain_saw"] = new(Apply: (_, next, _) => ApplyChainSaw(next)),
+            ["mch_excavator"] = new(ValidateExcavator, (_, next, _) => ApplyExcavator(next)),
+            ["mch_blazing_shot"] = new(ValidateBlazingShot, (_, next, _) => ApplyBlazingShot(next)),
+            ["mch_full_metal_field"] = new(ValidateFullMetalField, (_, next, _) => ApplyFullMetalField(next)),
+            ["mch_hypercharge"] = new(ValidateHypercharge, (_, next, _) => ApplyHypercharge(next)),
+            ["mch_wildfire"] = new(ValidateWildfire, (_, next, _) => ApplyWildfire(next)),
+            ["mch_detonator"] = new(ValidateDetonator, (previous, next, _) => ApplyDetonator(previous, next)),
+            ["mch_barrel_stabilizer"] = new(Apply: (_, next, _) => ApplyBarrelStabilizer(next)),
+            ["mch_reassemble"] = new(ValidateReassemble, (_, next, _) => ApplyReassemble(next)),
+            ["mch_direct_ability"] = new(),
+        };
+    }
+
+    /// <summary>机工配置契约由机工模块持有，公共加载器只调用注册的职业校验。</summary>
+    public static void ValidateConfig(JobConfig job)
+    {
+        if (!job.Timing.TryGetValue("wildfire_duration", out var wildfireDuration) ||
+            !job.ResourceLimits.TryGetValue("wildfire_remaining", out var wildfireRemainingMax))
+        {
+            return;
+        }
+
+        if (Math.Abs(wildfireDuration - wildfireRemainingMax) > 1e-9)
+        {
+            throw new InvalidOperationException(
+                "job config wildfire_duration and resources.wildfire_remaining.max_value " +
+                $"must match, got {wildfireDuration} and {wildfireRemainingMax}");
+        }
+    }
 
     private ProjectConfig? _project;
     private JobConfig? _job;
@@ -91,90 +118,26 @@ public sealed partial class MachinistJobStateMachine : JobResourceAccessors, IJo
             },
             new Dictionary<string, StatusDefinition>(Job.Statuses, StringComparer.Ordinal));
 
-    public bool SupportsBehavior(string behavior) => Behaviors.Contains(behavior);
+    public bool SupportsBehavior(string behavior) => behavior is not null && _behaviors.ContainsKey(behavior);
 
     /// <summary>校验机工职业专属动作合法性。</summary>
-    public ValidationResult ValidateAction(CombatState state, SkillDefinition skill)
-    {
-        if (!SupportsBehavior(skill.Behavior))
-        {
-            return new ValidationResult(true);
-        }
-
-        return skill.Behavior switch
-        {
-            "mch_combo_one" => ValidateComboOne(state, skill),
-            "mch_combo_two" => ValidateComboTwo(state, skill),
-            "mch_combo_three" => ValidateComboThree(state, skill),
-            "mch_tool" => ValidateTool(state, skill),
-            "mch_air_anchor" => ValidateAirAnchor(state, skill),
-            "mch_chain_saw" => ValidateChainSaw(state, skill),
-            "mch_excavator" => ValidateExcavator(state, skill),
-            "mch_blazing_shot" => ValidateBlazingShot(state, skill),
-            "mch_full_metal_field" => ValidateFullMetalField(state, skill),
-            "mch_hypercharge" => ValidateHypercharge(state, skill),
-            "mch_wildfire" => ValidateWildfire(state, skill),
-            "mch_detonator" => ValidateDetonator(state, skill),
-            "mch_barrel_stabilizer" => ValidateBarrelStabilizer(state, skill),
-            "mch_reassemble" => ValidateReassemble(state, skill),
-            "mch_direct_ability" => ValidateDirectAbility(state, skill),
-            _ => new ValidationResult(false, $"unknown_behavior:{skill.Behavior}"),
-        };
-    }
+    public ValidationResult ValidateAction(CombatState state, SkillDefinition skill) =>
+        skill.Behavior is { } behavior && _behaviors.TryGetValue(behavior, out var handler) &&
+        handler.Validate is { } validate
+            ? validate(state, skill)
+            : new ValidationResult(true);
 
     /// <summary>应用机工职业专属动作效果，并处理野火命中与整备消费。</summary>
     public void ApplyAction(CombatState previousState, CombatState nextState, SkillDefinition skill)
     {
-        switch (skill.Behavior)
+        if (skill.Behavior is not { } behavior || !_behaviors.TryGetValue(behavior, out var handler))
         {
-            case "mch_combo_one":
-                ApplyComboOne(nextState);
-                break;
-            case "mch_combo_two":
-                ApplyComboTwo(previousState, nextState);
-                break;
-            case "mch_combo_three":
-                ApplyComboThree(previousState, nextState);
-                break;
-            case "mch_tool":
-                break;
-            case "mch_air_anchor":
-                ApplyAirAnchor(nextState);
-                break;
-            case "mch_chain_saw":
-                ApplyChainSaw(nextState);
-                break;
-            case "mch_excavator":
-                ApplyExcavator(nextState);
-                break;
-            case "mch_blazing_shot":
-                ApplyBlazingShot(nextState);
-                break;
-            case "mch_full_metal_field":
-                ApplyFullMetalField(nextState);
-                break;
-            case "mch_hypercharge":
-                ApplyHypercharge(nextState);
-                break;
-            case "mch_wildfire":
-                ApplyWildfire(nextState);
-                break;
-            case "mch_detonator":
-                ApplyDetonator(previousState, nextState);
-                break;
-            case "mch_barrel_stabilizer":
-                ApplyBarrelStabilizer(nextState);
-                break;
-            case "mch_reassemble":
-                ApplyReassemble(nextState);
-                break;
-            case "mch_direct_ability":
-                break;
-            default:
-                throw new ArgumentOutOfRangeException(
-                    nameof(skill.Behavior), skill.Behavior,
-                    $"machinist does not support behavior: {skill.Behavior}");
+            throw new ArgumentOutOfRangeException(
+                nameof(skill.Behavior), skill.Behavior,
+                $"machinist does not support behavior: {skill.Behavior}");
         }
+
+        handler.Apply?.Invoke(previousState, nextState, skill);
 
         if (skill.Kind == ActionKind.Gcd && skill.Tags.Contains("weaponskill"))
         {

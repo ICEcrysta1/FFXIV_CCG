@@ -1,4 +1,6 @@
+using System.Text.Json;
 using Combat.Sim.Models.Combat;
+using Combat.Sim.Outputs.ContextBuilders;
 using Xunit;
 
 namespace FightEngine.Tests.Outputs;
@@ -8,6 +10,47 @@ namespace FightEngine.Tests.Outputs;
 /// </summary>
 public class OutputsHistoryTests
 {
+    [Fact]
+    public void 历史技能缓存按条目引用复用且返回独立列表()
+    {
+        var machine = OutputsTestKit.BuildMachine();
+        var state = TimelineTestDriver.Execute(machine, machine.InitialState(), "fire_iii").NextState;
+        var builder = new SkillHistoryContextBuilder();
+        var first = builder.Build(state);
+        var token = Assert.Single(first);
+        var cloned = state.Clone();
+
+        var second = builder.Build(cloned);
+        Assert.NotSame(first, second);
+        Assert.Same(token, Assert.Single(second));
+        first.Clear();
+        Assert.Same(token, Assert.Single(builder.Build(state)));
+
+        // 恢复为值相等的新条目时重新生成 token，不能把 record 值相等当作同一历史。
+        cloned.History[0] = cloned.History[0] with { };
+        Assert.Equal(state.History[0], cloned.History[0]);
+        var rebuilt = Assert.Single(builder.Build(cloned));
+        Assert.NotSame(token, rebuilt);
+        Assert.Equal(JsonSerializer.Serialize(token), JsonSerializer.Serialize(rebuilt));
+    }
+
+    [Fact]
+    public void 历史技能窗口裁剪后恢复旧历史保持相同结果()
+    {
+        var machine = OutputsTestKit.BuildMachine();
+        var previous = TimelineTestDriver.Execute(machine, machine.InitialState(), "fire_iii").NextState;
+        var builder = new SkillHistoryContextBuilder(historyLimit: 1);
+        var first = Assert.Single(builder.Build(previous));
+        var state = OutputsTestKit.ReadyAfterGcd(machine, previous);
+        state = TimelineTestDriver.Execute(machine, state, "fire_iv").NextState;
+
+        Assert.Equal("fire_iv", Assert.Single(builder.Build(state))["skill_key"]);
+        var restored = Assert.Single(builder.Build(previous));
+        Assert.NotSame(first, restored);
+        Assert.Equal(JsonSerializer.Serialize(first), JsonSerializer.Serialize(restored));
+        Assert.Empty(new SkillHistoryContextBuilder(historyLimit: 0).Build(state));
+    }
+
     [Fact]
     public void VectorStateHistoryKeepsResourceBeforeAfterAndSkillConsumption()
     {

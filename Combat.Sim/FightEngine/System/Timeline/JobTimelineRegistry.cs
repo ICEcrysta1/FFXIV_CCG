@@ -39,12 +39,12 @@ public sealed class JobTimelineRegistry
         _periodic.Values
             .OrderBy(item => item.Key, StringComparer.Ordinal)
             .Select(item => (
-                new JobTimerProjection(item.OutputTimerKey, item.Key, IsAccumulated: true, item.IntervalSeconds),
+                new JobTimerProjection(item.OutputTimerKey, IsAccumulated: true, item.IntervalSeconds),
                 item.Deadline(state)))
             .Concat(_countdowns.Values
                 .OrderBy(item => item.Key, StringComparer.Ordinal)
                 .Select(item => (
-                    new JobTimerProjection(item.OutputTimerKey, item.Key, IsAccumulated: false, IntervalSeconds: 0.0),
+                    new JobTimerProjection(item.OutputTimerKey, IsAccumulated: false, IntervalSeconds: 0.0),
                     item.Deadline(state))))
             .ToArray();
 

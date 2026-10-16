@@ -4,6 +4,7 @@
 // See LICENSE and LICENSE-FightEngine-Linking-Exception in the repository root.
 
 using Combat.Sim.Common;
+using Combat.Sim.Jobs;
 using Combat.Sim.Models.Definitions;
 
 namespace Combat.Sim.Config;
@@ -155,7 +156,7 @@ public static class ProjectConfigLoader
 
     private static void ValidateCrossContracts(SystemConfig system, JobConfig job)
     {
-        ValidateTimingResourceContracts(job);
+        JobMachineRegistry.ValidateConfig(job);
         ValidateStatusDefinitions(system, job);
         ValidateStatusConflicts(system, job);
         ValidateSkillConflicts(system, job);
@@ -229,23 +230,6 @@ public static class ProjectConfigLoader
             limits[key] = maxValue;
         }
         return limits;
-    }
-
-    /// <summary>校验时序配置与通用资源归一化上限的一致性。</summary>
-    private static void ValidateTimingResourceContracts(JobConfig job)
-    {
-        if (!job.Timing.TryGetValue("wildfire_duration", out var wildfireDuration) ||
-            !job.ResourceLimits.TryGetValue("wildfire_remaining", out var wildfireRemainingMax))
-        {
-            return;
-        }
-
-        if (Math.Abs(wildfireDuration - wildfireRemainingMax) > 1e-9)
-        {
-            throw new InvalidOperationException(
-                "job config wildfire_duration and resources.wildfire_remaining.max_value " +
-                $"must match, got {wildfireDuration} and {wildfireRemainingMax}");
-        }
     }
 
     /// <summary>构建技能定义（对照 _build_skill_definitions）。</summary>

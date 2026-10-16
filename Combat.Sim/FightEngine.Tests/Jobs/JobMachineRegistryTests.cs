@@ -1,4 +1,8 @@
+using System.Reflection;
+using System.Reflection.Emit;
+using Combat.Sim.Config;
 using Combat.Sim.Jobs;
+using Combat.Sim.Models.Definitions;
 using Xunit;
 
 namespace FightEngine.Tests.Jobs;
@@ -53,6 +57,64 @@ public class JobMachineRegistryTests
             () => JobMachineRegistry.Register("registry_factory_job", () => new RegistryJobA()));
         Assert.Contains("duplicate job state machine tag: registry_factory_job", ex.Message);
     }
+
+    [Fact]
+    public void 类型先占标签后工厂注册抛错()
+    {
+        JobMachineRegistry.Register<RegistryJobA>();
+        Assert.Throws<InvalidOperationException>(() =>
+            JobMachineRegistry.Register("registry_job_a", () => new RegistryJobB()));
+        Assert.IsType<RegistryJobA>(JobMachineRegistry.Get("registry_job_a"));
+    }
+
+    [Fact]
+    public void 类型注册挂载职业配置校验但不构造实例()
+    {
+        ValidatedRegistryJob.Constructions = 0;
+        JobMachineRegistry.Register<ValidatedRegistryJob>();
+        var job = EmptyJob("registry_validated_job");
+        var error = Assert.Throws<InvalidOperationException>(() => JobMachineRegistry.ValidateConfig(job));
+        Assert.Equal("registry job config is invalid", error.Message);
+        Assert.Equal(0, ValidatedRegistryJob.Constructions);
+    }
+
+    [Fact]
+    public void 外部程序集可重复发现职业及其配置校验()
+    {
+        // 独立程序集只引用公共契约；注册过程必须保持延迟构造。
+        var tag = "external_registry_" + Guid.NewGuid().ToString("N");
+        var assembly = AssemblyBuilder.DefineDynamicAssembly(new AssemblyName(tag), AssemblyBuilderAccess.Run);
+        var type = assembly.DefineDynamicModule(tag).DefineType(
+            "ExternalJob", TypeAttributes.Public, typeof(ValidatedRegistryJob));
+        var getter = type.DefineMethod("get_Tag",
+            MethodAttributes.Public | MethodAttributes.Static | MethodAttributes.SpecialName,
+            typeof(string), Type.EmptyTypes);
+        var il = getter.GetILGenerator();
+        il.Emit(OpCodes.Ldstr, tag);
+        il.Emit(OpCodes.Ret);
+        type.DefineProperty("Tag", PropertyAttributes.None, typeof(string), null).SetGetMethod(getter);
+
+        var constructor = type.DefineConstructor(MethodAttributes.Public, CallingConventions.Standard, Type.EmptyTypes);
+        il = constructor.GetILGenerator();
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Call, typeof(ValidatedRegistryJob).GetConstructor(Type.EmptyTypes)!);
+        il.Emit(OpCodes.Ldstr, "external job must remain unconstructed during registration");
+        il.Emit(OpCodes.Newobj, typeof(InvalidOperationException).GetConstructor(new[] { typeof(string) })!);
+        il.Emit(OpCodes.Throw);
+
+        type.CreateType();
+
+        JobMachineRegistry.RegisterAssembly(assembly);
+        JobMachineRegistry.RegisterAssembly(assembly);
+        Assert.Contains(tag, JobMachineRegistry.RegisteredTags());
+        var error = Assert.Throws<InvalidOperationException>(() => JobMachineRegistry.ValidateConfig(EmptyJob(tag)));
+        Assert.Equal("registry job config is invalid", error.Message);
+        Assert.Throws<TargetInvocationException>(() => JobMachineRegistry.Get(tag));
+    }
+
+    private static JobConfig EmptyJob(string key) => new(
+        key, key, new Dictionary<string, double>(), new Dictionary<string, double>(),
+        new Dictionary<string, StatusDefinition>(), Array.Empty<SkillDefinition>());
 
     [Fact]
     public void 按标签查询与标签排序()

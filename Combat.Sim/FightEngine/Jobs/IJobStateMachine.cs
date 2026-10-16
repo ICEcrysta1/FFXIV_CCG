@@ -28,6 +28,9 @@ public interface IJobStateMachine
     static virtual string Tag => throw new NotSupportedException(
         "job state machine must define a static Tag");
 
+    /// <summary>校验职业专属配置；在注册时挂载，加载配置时调用，不构造职业实例。</summary>
+    static virtual void ValidateConfig(JobConfig job) { }
+
     /// <summary>门面装配期注入项目配置与系统层引用。</summary>
     void Bind(ProjectConfig project, SystemStateMachine system) { }
 
