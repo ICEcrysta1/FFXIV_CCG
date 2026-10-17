@@ -331,6 +331,38 @@ def test_revival_falls_back_to_first_own_begincast_but_not_party_actions_or_dama
     ]
 
 
+@pytest.mark.parametrize("event_type", ["cast", "begincast"])
+@pytest.mark.parametrize("has_later_activity", [False, True])
+def test_same_timestamp_action_does_not_revive(event_type, has_later_activity):
+    """死亡同刻的旧动作不能充当复活证据，只能采用严格晚于死亡的新活动。"""
+    events = [
+        {"type": "death", "targetID": 10, "timestamp": 110000},
+        {"type": event_type, "sourceID": 10, "timestamp": 110000,
+         "abilityGameID": 152, "sourceResources": {"mp": 9000}},
+    ]
+    expected = [{"timestamp": 10.0, "event_kind": "player_death"}]
+    if has_later_activity:
+        events.append({"type": "begincast", "sourceID": 10, "timestamp": 118000,
+                       "abilityGameID": 152})
+        expected.append({"timestamp": 18.0, "event_kind": "player_revived", "mp": 2000})
+
+    assert _lifecycle_payload(events)["external_events"] == expected
+
+
+def test_death_timestamp_request_does_not_revive_even_when_cast_lands_later():
+    """日志 cast 晚于死亡时，仍不能用死亡同刻的旧请求推断复活。"""
+    payload = _lifecycle_payload([
+        {"type": "death", "targetID": 10, "timestamp": 110000},
+        {"type": "cast", "sourceID": 10, "timestamp": 112000,
+         "abilityGameID": 152, "sourceResources": {"mp": 2400}},
+    ], cast_action={"timestamp": 112.0, "request_timestamp": 110.0,
+                    "raw_event_index": 1, "action_key": "fire_iii", "skill_id": 152})
+
+    assert payload["external_events"] == [
+        {"timestamp": 10.0, "event_kind": "player_death"},
+    ]
+
+
 def test_same_timestamp_death_precedes_revival_and_each_later_death_can_revive_once():
     payload = _lifecycle_payload([
         {"type": "applybuff", "targetID": 10, "timestamp": 110000, "abilityGameID": 1000418},

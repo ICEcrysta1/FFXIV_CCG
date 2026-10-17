@@ -175,7 +175,7 @@ def test_compiled_history_and_current_state_use_compact_state_contract(tmp_path)
         assert sample[f"{prefix}_state_null_mask"].shape == sample[f"{prefix}_state_abs_values"].shape
 
 
-@pytest.mark.parametrize("old_contract", ["cache_format", "conversion_version", "unstable_history_order", "movement_windows", "cumulative_state_format", "cumulative_state_conversion", "skill_time"])
+@pytest.mark.parametrize("old_contract", ["cache_format", "conversion_version", "unstable_history_order", "movement_windows", "cumulative_state_format", "cumulative_state_conversion", "same_timestamp_revival", "skill_time"])
 def test_previous_state_layout_cache_is_rejected(tmp_path, old_contract):
     """旧输入字段缓存不可复用，即使 raw 文件身份和其余编译参数一致。"""
     torch = pytest.importorskip("torch")
@@ -201,6 +201,9 @@ def test_previous_state_layout_cache_is_rejected(tmp_path, old_contract):
         payload["cache_format"] = "raw_json_compiled_samples_v23_state_skill_availability"
     elif old_contract == "cumulative_state_conversion":
         payload["cache_signature"]["conversion_version"] = "raw_json_to_compiled_v26_gcd_movement_windows"
+    elif old_contract == "same_timestamp_revival":
+        # 旧活动兜底会把死亡同刻的旧请求视为复活，状态和历史边界需要重建。
+        payload["cache_signature"]["conversion_version"] = "raw_json_to_compiled_v28_player_lifecycle_party_downtime"
     else:
         # 即使格式和签名冒用新版，旧技能时间列仍必须明确拒绝。
         payload["skill_feature_names"] = (*payload["skill_feature_names"], "time_seconds")

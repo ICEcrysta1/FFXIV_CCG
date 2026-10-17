@@ -75,7 +75,7 @@ def _extract_lifecycle_events(fight_actions, raw_events, *, source_id, fight_sta
             observed_at, resources = timestamp, event.get("targetResources")
         else:
             activity = min((item for item in activities
-                            if death <= item[0] < next_death and death <= item[1] < next_death),
+                            if death < item[0] < next_death and death < item[1] < next_death),
                            key=lambda item: item[0], default=None)
             if activity is None:
                 continue
