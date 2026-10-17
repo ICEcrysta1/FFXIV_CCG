@@ -152,11 +152,14 @@ def test_build_training_samples_rejects_non_normalized_request_origin(
         build_training_samples(cs_backend, cs_skill_book, fight_payload)
 
 
-@pytest.mark.parametrize("death_time", [0.0, 5.0, 6.0], ids=["initial", "cancel_pending_effect", "keep_completed_history"])
+@pytest.mark.parametrize(
+    "death_time", [0.0, 5.0, 5.123456789, 6.0],
+    ids=["initial", "cancel_pending_effect", "fractional_timestamp", "keep_completed_history"],
+)
 def test_death_markers_and_reset_match_between_public_and_native_replay(
     cs_backend, cs_skill_book, death_time,
 ):
-    """死亡独立保存；已接受但被取消的技能不破坏后续历史前缀。"""
+    """统一死亡输出保留原始时间和历史位置；两条回放路径的完整载荷保持一致。"""
     actions = []
     if death_time:
         actions.append({

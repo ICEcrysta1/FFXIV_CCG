@@ -9,6 +9,7 @@ using Combat.Sim.Config;
 using Combat.Sim.Facade;
 using Combat.Sim.Models.Definitions;
 using Combat.Sim.Models.Timeline;
+using Combat.Sim.Outputs.TokenBuilders;
 
 namespace Combat.Sim.Policy;
 
@@ -106,14 +107,12 @@ internal static class PolicySequenceReplay
                 var applied = simulator.ApplyExternalEvents(batch);
                 if (!applied.Accepted)
                     throw new InvalidOperationException($"scene facts rejected at {batch[0].Timestamp:R}: {applied.Reason}");
-                if (applied.Token is { } token)
-                    pendingMarkers.Add(new Dictionary<string, object?>
-                    {
-                        ["token"] = token,
-                        ["timestamp"] = applied.Timestamp,
-                        ["after_history_length"] = simulator.HistoryCursor,
-                        ["step"] = observations.Count + 1,
-                    });
+                if (applied.Token is not null)
+                {
+                    var marker = DeathTokenBuilder.Build(applied.Timestamp, applied.HistoryCursor!.Value);
+                    marker["step"] = observations.Count + 1;
+                    pendingMarkers.Add(marker);
+                }
                 factIndex = batchEnd;
             }
             syncedTime = timestamp;

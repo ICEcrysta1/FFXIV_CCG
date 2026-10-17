@@ -6,6 +6,7 @@
 using Combat.Sim.Models.Combat;
 using Combat.Sim.Models.Timeline;
 using Combat.Sim.Outputs;
+using Combat.Sim.Outputs.TokenBuilders;
 using Combat.Sim.System.Timeline;
 
 namespace Combat.Sim.Facade;
@@ -198,7 +199,7 @@ public sealed class JobSimulator
         }
         _timeline.AdvanceClockTo(timestamp);
         var hasDeath = kinds.Contains(ExternalCombatEventKinds.PlayerDeath);
-        return new(true, "", timestamp, hasDeath ? "<dead/>" : null, hasDeath ? HistoryCursor : null);
+        return new(true, "", timestamp, hasDeath ? DeathTokenBuilder.Token : null, hasDeath ? HistoryCursor : null);
     }
 
     public SimulationSnapshot CreateSnapshot() => _timeline.CreateSnapshot();

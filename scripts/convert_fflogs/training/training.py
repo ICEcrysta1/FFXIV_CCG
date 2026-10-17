@@ -19,6 +19,7 @@ import math
 from common.context.contracts import SCENE_EPSILON
 from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION
 
+from scripts.common.inprocess_backend import _build_death_token
 from scripts.common.scene_state import SceneFactScheduler, _state_facts, rewrite_scene_player_state
 from scripts.common.state_machine_types import ActionSubmissionResult
 
@@ -107,12 +108,9 @@ def build_training_samples(
             if not result.accepted:
                 raise ValueError(f"external facts rejected at {result.timestamp}: {result.reason}")
             if result.token is not None:
-                history_markers.append({
-                    "token": result.token,
-                    "timestamp": float(result.timestamp),
-                    "after_history_length": int(result.history_cursor),
-                    "step": len(samples) + 1,
-                })
+                marker = _build_death_token(result)
+                marker["step"] = len(samples) + 1
+                history_markers.append(marker)
             fact_index = batch_end
         synced_time = timestamp
 
