@@ -2,7 +2,7 @@ using Combat.Sim.Models.Combat;
 using Combat.Sim.Models.Definitions;
 using Combat.Sim.Models.Timeline;
 using Combat.Sim.Jobs;
-using Combat.Sim.System.Registries;
+using Combat.Sim.State;
 
 namespace FightEngine.Tests.System;
 

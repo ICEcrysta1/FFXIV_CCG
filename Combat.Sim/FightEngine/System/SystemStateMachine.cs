@@ -8,7 +8,7 @@ using Combat.Sim.Config;
 using Combat.Sim.Models.Combat;
 using Combat.Sim.Models.Definitions;
 using Combat.Sim.Outputs;
-using Combat.Sim.System.Registries;
+using Combat.Sim.State;
 using Combat.Sim.System.Timeline;
 
 namespace Combat.Sim.System;
@@ -57,7 +57,7 @@ public sealed class SystemStateMachine
         DotTimeline.RegisterDots(skills);
 
     /// <summary>创建系统层默认初始状态。</summary>
-    public CombatState InitialState(double fightRemaining, int maxMp, double startTime = 0)
+    internal CombatState InitialState(double fightRemaining, int maxMp, double startTime = 0)
     {
         var state = new CombatState
         {

@@ -7,8 +7,7 @@ using Combat.Sim.Jobs.Timeline;
 using Combat.Sim.Models.Combat;
 using Combat.Sim.Models.Definitions;
 using Combat.Sim.Models.Timeline;
-using Combat.Sim.System.Registries;
-using Combat.Sim.System.Timeline;
+using Combat.Sim.State;
 
 namespace Combat.Sim.Jobs;
 

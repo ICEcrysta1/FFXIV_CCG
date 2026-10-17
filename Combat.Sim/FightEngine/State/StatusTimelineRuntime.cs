@@ -6,7 +6,7 @@
 using Combat.Sim.Models.Combat;
 using Combat.Sim.Models.Timeline;
 
-namespace Combat.Sim.System.Timeline;
+namespace Combat.Sim.State;
 
 /// <summary>声明所属容器的状态截止时间、持有到期钩子并处理单次过期，不推进时钟。</summary>
 public sealed class StatusTimelineRuntime

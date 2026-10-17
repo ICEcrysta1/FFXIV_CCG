@@ -6,7 +6,7 @@
 using Combat.Sim.Models.Combat;
 using Combat.Sim.Models.Definitions;
 
-namespace Combat.Sim.System.Registries;
+namespace Combat.Sim.State;
 
 /// <summary>
 /// 单一所有者的 Buff 注册中心：只操作构造时指定的状态容器，

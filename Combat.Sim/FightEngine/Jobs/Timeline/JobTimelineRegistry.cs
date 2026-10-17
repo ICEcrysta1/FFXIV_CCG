@@ -118,7 +118,8 @@ public sealed class JobTimelineRegistry
                 Math.Max(state.Time, deadline),
                 TimelineEventPriority.PeriodicSettlement,
                 TimelineEventKind.JobPeriodicTick,
-                registration.Key);
+                registration.Key,
+                Scope: TimelineEventScope.Job);
         }
 
         foreach (var registration in _countdowns.Values.OrderBy(item => item.Key, StringComparer.Ordinal))
@@ -130,7 +131,8 @@ public sealed class JobTimelineRegistry
                 Math.Max(state.Time, deadline),
                 TimelineEventPriority.ExpirationAndCooldown,
                 TimelineEventKind.JobTimerExpired,
-                registration.Key);
+                registration.Key,
+                Scope: TimelineEventScope.Job);
         }
     }
 

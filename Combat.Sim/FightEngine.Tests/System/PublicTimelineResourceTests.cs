@@ -5,6 +5,7 @@ using Combat.Sim.Jobs.Timeline;
 using Combat.Sim.Models.Combat;
 using Combat.Sim.Models.Definitions;
 using Combat.Sim.Models.Timeline;
+using Combat.Sim.State;
 using Combat.Sim.System;
 using Combat.Sim.System.Timeline;
 using static FightEngine.Tests.System.SystemTestKit;
@@ -256,6 +257,10 @@ public sealed class PublicTimelineResourceTests
         state.Job.TimelineDeadlines["test.periodic"] = 2.0;
         state.Job.TimelineDeadlines["test.countdown"] = 5.0;
         var timeline = CombatStateMachine.CreateTimeline(system, job, state, _ => 1);
+        Assert.Equal(TimelineEventScope.Job,
+            Assert.Single(timeline.PendingEvents.Where(item => item.Kind == TimelineEventKind.JobPeriodicTick)).Scope);
+        Assert.Equal(TimelineEventScope.Job,
+            Assert.Single(timeline.PendingEvents.Where(item => item.Kind == TimelineEventKind.JobTimerExpired)).Scope);
 
         var end = timeline.AdvanceTo(7.0);
 
