@@ -5,13 +5,12 @@
 
 using Combat.Sim.Models.Combat;
 using Combat.Sim.Models.Definitions;
-using static Combat.Sim.System.SystemConstants;
 
 namespace Combat.Sim.System.Registries;
 
 /// <summary>
 /// 单一所有者的 Buff 注册中心：只操作构造时指定的状态容器，
-/// 并处理 grant_status 行为的校验与应用。
+/// 负责单个状态的层数校验、授予、清除和消耗；技能级路由由门面处理。
 /// </summary>
 public sealed class BuffStateRegistry
 {
@@ -33,20 +32,6 @@ public sealed class BuffStateRegistry
     /// <summary>是否识别这个共享 Buff 行为名。</summary>
     public bool SupportsBehavior(string behavior) => behavior == "grant_status";
 
-    public ValidationResult ValidateSharedBehavior(CombatState state, SkillDefinition skill)
-    {
-        if (skill.AppliesStatuses.Count == 0 || skill.Behavior != "grant_status")
-        {
-            return new ValidationResult(true);
-        }
-        foreach (var statusKey in skill.AppliesStatuses)
-        {
-            var validation = ValidateRegisteredStatus(state, statusKey);
-            if (!validation.Ok) return validation;
-        }
-        return new ValidationResult(true);
-    }
-
     /// <summary>只在所属容器内检查状态，门面只负责按定义路由。</summary>
     public ValidationResult ValidateRegisteredStatus(CombatState state, string key)
     {
@@ -55,20 +40,6 @@ public sealed class BuffStateRegistry
                current.Remaining > 0 && current.Stacks >= definition.MaxStacks
             ? new ValidationResult(false, "status_already_active")
             : new ValidationResult(true);
-    }
-
-    /// <summary>应用所属状态的共享 Buff 行为（grant_status），返回是否处理了。</summary>
-    public bool ApplySharedBehavior(CombatState state, SkillDefinition skill)
-    {
-        if (skill.AppliesStatuses.Count == 0)
-        {
-            return false;
-        }
-        foreach (var statusKey in skill.AppliesStatuses)
-        {
-            GrantRegisteredStatus(state, statusKey);
-        }
-        return true;
     }
 
     public StatusDefinition StatusDefinitionOf(string key)

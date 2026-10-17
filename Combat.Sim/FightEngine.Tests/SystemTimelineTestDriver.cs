@@ -1,3 +1,4 @@
+using Combat.Sim.Jobs;
 using Combat.Sim.Models.Combat;
 
 namespace Combat.Sim.System;
@@ -10,7 +11,8 @@ internal static class SystemTimelineTestDriver
         double seconds,
         Func<string, int>? getMaxCharges = null)
     {
-        var timeline = machine.CreateTimeline(state, getMaxCharges ?? (_ => 1));
+        var timeline = CombatStateMachine.CreateTimeline(machine, new JobStateRuntime(), state,
+            getMaxCharges ?? (_ => 1));
         return timeline.AdvanceTo(state.Time + seconds);
     }
 }

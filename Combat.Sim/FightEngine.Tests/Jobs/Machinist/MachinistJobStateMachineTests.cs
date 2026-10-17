@@ -252,7 +252,7 @@ public class MachinistJobStateMachineTests
     {
         var machine = BuildMachine();
         var state = machine.InitialState();
-        machine.SystemMachine.GrantRegisteredStatus(state, "raid_buff_window", remaining: 1.0);
+        machine.SystemMachine.BuffState.GrantRegisteredStatus(state, "raid_buff_window", remaining: 1.0);
         state = TimelineTestDriver.Execute(machine, state, "wildfire").NextState;
         state.Job.SetResource("wildfire_hits", 2);
 
@@ -271,7 +271,7 @@ public class MachinistJobStateMachineTests
         var machine = BuildMachine();
         var state = StartWildfire(machine, hits: 2);
         state = TimelineTestDriver.AdvanceBy(machine, state, 9.0);
-        machine.SystemMachine.GrantRegisteredStatus(state, "raid_buff_window", remaining: 2.0);
+        machine.SystemMachine.BuffState.GrantRegisteredStatus(state, "raid_buff_window", remaining: 2.0);
 
         state = TimelineTestDriver.AdvanceBy(machine, state, 1.0);
 
@@ -285,7 +285,7 @@ public class MachinistJobStateMachineTests
     {
         var machine = BuildMachine();
         var state = StartWildfire(machine, hits: 4);
-        machine.SystemMachine.GrantRegisteredStatus(state, "raid_buff_window", remaining: 20.0);
+        machine.SystemMachine.BuffState.GrantRegisteredStatus(state, "raid_buff_window", remaining: 20.0);
 
         state = TimelineTestDriver.Execute(machine, state, "detonator").NextState;
         var expectedBase = 4 * 240.0;

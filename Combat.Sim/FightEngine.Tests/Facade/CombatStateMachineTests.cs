@@ -1,3 +1,5 @@
+using System.Text.Json;
+using Combat.Sim.Common;
 using Combat.Sim.Config;
 using Combat.Sim.Facade;
 using Combat.Sim.Models.Timeline;
@@ -9,6 +11,64 @@ namespace FightEngine.Tests.Facade;
 
 public class CombatStateMachineTests
 {
+    [Fact]
+    public void grant状态通过正式提交授予系统与职业的全部目标状态()
+    {
+        var simulator = new JobSimulator(BuildMixedGrantMachine());
+
+        var submission = simulator.SubmitAction(0, "potion");
+
+        Assert.True(submission.Accepted);
+        var state = simulator.GetState();
+        Assert.True(state.HasStatus("burst_potion"));
+        Assert.Equal(3, state.Job.StatusStacks("triplecast"));
+        Assert.True(state.Job.HasStatus("swiftcast"));
+        Assert.False(state.Statuses.ContainsKey("triplecast"));
+        Assert.False(state.Statuses.ContainsKey("swiftcast"));
+        Assert.False(state.Job.Statuses.ContainsKey("burst_potion"));
+        Assert.Equal("potion", Assert.Single(state.History).SkillKey);
+    }
+
+    [Theory]
+    [InlineData("burst_potion")]
+    [InlineData("triplecast")]
+    [InlineData("swiftcast")]
+    public void grant任一目标已满层时正式探测和提交均拒绝且不部分授予(string activeStatus)
+    {
+        var machine = BuildMixedGrantMachine();
+        var initial = machine.InitialState();
+        var owner = activeStatus == "burst_potion" ? machine.SystemMachine.BuffState : machine.JobMachine.State.Buffs;
+        owner.GrantRegisteredStatus(initial, activeStatus);
+        var simulator = new JobSimulator(machine, initial);
+        var before = JsonSerializer.Serialize(simulator.CreateSnapshot());
+
+        var validation = simulator.ValidateActionAt(0, "potion");
+        var submission = simulator.SubmitAction(0, "potion");
+
+        Assert.False(validation.Ok);
+        Assert.Equal("status_already_active", validation.Reason);
+        Assert.False(submission.Accepted);
+        Assert.Equal("status_already_active", submission.Reason);
+        Assert.Equal(before, JsonSerializer.Serialize(simulator.CreateSnapshot()));
+    }
+
+    private static CombatStateMachine BuildMixedGrantMachine()
+    {
+        var root = RepoRootLocator.Find();
+        var project = ProjectConfigLoader.LoadProjectConfig(root, "black_mage");
+        // 只替换测试技能的状态列表，其余规则、提交和结算都使用真实黑魔与正式门面。
+        project = project with
+        {
+            System = project.System with
+            {
+                Skills = project.System.Skills.Select(skill => skill.Key == "potion"
+                    ? skill with { AppliesStatuses = new[] { "burst_potion", "triplecast", "swiftcast" } }
+                    : skill).ToArray(),
+            },
+        };
+        return new CombatStateMachine(project, "black_mage", projectRoot: root);
+    }
+
     [Fact]
     public void 未注册职业标签抛错()
     {

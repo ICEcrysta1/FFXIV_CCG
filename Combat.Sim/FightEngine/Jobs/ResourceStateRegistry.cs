@@ -105,17 +105,7 @@ public sealed class ResourceStateRegistry
         return snapshot;
     }
 
-    /// <summary>导出一次动作前后的量谱快照与消耗量谱。</summary>
-    public (IReadOnlyDictionary<string, object> Before, IReadOnlyDictionary<string, object> After,
-        IReadOnlyDictionary<string, object> Consumed) BuildJobResourceTransition(
-        CombatState previousState,
-        CombatState nextState)
-    {
-        return BuildJobResourceTransition(
-            BuildJobResourceSnapshot(previousState),
-            BuildJobResourceSnapshot(nextState));
-    }
-
+    /// <summary>根据已构建的量谱快照导出一次动作前后的消耗量谱。</summary>
     internal (IReadOnlyDictionary<string, object> Before, IReadOnlyDictionary<string, object> After,
         IReadOnlyDictionary<string, object> Consumed) BuildJobResourceTransition(
         IReadOnlyDictionary<string, object> before,

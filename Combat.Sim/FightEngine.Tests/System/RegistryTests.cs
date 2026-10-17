@@ -1,8 +1,8 @@
 using Combat.Sim.Models.Combat;
 using Combat.Sim.Models.Definitions;
+using Combat.Sim.Models.Timeline;
 using Combat.Sim.Jobs;
 using Combat.Sim.System.Registries;
-using static FightEngine.Tests.System.SystemTestKit;
 
 namespace FightEngine.Tests.System;
 
@@ -78,38 +78,20 @@ public class RegistryTests
     }
 
     [Fact]
-    public void grant状态满层校验拒绝()
+    public void 已激活状态满层校验拒绝()
     {
         var registry = new BuffStateRegistry();
         registry.RegisterStatuses(new Dictionary<string, StatusDefinition>
         {
             ["burst_potion"] = new("burst_potion", GameId: 1, Duration: 30.0),
         });
-        var skill = Skill("potion", kind: ActionKind.Ogcd, behavior: "grant_status",
-            appliesStatuses: new[] { "burst_potion" });
         var state = new CombatState();
         registry.GrantRegisteredStatus(state, "burst_potion");
 
-        var result = registry.ValidateSharedBehavior(state, skill);
+        var result = registry.ValidateRegisteredStatus(state, "burst_potion");
 
         Assert.False(result.Ok);
         Assert.Equal("status_already_active", result.Reason);
-    }
-
-    [Fact]
-    public void grant行为应用授予全部状态()
-    {
-        var registry = new BuffStateRegistry();
-        registry.RegisterStatuses(new Dictionary<string, StatusDefinition>
-        {
-            ["burst_potion"] = new("burst_potion", GameId: 1, Duration: 30.0),
-        });
-        var skill = Skill("potion", kind: ActionKind.Ogcd, behavior: "grant_status",
-            appliesStatuses: new[] { "burst_potion" });
-        var state = new CombatState();
-
-        Assert.True(registry.ApplySharedBehavior(state, skill));
-        Assert.True(state.HasStatus("burst_potion"));
     }
 
     [Fact]
@@ -283,14 +265,15 @@ public class RegistryTests
     [Fact]
     public void 量谱前后差分导出consumed()
     {
-        var registry = new ResourceStateRegistry();
-        registry.RegisterJobResources(
+        var job = new JobStateRuntime();
+        job.Register(new JobStateRegistration(
             "black_mage",
             new Dictionary<string, JobResourceDefinition>
             {
                 ["astral_fire"] = new("astral_fire", "int", DefaultValue: 0, MaxValue: 3),
                 ["thundercloud_ready"] = new("thundercloud_ready", "bool", DefaultValue: false, MaxValue: 1),
-            });
+            }, new Dictionary<string, StatusDefinition>()));
+        var registry = job.Resources;
         var before = new CombatState();
         registry.SetJobResource(before, "astral_fire", 3);
         registry.SetJobResource(before, "thundercloud_ready", true);
@@ -298,10 +281,36 @@ public class RegistryTests
         registry.SetJobResource(after, "astral_fire", 1);
         registry.SetJobResource(after, "thundercloud_ready", false);
 
-        var (_, _, consumed) = registry.BuildJobResourceTransition(before, after);
+        var (_, _, consumed) = job.BuildResourceTransition(before, after);
 
         Assert.Equal(2, consumed["astral_fire"]);
         Assert.Equal(true, consumed["thundercloud_ready"]); // bool: before && !after
+    }
+
+    [Fact]
+    public void 职业量谱差分使用权威截止时刻投影()
+    {
+        var job = new JobStateRuntime();
+        job.Register(new JobStateRegistration("test_job",
+            new Dictionary<string, JobResourceDefinition>
+            {
+                ["timer_remaining"] = new("timer_remaining", "float", 0.0, MaxValue: 30),
+            }, new Dictionary<string, StatusDefinition>()));
+        job.Timeline.RegisterCountdown("test.timer", "timer_remaining",
+            state => state.Job.TimelineDeadlines.TryGetValue("test.timer", out var deadline) ? deadline : null,
+            (_, _, _) => TimelineMutation.Empty);
+        var before = new CombatState();
+        before.Job.SetResource("timer_remaining", 29.0);
+        before.Job.TimelineDeadlines["test.timer"] = 20;
+        var after = before.Clone();
+        after.Job.SetResource("timer_remaining", 2.0);
+        after.Job.TimelineDeadlines["test.timer"] = 10;
+
+        var (previous, current, consumed) = job.BuildResourceTransition(before, after);
+
+        Assert.Equal(20.0, previous["timer_remaining"]);
+        Assert.Equal(10.0, current["timer_remaining"]);
+        Assert.Equal(10.0, consumed["timer_remaining"]);
     }
 
     [Fact]

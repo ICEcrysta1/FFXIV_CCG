@@ -99,20 +99,6 @@ public sealed class SystemStateMachine
         double? gcdStartTimestamp = null) =>
         PlayerState.ApplyActionTiming(state, skill, effectiveGcd, actualCastSeconds, gcdStartTimestamp);
 
-    /// <summary>创建只包含公共玩家规则的时间线；职业组合由门面负责。</summary>
-    public CombatTimelineRuntime CreateTimeline(CombatState state, Func<string, int> getMaxCharges)
-    {
-        var timeline = new CombatTimelineRuntime(state);
-        RegisterTimelineHandlers(timeline, getMaxCharges);
-        timeline.RegisterHandler(TimelineEventKind.StatusExpired, StatusTimeline.HandleExpired);
-        timeline.ConfigureResources(current => PlayerState.DescribeEvents(current)
-            .Concat(StatusTimeline.DescribeEvents(current))
-            .Concat(DotTimeline.DescribeEvents(current))
-            .Concat(CooldownRuntime.DescribeEvents(current))
-            .Append(MpRecovery.DescribeEvent(current)).ToArray());
-        return timeline;
-    }
-
     /// <summary>注册公共规则；职业 MP 修正只影响恢复量，MP 写入仍由系统执行。</summary>
     internal void RegisterTimelineHandlers(CombatTimelineRuntime timeline,
         Func<string, int> getMaxCharges, Func<CombatState, int, int>? mpTickModifier = null)
@@ -288,15 +274,6 @@ public sealed class SystemStateMachine
         state.CurrentGcdDotPotency = 0.0;
         state.CumulativePotency += directPotencyValue;
     }
-
-    public void GrantRegisteredStatus(CombatState state, string key, double? remaining = null, int? stacks = null) =>
-        BuffState.GrantRegisteredStatus(state, key, remaining, stacks);
-
-    public void ClearRegisteredStatus(CombatState state, string key) =>
-        BuffState.ClearRegisteredStatus(state, key);
-
-    public void ConsumeRegisteredStatusStack(CombatState state, string key) =>
-        BuffState.ConsumeRegisteredStatusStack(state, key);
 
     public void GrantRegisteredTargetDot(
         CombatState state,

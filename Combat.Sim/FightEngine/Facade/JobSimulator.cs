@@ -198,12 +198,8 @@ public sealed class JobSimulator
 
     public void RestoreSnapshot(SimulationSnapshot snapshot) => _timeline.RestoreSnapshot(snapshot.DeepClone());
 
-    public JobSimulator Fork() => ForkCore(includeHistory: true);
-    // 策略历史快照不携带历史前缀，待结算事件与队列载荷仍完整隔离。
-    internal JobSimulator ForkWithoutHistory() => ForkCore(includeHistory: false);
-
-    private JobSimulator ForkCore(bool includeHistory) =>
-        new(_machine, _timeline.Fork(includeHistory, InstanceHandlers), _historyRetention, _availability);
+    public JobSimulator Fork() =>
+        new(_machine, _timeline.Fork(InstanceHandlers), _historyRetention, _availability);
 
     public Dictionary<string, object?> FormatState(string mode = "seconds") =>
         OutputRouter.Format(GetState(), mode);

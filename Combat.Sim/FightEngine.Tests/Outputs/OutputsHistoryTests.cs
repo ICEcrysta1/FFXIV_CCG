@@ -104,7 +104,7 @@ public class OutputsHistoryTests
     {
         var machine = OutputsTestKit.BuildMachine();
         var state = machine.InitialState();
-        machine.SystemMachine.GrantRegisteredStatus(state, "raid_buff_window", remaining: 18.0);
+        machine.SystemMachine.BuffState.GrantRegisteredStatus(state, "raid_buff_window", remaining: 18.0);
         var payload = TimelineTestDriver.FormatVectorState(machine, state);
 
         Assert.Equal(1.0,

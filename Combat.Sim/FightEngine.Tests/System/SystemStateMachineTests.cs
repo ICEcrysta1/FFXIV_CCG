@@ -112,8 +112,8 @@ public class SystemStateMachineTests
     {
         var machine = CreateMachine();
         var state = machine.InitialState(fightRemaining: 600.0, maxMp: 10000);
-        machine.GrantRegisteredStatus(state, "burst_potion");
-        machine.GrantRegisteredStatus(state, "raid_buff_window");
+        machine.BuffState.GrantRegisteredStatus(state, "burst_potion");
+        machine.BuffState.GrantRegisteredStatus(state, "raid_buff_window");
 
         var resolved = machine.ResolveAppliedPotency(state, 100);
 
@@ -141,7 +141,7 @@ public class SystemStateMachineTests
     {
         var machine = CreateMachine();
         var state = machine.InitialState(fightRemaining: 600.0, maxMp: 10000);
-        machine.GrantRegisteredStatus(state, "burst_potion", remaining: 5.0);
+        machine.BuffState.GrantRegisteredStatus(state, "burst_potion", remaining: 5.0);
 
         Assert.Equal(100 * 1.08, machine.ResolveAppliedPotencyAtOffset(state, 100, 3.0));
         Assert.Equal(100.0, machine.ResolveAppliedPotencyAtOffset(state, 100, 6.0)); // 已过期

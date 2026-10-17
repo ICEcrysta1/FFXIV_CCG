@@ -17,7 +17,7 @@ public sealed class PublicTimelineResourceTests
     private static SystemStateMachine CreateSystem() => new(Timing, Potency, MpRecovery);
 
     private static CombatTimelineRuntime CreateTimeline(SystemStateMachine system, CombatState state) =>
-        system.CreateTimeline(state, _ => 2);
+        CombatStateMachine.CreateTimeline(system, new JobStateRuntime(), state, _ => 2);
 
     private static void AssertSame(CombatTimelineRuntime expected, CombatTimelineRuntime actual)
     {
@@ -421,7 +421,7 @@ public sealed class PublicTimelineResourceTests
     }
 
     [Fact]
-    public void 独立系统时间线不清理职业Buff或结算职业计时器()
+    public void 公共状态到期处理不清理职业Buff或结算职业计时器()
     {
         var system = CreateSystem();
         var state = new CombatState();
@@ -430,13 +430,15 @@ public sealed class PublicTimelineResourceTests
         state.Job.TimelineDeadlines["job.timer"] = 3;
         state.Job.SetResource("gauge", 42);
 
-        var end = system.CreateTimeline(state, _ => 1).AdvanceTo(5);
+        var expiration = Assert.Single(system.StatusTimeline.DescribeEvents(state));
+        state.SetTimelineTime(expiration.Timestamp);
+        system.StatusTimeline.HandleExpired(expiration, state).ApplyState!(state);
 
-        Assert.Empty(end.Statuses);
-        Assert.True(end.Job.Statuses.ContainsKey("job"));
-        Assert.Equal(2, end.Job.Statuses["job"].Stacks);
-        Assert.Equal(3, end.Job.TimelineDeadlines["job.timer"]);
-        Assert.Equal(42, end.Job.GetResource("gauge"));
+        Assert.Empty(state.Statuses);
+        Assert.True(state.Job.Statuses.ContainsKey("job"));
+        Assert.Equal(2, state.Job.Statuses["job"].Stacks);
+        Assert.Equal(3, state.Job.TimelineDeadlines["job.timer"]);
+        Assert.Equal(42, state.Job.GetResource("gauge"));
     }
 
     [Fact]
