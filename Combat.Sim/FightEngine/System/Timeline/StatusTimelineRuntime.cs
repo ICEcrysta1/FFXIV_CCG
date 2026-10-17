@@ -11,12 +11,19 @@ namespace Combat.Sim.System.Timeline;
 /// <summary>声明所属容器的状态截止时间、持有到期钩子并处理单次过期，不推进时钟。</summary>
 public sealed class StatusTimelineRuntime
 {
+    private readonly TimelineEventScope _scope;
     private readonly Func<CombatState, Dictionary<string, StatusState>> _statuses;
     private readonly Dictionary<string, Action<CombatState>> _expiryHooks = new(StringComparer.Ordinal);
 
-    public StatusTimelineRuntime(Func<CombatState, Dictionary<string, StatusState>>? statuses = null)
+    public StatusTimelineRuntime(TimelineEventScope scope = TimelineEventScope.System)
     {
-        _statuses = statuses ?? (state => state.Statuses);
+        _scope = scope;
+        _statuses = scope switch
+        {
+            TimelineEventScope.System => state => state.Statuses,
+            TimelineEventScope.Job => state => state.Job.Statuses,
+            _ => throw new ArgumentOutOfRangeException(nameof(scope)),
+        };
     }
 
     /// <summary>
@@ -36,10 +43,13 @@ public sealed class StatusTimelineRuntime
 
     public IEnumerable<TimelineEvent> DescribeEvents(CombatState state) => _statuses(state).Select(pair =>
         new TimelineEvent(Math.Max(state.Time, pair.Value.ExpiresAt), TimelineEventPriority.ExpirationAndCooldown,
-            TimelineEventKind.StatusExpired, pair.Key));
+            TimelineEventKind.StatusExpired, pair.Key, Scope: _scope));
 
     public TimelineMutation HandleExpired(TimelineEvent item, CombatState state)
     {
+        if (item.Scope != _scope)
+            throw new ArgumentException("status expiration belongs to another scope", nameof(item));
+
         var statusKey = item.OwnerKey!;
         if (!_statuses(state).TryGetValue(statusKey, out var status) || status.ExpiresAt > state.Time)
         {

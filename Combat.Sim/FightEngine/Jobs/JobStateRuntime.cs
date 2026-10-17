@@ -6,6 +6,7 @@
 using Combat.Sim.Jobs.Timeline;
 using Combat.Sim.Models.Combat;
 using Combat.Sim.Models.Definitions;
+using Combat.Sim.Models.Timeline;
 using Combat.Sim.System.Registries;
 using Combat.Sim.System.Timeline;
 
@@ -16,7 +17,7 @@ public sealed class JobStateRuntime
 {
     public ResourceStateRegistry Resources { get; } = new();
     public BuffStateRegistry Buffs { get; } = new(state => state.Job.Statuses);
-    public StatusTimelineRuntime StatusTimeline { get; } = new(state => state.Job.Statuses);
+    public StatusTimelineRuntime StatusTimeline { get; } = new(TimelineEventScope.Job);
     public JobTimelineRegistry Timeline { get; } = new();
     public string JobTag => Resources.RegisteredJobTag ??
         throw new InvalidOperationException("job state is not registered");

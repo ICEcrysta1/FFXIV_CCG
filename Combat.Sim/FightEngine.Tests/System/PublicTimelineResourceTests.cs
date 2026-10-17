@@ -382,6 +382,44 @@ public sealed class PublicTimelineResourceTests
         Assert.Equal(new[] { 3 }, expiredStacks);
     }
 
+    [Theory]
+    [InlineData(3, 5)]
+    [InlineData(5, 3)]
+    [InlineData(5, 5)]
+    public void 同名公共与职业Buff按所属容器独立到期且钩子只结算一次(double systemExpiresAt, double jobExpiresAt)
+    {
+        var system = CreateSystem();
+        var job = new JobStateRuntime();
+        var expired = new List<(string Owner, double Time, int Stacks)>();
+        system.StatusTimeline.RegisterExpiryHook("buff", state =>
+            expired.Add(("system", state.Time, state.Statuses["buff"].Stacks)));
+        job.StatusTimeline.RegisterExpiryHook("buff", state =>
+            expired.Add(("job", state.Time, state.Job.Statuses["buff"].Stacks)));
+        var state = new CombatState();
+        state.Statuses["buff"] = new StatusState(systemExpiresAt, stacks: 1);
+        state.Job.Statuses["buff"] = new StatusState(jobExpiresAt, stacks: 3);
+        var timeline = CombatStateMachine.CreateTimeline(system, job, state, _ => 1);
+
+        var firstExpiry = Math.Min(systemExpiresAt, jobExpiresAt);
+        var middle = timeline.AdvanceTo(firstExpiry);
+
+        Assert.Equal(systemExpiresAt > firstExpiry, middle.HasStatus("buff"));
+        Assert.Equal(jobExpiresAt > firstExpiry, middle.Job.HasStatus("buff"));
+
+        var end = timeline.AdvanceTo(Math.Max(systemExpiresAt, jobExpiresAt));
+        var expected = new[]
+        {
+            (Owner: "system", Time: systemExpiresAt, Stacks: 1),
+            (Owner: "job", Time: jobExpiresAt, Stacks: 3),
+        }.OrderBy(item => item.Time).ToArray();
+        Assert.Empty(end.Statuses);
+        Assert.Empty(end.Job.Statuses);
+        Assert.Equal(expected, expired);
+
+        timeline.AdvanceTo(end.Time + 1);
+        Assert.Equal(expected, expired);
+    }
+
     [Fact]
     public void 独立系统时间线不清理职业Buff或结算职业计时器()
     {

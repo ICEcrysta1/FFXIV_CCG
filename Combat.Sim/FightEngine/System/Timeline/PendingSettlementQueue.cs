@@ -16,7 +16,7 @@ namespace Combat.Sim.System.Timeline;
 ///
 /// 队列只保存事实本身和它原有的排序键，不承载任何领域规则：结算仍由 <see cref="CombatTimelineRuntime"/>
 /// 按 Kind 派发给对应处理器，并且与普通时间线事件共用同一套排序键，所以"事实落在哪个队列"
-/// 不影响结算顺序。同一目标（类型 + owner + 到期时刻）只保留一条，重复登记会被忽略。
+/// 不影响结算顺序。同一目标（类型 + 所属域 + 资源键 + 到期时刻）只保留一条，重复登记会被忽略。
 /// </summary>
 public sealed class PendingSettlementQueue
 {
@@ -85,13 +85,14 @@ public sealed class PendingSettlementQueue
         _byTarget.Clear();
     }
 
-    /// <summary>待结算事实的同一性：类型 + owner + 到期时刻。</summary>
+    /// <summary>待结算事实的同一性包含所属域，系统与职业的同名目标不能互相去重。</summary>
     private readonly record struct SettlementTarget(
         TimelineEventKind Kind,
+        TimelineEventScope Scope,
         string? OwnerKey,
         double DueAt)
     {
         public static SettlementTarget From(TimelineEvent settlement) =>
-            new(settlement.Kind, settlement.OwnerKey, settlement.Timestamp);
+            new(settlement.Kind, settlement.Scope, settlement.OwnerKey, settlement.Timestamp);
     }
 }

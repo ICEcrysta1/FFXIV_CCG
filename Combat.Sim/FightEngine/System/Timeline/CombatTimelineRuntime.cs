@@ -515,6 +515,7 @@ public sealed class CombatTimelineRuntime
     private static bool IsSameDispatch(TimelineEvent? previous, TimelineEvent current) =>
         previous is not null
         && previous.Kind == current.Kind
+        && previous.Scope == current.Scope
         && string.Equals(previous.OwnerKey, current.OwnerKey, StringComparison.Ordinal)
         && Math.Abs(previous.Timestamp - current.Timestamp) <= TimeEpsilon;
 }

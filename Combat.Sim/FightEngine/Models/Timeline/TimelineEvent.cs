@@ -36,6 +36,13 @@ public enum TimelineEventPriority
     DecisionBoundary = 50,
 }
 
+/// <summary>事件所属的规则域；与域内的资源键共同标识事件目标。</summary>
+public enum TimelineEventScope
+{
+    System,
+    Job,
+}
+
 /// <summary>
 /// 时间线中的不可变事件。
 /// Sequence 为 0 时表示尚未由 CombatTimelineRuntime 编号。
@@ -47,7 +54,8 @@ public sealed record TimelineEvent(
     string? OwnerKey = null,
     Guid? ActionInstanceId = null,
     object? Payload = null,
-    long Sequence = 0)
+    long Sequence = 0,
+    TimelineEventScope Scope = TimelineEventScope.System)
 {
     internal TimelineEvent DeepClone() => this with
     {

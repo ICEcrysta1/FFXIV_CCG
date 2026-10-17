@@ -119,10 +119,12 @@ public sealed class CombatStateMachine
     {
         var timeline = new CombatTimelineRuntime(state);
         system.RegisterTimelineHandlers(timeline, getMaxCharges, job.Timeline.ResolveMpTick);
-        timeline.RegisterHandler(TimelineEventKind.StatusExpired, (item, current) =>
-            current.Job.Statuses.ContainsKey(item.OwnerKey!)
-                ? job.StatusTimeline.HandleExpired(item, current)
-                : system.StatusTimeline.HandleExpired(item, current));
+        timeline.RegisterHandler(TimelineEventKind.StatusExpired, (item, current) => item.Scope switch
+        {
+            TimelineEventScope.System => system.StatusTimeline.HandleExpired(item, current),
+            TimelineEventScope.Job => job.StatusTimeline.HandleExpired(item, current),
+            _ => throw new ArgumentOutOfRangeException(nameof(item), "unsupported status expiration scope"),
+        });
         timeline.RegisterHandler(TimelineEventKind.JobPeriodicTick, job.Timeline.HandlePeriodic);
         timeline.RegisterHandler(TimelineEventKind.JobTimerExpired,
             (item, current) => job.Timeline.HandleCountdown(item, current, targetableAt));
