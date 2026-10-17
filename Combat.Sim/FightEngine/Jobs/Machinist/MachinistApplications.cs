@@ -47,37 +47,37 @@ public sealed partial class MachinistJobStateMachine
     private void ApplyChainSaw(CombatState nextState)
     {
         GainBattery(nextState, 20);
-        System.GrantRegisteredStatus(nextState, "excavator_ready");
+        State.Buffs.GrantRegisteredStatus(nextState, "excavator_ready");
     }
 
     private void ApplyExcavator(CombatState nextState)
     {
         GainBattery(nextState, 20);
-        System.ClearRegisteredStatus(nextState, "excavator_ready");
+        State.Buffs.ClearRegisteredStatus(nextState, "excavator_ready");
     }
 
     private void ApplyBlazingShot(CombatState nextState)
     {
-        System.ConsumeRegisteredStatusStack(nextState, "overheated");
+        State.Buffs.ConsumeRegisteredStatusStack(nextState, "overheated");
         System.ApplyCooldownReduction(nextState, RequireSkill("double_check"), 15.0);
         System.ApplyCooldownReduction(nextState, RequireSkill("checkmate"), 15.0);
     }
 
     private void ApplyFullMetalField(CombatState nextState) =>
-        System.ClearRegisteredStatus(nextState, "full_metal_machinist");
+        State.Buffs.ClearRegisteredStatus(nextState, "full_metal_machinist");
 
     private void ApplyHypercharge(CombatState nextState)
     {
-        if (nextState.HasStatus("free_hypercharge"))
+        if (nextState.Job.HasStatus("free_hypercharge"))
         {
-            System.ClearRegisteredStatus(nextState, "free_hypercharge");
+            State.Buffs.ClearRegisteredStatus(nextState, "free_hypercharge");
         }
         else
         {
             SetResource(nextState, "heat", IntResource(nextState, "heat") - 50);
         }
 
-        System.GrantRegisteredStatus(nextState, "overheated", stacks: 5);
+        State.Buffs.GrantRegisteredStatus(nextState, "overheated", stacks: 5);
     }
 
     private void ApplyWildfire(CombatState nextState)
@@ -99,12 +99,12 @@ public sealed partial class MachinistJobStateMachine
 
     private void ApplyBarrelStabilizer(CombatState nextState)
     {
-        System.GrantRegisteredStatus(nextState, "free_hypercharge");
-        System.GrantRegisteredStatus(nextState, "full_metal_machinist");
+        State.Buffs.GrantRegisteredStatus(nextState, "free_hypercharge");
+        State.Buffs.GrantRegisteredStatus(nextState, "full_metal_machinist");
     }
 
     private void ApplyReassemble(CombatState nextState) =>
-        System.GrantRegisteredStatus(nextState, "reassemble");
+        State.Buffs.GrantRegisteredStatus(nextState, "reassemble");
 
     private SkillDefinition RequireSkill(string key) =>
         Job.Skills.FirstOrDefault(skill => skill.Key == key)
@@ -125,17 +125,17 @@ public sealed partial class MachinistJobStateMachine
 
     private void ConsumeReassemble(CombatState state, SkillDefinition skill)
     {
-        if (state.HasStatus("reassemble") &&
+        if (state.Job.HasStatus("reassemble") &&
             skill.Potency > 0 &&
             !skill.Tags.Contains("reassemble_immune"))
         {
-            System.ClearRegisteredStatus(state, "reassemble");
+            State.Buffs.ClearRegisteredStatus(state, "reassemble");
         }
     }
 
     private void RecordOverheatedExpiry(CombatState state)
     {
-        if (!state.Statuses.TryGetValue("overheated", out var overheated))
+        if (!state.Job.Statuses.TryGetValue("overheated", out var overheated))
         {
             return;
         }

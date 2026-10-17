@@ -36,12 +36,11 @@ public sealed class StateContextBuilder
         // 状态的 remaining 属性从绝对截止时间派生，输出层不另行维护计时器。
         var currentGcd = _jobMachine.CurrentGcdDuration(state);
         return new StateContext(
-            JobTag: _systemMachine.RegisteredJobTag ??
-                    throw new InvalidOperationException("job state is not registered"),
+            JobTag: _jobMachine.State.JobTag,
             JobName: _project.Job.Name,
             Player: BuildPlayerContext(state, currentGcd),
             Target: BuildTargetContext(state),
-            Resources: _systemMachine.BuildJobResourceSnapshot(state),
+            Resources: _jobMachine.State.BuildResourceSnapshot(state),
             Buffs: BuildBuffContext(state, currentGcd),
             Dots: BuildDotContext(state, currentGcd));
     }
@@ -78,15 +77,18 @@ public sealed class StateContextBuilder
     private List<BuffContextEntry> BuildBuffContext(CombatState state, double currentGcd)
     {
         var buffs = new List<BuffContextEntry>();
-        foreach (var (source, definitions) in new (string Source, IReadOnlyDictionary<string, Models.Definitions.StatusDefinition> Definitions)[]
+        foreach (var (source, definitions, statuses) in new (
+                     string Source,
+                     IReadOnlyDictionary<string, Models.Definitions.StatusDefinition> Definitions,
+                     IReadOnlyDictionary<string, StatusState> Statuses)[]
                  {
-                     ("system", _systemMachine.SystemStatusDefinitions),
-                     ("job", _systemMachine.JobStatusDefinitions),
+                     ("system", _systemMachine.SystemStatusDefinitions, state.Statuses),
+                     ("job", _jobMachine.State.Buffs.Definitions, state.Job.Statuses),
                  })
         {
             foreach (var (statusKey, definition) in definitions)
             {
-                if (!state.Statuses.TryGetValue(statusKey, out var status) ||
+                if (!statuses.TryGetValue(statusKey, out var status) ||
                     status.Remaining <= 0 || status.Stacks <= 0)
                 {
                     continue;

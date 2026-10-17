@@ -5,7 +5,7 @@
 
 using Combat.Sim.Models.Combat;
 
-namespace Combat.Sim.System.Timeline;
+namespace Combat.Sim.Jobs.Timeline;
 
 /// <summary>
 /// 职业计时器的输出投影契约。内部只保存绝对截止时刻，输出层按职业量谱 schema

@@ -12,28 +12,28 @@ namespace Combat.Sim.Jobs.Machinist;
 public sealed partial class MachinistJobStateMachine
 {
     private ValidationResult ValidateExcavator(CombatState state, SkillDefinition skill) =>
-        state.HasStatus("excavator_ready")
+        state.Job.HasStatus("excavator_ready")
             ? new ValidationResult(true)
             : new ValidationResult(false, "requires_excavator_ready");
 
     private ValidationResult ValidateBlazingShot(CombatState state, SkillDefinition skill) =>
-        state.HasStatus("overheated")
+        state.Job.HasStatus("overheated")
             ? new ValidationResult(true)
             : new ValidationResult(false, "requires_overheated");
 
     private ValidationResult ValidateFullMetalField(CombatState state, SkillDefinition skill) =>
-        state.HasStatus("full_metal_machinist")
+        state.Job.HasStatus("full_metal_machinist")
             ? new ValidationResult(true)
             : new ValidationResult(false, "requires_full_metal_machinist");
 
     private ValidationResult ValidateHypercharge(CombatState state, SkillDefinition skill)
     {
-        if (state.HasStatus("overheated"))
+        if (state.Job.HasStatus("overheated"))
         {
             return new ValidationResult(false, "already_overheated");
         }
 
-        return state.HasStatus("free_hypercharge") || IntResource(state, "heat") >= 50
+        return state.Job.HasStatus("free_hypercharge") || IntResource(state, "heat") >= 50
             ? new ValidationResult(true)
             : new ValidationResult(false, "not_enough_heat");
     }
@@ -49,7 +49,7 @@ public sealed partial class MachinistJobStateMachine
             : new ValidationResult(false, "requires_wildfire");
 
     private static ValidationResult ValidateReassemble(CombatState state, SkillDefinition skill) =>
-        state.HasStatus("reassemble")
+        state.Job.HasStatus("reassemble")
             ? new ValidationResult(false, "status_already_active")
             : new ValidationResult(true);
 }

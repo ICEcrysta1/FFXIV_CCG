@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Combat.Sim.Facade;
 using Combat.Sim.Jobs;
+using Combat.Sim.Jobs.Timeline;
 using Combat.Sim.Models.Combat;
 using Combat.Sim.Models.Definitions;
 using Combat.Sim.Models.Timeline;
@@ -106,7 +107,7 @@ public sealed class PublicTimelineResourceTests
     {
         var machine = CombatStateMachine.FromDefaultConfig(Combat.Sim.Common.RepoRootLocator.Find(), "black_mage");
         var state = machine.InitialState();
-        state.SetJobResource("astral_fire", 1);
+        state.Job.SetResource("astral_fire", 1);
         state = TimelineTestDriver.Execute(machine, state, "transpose").NextState;
         foreach (var elapsed in new[] { 1.0, 2.0, 1.95, 0.049999 })
         {
@@ -126,8 +127,8 @@ public sealed class PublicTimelineResourceTests
         var machine = CombatStateMachine.FromDefaultConfig(Combat.Sim.Common.RepoRootLocator.Find(), "black_mage");
         var state = machine.InitialState();
         state.Mp = 0;
-        state.SetJobResource("astral_fire", fire);
-        state.SetJobResource("umbral_ice", ice);
+        state.Job.SetResource("astral_fire", fire);
+        state.Job.SetResource("umbral_ice", ice);
         var direct = TimelineTestDriver.AdvanceBy(machine, state, 6);
         var split = TimelineTestDriver.AdvanceBy(machine, TimelineTestDriver.AdvanceBy(machine, state, 2), 4);
         Assert.Equal(expectedMp, direct.Mp);
@@ -182,13 +183,14 @@ public sealed class PublicTimelineResourceTests
         state.Statuses["bonus"] = new StatusState(6);
         var observations = new List<(double Time, double Remaining)>();
         var system = CreateSystem();
-        system.JobTimeline.RegisterMpTickModifier((tickState, amount) =>
+        var job = new JobStateRuntime();
+        job.Timeline.RegisterMpTickModifier((tickState, amount) =>
         {
             var remaining = tickState.Statuses.TryGetValue("bonus", out var buff) ? buff.Remaining : 0;
             observations.Add((tickState.Time, remaining));
             return amount + (tickState.HasStatus("bonus") ? 100 : 0);
         });
-        var timeline = system.CreateTimeline(state, _ => 1);
+        var timeline = CombatStateMachine.CreateTimeline(system, job, state, _ => 1);
         var end = timeline.AdvanceTo(9);
         Assert.Equal(new[] { (3.0, 3.0), (6.0, 0.0), (9.0, 0.0) }, observations);
         Assert.Equal(700, end.Mp);
@@ -226,39 +228,40 @@ public sealed class PublicTimelineResourceTests
     public void 职业注册的周期和倒计时由公共时间线驱动()
     {
         var system = CreateSystem();
-        system.JobTimeline.RegisterPeriodicResource(
+        var job = new JobStateRuntime();
+        job.Timeline.RegisterPeriodicResource(
             "test.periodic",
             2.0,
             "periodic_elapsed",
-            state => state.JobTimelineDeadlines.TryGetValue("test.periodic", out var deadline) ? deadline : null,
+            state => state.Job.TimelineDeadlines.TryGetValue("test.periodic", out var deadline) ? deadline : null,
             (item, state) => new TimelineMutation(ApplyState: target =>
             {
-                target.SetJobResource(
+                target.Job.SetResource(
                     "periodic_ticks",
-                    Convert.ToInt32(target.GetJobResource("periodic_ticks", 0)) + 1);
+                    Convert.ToInt32(target.Job.GetResource("periodic_ticks", 0)) + 1);
                 // 结算后把下一次结算推进一个完整周期，由中心据此续排。
-                target.JobTimelineDeadlines["test.periodic"] = item.Timestamp + 2.0;
+                target.Job.TimelineDeadlines["test.periodic"] = item.Timestamp + 2.0;
             }));
-        system.JobTimeline.RegisterCountdown(
+        job.Timeline.RegisterCountdown(
             "test.countdown",
             "countdown_remaining",
-            state => state.JobTimelineDeadlines.TryGetValue("test.countdown", out var deadline) ? deadline : null,
+            state => state.Job.TimelineDeadlines.TryGetValue("test.countdown", out var deadline) ? deadline : null,
             (_, state, _) => new TimelineMutation(ApplyState: target =>
             {
-                target.SetJobResource("countdown_expired", true);
-                target.JobTimelineDeadlines.Remove("test.countdown");
+                target.Job.SetResource("countdown_expired", true);
+                target.Job.TimelineDeadlines.Remove("test.countdown");
             }));
 
         var state = new CombatState();
-        state.JobTimelineDeadlines["test.periodic"] = 2.0;
-        state.JobTimelineDeadlines["test.countdown"] = 5.0;
-        var timeline = system.CreateTimeline(state, _ => 1);
+        state.Job.TimelineDeadlines["test.periodic"] = 2.0;
+        state.Job.TimelineDeadlines["test.countdown"] = 5.0;
+        var timeline = CombatStateMachine.CreateTimeline(system, job, state, _ => 1);
 
         var end = timeline.AdvanceTo(7.0);
 
-        Assert.Equal(3, Convert.ToInt32(end.GetJobResource("periodic_ticks")));
-        Assert.True(Convert.ToBoolean(end.GetJobResource("countdown_expired")));
-        Assert.Equal(0.0, Convert.ToDouble(end.GetJobResource("countdown_remaining")));
+        Assert.Equal(3, Convert.ToInt32(end.Job.GetResource("periodic_ticks")));
+        Assert.True(Convert.ToBoolean(end.Job.GetResource("countdown_expired")));
+        Assert.Equal(0.0, Convert.ToDouble(end.Job.GetResource("countdown_remaining")));
     }
 
     [Fact]
@@ -269,21 +272,22 @@ public sealed class PublicTimelineResourceTests
         static (int Ticks, List<double> FireTimes) Run(IEnumerable<double> advancePlan)
         {
             var system = CreateSystem();
+            var job = new JobStateRuntime();
             var firedAt = new List<double>();
-            system.JobTimeline.RegisterPeriodicResource(
+            job.Timeline.RegisterPeriodicResource(
                 "test.periodic",
                 2.0,
                 "periodic_view",
-                state => state.JobTimelineDeadlines.TryGetValue("test.periodic", out var deadline) ? deadline : null,
+                state => state.Job.TimelineDeadlines.TryGetValue("test.periodic", out var deadline) ? deadline : null,
                 (item, state) => new TimelineMutation(ApplyState: target =>
                 {
                     firedAt.Add(item.Timestamp);
-                    target.JobTimelineDeadlines["test.periodic"] = item.Timestamp + 2.0;
+                    target.Job.TimelineDeadlines["test.periodic"] = item.Timestamp + 2.0;
                 }));
 
             var state = new CombatState();
-            state.JobTimelineDeadlines["test.periodic"] = 2.0;
-            var timeline = system.CreateTimeline(state, _ => 1);
+            state.Job.TimelineDeadlines["test.periodic"] = 2.0;
+            var timeline = CombatStateMachine.CreateTimeline(system, job, state, _ => 1);
             foreach (var seconds in advancePlan)
             {
                 timeline.AdvanceTo(timeline.CurrentTime + seconds);
@@ -305,24 +309,25 @@ public sealed class PublicTimelineResourceTests
     public void 职业倒计时与状态同刻到期时结算不会被取消()
     {
         var system = CreateSystem();
+        var job = new JobStateRuntime();
         var fired = 0;
-        system.JobTimeline.RegisterCountdown(
+        job.Timeline.RegisterCountdown(
             "test.countdown",
             "countdown_remaining",
-            state => state.JobTimelineDeadlines.TryGetValue("test.countdown", out var deadline) ? deadline : null,
+            state => state.Job.TimelineDeadlines.TryGetValue("test.countdown", out var deadline) ? deadline : null,
             (_, _, _) => new TimelineMutation(ApplyState: target =>
             {
                 // 处理器消费这次到期事实：不清除截止时刻内核会重复结算。
-                target.JobTimelineDeadlines.Remove("test.countdown");
+                target.Job.TimelineDeadlines.Remove("test.countdown");
                 fired++;
             }));
 
         var state = new CombatState();
-        state.JobTimelineDeadlines["test.countdown"] = 5.0;
+        state.Job.TimelineDeadlines["test.countdown"] = 5.0;
         // 让一个状态与倒计时在同一时刻过期：状态过期会触发资源重新同步，
         // 描述不再产出到期事实，稍晚派发就会被取消掉。
         state.Statuses["buff"] = new StatusState(5);
-        var timeline = system.CreateTimeline(state, _ => 1);
+        var timeline = CombatStateMachine.CreateTimeline(system, job, state, _ => 1);
 
         var end = timeline.AdvanceTo(5);
 
@@ -334,20 +339,66 @@ public sealed class PublicTimelineResourceTests
     public void 职业状态到期处理在状态移除前执行且同刻只结算一次()
     {
         var system = CreateSystem();
+        var job = new JobStateRuntime();
         var observedStacks = new List<int>();
-        system.StatusTimeline.RegisterExpiryHook("buff", state => observedStacks.Add(
-            state.Statuses.TryGetValue("buff", out var expired) ? expired.Stacks : -1));
+        job.StatusTimeline.RegisterExpiryHook("buff", state => observedStacks.Add(
+            state.Job.Statuses.TryGetValue("buff", out var expired) ? expired.Stacks : -1));
         var state = new CombatState();
-        state.Statuses["buff"] = new StatusState(5, stacks: 3);
-        var timeline = system.CreateTimeline(state, _ => 1);
+        state.Job.Statuses["buff"] = new StatusState(5, stacks: 3);
+        var timeline = CombatStateMachine.CreateTimeline(system, job, state, _ => 1);
 
         var end = timeline.AdvanceTo(5);
 
         // 处理器必须还能读到尚未移除的层数（-1 表示状态已经被提前移除），
         // 且不能因为时间线分段或重复同步而累计两次。
         Assert.Equal(new[] { 3 }, observedStacks);
-        Assert.False(end.HasStatus("buff"));
+        Assert.False(end.Job.HasStatus("buff"));
+        Assert.Empty(end.Job.Statuses);
+    }
+
+    [Fact]
+    public void 公共与职业Buff按各自截止时刻结算()
+    {
+        var system = CreateSystem();
+        var job = new JobStateRuntime();
+        var expiredStacks = new List<int>();
+        job.StatusTimeline.RegisterExpiryHook("job_buff", state =>
+            expiredStacks.Add(state.Job.Statuses["job_buff"].Stacks));
+        var state = new CombatState();
+        state.Statuses["public_buff"] = new StatusState(3, 1);
+        state.Job.Statuses["job_buff"] = new StatusState(5, 3);
+        var timeline = CombatStateMachine.CreateTimeline(system, job, state, _ => 1);
+
+        var middle = timeline.AdvanceTo(3);
+        Assert.False(middle.HasStatus("public_buff"));
+        Assert.Equal(3, middle.Job.StatusStacks("job_buff"));
+        Assert.Equal(2, middle.Job.Statuses["job_buff"].Remaining);
+        Assert.Empty(expiredStacks);
+
+        var end = timeline.AdvanceTo(5);
+        Assert.Empty(end.Job.Statuses);
+        Assert.Equal(new[] { 3 }, expiredStacks);
+        timeline.AdvanceTo(6);
+        Assert.Equal(new[] { 3 }, expiredStacks);
+    }
+
+    [Fact]
+    public void 独立系统时间线不清理职业Buff或结算职业计时器()
+    {
+        var system = CreateSystem();
+        var state = new CombatState();
+        state.Statuses["public"] = new StatusState(3);
+        state.Job.Statuses["job"] = new StatusState(3, 2);
+        state.Job.TimelineDeadlines["job.timer"] = 3;
+        state.Job.SetResource("gauge", 42);
+
+        var end = system.CreateTimeline(state, _ => 1).AdvanceTo(5);
+
         Assert.Empty(end.Statuses);
+        Assert.True(end.Job.Statuses.ContainsKey("job"));
+        Assert.Equal(2, end.Job.Statuses["job"].Stacks);
+        Assert.Equal(3, end.Job.TimelineDeadlines["job.timer"]);
+        Assert.Equal(42, end.Job.GetResource("gauge"));
     }
 
     [Fact]

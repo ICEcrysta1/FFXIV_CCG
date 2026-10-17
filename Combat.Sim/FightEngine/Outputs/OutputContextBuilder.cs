@@ -22,7 +22,7 @@ internal sealed record ModelHistoryRow(object Identity, long Sequence, ModelStat
 /// </summary>
 public sealed class OutputContextBuilder
 {
-    private readonly SystemStateMachine _systemMachine;
+    private readonly JobStateRuntime _jobState;
     private readonly StateContextBuilder _stateContextBuilder;
     private readonly BuffVectorTokenBuilder _buffVectorTokenBuilder;
     private readonly TargetBuffVectorTokenBuilder _targetBuffVectorTokenBuilder;
@@ -37,12 +37,12 @@ public sealed class OutputContextBuilder
         IJobStateMachine jobMachine,
         int? historyLimit = null)
     {
-        _systemMachine = systemMachine;
+        _jobState = jobMachine.State;
         _stateContextBuilder = new StateContextBuilder(project, systemMachine, jobMachine);
         var playerVectorTokenBuilder = new PlayerVectorTokenBuilder();
-        _buffVectorTokenBuilder = new BuffVectorTokenBuilder(systemMachine);
+        _buffVectorTokenBuilder = new BuffVectorTokenBuilder(systemMachine, _jobState);
         _targetBuffVectorTokenBuilder = new TargetBuffVectorTokenBuilder(systemMachine);
-        _resourceVectorTokenBuilder = new ResourceVectorTokenBuilder(systemMachine);
+        _resourceVectorTokenBuilder = new ResourceVectorTokenBuilder(_jobState);
         _stateTokenBuilder = new StateTokenBuilder(
             playerVectorTokenBuilder,
             _buffVectorTokenBuilder,
@@ -57,7 +57,7 @@ public sealed class OutputContextBuilder
 
     internal IReadOnlyDictionary<string, object> BuildNoopResourceTransition(CombatState state)
     {
-        var (_, _, consumed) = _systemMachine.BuildJobResourceTransition(state, state);
+        var (_, _, consumed) = _jobState.BuildResourceTransition(state, state);
         return consumed;
     }
 
@@ -92,8 +92,7 @@ public sealed class OutputContextBuilder
         currentContext["tokens"] = new List<Dictionary<string, double[]>> { _stateTokenBuilder.Build(current, actionKeys) };
         return new Dictionary<string, object?>
         {
-            ["job_tag"] = _systemMachine.RegisteredJobTag ??
-                          throw new InvalidOperationException("job state is not registered"),
+            ["job_tag"] = _jobState.JobTag,
             ["schema_version"] = OutputContextSchema.CanonicalContextSchemaVersion,
             // 与真实效果、已完成 policy 等待一一对应的累计行数；不受历史裁剪影响。
             ["history_cursor"] = state.LastHistorySequence,

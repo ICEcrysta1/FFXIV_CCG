@@ -6,7 +6,7 @@
 using Combat.Sim.Models.Combat;
 using Combat.Sim.Models.Timeline;
 
-namespace Combat.Sim.System.Timeline;
+namespace Combat.Sim.Jobs.Timeline;
 
 /// <summary>
 /// 职业时间资源注册表。职业只声明周期与倒计时的**绝对截止时刻**，时间推进与事件排空由时间线内核负责；

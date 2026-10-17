@@ -13,7 +13,7 @@ public sealed partial class BlackMageJobStateMachine
     /// <summary>炽炎：耗蓝并消耗 1 层灵极魂，+1 天语（对照 _apply_fire_iv）。</summary>
     private void ApplyFireIv(CombatState previousState, CombatState nextState, SkillDefinition skill)
     {
-        SpendMp(nextState, ActualMpCost(previousState, skill));
+        System.PlayerState.SpendMp(nextState, ActualMpCost(previousState, skill));
         if (IntResource(nextState, "umbral_hearts") > 0)
         {
             SetResource(nextState, "umbral_hearts", IntResource(nextState, "umbral_hearts") - 1);
@@ -28,14 +28,14 @@ public sealed partial class BlackMageJobStateMachine
     /// <summary>绝望：清空 MP 并补满 AF（对照 _apply_despair）。</summary>
     private void ApplyDespair(CombatState nextState)
     {
-        SpendMp(nextState, nextState.Mp);
+        System.PlayerState.SpendMp(nextState, nextState.Mp);
         SetAstralFire(nextState, ResourceMax("astral_fire"));
     }
 
     /// <summary>核爆：消耗全部 MP（灵极魂时减半）、补满 AF、清空灵极魂并 +3 天语（对照 _apply_flare）。</summary>
     private void ApplyFlare(CombatState nextState)
     {
-        SpendMp(nextState, FlareCost(nextState));
+        System.PlayerState.SpendMp(nextState, FlareCost(nextState));
         SetAstralFire(nextState, ResourceMax("astral_fire"));
         if (IntResource(nextState, "umbral_hearts") > 0)
         {
@@ -55,7 +55,7 @@ public sealed partial class BlackMageJobStateMachine
     /// <summary>冰澈与玄冰：耗蓝、补满灵极魂并按当前 UI 命中回蓝。</summary>
     private void ApplyIceRefill(CombatState previousState, CombatState nextState, SkillDefinition skill)
     {
-        SpendMp(nextState, ActualMpCost(previousState, skill));
+        System.PlayerState.SpendMp(nextState, ActualMpCost(previousState, skill));
         SetResource(nextState, "umbral_hearts", ResourceMax("umbral_hearts"));
         RecoverMpForUmbralIce(nextState);
     }
@@ -65,7 +65,7 @@ public sealed partial class BlackMageJobStateMachine
     {
         if (InAstralFire(previousState))
         {
-            SpendMp(nextState, ActualMpCost(previousState, skill));
+            System.PlayerState.SpendMp(nextState, ActualMpCost(previousState, skill));
             SetResource(nextState, "firestarter_ready", true);
         }
 
@@ -139,7 +139,7 @@ public sealed partial class BlackMageJobStateMachine
     /// <summary>魔泉：回满 MP 与 AF/灵极魂，授予悖论与雷云（对照 _apply_manafont）。</summary>
     private void ApplyManafont(CombatState nextState)
     {
-        nextState.Mp = nextState.MaxMp;
+        System.PlayerState.RestoreMp(nextState);
         SetAstralFire(nextState, ResourceMax("astral_fire"));
         SetResource(nextState, "umbral_hearts", ResourceMax("umbral_hearts"));
         SetResource(nextState, "paradox_ready", true);
@@ -152,7 +152,7 @@ public sealed partial class BlackMageJobStateMachine
     /// <summary>火属性 stance 过渡：耗蓝、补满 AF、授予雷云，满 UI+灵极魂时授予悖论（对照 _apply_fire_stance_transition）。</summary>
     private void ApplyFireStanceTransition(CombatState previousState, CombatState nextState, SkillDefinition skill)
     {
-        SpendMp(nextState, ActualMpCost(previousState, skill));
+        System.PlayerState.SpendMp(nextState, ActualMpCost(previousState, skill));
         SetAstralFire(nextState, ResourceMax("astral_fire"));
         SetResource(nextState, "thundercloud_ready", true);
         if (IntResource(previousState, "umbral_ice") == ResourceMax("umbral_ice") &&
@@ -168,7 +168,7 @@ public sealed partial class BlackMageJobStateMachine
     /// </summary>
     private void ApplyIceStanceTransition(CombatState previousState, CombatState nextState, SkillDefinition skill)
     {
-        SpendMp(nextState, ActualMpCost(previousState, skill));
+        System.PlayerState.SpendMp(nextState, ActualMpCost(previousState, skill));
         SetUmbralIce(nextState, ResourceMax("umbral_ice"));
         SetResource(nextState, "thundercloud_ready", true);
         if (IntResource(previousState, "astral_fire") == ResourceMax("astral_fire"))
@@ -180,7 +180,7 @@ public sealed partial class BlackMageJobStateMachine
         var mpRecovery = previousUiStacks >= ResourceMax("umbral_ice")
             ? nextState.MaxMp
             : BlackMageConstants.UmbralIceMpPerStack * Math.Max(1, previousUiStacks);
-        RecoverMp(nextState, mpRecovery);
+        System.PlayerState.RecoverMp(nextState, mpRecovery);
     }
 
     /// <summary>写入 AF 层数并清空 UI（对照 _set_astral_fire）。</summary>
@@ -229,10 +229,6 @@ public sealed partial class BlackMageJobStateMachine
     private int FlareCost(CombatState state) =>
         IntResource(state, "umbral_hearts") > 0 ? state.Mp / 2 : state.Mp;
 
-    private void SpendMp(CombatState state, int amount) => state.Mp = Math.Max(0, state.Mp - amount);
-
-    private void RecoverMp(CombatState state, int amount) => state.Mp = Math.Min(state.MaxMp, state.Mp + amount);
-
     /// <summary>按当前 UI 层数命中回蓝：满层一次回满，否则每层 2500（对照 _recover_mp_for_umbral_ice）。</summary>
     private void RecoverMpForUmbralIce(CombatState state)
     {
@@ -242,7 +238,7 @@ public sealed partial class BlackMageJobStateMachine
             return;
         }
 
-        RecoverMp(
+        System.PlayerState.RecoverMp(
             state,
             uiStacks >= ResourceMax("umbral_ice")
                 ? 10000

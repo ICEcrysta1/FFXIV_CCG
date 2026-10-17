@@ -297,7 +297,7 @@ public class CombatStateMachineTests
         var history = state.History.Last();
         Assert.Equal(320.0, history.Potency, 9);
         Assert.Equal(2.0, history.Value, 9);
-        Assert.False(state.HasStatus("reassemble"));
+        Assert.False(state.Job.HasStatus("reassemble"));
         Assert.NotEqual(history.Potency, machine.JobMachine.ResolvePotency(state, skill, skill.Potency));
         Assert.NotEqual(history.Value, machine.JobMachine.ResolveActionValue(state, skill, skill.Value));
         Assert.Equal(30.0, history.NextCooldownSeconds, 9);

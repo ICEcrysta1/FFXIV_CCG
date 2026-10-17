@@ -29,15 +29,15 @@ public class BlackMageJobStateMachineTests
         return TimelineTestDriver.AdvanceBy(machine, state, waitSeconds);
     }
 
-    private static int Int(CombatState state, string key) => Assert.IsType<int>(state.GetJobResource(key));
+    private static int Int(CombatState state, string key) => Assert.IsType<int>(state.Job.GetResource(key));
 
-    private static bool Bool(CombatState state, string key) => Assert.IsType<bool>(state.GetJobResource(key));
+    private static bool Bool(CombatState state, string key) => Assert.IsType<bool>(state.Job.GetResource(key));
 
-    private static double Float(CombatState state, string key) => Assert.IsType<double>(state.GetJobResource(key));
+    private static double Float(CombatState state, string key) => Assert.IsType<double>(state.Job.GetResource(key));
 
     /// <summary>读取职业时间资源的对外视图（即模型输入看到的相对秒数）。</summary>
     private static double TimerView(CombatStateMachine machine, CombatState state, string key) =>
-        Convert.ToDouble(machine.SystemMachine.BuildJobResourceSnapshot(state)[key]);
+        Convert.ToDouble(machine.JobMachine.State.BuildResourceSnapshot(state)[key]);
 
     private static string FindRepoRoot()
     {
@@ -83,7 +83,7 @@ public class BlackMageJobStateMachineTests
     {
         var machine = BuildMachine();
         var state = machine.InitialState();
-        state.SetJobResource("astral_fire", 3);
+        state.Job.SetResource("astral_fire", 3);
         state.Mp = 5000;
 
         var nextState = TimelineTestDriver.Execute(machine, state, "fire_iii").NextState;
@@ -108,12 +108,12 @@ public class BlackMageJobStateMachineTests
         var machine = BuildMachine();
 
         var astralFire = machine.InitialState();
-        astralFire.SetJobResource("astral_fire", 3);
+        astralFire.Job.SetResource("astral_fire", 3);
         Assert.True(machine.ValidateAction(astralFire, "fire_iv").Ok);
         Assert.Equal("requires_ui", machine.ValidateAction(astralFire, "blizzard_iv").Reason);
 
         var umbralIce = machine.InitialState();
-        umbralIce.SetJobResource("umbral_ice", 3);
+        umbralIce.Job.SetResource("umbral_ice", 3);
         Assert.True(machine.ValidateAction(umbralIce, "blizzard_iv").Ok);
         Assert.Equal("requires_af", machine.ValidateAction(umbralIce, "fire_iv").Reason);
     }
@@ -124,17 +124,17 @@ public class BlackMageJobStateMachineTests
         var machine = BuildMachine();
 
         var astralFire = machine.InitialState();
-        astralFire.SetJobResource("astral_fire", 3);
+        astralFire.Job.SetResource("astral_fire", 3);
         var fireToIce = TimelineTestDriver.Execute(machine, astralFire, "blizzard_iii");
         Assert.Equal(1.75, fireToIce.NextState.History[^1].CastTimeSeconds, 5);
 
         var umbralIceOne = machine.InitialState();
-        umbralIceOne.SetJobResource("umbral_ice", 1);
+        umbralIceOne.Job.SetResource("umbral_ice", 1);
         var uiOneBlizzard = TimelineTestDriver.Execute(machine, umbralIceOne, "blizzard_iii");
         Assert.Equal(3.5, uiOneBlizzard.NextState.History[^1].CastTimeSeconds, 5);
 
         var umbralIceThree = machine.InitialState();
-        umbralIceThree.SetJobResource("umbral_ice", 3);
+        umbralIceThree.Job.SetResource("umbral_ice", 3);
         var iceToFire = TimelineTestDriver.Execute(machine, umbralIceThree, "fire_iii");
         Assert.Equal(1.75, iceToFire.NextState.History[^1].CastTimeSeconds, 5);
     }
@@ -157,7 +157,7 @@ public class BlackMageJobStateMachineTests
     {
         var machine = BuildMachine();
         var state = ReadyAfterGcd(machine, TimelineTestDriver.Execute(machine, machine.InitialState(), "fire_iii").NextState);
-        state.SetJobResource("astral_soul", 6);
+        state.Job.SetResource("astral_soul", 6);
 
         var validation = machine.ValidateAction(state, "fire_iv");
         Assert.True(validation.Ok);
@@ -173,8 +173,8 @@ public class BlackMageJobStateMachineTests
         var machine = BuildMachine();
         var state = ReadyAfterGcd(machine, TimelineTestDriver.Execute(machine, machine.InitialState(), "fire_iii").NextState);
         state.Mp = 4000;
-        state.SetJobResource("umbral_hearts", 3);
-        state.SetJobResource("astral_soul", 2);
+        state.Job.SetResource("umbral_hearts", 3);
+        state.Job.SetResource("astral_soul", 2);
 
         var nextState = TimelineTestDriver.Execute(machine, state, "flare").NextState;
 
@@ -191,7 +191,7 @@ public class BlackMageJobStateMachineTests
         var machine = BuildMachine();
         var state = ReadyAfterGcd(machine, TimelineTestDriver.Execute(machine, machine.InitialState(), "fire_iii").NextState);
         state.Mp = 2400;
-        state.SetJobResource("astral_soul", 4);
+        state.Job.SetResource("astral_soul", 4);
 
         var nextState = TimelineTestDriver.Execute(machine, state, "flare").NextState;
 
@@ -241,7 +241,7 @@ public class BlackMageJobStateMachineTests
     {
         var machine = BuildMachine();
         var state = machine.InitialState();
-        state.SetJobResource("umbral_ice", 2);
+        state.Job.SetResource("umbral_ice", 2);
         state.Mp = 0;
 
         var nextState = TimelineTestDriver.Execute(machine, state, "blizzard_iii").NextState;
@@ -260,7 +260,7 @@ public class BlackMageJobStateMachineTests
         Assert.Equal("requires_ui", neutralValidation.Reason);
 
         var state = machine.InitialState();
-        state.SetJobResource("umbral_ice", 3);
+        state.Job.SetResource("umbral_ice", 3);
         state.Mp = 0;
 
         var nextState = TimelineTestDriver.Execute(machine, state, "freeze").NextState;
@@ -275,8 +275,8 @@ public class BlackMageJobStateMachineTests
         var state = machine.InitialState();
         Assert.Throws<InvalidOperationException>(() => TimelineTestDriver.Execute(machine, state, "paradox"));
 
-        state.SetJobResource("paradox_ready", true);
-        state.SetJobResource("astral_fire", 3);
+        state.Job.SetResource("paradox_ready", true);
+        state.Job.SetResource("astral_fire", 3);
         state.Mp = 2000;
         var nextState = TimelineTestDriver.Execute(machine, state, "paradox").NextState;
         Assert.False(Bool(nextState, "paradox_ready"));
@@ -289,7 +289,7 @@ public class BlackMageJobStateMachineTests
     {
         var machine = BuildMachine();
         var state = machine.InitialState();
-        state.SetJobResource("astral_fire", 3);
+        state.Job.SetResource("astral_fire", 3);
         state.Mp = 0;
         var blizzardIii = TimelineTestDriver.Execute(machine, state, "blizzard_iii");
         state = TimelineTestDriver.AdvanceBy(machine, blizzardIii.NextState, blizzardIii.NextGcdWindowSeconds);
@@ -307,7 +307,7 @@ public class BlackMageJobStateMachineTests
     {
         var machine = BuildMachine();
         var state = machine.InitialState();
-        state.SetJobResource("thundercloud_ready", true);
+        state.Job.SetResource("thundercloud_ready", true);
         var nextState = TimelineTestDriver.Execute(machine, state, "high_thunder").NextState;
 
         Assert.Contains("high_thunder", machine.SystemMachine.RegisteredTargetDotKeys);
@@ -320,7 +320,7 @@ public class BlackMageJobStateMachineTests
     {
         var machine = BuildMachine();
         var state = machine.InitialState();
-        state.SetJobResource("thundercloud_ready", true);
+        state.Job.SetResource("thundercloud_ready", true);
 
         var nextState = TimelineTestDriver.Execute(machine, state, "high_thunder_ii").NextState;
 
@@ -334,7 +334,7 @@ public class BlackMageJobStateMachineTests
     {
         var machine = BuildMachine();
         var state = machine.InitialState();
-        state.SetJobResource("polyglot", 2);
+        state.Job.SetResource("polyglot", 2);
 
         var nextState = TimelineTestDriver.Execute(machine, state, "xenoglossy").NextState;
 
@@ -346,7 +346,7 @@ public class BlackMageJobStateMachineTests
     {
         var machine = BuildMachine();
         var state = ReadyAfterGcd(machine, TimelineTestDriver.Execute(machine, machine.InitialState(), "fire_iii").NextState);
-        state.SetJobResource("polyglot", 3);
+        state.Job.SetResource("polyglot", 3);
 
         Assert.True(machine.ValidateAction(state, "amplifier").Ok);
 
@@ -371,8 +371,8 @@ public class BlackMageJobStateMachineTests
     {
         var machine = BuildMachine();
         var state = machine.InitialState();
-        state.SetJobResource("umbral_ice", 3);
-        state.SetJobResource("umbral_hearts", 3);
+        state.Job.SetResource("umbral_ice", 3);
+        state.Job.SetResource("umbral_hearts", 3);
         state.Mp = 0;
 
         var nextState = TimelineTestDriver.Execute(machine, state, "high_fire_ii").NextState;
@@ -389,7 +389,7 @@ public class BlackMageJobStateMachineTests
     {
         var machine = BuildMachine();
         var state = machine.InitialState();
-        state.SetJobResource("astral_fire", 3);
+        state.Job.SetResource("astral_fire", 3);
         state.Mp = 3000;
 
         var nextState = TimelineTestDriver.Execute(machine, state, "high_fire_ii").NextState;
@@ -403,10 +403,10 @@ public class BlackMageJobStateMachineTests
         var machine = BuildMachine();
         var state = ReadyAfterGcd(machine, TimelineTestDriver.Execute(machine, machine.InitialState(), "fire_iii").NextState);
         state = TimelineTestDriver.Execute(machine, state, "triplecast").NextState;
-        Assert.Equal(3, state.StatusStacks("triplecast"));
+        Assert.Equal(3, state.Job.StatusStacks("triplecast"));
 
         var nextState = TimelineTestDriver.Execute(machine, state, "fire_iv").NextState;
-        Assert.Equal(2, nextState.StatusStacks("triplecast"));
+        Assert.Equal(2, nextState.Job.StatusStacks("triplecast"));
         Assert.Equal(2.5, nextState.WeaveWindowRemaining, 5);
     }
 
@@ -415,13 +415,13 @@ public class BlackMageJobStateMachineTests
     {
         var machine = BuildMachine();
         var state = machine.InitialState();
-        state.SetJobResource("firestarter_ready", true);
+        state.Job.SetResource("firestarter_ready", true);
         state = TimelineTestDriver.Execute(machine, state, "triplecast").NextState;
 
         var nextState = TimelineTestDriver.Execute(machine, state, "fire_iii").NextState;
 
         Assert.False(Bool(nextState, "firestarter_ready"));
-        Assert.Equal(3, nextState.StatusStacks("triplecast"));
+        Assert.Equal(3, nextState.Job.StatusStacks("triplecast"));
         Assert.Equal(10000, nextState.Mp);
     }
 
@@ -430,13 +430,13 @@ public class BlackMageJobStateMachineTests
     {
         var machine = BuildMachine();
         var state = machine.InitialState();
-        state.SetJobResource("firestarter_ready", true);
+        state.Job.SetResource("firestarter_ready", true);
         state = TimelineTestDriver.Execute(machine, state, "swiftcast").NextState;
 
         var nextState = TimelineTestDriver.Execute(machine, state, "fire_iii").NextState;
 
         Assert.False(Bool(nextState, "firestarter_ready"));
-        Assert.True(nextState.HasStatus("swiftcast"));
+        Assert.True(nextState.Job.HasStatus("swiftcast"));
         Assert.Equal(10000, nextState.Mp);
     }
 
@@ -450,8 +450,8 @@ public class BlackMageJobStateMachineTests
 
         var nextState = TimelineTestDriver.Execute(machine, state, "fire_iv").NextState;
 
-        Assert.False(nextState.HasStatus("swiftcast"));
-        Assert.Equal(3, nextState.StatusStacks("triplecast"));
+        Assert.False(nextState.Job.HasStatus("swiftcast"));
+        Assert.Equal(3, nextState.Job.StatusStacks("triplecast"));
     }
 
     [Fact]
@@ -462,8 +462,8 @@ public class BlackMageJobStateMachineTests
         Assert.False(machine.SkillBook.Contains("retrace"));
         Assert.False(machine.SkillBook.Contains("manaward"));
         Assert.False(machine.SkillBook.Contains("surecast"));
-        Assert.DoesNotContain("manaward", machine.SystemMachine.JobStatusDefinitions.Keys);
-        Assert.DoesNotContain("surecast", machine.SystemMachine.JobStatusDefinitions.Keys);
+        Assert.DoesNotContain("manaward", machine.JobMachine.State.Buffs.Definitions.Keys);
+        Assert.DoesNotContain("surecast", machine.JobMachine.State.Buffs.Definitions.Keys);
         Assert.False(machine.JobMachine.SupportsBehavior("ley_lines_utility"));
 
         var available = new JobSimulator(machine).AvailableActionKeysAt(0);
@@ -494,9 +494,9 @@ public class BlackMageJobStateMachineTests
         CombatState TransposeFrom(int astralFire, int umbralIce, int umbralHearts)
         {
             var state = machine.InitialState();
-            state.SetJobResource("astral_fire", astralFire);
-            state.SetJobResource("umbral_ice", umbralIce);
-            state.SetJobResource("umbral_hearts", umbralHearts);
+            state.Job.SetResource("astral_fire", astralFire);
+            state.Job.SetResource("umbral_ice", umbralIce);
+            state.Job.SetResource("umbral_hearts", umbralHearts);
             return TimelineTestDriver.Execute(machine, state, "transpose").NextState;
         }
 
@@ -512,7 +512,7 @@ public class BlackMageJobStateMachineTests
     {
         var machine = BuildMachine();
         var state = machine.InitialState();
-        state.SetJobResource("astral_fire", 1);
+        state.Job.SetResource("astral_fire", 1);
         state.Mp = 2000;
 
         var nextState = TimelineTestDriver.Execute(machine, state, "despair").NextState;
@@ -537,7 +537,7 @@ public class BlackMageJobStateMachineTests
         Assert.Equal(800, machine.SkillBook.Get(skillKey).MpCostFloor);
         var simulator = new JobSimulator(machine);
         var snapshot = simulator.CreateSnapshot();
-        snapshot.State.SetJobResource("astral_fire", astralFire);
+        snapshot.State.Job.SetResource("astral_fire", astralFire);
         snapshot.State.Mp = mp;
         simulator.RestoreSnapshot(snapshot);
 
@@ -682,7 +682,7 @@ public class BlackMageJobStateMachineTests
         state = TimelineTestDriver.AdvanceBy(machine, state, 21.0);
 
         Assert.Equal(4000, state.Mp);
-        Assert.False(state.HasStatus("lucid_dreaming"));
+        Assert.False(state.Job.HasStatus("lucid_dreaming"));
     }
 
     [Fact]
@@ -710,8 +710,8 @@ public class BlackMageJobStateMachineTests
         var machine = BuildMachine();
         var state = machine.InitialState();
         // 走对外视图写入：由翻译层换算成绝对截止时刻。
-        machine.SystemMachine.SetJobResource(state, "polyglot_timer", 12.0);
-        state.SetJobResource("polyglot", 1);
+        machine.JobMachine.State.Resources.SetJobResource(state, "polyglot_timer", 12.0);
+        state.Job.SetResource("polyglot", 1);
 
         var nextState = TimelineTestDriver.AdvanceBy(machine, state, 5.0);
 

@@ -487,8 +487,7 @@ public sealed class CombatTimelineRuntime
         target.CumulativeDotPotency = clone.CumulativeDotPotency;
         target.CurrentPotency = clone.CurrentPotency;
         target.CurrentGcdDotPotency = clone.CurrentGcdDotPotency;
-        target.JobResources = clone.JobResources;
-        target.JobTimelineDeadlines = clone.JobTimelineDeadlines;
+        target.Job = clone.Job;
         target.Cooldowns = clone.Cooldowns;
         target.Statuses = clone.Statuses;
         target.Dots = clone.Dots;

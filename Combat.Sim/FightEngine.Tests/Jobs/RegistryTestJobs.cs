@@ -8,6 +8,8 @@ namespace FightEngine.Tests.Jobs;
 /// <summary>注册中心测试专用职业 A（tag = registry_job_a）。</summary>
 public class RegistryJobA : IJobStateMachine
 {
+    public JobStateRuntime State { get; } = new();
+
     public static string Tag => "registry_job_a";
 
     public double DefaultFightRemaining => 600.0;
@@ -46,6 +48,8 @@ public sealed class RegistryJobB : RegistryJobA
 /// </summary>
 public sealed class PreemptedJob : IJobStateMachine
 {
+    public JobStateRuntime State { get; } = new();
+
     public static string Tag => "registry_preempted_job";
 
     public double DefaultFightRemaining => 600.0;
@@ -74,6 +78,8 @@ public sealed class PreemptedJob : IJobStateMachine
 /// <summary>带构造计数的注册测试职业：锁定注册路径不构造实例。</summary>
 public sealed class CountingJob : IJobStateMachine
 {
+    public JobStateRuntime State { get; } = new();
+
     public static int Constructions;
 
     public CountingJob()

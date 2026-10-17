@@ -8,7 +8,7 @@ using Combat.Sim.Models.Combat;
 using Combat.Sim.Models.Definitions;
 using Combat.Sim.Models.Timeline;
 using Combat.Sim.System;
-using Combat.Sim.System.Timeline;
+using Combat.Sim.Jobs.Timeline;
 
 namespace Combat.Sim.Jobs.Black.Mage;
 
@@ -24,7 +24,7 @@ public sealed partial class BlackMageJobStateMachine : JobResourceAccessors, IJo
     /// <summary>职业标签（对照 black_mage.py 的 tag = "black_mage"）。</summary>
     public static string Tag => "black_mage";
 
-    /// <summary>通晓周期的注册 key，同时是它在 JobTimelineDeadlines 里的绝对截止时刻键。</summary>
+    /// <summary>通晓周期的注册 key，同时是它在 Job.TimelineDeadlines 里的绝对截止时刻键。</summary>
     private const string PolyglotTimelineKey = "black_mage.polyglot";
 
     private ProjectConfig? _project;
@@ -77,7 +77,7 @@ public sealed partial class BlackMageJobStateMachine : JobResourceAccessors, IJo
     /// <summary>职业默认战斗剩余时间（对照 job.default_fight_remaining）。</summary>
     public double DefaultFightRemaining => Job.DefaultFightRemaining;
 
-    /// <summary>向系统层注册黑魔专属资源与职业 Buff（对照 build_state_registration）。</summary>
+    /// <summary>注册职业自身的黑魔专属资源与职业 Buff（对照 build_state_registration）。</summary>
     public JobStateRegistration BuildStateRegistration() =>
         new(
             Tag,
@@ -146,7 +146,7 @@ public sealed partial class BlackMageJobStateMachine : JobResourceAccessors, IJo
             }
 
             var totalAmount = Math.Max(0, naturalAmount);
-            if (state.Statuses.TryGetValue("lucid_dreaming", out var lucidStatus) &&
+            if (state.Job.Statuses.TryGetValue("lucid_dreaming", out var lucidStatus) &&
                 lucidStatus.Remaining > SystemConstants.ZeroEpsilon)
             {
                 totalAmount += BlackMageConstants.LucidDreamingTickMp;
@@ -160,7 +160,7 @@ public sealed partial class BlackMageJobStateMachine : JobResourceAccessors, IJo
     public double CurrentGcdDuration(CombatState state)
     {
         var gcd = state.BaseGcd ?? Project.System.BaseGcd;
-        if (state.HasStatus("ley_lines"))
+        if (state.Job.HasStatus("ley_lines"))
         {
             gcd *= Job.TimingValue("ley_lines_haste_multiplier");
         }
@@ -181,7 +181,7 @@ public sealed partial class BlackMageJobStateMachine : JobResourceAccessors, IJo
             return true;
         }
 
-        if (state.HasStatus("swiftcast") || state.HasStatus("triplecast"))
+        if (state.Job.HasStatus("swiftcast") || state.Job.HasStatus("triplecast"))
         {
             return true;
         }
@@ -279,13 +279,13 @@ public sealed partial class BlackMageJobStateMachine : JobResourceAccessors, IJo
         }
 
         // 两种通用瞬发同时存在时，游戏优先消耗即刻咏唱，再消耗三连咏唱。
-        if (state.HasStatus("swiftcast"))
+        if (state.Job.HasStatus("swiftcast"))
         {
-            System.ClearRegisteredStatus(state, "swiftcast");
+            State.Buffs.ClearRegisteredStatus(state, "swiftcast");
         }
-        else if (state.HasStatus("triplecast"))
+        else if (state.Job.HasStatus("triplecast"))
         {
-            System.ConsumeRegisteredStatusStack(state, "triplecast");
+            State.Buffs.ConsumeRegisteredStatusStack(state, "triplecast");
         }
     }
 

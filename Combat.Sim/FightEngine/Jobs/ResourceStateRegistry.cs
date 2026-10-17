@@ -6,10 +6,10 @@
 using Combat.Sim.Models.Combat;
 using Combat.Sim.Models.Definitions;
 
-namespace Combat.Sim.System.Registries;
+namespace Combat.Sim.Jobs;
 
 /// <summary>
-/// 系统层职业量谱注册中心：定义注册、量谱归一化读写、快照与前后差分输出
+/// 职业量谱注册中心：定义注册、量谱归一化读写、快照与前后差分输出
 /// （对照 resource_state.ResourceStateRegistry）。
 /// </summary>
 public sealed class ResourceStateRegistry
@@ -77,13 +77,13 @@ public sealed class ResourceStateRegistry
     public object GetJobResource(CombatState state, string key)
     {
         var definition = RequireDefinition(key);
-        return NormalizeJobResourceValue(definition, state.GetJobResource(key, definition.DefaultValue));
+        return NormalizeJobResourceValue(definition, state.Job.GetResource(key, definition.DefaultValue));
     }
 
     public void SetJobResource(CombatState state, string key, object value)
     {
         var definition = RequireDefinition(key);
-        state.SetJobResource(key, NormalizeJobResourceValue(definition, value));
+        state.Job.SetResource(key, NormalizeJobResourceValue(definition, value));
     }
 
     /// <summary>按资源定义钳制并序列化一个外部计算出的值（供计时器视图投影复用同一套规范化）。</summary>

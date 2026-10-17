@@ -15,7 +15,8 @@ public class JobResourceAccessorsTests
             SystemTestKit.Timing,
             SystemTestKit.Potency,
             SystemTestKit.MpRecovery);
-        system.RegisterJobState(new JobStateRegistration(
+        var accessors = new TestAccessors();
+        accessors.State.Register(new JobStateRegistration(
             "test_job",
             new Dictionary<string, JobResourceDefinition>
             {
@@ -26,7 +27,7 @@ public class JobResourceAccessorsTests
             new Dictionary<string, StatusDefinition>()));
 
         var state = system.InitialState(fightRemaining: 600.0, maxMp: 10000);
-        var accessors = new TestAccessors();
+        accessors.State.Initialize(state);
         accessors.Attach(system);
 
         Assert.Equal(0, accessors.ReadInt(state, "count"));
@@ -46,7 +47,7 @@ public class JobResourceAccessorsTests
         var accessors = new TestAccessors();
 
         var exception = Assert.Throws<InvalidOperationException>(
-            () => accessors.Read(new CombatState(), "count"));
+            () => accessors.ReadSystem());
 
         Assert.Contains("Bind(project, system)", exception.Message);
     }
@@ -54,6 +55,8 @@ public class JobResourceAccessorsTests
     private sealed class TestAccessors : JobResourceAccessors
     {
         public void Attach(SystemStateMachine system) => BindSystem(system);
+
+        public SystemStateMachine ReadSystem() => System;
 
         public object Read(CombatState state, string key) => Resource(state, key);
 

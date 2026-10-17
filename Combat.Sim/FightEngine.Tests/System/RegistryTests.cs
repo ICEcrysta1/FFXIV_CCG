@@ -1,6 +1,6 @@
 using Combat.Sim.Models.Combat;
 using Combat.Sim.Models.Definitions;
-using Combat.Sim.Models.Definitions;
+using Combat.Sim.Jobs;
 using Combat.Sim.System.Registries;
 using static FightEngine.Tests.System.SystemTestKit;
 
@@ -15,7 +15,7 @@ public class RegistryTests
     public void Buff授予默认使用定义时长与层数()
     {
         var registry = new BuffStateRegistry();
-        registry.RegisterSystemStatuses(new Dictionary<string, StatusDefinition>
+        registry.RegisterStatuses(new Dictionary<string, StatusDefinition>
         {
             ["burst_potion"] = new("burst_potion", GameId: 1, Duration: 30.0, MaxStacks: 1),
         });
@@ -32,7 +32,7 @@ public class RegistryTests
     public void Buff授予覆盖剩余时间与层数并钳制()
     {
         var registry = new BuffStateRegistry();
-        registry.RegisterSystemStatuses(new Dictionary<string, StatusDefinition>
+        registry.RegisterStatuses(new Dictionary<string, StatusDefinition>
         {
             ["triplecast"] = new("triplecast", GameId: 2, Duration: 15.0, MaxStacks: 3),
         });
@@ -48,7 +48,7 @@ public class RegistryTests
     public void Buff剩余时间归零时清除()
     {
         var registry = new BuffStateRegistry();
-        registry.RegisterSystemStatuses(new Dictionary<string, StatusDefinition>
+        registry.RegisterStatuses(new Dictionary<string, StatusDefinition>
         {
             ["burst_potion"] = new("burst_potion", GameId: 1, Duration: 30.0),
         });
@@ -64,7 +64,7 @@ public class RegistryTests
     public void 消耗层数到零清除状态()
     {
         var registry = new BuffStateRegistry();
-        registry.RegisterSystemStatuses(new Dictionary<string, StatusDefinition>
+        registry.RegisterStatuses(new Dictionary<string, StatusDefinition>
         {
             ["triplecast"] = new("triplecast", GameId: 2, Duration: 15.0, MaxStacks: 3),
         });
@@ -81,7 +81,7 @@ public class RegistryTests
     public void grant状态满层校验拒绝()
     {
         var registry = new BuffStateRegistry();
-        registry.RegisterSystemStatuses(new Dictionary<string, StatusDefinition>
+        registry.RegisterStatuses(new Dictionary<string, StatusDefinition>
         {
             ["burst_potion"] = new("burst_potion", GameId: 1, Duration: 30.0),
         });
@@ -100,7 +100,7 @@ public class RegistryTests
     public void grant行为应用授予全部状态()
     {
         var registry = new BuffStateRegistry();
-        registry.RegisterSystemStatuses(new Dictionary<string, StatusDefinition>
+        registry.RegisterStatuses(new Dictionary<string, StatusDefinition>
         {
             ["burst_potion"] = new("burst_potion", GameId: 1, Duration: 30.0),
         });
@@ -118,6 +118,98 @@ public class RegistryTests
         var registry = new BuffStateRegistry();
 
         Assert.Throws<KeyNotFoundException>(() => registry.StatusDefinitionOf("nope"));
+    }
+
+    [Fact]
+    public void 同名公共与职业Buff的授予和消耗各自独立()
+    {
+        var system = new BuffStateRegistry();
+        var job = new BuffStateRegistry(state => state.Job.Statuses);
+        system.RegisterStatuses(new Dictionary<string, StatusDefinition>
+        {
+            ["buff"] = new("buff", GameId: 1, Duration: 30, MaxStacks: 2),
+        });
+        job.RegisterStatuses(new Dictionary<string, StatusDefinition>
+        {
+            ["buff"] = new("buff", GameId: 2, Duration: 10, MaxStacks: 3),
+        });
+        var state = new CombatState();
+
+        system.GrantRegisteredStatus(state, "buff");
+        Assert.False(state.Job.HasStatus("buff"));
+        job.GrantRegisteredStatus(state, "buff");
+        job.ConsumeRegisteredStatusStack(state, "buff");
+
+        Assert.Equal(2, state.StatusStacks("buff"));
+        Assert.Equal(2, state.Job.StatusStacks("buff"));
+        Assert.Equal(30, state.Statuses["buff"].Remaining);
+        Assert.Equal(10, state.Job.Statuses["buff"].Remaining);
+        Assert.Equal(1, system.Definitions["buff"].GameId);
+        Assert.Equal(2, job.Definitions["buff"].GameId);
+    }
+
+    [Fact]
+    public void 清理公共Buff保留职业状态DoT与MP()
+    {
+        var system = new BuffStateRegistry();
+        var state = new CombatState { Mp = 1234 };
+        state.Statuses["buff"] = new StatusState(30);
+        state.Job.Statuses["buff"] = new StatusState(10, 2);
+        state.Job.SetResource("gauge", 42);
+        state.Job.TimelineDeadlines["job.timer"] = 25;
+        state.Dots["dot"] = new DotState(18, 100);
+
+        system.ClearRegisteredStatus(state, "buff");
+
+        Assert.Empty(state.Statuses);
+        Assert.Equal(2, state.Job.StatusStacks("buff"));
+        Assert.Equal(42, state.Job.GetResource("gauge"));
+        Assert.Equal(25, state.Job.TimelineDeadlines["job.timer"]);
+        Assert.Equal(18, state.Dots["dot"].Remaining);
+        Assert.Equal(1234, state.Mp);
+    }
+
+    [Fact]
+    public void 职业Buff处理不改变公共BuffDoT与MP()
+    {
+        var job = new BuffStateRegistry(state => state.Job.Statuses);
+        var state = new CombatState { Mp = 1234 };
+        state.Statuses["buff"] = new StatusState(30, 2);
+        state.Job.Statuses["buff"] = new StatusState(10, 2);
+        state.Dots["dot"] = new DotState(18, 100);
+
+        job.ClearRegisteredStatus(state, "buff");
+
+        Assert.Empty(state.Job.Statuses);
+        Assert.Equal(2, state.StatusStacks("buff"));
+        Assert.Equal(30, state.Statuses["buff"].Remaining);
+        Assert.Equal(18, state.Dots["dot"].Remaining);
+        Assert.Equal(1234, state.Mp);
+    }
+
+    [Fact]
+    public void 战斗克隆独立复制职业容器及Buff实例()
+    {
+        var original = new CombatState();
+        original.Statuses["public"] = new StatusState(30, 2);
+        original.Job.Statuses["job"] = new StatusState(10, 3);
+        original.Job.SetResource("gauge", 42);
+        original.Job.TimelineDeadlines["job.timer"] = 25;
+        original.Dots["dot"] = new DotState(18, 100);
+
+        var clone = original.Clone();
+        clone.Statuses["public"].Stacks = 1;
+        clone.Job.Statuses["job"].Stacks = 1;
+        clone.Job.SetResource("gauge", 0);
+        clone.Job.TimelineDeadlines.Clear();
+        clone.Dots.Clear();
+
+        Assert.NotSame(original.Job, clone.Job);
+        Assert.Equal(2, original.StatusStacks("public"));
+        Assert.Equal(3, original.Job.StatusStacks("job"));
+        Assert.Equal(42, original.Job.GetResource("gauge"));
+        Assert.Equal(25, original.Job.TimelineDeadlines["job.timer"]);
+        Assert.Single(original.Dots);
     }
 
     // ---------- ResourceStateRegistry ----------

@@ -46,7 +46,7 @@ public sealed class CombatTimelineRuntimeTests
 
         Assert.Equal(direct.CurrentTime, split.CurrentTime);
         Assert.Equal(direct.GetState().Mp, split.GetState().Mp);
-        Assert.Equal(direct.GetState().JobResources, split.GetState().JobResources);
+        Assert.Equal(direct.GetState().Job.Resources, split.GetState().Job.Resources);
         Assert.Equal(direct.PendingEvents, split.PendingEvents);
     }
 

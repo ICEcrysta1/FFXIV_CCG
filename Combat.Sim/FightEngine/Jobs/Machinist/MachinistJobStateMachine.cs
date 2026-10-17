@@ -9,7 +9,7 @@ using Combat.Sim.Models.Combat;
 using Combat.Sim.Models.Definitions;
 using Combat.Sim.Models.Timeline;
 using Combat.Sim.System;
-using Combat.Sim.System.Timeline;
+using Combat.Sim.Jobs.Timeline;
 
 namespace Combat.Sim.Jobs.Machinist;
 
@@ -23,10 +23,10 @@ public sealed partial class MachinistJobStateMachine : JobResourceAccessors, IJo
     /// <summary>职业标签（对照 machinist.py 的 tag = "machinist"）。</summary>
     public static string Tag => "machinist";
 
-    /// <summary>连击倒计时的注册 key，同时是它在 JobTimelineDeadlines 里的绝对到期键。</summary>
+    /// <summary>连击倒计时的注册 key，同时是它在 Job.TimelineDeadlines 里的绝对到期键。</summary>
     private const string ComboTimelineKey = "machinist.combo";
 
-    /// <summary>野火倒计时的注册 key，同时是它在 JobTimelineDeadlines 里的绝对到期键。</summary>
+    /// <summary>野火倒计时的注册 key，同时是它在 Job.TimelineDeadlines 里的绝对到期键。</summary>
     private const string WildfireTimelineKey = "machinist.wildfire";
 
     private sealed record BehaviorHandler(
@@ -75,7 +75,7 @@ public sealed partial class MachinistJobStateMachine : JobResourceAccessors, IJo
 
     public double DefaultFightRemaining => Job.DefaultFightRemaining;
 
-    /// <summary>向系统层注册机工资源与职业状态。</summary>
+    /// <summary>注册职业自身的机工资源与职业状态。</summary>
     public JobStateRegistration BuildStateRegistration() =>
         new(
             Tag,
@@ -157,7 +157,7 @@ public sealed partial class MachinistJobStateMachine : JobResourceAccessors, IJo
             potency = WildfireBasePotency(state);
         }
 
-        if (state.HasStatus("overheated") && skill.Tags.Contains("single_target_weaponskill"))
+        if (state.Job.HasStatus("overheated") && skill.Tags.Contains("single_target_weaponskill"))
         {
             potency += MachinistConstants.OverheatedSingleTargetPotencyBonus;
         }
@@ -170,7 +170,7 @@ public sealed partial class MachinistJobStateMachine : JobResourceAccessors, IJo
     {
         var value = Math.Max(0.0, baseValue);
         var reassembleApplies =
-            state.HasStatus("reassemble") &&
+            state.Job.HasStatus("reassemble") &&
             skill.Kind == ActionKind.Gcd &&
             skill.Potency > 0 &&
             skill.Tags.Contains("weaponskill") &&
@@ -187,7 +187,7 @@ public sealed partial class MachinistJobStateMachine : JobResourceAccessors, IJo
             (_, state, _) => new TimelineMutation(ApplyState: ClearCombo));
         // 状态到期钩子归 StatusTimelineRuntime 所有（它才是状态到期的拥有者），
         // 时间资源仍注册在 timeline 上。
-        System.StatusTimeline.RegisterExpiryHook("overheated", RecordOverheatedExpiry);
+        State.StatusTimeline.RegisterExpiryHook("overheated", RecordOverheatedExpiry);
         timeline.RegisterCountdown(
             WildfireTimelineKey,
             "wildfire_remaining",

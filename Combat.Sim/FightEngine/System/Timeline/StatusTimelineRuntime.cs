@@ -8,13 +8,19 @@ using Combat.Sim.Models.Timeline;
 
 namespace Combat.Sim.System.Timeline;
 
-/// <summary>声明状态截止时间、持有职业状态到期钩子并处理单次过期，不推进时钟。</summary>
+/// <summary>声明所属容器的状态截止时间、持有到期钩子并处理单次过期，不推进时钟。</summary>
 public sealed class StatusTimelineRuntime
 {
+    private readonly Func<CombatState, Dictionary<string, StatusState>> _statuses;
     private readonly Dictionary<string, Action<CombatState>> _expiryHooks = new(StringComparer.Ordinal);
 
+    public StatusTimelineRuntime(Func<CombatState, Dictionary<string, StatusState>>? statuses = null)
+    {
+        _statuses = statuses ?? (state => state.Statuses);
+    }
+
     /// <summary>
-    /// 注册职业状态到期处理。处理器在状态被移除之前调用，因此仍能读到即将过期的残留层数；
+    /// 注册所属状态的到期处理。处理器在状态被移除之前调用，因此仍能读到即将过期的残留层数；
     /// 需要统计或结算"过期时的残留"的职业规则走这里，而不是另排一个倒计时事件去争优先级。
     /// 处理器只能修改状态，不能排布或取消事件。
     /// </summary>
@@ -28,21 +34,21 @@ public sealed class StatusTimelineRuntime
         }
     }
 
-    public IEnumerable<TimelineEvent> DescribeEvents(CombatState state) => state.Statuses.Select(pair =>
+    public IEnumerable<TimelineEvent> DescribeEvents(CombatState state) => _statuses(state).Select(pair =>
         new TimelineEvent(Math.Max(state.Time, pair.Value.ExpiresAt), TimelineEventPriority.ExpirationAndCooldown,
             TimelineEventKind.StatusExpired, pair.Key));
 
     public TimelineMutation HandleExpired(TimelineEvent item, CombatState state)
     {
         var statusKey = item.OwnerKey!;
-        if (!state.Statuses.TryGetValue(statusKey, out var status) || status.ExpiresAt > state.Time)
+        if (!_statuses(state).TryGetValue(statusKey, out var status) || status.ExpiresAt > state.Time)
         {
             return TimelineMutation.Empty;
         }
 
         return new TimelineMutation(ApplyState: target =>
         {
-            if (!target.Statuses.TryGetValue(statusKey, out var current) || current.ExpiresAt > target.Time)
+            if (!_statuses(target).TryGetValue(statusKey, out var current) || current.ExpiresAt > target.Time)
             {
                 return;
             }
@@ -53,7 +59,7 @@ public sealed class StatusTimelineRuntime
                 hook(target);
             }
 
-            target.Statuses.Remove(statusKey);
+            _statuses(target).Remove(statusKey);
         });
     }
 }

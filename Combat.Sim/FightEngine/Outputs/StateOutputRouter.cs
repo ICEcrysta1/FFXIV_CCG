@@ -33,7 +33,7 @@ public sealed class StateOutputRouter
         _precisionConfigRoot = precisionConfigRoot;
         _contextBuilder = new OutputContextBuilder(project, systemMachine, jobMachine, historyLimit);
         _secondsFormatter = new SecondsStateFormatter();
-        _gcdFormatter = new GcdStateFormatter(systemMachine.JobResourceDefinitions);
+        _gcdFormatter = new GcdStateFormatter(jobMachine.State.Resources.JobResourceDefinitions);
     }
 
     /// <summary>输出单个状态快照（对照 format；mode 为 seconds / gcd）。</summary>

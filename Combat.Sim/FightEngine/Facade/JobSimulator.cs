@@ -266,9 +266,7 @@ public sealed class JobSimulator
 
     private CombatTimelineRuntime BuildTimeline(CombatState state)
     {
-        var timeline = _machine.SystemMachine.CreateTimeline(
-            state,
-            key => _machine.ResolveSkill(key).Charges);
+        var timeline = _machine.CreateTimeline(state);
         BindTimelineHandlers(timeline);
         return timeline;
     }

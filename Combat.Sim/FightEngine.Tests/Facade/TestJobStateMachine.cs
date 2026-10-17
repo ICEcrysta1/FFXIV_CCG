@@ -12,6 +12,8 @@ namespace FightEngine.Tests.Facade;
 /// </summary>
 public sealed class TestJobStateMachine : IJobStateMachine
 {
+    public JobStateRuntime State { get; } = new();
+
     private double _baseGcd;
 
     public TestJobStateMachine(double baseGcd = 2.5)

@@ -56,8 +56,8 @@ public class OutputsHistoryTests
     {
         var machine = OutputsTestKit.BuildMachine();
         var state = machine.InitialState();
-        state.SetJobResource("paradox_ready", true);
-        state.SetJobResource("astral_fire", 3);
+        state.Job.SetResource("paradox_ready", true);
+        state.Job.SetResource("astral_fire", 3);
         state.Mp = 2000;
 
         var nextState = TimelineTestDriver.Execute(machine, state, "paradox").NextState;
@@ -72,7 +72,7 @@ public class OutputsHistoryTests
         Assert.Equal(400, nextState.Mp);
         Assert.Equal(1.0, OutputsTestKit.HistoryVectorValue(historyState, "resource_state", "previous_action_after.paradox_ready"), 5);
         Assert.Equal(1.0, OutputsTestKit.HistoryVectorValue(historyState, "resource_state", "request_state.paradox_ready"), 5);
-        Assert.Equal(false, nextState.GetJobResource("paradox_ready"));
+        Assert.Equal(false, nextState.Job.GetResource("paradox_ready"));
         // 资源消耗只保留在技能 token，状态历史不重复输出 consumed 段。
         var consumed = (Dictionary<string, object?>)skillHistory[^1]["job_resources_consumed"]!;
         Assert.Equal(true, consumed["paradox_ready"]);
@@ -147,7 +147,7 @@ public class OutputsHistoryTests
     {
         var machine = OutputsTestKit.BuildMachine();
         var state = machine.InitialState();
-        state.SetJobResource("thundercloud_ready", true);
+        state.Job.SetResource("thundercloud_ready", true);
         var result = TimelineTestDriver.Execute(machine, state, "high_thunder");
         var payload = TimelineTestDriver.FormatResult(machine, result);
         var historyState = (Dictionary<string, object?>)payload["state_history_context"];
@@ -163,12 +163,12 @@ public class OutputsHistoryTests
     {
         var machine = OutputsTestKit.BuildMachine();
         var state = machine.InitialState();
-        state.SetJobResource("astral_fire", 3);
+        state.Job.SetResource("astral_fire", 3);
         var result = TimelineTestDriver.Execute(machine, state, "fire_iv");
         var afterPayload = TimelineTestDriver.FormatVectorState(machine, result.NextState);
         var skillHistory = (List<Dictionary<string, object?>>)afterPayload["skill_history_context"];
         Assert.Equal(300.0 * 1.8, (double)skillHistory[^1]["potency"]!, 5);
-        state.SetJobResource("paradox_ready", true);
+        state.Job.SetResource("paradox_ready", true);
         var paradoxResult = TimelineTestDriver.Execute(machine, state, "paradox");
         var paradoxHistory = (List<Dictionary<string, object?>>)TimelineTestDriver.FormatVectorState(machine,
             paradoxResult.NextState)["skill_history_context"]!;
@@ -180,7 +180,7 @@ public class OutputsHistoryTests
     {
         var machine = OutputsTestKit.BuildMachine();
         var state = machine.InitialState();
-        state.SetJobResource("umbral_ice", 3);
+        state.Job.SetResource("umbral_ice", 3);
 
         var result = TimelineTestDriver.Execute(machine, state, "fire_iii");
         var payload = TimelineTestDriver.FormatVectorState(machine, result.NextState);
