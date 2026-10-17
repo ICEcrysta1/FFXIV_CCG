@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -36,7 +37,8 @@ logger = logging.getLogger(__name__)
 # v23：保存有序状态分组与完整冻结技能表，基础 ABS／DELTA／mask 不扩宽。
 # v24：基础状态删除累计直伤/DoT 维度；独立真实执行统计继续保留。
 #      同步黑魔绝望最低 MP 800 的执行边界，旧状态 bank 不得复用。
-CACHE_FORMAT = "raw_json_compiled_samples_v24_no_cumulative_state"
+# v25：独立保存死亡标记及其历史/样本边界，不占用技能或状态数值行。
+CACHE_FORMAT = "raw_json_compiled_samples_v25_death_markers"
 # v11：C# 状态机把硬读条的服务器效果结算与完整读条锁结束拆开；转换请求时刻
 # 仍按统一滑步窗口恢复，日志抖动只由容量一动作队列吸收。旧缓存的效果状态时序不可复用。
 # v10：硬读条请求时刻改由 `cast − 实际读条时长 + 0.5 秒滑步窗口` 解析，
@@ -61,12 +63,38 @@ CACHE_FORMAT = "raw_json_compiled_samples_v24_no_cumulative_state"
 # v26：从完整坐标观测提取移动区间，先按实测 GCD 合并，再剔除短于 GCD 减滑步时间的窗口。
 # v27：按无累计威力的模型状态契约重建完整 raw history bank。
 #      黑魔绝望最低 MP 改为 800，旧合法性与状态转移结果必须重编译。
-DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v27_no_cumulative_state"
+# v28：提交死亡/复活事实并保存 <dead/> 历史标记；Boss 停手由全队实际命中推导。
+#      活动兜底严格晚于死亡，旧规则可能包含同刻伪造的复活，必须重编译。
+DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v28_strict_player_lifecycle_party_downtime"
 # `weights_only=True` 的安全 unpickler 对 protocol 2 支持最稳定；compiled
 # cache 的样本数据只需要普通 mapping 和 tensor，不需要更高协议。
 CACHE_PICKLE_PROTOCOL = 2
 DEFAULT_CACHE_SHARD_SIZE = 512
 DEFAULT_CACHE_MAX_SHARDS = 8
+
+
+def _read_history_marker_bank(markers, *, num_samples: int) -> tuple[dict[str, object], ...]:
+    """只校验离散历史标记；样本和数值历史的关联由各 reader 验证。"""
+    if not isinstance(markers, (list, tuple)):
+        raise ValueError("history markers must be a list or tuple")
+    result = []
+    previous_timestamp, previous_step, previous_length = -math.inf, 0, 0
+    for marker in markers:
+        if not isinstance(marker, dict) or marker.get("token") != "<dead/>":
+            raise ValueError("history marker must contain the <dead/> token")
+        timestamp = marker.get("timestamp")
+        step, length = marker.get("step"), marker.get("after_history_length")
+        if (isinstance(timestamp, bool) or not isinstance(timestamp, (int, float))
+                or not math.isfinite(timestamp) or timestamp < previous_timestamp):
+            raise ValueError("history marker timestamps must be finite and nondecreasing")
+        if type(step) is not int or not previous_step <= step <= num_samples or step < 1:
+            raise ValueError("history marker steps must be existing nondecreasing sample steps")
+        if type(length) is not int or length < previous_length:
+            raise ValueError("history marker history lengths must be nonnegative and nondecreasing")
+        result.append({"token": "<dead/>", "timestamp": float(timestamp),
+                       "after_history_length": length, "step": step})
+        previous_timestamp, previous_step, previous_length = timestamp, step, length
+    return tuple(result)
 
 
 class CompiledShardCache:
@@ -218,6 +246,14 @@ class CompiledCacheReader:
             self._cache_path.parent / str(relative_path)
             for relative_path in payload["shard_files"]
         )
+        self._history_markers = _read_history_marker_bank(
+            payload["history_markers"], num_samples=self._num_samples,
+        )
+        for marker in self._history_markers:
+            sample = self.sample(marker["step"] - 1)
+            if (sample.get("metadata", {}).get("step") != marker["step"]
+                    or sample["history_end"] - 1 < marker["after_history_length"]):
+                raise ValueError("history marker must reference an existing sample history prefix")
 
     @property
     def schema(self):
@@ -293,6 +329,15 @@ class CompiledCacheReader:
             "percentile_bucket": metadata.get("percentile_bucket"),
             "quality_label_status": metadata.get("quality_label_status", "unannotated"),
         }
+
+    def history_markers(self, sample_idx: int) -> tuple[dict[str, object], ...]:
+        """按首次可见样本返回标记前缀，不能从相同技能历史长度推断可见性。"""
+        sample = self.sample(sample_idx)
+        markers = tuple(dict(marker) for marker in self._history_markers if marker["step"] <= sample_idx + 1)
+        if markers and (sample.get("metadata", {}).get("step") != sample_idx + 1
+                        or markers[-1]["after_history_length"] > sample["history_end"] - 1):
+            raise ValueError("history marker must reference the sample history prefix")
+        return markers
 
     def scene_tokens(self, sample_idx: int, *, float_dtype, int_dtype):
         torch = import_torch()

@@ -21,6 +21,108 @@ from scripts.convert_fflogs import (
 from tests.helpers import DEFAULT_BASE_GCD, raid_buff_window_token, targetable_window_token
 
 
+def _party_report(events):
+    return {
+        "fight_id": 7, "fights": [{"id": 7, "start_time": 0, "end_time": 30000}],
+        "friendlies": [
+            {"id": actor, "type": "BlackMage" if actor == 10 else "Dancer", "fights": [{"id": 7}]}
+            for actor in range(10, 18)
+        ] + [
+            {"id": 99, "type": "Pet", "petOwner": 10, "fights": [{"id": 7}]},
+            {"id": 98, "type": "LimitBreak", "fights": [{"id": 7}]},
+            {"id": 97, "type": "NPC", "fights": [{"id": 7}]},
+            {"id": 96, "type": "Dancer", "fights": [{"id": 8}]},
+        ],
+        "enemies": [
+            {"id": 100, "type": "Boss", "fights": [{"id": 7}]},
+            {"id": 200, "type": "Boss", "fights": [{"id": 8}]},
+        ],
+        "events": events,
+    }
+
+
+def test_party_downtime_uses_latest_direct_hit_and_earliest_resumed_cast_request():
+    """排除宠物、DoT和其他战斗；正伤自动攻击仍是本场可攻击证据。"""
+    from scripts.convert_fflogs.extraction.downtime import _collect_party_damage_actions, detect_downtime_windows
+
+    def damage(timestamp, **fields):
+        return {"type": "damage", "sourceID": 11, "targetID": 100, "fight": 7,
+                "timestamp": timestamp, "abilityGameID": 999, "amount": 100, **fields}
+
+    events = [
+        # 恢复段若缺少 packetID，不能沿用很早以前的同名 cast 吞掉整个停手窗口。
+        {"type": "cast", "sourceID": 11, "timestamp": 900, "abilityGameID": 999, "fight": 7},
+        damage(1000),
+        damage(1000, sourceID=10), damage(3000, sourceID=12),
+        damage(5000, abilityGameID=7, ability={"name": "Attack"}),
+        damage(8000, tick=True), damage(9000, sourceID=99), damage(10000, sourceID=98),
+        damage(11000, sourceID=97), damage(12000, sourceID=96), damage(13000, targetID=200),
+        damage(14000, targetID=12), damage(15000, fight=8), damage(16000, amount=0),
+        damage(17000, type="calculateddamage"),
+        # 先命中的队友在20秒恢复；另一队友17秒便开始了有效读条，应作为右界。
+        damage(20000),
+        {"type": "begincast", "sourceID": 12, "timestamp": 17000, "duration": 4000,
+         "abilityGameID": 123456, "fight": 7},
+        {"type": "begincast", "sourceID": 12, "timestamp": 19000, "duration": 10000,
+         "abilityGameID": 123456, "fight": 7},
+        {"type": "cast", "sourceID": 12, "timestamp": 20500, "packetID": 42,
+         "abilityGameID": 123456, "fight": 7},
+        damage(20700, sourceID=12, abilityGameID=123456, packetID=42),
+    ]
+    attacks = _collect_party_damage_actions(
+        _party_report(events), [], source_id=10, fight_start=0, fight_end=21, match_tolerance_seconds=0.5,
+    )
+    windows = detect_downtime_windows(attacks, fight_start=0, fight_end=21,
+                                     gap_seconds=6, boundary_margin=0.5)
+    assert windows == [{"start": 5.5, "end": 16.5, "duration": 11.0}]
+
+
+def test_party_downtime_preserves_logged_player_prepull_request_without_begincast():
+    from scripts.convert_fflogs.extraction.downtime import _collect_party_damage_actions, detect_downtime_windows
+
+    events = [
+        {"type": "damage", "sourceID": 11, "targetID": 100, "fight": 7,
+         "timestamp": 1000, "abilityGameID": 999, "amount": 100},
+        {"type": "cast", "sourceID": 10, "timestamp": 20000, "abilityGameID": 152,
+         "packetID": 42, "fight": 7},
+        {"type": "damage", "sourceID": 10, "targetID": 100, "fight": 7,
+         "timestamp": 21000, "abilityGameID": 152, "packetID": 42, "amount": 100},
+    ]
+    actions = [{"timestamp": 20, "request_timestamp": 17, "skill_id": 152}]
+    attacks = _collect_party_damage_actions(
+        _party_report(events), actions, source_id=10, fight_start=0, fight_end=22, match_tolerance_seconds=0.5,
+    )
+    assert detect_downtime_windows(attacks, fight_start=0, fight_end=22, gap_seconds=6,
+                                   boundary_margin=0.5) == [{"start": 1.5, "end": 16.5, "duration": 15.0}]
+
+
+def test_report_pipeline_does_not_treat_player_death_gap_as_boss_downtime():
+    """正式流水线使用本场八人实际命中，队友持续输出时目标玩家停手不关Boss。"""
+    from scripts.convert_fflogs import build_skill_book
+
+    events = [
+        {"type": "cast", "sourceID": 10, "targetID": 100, "timestamp": 2000,
+         "abilityGameID": 152, "fight": 7},
+        {"type": "death", "targetID": 10, "timestamp": 5000, "fight": 7},
+        {"type": "cast", "sourceID": 10, "targetID": 100, "timestamp": 24000,
+         "abilityGameID": 154, "fight": 7},
+        *({"type": "damage", "sourceID": 11, "targetID": 100, "timestamp": timestamp,
+           "abilityGameID": 123456, "amount": 100, "fight": 7}
+          for timestamp in range(2000, 24001, 2000)),
+    ]
+    project = load_job_project_config("black_mage")
+    payload, _ = convert_report_payload(
+        _party_report(events), job_tag="black_mage", project_config=project,
+        skill_book=build_skill_book(project), source_id=10, encounter_name="Demo",
+        report_code="party", player_name="Tester", generated_at="2026-10-18",
+    )
+    assert all(token[3] == 1 for token in payload["scene_context"]["targetable_window_context"]["tokens"])
+    assert payload["external_events"] == [
+        {"timestamp": 3.0, "event_kind": "player_death"},
+        {"timestamp": 22.0, "event_kind": "player_revived", "mp": 2000},
+    ]
+
+
 def test_extract_supported_actions_resolves_action_keys_and_potion(cs_backend, cs_skill_book):
     raw_payload = {
         "events": [

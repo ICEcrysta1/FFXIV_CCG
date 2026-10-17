@@ -119,6 +119,7 @@ def scene_cache(tmp_path):
             "action_keys": actions["action_keys"], "action_to_vocab_id": actions["action_to_vocab_id"],
             "action_is_gcd": actions["action_is_gcd"], "shard_size": 768,
             "history_bank": bank, "shard_files": [shard.name],
+            "history_markers": (),
             "vocab_signature": tuple(SkillVocab.build_from_job_tag("black_mage")),
         }
         if invalid == "stale":

@@ -472,6 +472,7 @@ public sealed class CombatTimelineRuntime
         target.DowntimeRemaining = clone.DowntimeRemaining;
         target.Mp = clone.Mp;
         target.MaxMp = clone.MaxMp;
+        target.IsDead = clone.IsDead;
         target.NaturalMpLastTickAt = clone.NaturalMpLastTickAt;
         target.CastEndsAt = clone.CastEndsAt;
         target.GcdReadyAt = clone.GcdReadyAt;
@@ -493,6 +494,7 @@ public sealed class CombatTimelineRuntime
         target.History = clone.History;
         target.LastDecisionId = clone.LastDecisionId;
         target.LastDecisionAfter = clone.LastDecisionAfter;
+        target.LastCompletedDecisionAfter = clone.LastCompletedDecisionAfter;
         target.LastHistorySequence = clone.LastHistorySequence;
     }
 

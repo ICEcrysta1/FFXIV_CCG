@@ -61,6 +61,9 @@ public interface IJobStateMachine
     /// <summary>声明职业周期资源、倒计时和 MP 修正规则，由门面组合到统一时间线。</summary>
     void RegisterTimeline(JobTimelineRegistry timeline) { }
 
+    /// <summary>响应外部死亡标记，只处理职业拥有的状态；未实现的职业默认保持原状。</summary>
+    void OnDeath(CombatState state) { }
+
     /// <summary>职业可选的读条倍率；默认 1.0（对照可选 cast_time_multiplier）。</summary>
     double CastTimeMultiplier(CombatState state, SkillDefinition skill) => 1.0;
 

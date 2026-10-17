@@ -41,7 +41,12 @@ class _FakeBackend:
 
     def replay_policy_sequence_packet(self, requests_json, facts_json, **kwargs):
         self.calls.append(("replay", requests_json, facts_json, kwargs))
-        return pickle.dumps({"observations": [{"context": {"value": -0.0}}]})
+        return pickle.dumps({"observations": [{
+            "context": {"value": -0.0},
+            "history_markers": [{
+                "token": "<dead/>", "timestamp": 1.0, "after_history_length": 0, "step": 1,
+            }],
+        }]})
 
     def close(self):
         self.closed = True
@@ -106,13 +111,16 @@ def test_process_proxy_transfers_packed_context_and_releases_only_its_queue():
         result = backend.apply_external_events([{"timestamp": 1.0, "kind": "movement"}])
         assert vars(result) == {
             "accepted": True, "reason": "", "event_kind": "movement", "timestamp": 1.0,
-            "next_scheduled_event_time": None,
+            "next_scheduled_event_time": None, "token": None, "history_cursor": None,
         }
         frames = backend.replay_policy_sequence(
             [{"timestamp": 1.0, "action": "fire"}], [],
             fight_duration=10.0, policy_action_key="fire",
         )
         assert copysign(1.0, frames[0]["context"]["value"]) == -1.0
+        assert frames[0]["history_markers"] == [{
+            "token": "<dead/>", "timestamp": 1.0, "after_history_length": 0, "step": 1,
+        }]
         replay = engine.backends[0].calls[-1]
         assert replay == (
             "replay", '[{"timestamp":1.0,"action":"fire"}]', '[]',

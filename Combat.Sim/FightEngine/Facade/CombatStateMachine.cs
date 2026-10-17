@@ -317,6 +317,13 @@ public sealed class CombatStateMachine
             ResolveJobAdjustedPotency(sourceState, skill, basePotency: skill.Potency));
     }
 
+    /// <summary>在同一次时间线结算内，由系统和职业分别重置自己拥有的状态。</summary>
+    internal void ApplyDeath(CombatState state)
+    {
+        SystemMachine.ApplyDeath(state);
+        JobMachine.OnDeath(state);
+    }
+
     /// <summary>按当前状态的共享增伤倍率解析职业修正后的实际威力（对照 _resolve_job_adjusted_potency）。</summary>
     internal double ResolveJobAdjustedPotency(CombatState state, SkillDefinition skill, double basePotency) =>
         JobMachine.ResolvePotency(state, skill, basePotency);

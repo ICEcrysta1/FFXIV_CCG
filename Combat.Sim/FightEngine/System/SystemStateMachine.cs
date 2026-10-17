@@ -99,6 +99,14 @@ public sealed class SystemStateMachine
         double? gcdStartTimestamp = null) =>
         PlayerState.ApplyActionTiming(state, skill, effectiveGcd, actualCastSeconds, gcdStartTimestamp);
 
+    /// <summary>死亡标记只重置系统拥有的 MP 与公共 Buff，保留 DoT 和冷却。</summary>
+    internal void ApplyDeath(CombatState state)
+    {
+        state.IsDead = true;
+        state.Mp = 0;
+        state.Statuses.Clear();
+    }
+
     /// <summary>注册公共规则；职业 MP 修正只影响恢复量，MP 写入仍由系统执行。</summary>
     internal void RegisterTimelineHandlers(CombatTimelineRuntime timeline,
         Func<string, int> getMaxCharges, Func<CombatState, int, int>? mpTickModifier = null)
@@ -110,6 +118,12 @@ public sealed class SystemStateMachine
             (item, current) => CooldownRuntime.HandleReady(item, current, getMaxCharges));
         timeline.RegisterHandler(TimelineEventKind.MpTick,
             (item, current) => MpRecovery.HandleTick(item, current, mpTickModifier ?? ((_, amount) => amount)));
+        timeline.RegisterHandler(TimelineEventKind.PlayerRevived, (item, _) => new TimelineMutation(ApplyState: target =>
+        {
+            var external = (ExternalCombatEvent)item.Payload!;
+            target.IsDead = false;
+            if (external.Mp is { } mp) target.Mp = Math.Min(target.MaxMp, mp);
+        }));
     }
 
     private TimelineMutation HandleSceneChanged(TimelineEvent item, CombatState state)
@@ -175,9 +189,18 @@ public sealed class SystemStateMachine
                 external.Value is null
                 && external.TargetCount is >= 0
                 && external.RemainingSeconds is null,
+            ExternalCombatEventKinds.PlayerDeath =>
+                external.Value is null
+                && external.TargetCount is null
+                && external.RemainingSeconds is null,
+            ExternalCombatEventKinds.PlayerRevived =>
+                external.Value is null
+                && external.TargetCount is null
+                && external.RemainingSeconds is null
+                && external.Mp is null or >= 0,
             _ => false,
         };
-        if (!supported)
+        if (!supported || (external.Mp is not null && external.Kind != ExternalCombatEventKinds.PlayerRevived))
         {
             throw new ArgumentException($"unsupported external scene event: {external.Kind}", nameof(external));
         }

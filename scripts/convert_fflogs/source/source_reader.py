@@ -9,6 +9,7 @@ from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION, STATE_SNAPSH
 from common.policy.data.state_features import StateTokenTensors, read_state_tokens, validate_state_feature_keys
 from common.pytorch.dependencies import import_torch
 from common.policy.data.action_space import ActionSpace
+from common.policy.data.compiled_cache import _read_history_marker_bank
 
 from .source_helpers import (
     SKILL_ID_FIELD,
@@ -84,6 +85,14 @@ class TrainingSourceReader:
         # 当前状态逐行验证元数据、一次转换数值，供编译分片批量读取；公开单样本入口仍独立读取。
         self._current_states = self.state_matrix_from_tokens(current_tokens, dtype=self._torch.float32)
         self._skill_feature_names = derive_skill_feature_names(self)
+        self._history_markers = _read_history_marker_bank(
+            payload.get("history_markers", ()), num_samples=self._num_samples,
+        )
+        for marker in self._history_markers:
+            sample_idx = marker["step"] - 1
+            if (self._sample(sample_idx).get("step") != marker["step"]
+                    or self.history_length(sample_idx) < marker["after_history_length"]):
+                raise ValueError("history marker must reference an existing sample history prefix")
 
     @property
     def schema(self) -> TrainingSchema:
@@ -145,6 +154,20 @@ class TrainingSourceReader:
 
     def history_length(self, sample_idx: int) -> int:
         return len(self._history_rows(sample_idx))
+
+    @property
+    def history_marker_bank(self) -> tuple[dict[str, object], ...]:
+        """完整离散标记只用于落盘，不混入技能和状态数值历史。"""
+        return tuple(dict(marker) for marker in self._history_markers)
+
+    def history_markers(self, sample_idx: int) -> tuple[dict[str, object], ...]:
+        """返回当前样本已发生的独立标记，保留同长度历史之间的事件边界。"""
+        sample = self._sample(sample_idx)
+        markers = tuple(dict(marker) for marker in self._history_markers if marker["step"] <= sample_idx + 1)
+        if markers and (sample.get("step") != sample_idx + 1
+                        or markers[-1]["after_history_length"] > self.history_length(sample_idx)):
+            raise ValueError("history marker must reference the sample history prefix")
+        return markers
 
     def history_delta(
         self,

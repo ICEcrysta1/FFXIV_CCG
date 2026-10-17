@@ -94,6 +94,8 @@ def write_compiled_cache_stream(
         "shard_files": shard_files,
         # 历史 bank 按 source 只保存一份；样本自身只保留 end/length 引用。
         "history_bank": history_bank,
+        # 离散事件按首次可见样本索引，不扩宽技能词表和状态矩阵。
+        "history_markers": reader.history_marker_bank,
     }
     temporary_path = cache_path.with_name(f"{cache_path.name}.tmp.{os.getpid()}")
     try:
