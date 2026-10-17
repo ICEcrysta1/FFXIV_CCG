@@ -17,6 +17,12 @@ namespace Combat.Sim.System;
 /// </summary>
 public sealed class PlayerStateRuntime
 {
+    /// <summary>职业决定技能的实际耗蓝，公共玩家层执行 MP 变化。</summary>
+    public void SpendMp(CombatState state, int amount) => state.Mp = Math.Max(0, state.Mp - amount);
+
+    public void RecoverMp(CombatState state, int amount) => state.Mp = Math.Min(state.MaxMp, state.Mp + amount);
+
+    public void RestoreMp(CombatState state) => state.Mp = state.MaxMp;
 
     /// <summary>校验所有职业共享的动作合法性。</summary>
     public ValidationResult ValidateCommonAction(

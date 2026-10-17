@@ -1,4 +1,5 @@
 using Combat.Sim.Config;
+using Combat.Sim.Jobs;
 using Combat.Sim.Models.Combat;
 using Combat.Sim.Models.Definitions;
 using Combat.Sim.System;
@@ -22,7 +23,8 @@ public static class SystemTestKit
     public static CombatState AdvancePublic(CombatState state, double seconds, Func<string, int>? getMaxCharges = null)
     {
         var machine = new SystemStateMachine(Timing, Potency, MpRecovery);
-        var timeline = machine.CreateTimeline(state, getMaxCharges ?? (_ => 1));
+        var timeline = CombatStateMachine.CreateTimeline(machine, new JobStateRuntime(), state,
+            getMaxCharges ?? (_ => 1));
         return timeline.AdvanceTo(state.Time + seconds);
     }
 

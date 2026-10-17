@@ -124,14 +124,12 @@ public sealed class SkillAvailabilityBuilderTests
         Assert.Equal(before, JsonSerializer.Serialize(simulator.CreateSnapshot()));
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void 子分支生效捕获只读取自己的队列并覆盖恢复及二次分支(bool withoutHistory)
+    [Fact]
+    public void 子分支生效捕获只读取自己的队列并覆盖恢复及二次分支()
     {
         var parent = new JobSimulator(FacadeKit.BuildMachine());
         parent.SubmitAction(0, "cast_skill");
-        var child = withoutHistory ? parent.ForkWithoutHistory() : parent.Fork();
+        var child = parent.Fork();
         var restored = new JobSimulator(FacadeKit.BuildMachine());
         restored.RestoreSnapshot(child.CreateSnapshot());
         var grandchild = child.Fork();

@@ -15,17 +15,17 @@ public class MachinistJobStateMachineTests
         CombatStateMachine.FromDefaultConfig(RepoRoot, "machinist");
 
     private static int Int(CombatState state, string key) =>
-        Assert.IsType<int>(state.GetJobResource(key));
+        Assert.IsType<int>(state.Job.GetResource(key));
 
     private static double Float(CombatState state, string key) =>
-        Assert.IsType<double>(state.GetJobResource(key));
+        Assert.IsType<double>(state.Job.GetResource(key));
 
     private static bool Bool(CombatState state, string key) =>
-        Assert.IsType<bool>(state.GetJobResource(key));
+        Assert.IsType<bool>(state.Job.GetResource(key));
 
     /// <summary>读取职业时间资源的对外视图（即模型输入看到的相对秒数）。</summary>
     private static double TimerView(CombatStateMachine machine, CombatState state, string key) =>
-        Convert.ToDouble(machine.SystemMachine.BuildJobResourceSnapshot(state)[key]);
+        Convert.ToDouble(machine.JobMachine.State.BuildResourceSnapshot(state)[key]);
 
     private static CombatState ReadyAfterGcd(CombatStateMachine machine, CombatState state) =>
         state.GcdRemaining <= 0.0 ? state : TimelineTestDriver.AdvanceBy(machine, state, state.GcdRemaining);
@@ -33,7 +33,7 @@ public class MachinistJobStateMachineTests
     private static CombatState StartWildfire(CombatStateMachine machine, int hits)
     {
         var state = TimelineTestDriver.Execute(machine, machine.InitialState(), "wildfire").NextState;
-        state.SetJobResource("wildfire_hits", hits);
+        state.Job.SetResource("wildfire_hits", hits);
         return state;
     }
 
@@ -59,12 +59,12 @@ public class MachinistJobStateMachineTests
         Assert.Contains("wildfire", machine.SkillBook.Keys());
         Assert.Contains("detonator", machine.SkillBook.Keys());
         Assert.DoesNotContain("automaton_queen", machine.SkillBook.Keys());
-        Assert.Contains("heat", state.JobResources.Keys);
-        Assert.Contains("wildfire_hits", state.JobResources.Keys);
-        Assert.DoesNotContain("queen_heat", state.JobResources.Keys);
+        Assert.Contains("heat", state.Job.Resources.Keys);
+        Assert.Contains("wildfire_hits", state.Job.Resources.Keys);
+        Assert.DoesNotContain("queen_heat", state.Job.Resources.Keys);
 
         state = TimelineTestDriver.Execute(machine, state, "reassemble").NextState;
-        Assert.True(state.HasStatus("reassemble"));
+        Assert.True(state.Job.HasStatus("reassemble"));
     }
 
     [Fact]
@@ -88,7 +88,7 @@ public class MachinistJobStateMachineTests
         state = TimelineTestDriver.Execute(machine, state, "heated_split_shot").NextState;
         var history = (List<Dictionary<string, object?>>)TimelineTestDriver.FormatVectorState(machine, state)["skill_history_context"];
         Assert.Equal(2.0, (double)history[^1]["value"]!, 5);
-        Assert.False(state.HasStatus("reassemble"));
+        Assert.False(state.Job.HasStatus("reassemble"));
     }
 
     [Theory]
@@ -99,15 +99,15 @@ public class MachinistJobStateMachineTests
     {
         var machine = BuildMachine();
         var state = machine.InitialState();
-        state.SetJobResource("wildfire_active", true);
-        state.SetJobResource("wildfire_hits", 2);
-        machine.SystemMachine.GrantRegisteredStatus(state, "reassemble");
+        state.Job.SetResource("wildfire_active", true);
+        state.Job.SetResource("wildfire_hits", 2);
+        machine.JobMachine.State.Buffs.GrantRegisteredStatus(state, "reassemble");
         var next = state.Clone();
 
         machine.JobMachine.ApplyAction(state, next, machine.SkillBook.Get(skillKey));
 
         Assert.Equal(expectedWildfireHits, Int(next, "wildfire_hits"));
-        Assert.Equal(expectedReassemble, next.HasStatus("reassemble"));
+        Assert.Equal(expectedReassemble, next.Job.HasStatus("reassemble"));
     }
 
     [Theory]
@@ -117,9 +117,9 @@ public class MachinistJobStateMachineTests
     {
         var machine = BuildMachine();
         var state = machine.InitialState();
-        state.SetJobResource("wildfire_active", true);
-        state.SetJobResource("wildfire_hits", 2);
-        machine.SystemMachine.GrantRegisteredStatus(state, "reassemble");
+        state.Job.SetResource("wildfire_active", true);
+        state.Job.SetResource("wildfire_hits", 2);
+        machine.JobMachine.State.Buffs.GrantRegisteredStatus(state, "reassemble");
         var skill = machine.SkillBook.Get("drill") with { Behavior = behavior! };
         var next = state.Clone();
 
@@ -131,7 +131,7 @@ public class MachinistJobStateMachineTests
         Assert.Equal("Behavior", error.ParamName);
         Assert.Equal(behavior, error.ActualValue);
         Assert.Equal(2, Int(next, "wildfire_hits"));
-        Assert.True(next.HasStatus("reassemble"));
+        Assert.True(next.Job.HasStatus("reassemble"));
     }
 
     [Fact]
@@ -168,13 +168,13 @@ public class MachinistJobStateMachineTests
         Assert.Equal(0, Int(state, "combo_stage"));
         Assert.Equal(0.0, Float(state, "combo_remaining"));
 
-        state.SetJobResource("heat", 100);
+        state.Job.SetResource("heat", 100);
         state = ReadyAfterGcd(machine, state);
         state = TimelineTestDriver.Execute(machine, state, "heated_split_shot").NextState;
         Assert.Equal(100, Int(state, "heat"));
         Assert.Equal(5, Int(state, "wasted_heat"));
 
-        state.SetJobResource("battery", 100);
+        state.Job.SetResource("battery", 100);
         state = ReadyAfterGcd(machine, state);
         state = TimelineTestDriver.Execute(machine, state, "air_anchor").NextState;
         Assert.Equal(100, Int(state, "battery"));
@@ -194,22 +194,22 @@ public class MachinistJobStateMachineTests
         Assert.Equal("requires_wildfire", machine.ValidateAction(state, "detonator").Reason);
 
         state = TimelineTestDriver.Execute(machine, state, "barrel_stabilizer").NextState;
-        Assert.True(state.HasStatus("free_hypercharge"));
-        Assert.True(state.HasStatus("full_metal_machinist"));
+        Assert.True(state.Job.HasStatus("free_hypercharge"));
+        Assert.True(state.Job.HasStatus("full_metal_machinist"));
 
         state = TimelineTestDriver.Execute(machine, state, "full_metal_field").NextState;
-        Assert.False(state.HasStatus("full_metal_machinist"));
+        Assert.False(state.Job.HasStatus("full_metal_machinist"));
 
         state = ReadyAfterGcd(machine, state);
-        state.SetJobResource("heat", 50);
+        state.Job.SetResource("heat", 50);
         state = TimelineTestDriver.Execute(machine, state, "hypercharge").NextState;
         Assert.Equal(50, Int(state, "heat"));
-        Assert.True(state.HasStatus("overheated"));
-        Assert.Equal(5, state.StatusStacks("overheated"));
+        Assert.True(state.Job.HasStatus("overheated"));
+        Assert.Equal(5, state.Job.StatusStacks("overheated"));
 
         state = ReadyAfterGcd(machine, state);
         state = TimelineTestDriver.Execute(machine, state, "blazing_shot").NextState;
-        Assert.Equal(4, state.StatusStacks("overheated"));
+        Assert.Equal(4, state.Job.StatusStacks("overheated"));
     }
 
     [Fact]
@@ -219,14 +219,14 @@ public class MachinistJobStateMachineTests
         var state = TimelineTestDriver.Execute(machine, machine.InitialState(), "chain_saw").NextState;
 
         Assert.Equal(20, Int(state, "battery"));
-        Assert.True(state.HasStatus("excavator_ready"));
+        Assert.True(state.Job.HasStatus("excavator_ready"));
         state = ReadyAfterGcd(machine, state);
         Assert.True(machine.ValidateAction(state, "excavator").Ok);
 
         state = TimelineTestDriver.Execute(machine, state, "excavator").NextState;
 
         Assert.Equal(40, Int(state, "battery"));
-        Assert.False(state.HasStatus("excavator_ready"));
+        Assert.False(state.Job.HasStatus("excavator_ready"));
     }
 
     [Fact]
@@ -241,7 +241,7 @@ public class MachinistJobStateMachineTests
         state = TimelineTestDriver.Execute(machine, state, "heated_split_shot").NextState;
         Assert.Equal(1, Int(state, "wildfire_hits"));
 
-        state.SetJobResource("wildfire_hits", 6);
+        state.Job.SetResource("wildfire_hits", 6);
         state = ReadyAfterGcd(machine, state);
         state = TimelineTestDriver.Execute(machine, state, "heated_slug_shot").NextState;
         Assert.Equal(6, Int(state, "wildfire_hits"));
@@ -252,9 +252,9 @@ public class MachinistJobStateMachineTests
     {
         var machine = BuildMachine();
         var state = machine.InitialState();
-        machine.SystemMachine.GrantRegisteredStatus(state, "raid_buff_window", remaining: 1.0);
+        machine.SystemMachine.BuffState.GrantRegisteredStatus(state, "raid_buff_window", remaining: 1.0);
         state = TimelineTestDriver.Execute(machine, state, "wildfire").NextState;
-        state.SetJobResource("wildfire_hits", 2);
+        state.Job.SetResource("wildfire_hits", 2);
 
         state = TimelineTestDriver.AdvanceBy(machine, state, 10.0);
 
@@ -271,7 +271,7 @@ public class MachinistJobStateMachineTests
         var machine = BuildMachine();
         var state = StartWildfire(machine, hits: 2);
         state = TimelineTestDriver.AdvanceBy(machine, state, 9.0);
-        machine.SystemMachine.GrantRegisteredStatus(state, "raid_buff_window", remaining: 2.0);
+        machine.SystemMachine.BuffState.GrantRegisteredStatus(state, "raid_buff_window", remaining: 2.0);
 
         state = TimelineTestDriver.AdvanceBy(machine, state, 1.0);
 
@@ -285,7 +285,7 @@ public class MachinistJobStateMachineTests
     {
         var machine = BuildMachine();
         var state = StartWildfire(machine, hits: 4);
-        machine.SystemMachine.GrantRegisteredStatus(state, "raid_buff_window", remaining: 20.0);
+        machine.SystemMachine.BuffState.GrantRegisteredStatus(state, "raid_buff_window", remaining: 20.0);
 
         state = TimelineTestDriver.Execute(machine, state, "detonator").NextState;
         var expectedBase = 4 * 240.0;
@@ -325,12 +325,12 @@ public class MachinistJobStateMachineTests
     {
         var machine = BuildMachine();
         var state = machine.InitialState();
-        state.SetJobResource("heat", 50);
+        state.Job.SetResource("heat", 50);
         state = TimelineTestDriver.Execute(machine, state, "hypercharge").NextState;
 
         state = TimelineTestDriver.AdvanceBy(machine, state, 10.0);
 
-        Assert.False(state.HasStatus("overheated"));
+        Assert.False(state.Job.HasStatus("overheated"));
         Assert.Equal(5, Int(state, "wasted_overheated_stacks"));
     }
 
@@ -341,14 +341,14 @@ public class MachinistJobStateMachineTests
     {
         var machine = BuildMachine();
         var state = machine.InitialState();
-        state.SetJobResource("heat", 50);
+        state.Job.SetResource("heat", 50);
         state = TimelineTestDriver.Execute(machine, state, "hypercharge").NextState;
 
         state = TimelineTestDriver.AdvanceBy(machine, state, elapsedBeforeExpiry);
         Assert.Equal(0, Int(state, "wasted_overheated_stacks"));
 
         state = TimelineTestDriver.AdvanceBy(machine, state, 1.0);
-        Assert.False(state.HasStatus("overheated"));
+        Assert.False(state.Job.HasStatus("overheated"));
         Assert.Equal(5, Int(state, "wasted_overheated_stacks"));
 
         state = TimelineTestDriver.AdvanceBy(machine, state, 1.0);

@@ -8,9 +8,10 @@ public sealed class JobSimulatorTests
     [Theory]
     [InlineData("black_mage", "fire_iii")]
     [InlineData("machinist", "heated_split_shot")]
-    public void 无历史策略分支与完整分支在读条排队和场景事件下逐值相同(string job, string action)
+    public void 正式分支与快照恢复在读条排队和场景事件下逐值相同(string job, string action)
     {
-        var simulator = new JobSimulator(CombatStateMachine.FromDefaultConfig(FindRepoRoot(), job));
+        var machine = CombatStateMachine.FromDefaultConfig(FindRepoRoot(), job);
+        var simulator = new JobSimulator(machine);
         Assert.True(simulator.SubmitAction(0, action).Accepted);
         foreach (var time in new[] { 0.0, 0.2, 2.2, 3.0, 6.0 })
         {
@@ -27,19 +28,28 @@ public sealed class JobSimulatorTests
             var output = simulator.FormatVectorState();
             var keys = (List<string>)output["action_keys"]!;
             var legalMask = (List<bool>)output["action_legal_mask"]!;
+            var currentSnapshot = simulator.CreateSnapshot();
             for (var index = 0; index < keys.Count; index++)
             {
-                var full = simulator.Fork();
-                var light = simulator.ForkWithoutHistory();
-                var submission = full.SubmitAction(time, keys[index]);
-                var lightSubmission = light.SubmitAction(time, keys[index]);
+                var branch = simulator.Fork();
+                var restored = new JobSimulator(machine);
+                restored.RestoreSnapshot(currentSnapshot);
+                Assert.Equal(currentSnapshot.State.History.Count, branch.GetState().History.Count);
+                var submission = branch.SubmitAction(time, keys[index]);
+                var restoredSubmission = restored.SubmitAction(time, keys[index]);
                 Assert.Equal(submission.Accepted, legalMask[index]);
-                Assert.Equal(submission.Accepted, lightSubmission.Accepted);
-                Assert.Equal(submission.Reason, lightSubmission.Reason);
+                Assert.Equal(submission.Accepted, restoredSubmission.Accepted);
+                Assert.Equal(submission.Reason, restoredSubmission.Reason);
+                Assert.Equal(submission.Queued, restoredSubmission.Queued);
+                Assert.Equal(submission.AcceptedTimestamp, restoredSubmission.AcceptedTimestamp);
+                Assert.Equal(submission.EffectTimestamp, restoredSubmission.EffectTimestamp);
                 if (!submission.Accepted) continue;
                 var effectAt = submission.EffectTimestamp!.Value;
-                Assert.Equal(StateJson(full.AdvanceTo(effectAt)), StateJson(light.AdvanceTo(effectAt)));
+                Assert.Equal(StateJson(branch.AdvanceTo(effectAt)), StateJson(restored.AdvanceTo(effectAt)));
+                Assert.Equal(branch.GetState().History.Count, restored.GetState().History.Count);
             }
+            Assert.Equal(StateJson(currentSnapshot.State), StateJson(simulator.GetState()));
+            Assert.Equal(currentSnapshot.State.History.Count, simulator.GetState().History.Count);
         }
     }
 

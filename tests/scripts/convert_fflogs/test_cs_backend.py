@@ -40,7 +40,7 @@ def test_black_mage_full_mp_spenders_share_800_mp_boundary(cs_backend, skill_key
     simulator = JobSimulator(machine)
     snapshot = simulator.CreateSnapshot()
     snapshot.State.Mp = mp
-    snapshot.State.SetJobResource("astral_fire", Int32(astral_fire))
+    snapshot.State.Job.SetResource("astral_fire", Int32(astral_fire))
     simulator.RestoreSnapshot(snapshot)
 
     validation = simulator.ValidateActionAt(0.0, skill_key)

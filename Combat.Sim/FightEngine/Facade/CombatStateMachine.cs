@@ -11,6 +11,7 @@ using Combat.Sim.Models.Definitions;
 using Combat.Sim.Models.Timeline;
 using Combat.Sim.Outputs;
 using Combat.Sim.Skills;
+using Combat.Sim.State;
 using Combat.Sim.System;
 using Combat.Sim.System.Timeline;
 
@@ -33,6 +34,7 @@ public sealed class CombatStateMachine
     public string JobTag { get; }
     internal SystemStateMachine SystemMachine { get; }
     internal IJobStateMachine JobMachine { get; }
+    internal ActionHistoryRuntime History { get; }
     internal SkillBook SkillBook { get; }
 
     // 规则可被多个队列并发读取；带增量缓存的输出路由器必须由各模拟游标单独持有。
@@ -66,10 +68,11 @@ public sealed class CombatStateMachine
             projectConfig.System.MpRecovery);
         SystemMachine.RegisterSystemStatuses(projectConfig.System.Statuses);
         JobMachine = BuildJobMachine(projectConfig, jobTag, SystemMachine);
-        SystemMachine.RegisterJobState(
+        JobMachine.State.Register(
             JobMachine.BuildStateRegistration(),
             resourceLimits: projectConfig.Job.ResourceLimits);
-        JobMachine.RegisterTimeline(SystemMachine.JobTimeline);
+        JobMachine.RegisterTimeline(JobMachine.State.Timeline);
+        History = new ActionHistoryRuntime(JobMachine.State);
         SkillBook = SkillBook.FromProjectConfig(projectConfig);
         SystemMachine.RegisterJobTargetDots(SkillBook.EnabledSkills());
         ValidateSkillContracts();
@@ -98,13 +101,69 @@ public sealed class CombatStateMachine
 
     /// <summary>创建当前职业的初始战斗状态（对照 initial_state）。</summary>
     internal CombatState InitialState(
-        double? fightRemaining = null,
-        int? maxMp = null,
-        double startTime = 0) =>
-        SystemMachine.InitialState(
+        double? fightRemaining = null, int? maxMp = null, double startTime = 0)
+    {
+        var state = SystemMachine.InitialState(
             fightRemaining ?? JobMachine.DefaultFightRemaining,
-            maxMp ?? Project.EngineResources.MaxMp,
-            startTime);
+            maxMp ?? Project.EngineResources.MaxMp, startTime);
+        JobMachine.State.Initialize(state);
+        return state;
+    }
+
+    /// <summary>门面组合两层规则；两层都不拥有独立时钟或推进循环。</summary>
+    internal CombatTimelineRuntime CreateTimeline(CombatState state, Func<double, bool>? targetableAt = null) =>
+        CreateTimeline(SystemMachine, JobMachine.State, state, key => ResolveSkill(key).Charges, targetableAt);
+
+    internal static CombatTimelineRuntime CreateTimeline(SystemStateMachine system, JobStateRuntime job,
+        CombatState state, Func<string, int> getMaxCharges, Func<double, bool>? targetableAt = null)
+    {
+        var timeline = new CombatTimelineRuntime(state);
+        system.RegisterTimelineHandlers(timeline, getMaxCharges, job.Timeline.ResolveMpTick);
+        timeline.RegisterHandler(TimelineEventKind.StatusExpired, (item, current) => item.Scope switch
+        {
+            TimelineEventScope.System => system.StatusTimeline.HandleExpired(item, current),
+            TimelineEventScope.Job => job.StatusTimeline.HandleExpired(item, current),
+            _ => throw new ArgumentOutOfRangeException(nameof(item), "unsupported status expiration scope"),
+        });
+        timeline.RegisterHandler(TimelineEventKind.JobPeriodicTick, job.Timeline.HandlePeriodic);
+        timeline.RegisterHandler(TimelineEventKind.JobTimerExpired,
+            (item, current) => job.Timeline.HandleCountdown(item, current, targetableAt));
+        timeline.ConfigureResources(current => system.PlayerState.DescribeEvents(current)
+            .Concat(system.StatusTimeline.DescribeEvents(current))
+            .Concat(job.StatusTimeline.DescribeEvents(current))
+            .Concat(system.DotTimeline.DescribeEvents(current))
+            .Concat(system.CooldownRuntime.DescribeEvents(current))
+            .Concat(job.Timeline.DescribeEvents(current))
+            .Append(system.MpRecovery.DescribeEvent(current)).ToArray());
+        return timeline;
+    }
+
+    private BuffStateRegistry StatusOwner(string key)
+    {
+        if (SystemMachine.SystemStatusDefinitions.ContainsKey(key)) return SystemMachine.BuffState;
+        if (JobMachine.State.Buffs.Definitions.ContainsKey(key)) return JobMachine.State.Buffs;
+        throw new KeyNotFoundException($"unregistered status: {key}");
+    }
+
+    private ValidationResult ValidateSharedBehavior(CombatState state, SkillDefinition skill)
+    {
+        if (skill.AppliesStatuses.Count == 0 || skill.Behavior != "grant_status")
+            return new ValidationResult(true);
+        foreach (var key in skill.AppliesStatuses)
+        {
+            var owner = StatusOwner(key);
+            var validation = owner.ValidateRegisteredStatus(state, key);
+            if (!validation.Ok) return validation;
+        }
+        return new ValidationResult(true);
+    }
+
+    private bool ApplySharedBehavior(CombatState state, SkillDefinition skill)
+    {
+        if (skill.AppliesStatuses.Count == 0) return false;
+        foreach (var key in skill.AppliesStatuses) StatusOwner(key).GrantRegisteredStatus(state, key);
+        return true;
+    }
 
     /// <summary>按 key 或游戏内 id 解析技能定义（对照 resolve_skill）。</summary>
     internal SkillDefinition ResolveSkill(string key) => SkillBook.Get(key);
@@ -148,7 +207,7 @@ public sealed class CombatStateMachine
             return commonValidation;
         }
 
-        var sharedValidation = SystemMachine.ValidateSharedBehavior(state, skill);
+        var sharedValidation = ValidateSharedBehavior(state, skill);
         if (!sharedValidation.Ok)
         {
             return sharedValidation;
@@ -246,7 +305,7 @@ public sealed class CombatStateMachine
     /// <summary>应用系统技能、共享行为、职业行为和目标威力（对照 _apply_action_effect）。</summary>
     internal void ApplyActionEffect(CombatState sourceState, CombatState state, SkillDefinition skill)
     {
-        var handledShared = SystemMachine.ApplySharedBehavior(state, skill);
+        var handledShared = ApplySharedBehavior(state, skill);
         if (!handledShared && JobMachine.SupportsBehavior(skill.Behavior))
         {
             JobMachine.ApplyAction(sourceState, state, skill);
@@ -360,7 +419,7 @@ public sealed class CombatStateMachine
         // 威力和训练价值沿用请求快照，冷却反映动作消耗后的效果快照。
         var (nextCooldownSeconds, availableCharges, maxCharges) =
             SystemMachine.BuildCooldownSnapshot(effectState, skill);
-        SystemMachine.RecordActionHistory(
+        History.RecordActionHistory(
             effectState,
             requestState,
             skill,

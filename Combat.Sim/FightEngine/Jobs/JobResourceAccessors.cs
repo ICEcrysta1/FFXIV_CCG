@@ -10,11 +10,12 @@ namespace Combat.Sim.Jobs;
 
 /// <summary>
 /// 职业状态机共享的量谱访问辅助方法。
-/// 职业层只负责具体规则，不重复维护系统量谱的读写和类型转换语义。
+/// 职业层只负责具体规则，不重复维护量谱的读写和类型转换语义。
 /// </summary>
 public abstract class JobResourceAccessors
 {
     private SystemStateMachine? _system;
+    public JobStateRuntime State { get; } = new();
 
     /// <summary>获取已由 Bind 注入的系统层；未绑定时保持 fail-fast 语义。</summary>
     protected SystemStateMachine System => _system ?? throw new InvalidOperationException(
@@ -23,11 +24,11 @@ public abstract class JobResourceAccessors
     /// <summary>由具体职业的 Bind 转交系统层引用。</summary>
     protected void BindSystem(SystemStateMachine system) => _system = system;
 
-    protected object Resource(CombatState state, string key) => System.GetJobResource(state, key);
+    protected object Resource(CombatState state, string key) => State.Resources.GetJobResource(state, key);
 
     protected int ResourceMax(string key)
     {
-        var maxValue = System.JobResourceMax(key);
+        var maxValue = State.Resources.ResourceMaxValue(key);
         if (maxValue is null)
         {
             throw new KeyNotFoundException($"job resource {key} is missing max_value");
@@ -43,22 +44,22 @@ public abstract class JobResourceAccessors
     protected bool BoolResource(CombatState state, string key) => Convert.ToBoolean(Resource(state, key));
 
     protected void SetResource(CombatState state, string key, object value) =>
-        System.SetJobResource(state, key, value);
+        State.Resources.SetJobResource(state, key, value);
 
     /// <summary>读取职业时间资源的绝对截止时刻；null 表示当前不在计时。</summary>
     protected static double? TimelineDeadline(CombatState state, string key) =>
-        state.JobTimelineDeadlines.TryGetValue(key, out var deadline) ? deadline : null;
+        state.Job.TimelineDeadlines.TryGetValue(key, out var deadline) ? deadline : null;
 
     /// <summary>写入职业时间资源的绝对截止时刻；传 null 表示停止计时。</summary>
     protected static void SetTimelineDeadline(CombatState state, string key, double? deadline)
     {
         if (deadline is double value)
         {
-            state.JobTimelineDeadlines[key] = value;
+            state.Job.TimelineDeadlines[key] = value;
             return;
         }
 
-        state.JobTimelineDeadlines.Remove(key);
+        state.Job.TimelineDeadlines.Remove(key);
     }
 
     /// <summary>对照 Python int() 的截断语义，避免 Convert.ToInt32 的银行家舍入。</summary>

@@ -46,7 +46,7 @@ public sealed class CombatTimelineRuntimeTests
 
         Assert.Equal(direct.CurrentTime, split.CurrentTime);
         Assert.Equal(direct.GetState().Mp, split.GetState().Mp);
-        Assert.Equal(direct.GetState().JobResources, split.GetState().JobResources);
+        Assert.Equal(direct.GetState().Job.Resources, split.GetState().Job.Resources);
         Assert.Equal(direct.PendingEvents, split.PendingEvents);
     }
 
@@ -325,6 +325,104 @@ public sealed class CombatTimelineRuntimeTests
         Assert.Equal("later", later.OwnerKey);
         Assert.Equal(0, queue.Count);
         Assert.False(queue.TryPeek(out _, out _));
+    }
+
+    [Fact]
+    public void 同名同刻待结算事件按所属域独立去重且恢复后保持顺序()
+    {
+        var queue = new PendingSettlementQueue();
+        var system = new TimelineEvent(5, TimelineEventPriority.ExpirationAndCooldown,
+            TimelineEventKind.StatusExpired, "buff", Sequence: 1, Scope: TimelineEventScope.System);
+        var job = system with { Sequence = 2, Scope = TimelineEventScope.Job };
+
+        Assert.True(queue.Enqueue(system));
+        Assert.True(queue.Enqueue(job));
+        Assert.False(queue.Enqueue(system with { Sequence = 3 }));
+        Assert.False(queue.Enqueue(job with { Sequence = 4 }));
+        Assert.Equal(2, queue.Count);
+
+        var snapshot = queue.Snapshot();
+        Assert.Equal(new[] { system, job }, snapshot);
+        queue.Restore(snapshot.Reverse());
+        Assert.Equal(snapshot, queue.Snapshot());
+        Assert.False(queue.Enqueue(job with { Sequence = 5 }));
+
+        Assert.True(queue.TryDequeue(5, out var first));
+        Assert.Equal(system, first);
+        Assert.True(queue.TryDequeue(5, out var second));
+        Assert.Equal(job, second);
+        Assert.Equal(0, queue.Count);
+    }
+
+    [Fact]
+    public void 快照恢复与fork保留普通及待结算事件的所属域()
+    {
+        var runtime = new CombatTimelineRuntime(new CombatState { Mp = 0 });
+        runtime.RegisterHandler(TimelineEventKind.StatusExpired, (item, _) => new TimelineMutation(
+            ApplyState: state => state.Mp += item.Scope == TimelineEventScope.System ? 1 : 10));
+        runtime.Schedule(new(1, TimelineEventPriority.ExpirationAndCooldown,
+            TimelineEventKind.StatusExpired, "buff", Scope: TimelineEventScope.System));
+        runtime.Schedule(new(1, TimelineEventPriority.ExpirationAndCooldown,
+            TimelineEventKind.StatusExpired, "buff", Scope: TimelineEventScope.Job));
+        var original = runtime.CreateSnapshot();
+        var systemSettlement = new TimelineEvent(0, TimelineEventPriority.ExpirationAndCooldown,
+            TimelineEventKind.StatusExpired, "buff", Sequence: original.NextSequence,
+            Scope: TimelineEventScope.System);
+        var jobSettlement = systemSettlement with
+        {
+            Sequence = original.NextSequence + 1,
+            Scope = TimelineEventScope.Job,
+        };
+        runtime.RestoreSnapshot(original with { PendingSettlements = new[] { systemSettlement, jobSettlement } });
+
+        var restored = runtime.CreateSnapshot();
+        var fork = runtime.Fork();
+        Assert.Equal(original.PendingEvents, restored.PendingEvents);
+        Assert.Equal(new[] { systemSettlement, jobSettlement }, restored.PendingSettlements);
+        Assert.Equal(restored.PendingEvents, fork.PendingEvents);
+        Assert.Equal(restored.PendingSettlements, fork.CreateSnapshot().PendingSettlements);
+
+        Assert.Equal(22, fork.AdvanceTo(1).Mp);
+        Assert.Equal(0, runtime.GetState().Mp);
+        Assert.Equal(22, runtime.AdvanceTo(1).Mp);
+        Assert.Equal(fork.CreateSnapshot().NextSequence, runtime.CreateSnapshot().NextSequence);
+    }
+
+    [Fact]
+    public void 同名同刻事件交替所属域不会误触发连续重复派发保护()
+    {
+        var runtime = new CombatTimelineRuntime();
+        var handled = new List<TimelineEventScope>();
+        runtime.RegisterHandler(TimelineEventKind.StatusExpired, (item, _) =>
+        {
+            handled.Add(item.Scope);
+            return TimelineMutation.Empty;
+        });
+        var expected = Enumerable.Range(0, 16)
+            .Select(index => index % 2 == 0 ? TimelineEventScope.System : TimelineEventScope.Job).ToArray();
+        foreach (var scope in expected)
+            runtime.Schedule(new(1, TimelineEventPriority.ExpirationAndCooldown,
+                TimelineEventKind.StatusExpired, "buff", Scope: scope));
+
+        runtime.AdvanceTo(1);
+
+        Assert.Equal(expected, handled);
+        Assert.Empty(runtime.PendingEvents);
+    }
+
+    [Fact]
+    public void 同一所属域未消费的到期事实仍触发连续重复派发保护()
+    {
+        var runtime = new CombatTimelineRuntime();
+        runtime.RegisterHandler(TimelineEventKind.StatusExpired, (item, _) => new TimelineMutation(
+            EventsToSchedule: new[] { item with { Sequence = 0 } }));
+        runtime.Schedule(new(1, TimelineEventPriority.ExpirationAndCooldown,
+            TimelineEventKind.StatusExpired, "buff", Scope: TimelineEventScope.Job));
+
+        var exception = Assert.Throws<InvalidOperationException>(() => runtime.AdvanceTo(1));
+
+        Assert.Contains("dispatched more than", exception.Message);
+        Assert.Contains("buff", exception.Message);
     }
 
     [Fact]

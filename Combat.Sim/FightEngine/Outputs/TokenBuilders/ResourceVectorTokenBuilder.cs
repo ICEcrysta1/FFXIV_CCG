@@ -4,7 +4,7 @@
 // See LICENSE and LICENSE-FightEngine-Linking-Exception in the repository root.
 
 using Combat.Sim.Config;
-using Combat.Sim.System;
+using Combat.Sim.Jobs;
 
 namespace Combat.Sim.Outputs.TokenBuilders;
 
@@ -18,9 +18,9 @@ public sealed class ResourceVectorTokenBuilder
     private readonly string[] _featureKeys;
     private readonly string[] _historyFeatureKeys;
 
-    public ResourceVectorTokenBuilder(SystemStateMachine systemMachine)
+    public ResourceVectorTokenBuilder(JobStateRuntime jobState)
     {
-        _resourceKeys = systemMachine.JobResourceVectorKeys("resource").ToArray();
+        _resourceKeys = jobState.Resources.VectorResourceKeys("resource").ToArray();
         _featureKeys = BuildFeatureKeys();
         _historyFeatureKeys = SchemaConfigLoader.Instance.StateSnapshots
             .SelectMany(snapshot => _featureKeys.Select(key => $"{snapshot}.{key}"))

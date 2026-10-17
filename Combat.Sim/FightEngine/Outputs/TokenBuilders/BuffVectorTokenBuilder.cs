@@ -3,7 +3,7 @@
 // Additional permission: FightEngine GPLv3 Linking Exception, Version 1.0.
 // See LICENSE and LICENSE-FightEngine-Linking-Exception in the repository root.
 
-using Combat.Sim.Models.Definitions;
+using Combat.Sim.Jobs;
 using Combat.Sim.System;
 
 using Combat.Sim.Config;
@@ -24,15 +24,15 @@ public sealed class BuffVectorTokenBuilder
     private readonly string[] _featureKeys;
     private readonly string[] _historyFeatureKeys;
 
-    public BuffVectorTokenBuilder(SystemStateMachine systemMachine)
+    public BuffVectorTokenBuilder(SystemStateMachine systemMachine, JobStateRuntime jobState)
     {
         // Buff 状态字段模板（config/schema.yaml 单一事实来源，缺失时显式报错），构造时缓存一次
         _statusFields = SchemaConfigLoader.RequireStateVectorFields("buff_state").ToArray();
         _systemStatusKeys = systemMachine.SystemStatusDefinitions.Keys
             .OrderBy(key => key, StringComparer.Ordinal).ToArray();
-        _jobStatusKeys = systemMachine.JobStatusDefinitions.Keys
+        _jobStatusKeys = jobState.Buffs.Definitions.Keys
             .OrderBy(key => key, StringComparer.Ordinal).ToArray();
-        _buffResourceKeys = systemMachine.JobResourceVectorKeys("buff").ToArray();
+        _buffResourceKeys = jobState.Resources.VectorResourceKeys("buff").ToArray();
         _featureKeys = BuildFeatureKeys();
         _historyFeatureKeys = SchemaConfigLoader.Instance.StateSnapshots
             .SelectMany(snapshot => _featureKeys.Select(key => $"{snapshot}.{key}"))

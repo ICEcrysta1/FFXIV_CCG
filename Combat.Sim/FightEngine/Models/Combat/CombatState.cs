@@ -25,6 +25,7 @@ public sealed class CombatState
     internal void BindResourceTimes()
     {
         foreach (var item in Statuses.Values) item.BindTime(Time);
+        Job.BindTime(Time);
         foreach (var item in Dots.Values) item.BindTime(Time);
         foreach (var item in Cooldowns.Values) item.BindTime(Time);
     }
@@ -70,13 +71,7 @@ public sealed class CombatState
     public double CumulativeDotPotency { get; set; } = 0.0;
     public double CurrentPotency { get; set; } = 0.0;
     public double CurrentGcdDotPotency { get; set; } = 0.0;
-    public Dictionary<string, object> JobResources { get; set; } = new();
-    /// <summary>
-    /// 职业时间资源的绝对截止时刻，key 用注册 key（如 black_mage.polyglot）。
-    /// 键的存在性表示"有正在计时的截止时刻"，不存在即"不在计时"。
-    /// 与 Cooldowns/Statuses/Dots 同级：时间原点重设时一起平移，但不参与量谱输出与归一化。
-    /// </summary>
-    public Dictionary<string, double> JobTimelineDeadlines { get; set; } = new();
+    public JobState Job { get; set; } = new();
     public Dictionary<string, CooldownState> Cooldowns { get; set; } = new();
     public Dictionary<string, StatusState> Statuses { get; set; } = new();
     public Dictionary<string, DotState> Dots { get; set; } = new();
@@ -119,8 +114,7 @@ public sealed class CombatState
             CumulativeDotPotency = CumulativeDotPotency,
             CurrentPotency = CurrentPotency,
             CurrentGcdDotPotency = CurrentGcdDotPotency,
-            JobResources = new Dictionary<string, object>(JobResources),
-            JobTimelineDeadlines = new Dictionary<string, double>(JobTimelineDeadlines),
+            Job = Job.Clone(),
             Cooldowns = Cooldowns.ToDictionary(pair => pair.Key, pair => pair.Value.Clone()),
             Statuses = Statuses.ToDictionary(pair => pair.Key, pair => pair.Value.Clone()),
             Dots = Dots.ToDictionary(pair => pair.Key, pair => pair.Value.Clone()),
@@ -140,11 +134,6 @@ public sealed class CombatState
         clone.History = new();
         return clone;
     }
-
-    public object? GetJobResource(string key, object? fallback = null) =>
-        JobResources.TryGetValue(key, out var value) ? value : fallback;
-
-    public void SetJobResource(string key, object value) => JobResources[key] = value;
 
     public bool HasStatus(string key) =>
         Statuses.TryGetValue(key, out var status) && status.Remaining > 0 && status.Stacks > 0;

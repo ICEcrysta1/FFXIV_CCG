@@ -60,10 +60,7 @@ internal static class TimelineTestDriver
         double seconds,
         Func<double, bool>? targetableAt = null)
     {
-        var timeline = machine.SystemMachine.CreateTimeline(
-            state,
-            key => machine.ResolveSkill(key).Charges,
-            targetableAt);
+        var timeline = machine.CreateTimeline(state, targetableAt);
         return timeline.AdvanceTo(state.Time + seconds);
     }
 

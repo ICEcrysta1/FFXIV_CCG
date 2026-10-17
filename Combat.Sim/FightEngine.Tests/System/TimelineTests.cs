@@ -1,4 +1,5 @@
 using Combat.Sim.Models.Combat;
+using Combat.Sim.State;
 using Combat.Sim.Models.Definitions;
 using Combat.Sim.System.Timeline;
 using static FightEngine.Tests.System.SystemTestKit;

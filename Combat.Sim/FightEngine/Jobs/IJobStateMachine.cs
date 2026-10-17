@@ -7,7 +7,7 @@ using Combat.Sim.Config;
 using Combat.Sim.Models.Combat;
 using Combat.Sim.Models.Definitions;
 using Combat.Sim.System;
-using Combat.Sim.System.Timeline;
+using Combat.Sim.Jobs.Timeline;
 
 namespace Combat.Sim.Jobs;
 
@@ -31,10 +31,13 @@ public interface IJobStateMachine
     /// <summary>门面装配期注入项目配置与系统层引用。</summary>
     void Bind(ProjectConfig project, SystemStateMachine system) { }
 
+    /// <summary>职业拥有的量谱、Buff 和计时规则；不保存队列游标。</summary>
+    JobStateRuntime State { get; }
+
     /// <summary>职业默认战斗剩余时间（对照 job.default_fight_remaining）。</summary>
     double DefaultFightRemaining { get; }
 
-    /// <summary>职业向系统层注册的资源与状态定义（对照 build_state_registration）。</summary>
+    /// <summary>职业自身的资源与状态注册定义（对照 build_state_registration）。</summary>
     JobStateRegistration BuildStateRegistration();
 
     /// <summary>当前有效 GCD；优先使用 state.BaseGcd，再应用职业加速倍率。</summary>
@@ -55,7 +58,7 @@ public interface IJobStateMachine
     /// <summary>消耗职业时序资源（对照 consume_timing_resources，仅 GCD 调用）。</summary>
     void ConsumeTimingResources(CombatState state, SkillDefinition skill);
 
-    /// <summary>向公共时间线注册职业周期资源、倒计时和 MP 修正规则。</summary>
+    /// <summary>声明职业周期资源、倒计时和 MP 修正规则，由门面组合到统一时间线。</summary>
     void RegisterTimeline(JobTimelineRegistry timeline) { }
 
     /// <summary>职业可选的读条倍率；默认 1.0（对照可选 cast_time_multiplier）。</summary>

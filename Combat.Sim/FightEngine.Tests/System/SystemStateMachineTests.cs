@@ -1,6 +1,7 @@
 using Combat.Sim.Models.Combat;
 using Combat.Sim.Models.Definitions;
 using Combat.Sim.Outputs;
+using Combat.Sim.Jobs;
 using Combat.Sim.System;
 using static FightEngine.Tests.System.SystemTestKit;
 
@@ -9,9 +10,9 @@ namespace FightEngine.Tests.System;
 /// <summary>系统状态机测试：门面编排、MP 回蓝、系统技能与威力解析。</summary>
 public class SystemStateMachineTests
 {
-    private static SystemStateMachine CreateMachine(int? maxHistory = null)
+    private static SystemStateMachine CreateMachine()
     {
-        var machine = new SystemStateMachine(Timing, Potency, MpRecovery, maxHistory: maxHistory);
+        var machine = new SystemStateMachine(Timing, Potency, MpRecovery);
         machine.RegisterSystemStatuses(new Dictionary<string, StatusDefinition>
         {
             ["burst_potion"] = new("burst_potion", GameId: 1, Duration: 30.0),
@@ -47,7 +48,8 @@ public class SystemStateMachineTests
     public void 初始状态装配量谱默认值()
     {
         var machine = CreateMachine();
-        machine.RegisterJobState(new JobStateRegistration(
+        var job = new JobStateRuntime();
+        job.Register(new JobStateRegistration(
             "black_mage",
             new Dictionary<string, JobResourceDefinition>
             {
@@ -60,8 +62,9 @@ public class SystemStateMachineTests
         });
 
         var state = machine.InitialState(fightRemaining: 600.0, maxMp: 10000);
+        job.Initialize(state);
 
-        Assert.Equal(0, state.GetJobResource("astral_fire"));
+        Assert.Equal(0, state.Job.GetResource("astral_fire"));
         Assert.Equal(10000, state.Mp);
         Assert.Equal(600.0, state.FightRemaining);
     }
@@ -72,16 +75,17 @@ public class SystemStateMachineTests
     public void 回蓝按tick间隔推进并读取回调()
     {
         var machine = CreateMachine();
+        var job = new JobStateRuntime();
         var state = machine.InitialState(fightRemaining: 600.0, maxMp: 10000);
         state.Mp = 8000; // 留出回蓝空间
         var observedNaturalAmounts = new List<int>();
-        machine.JobTimeline.RegisterMpTickModifier((_, naturalAmount) =>
+        job.Timeline.RegisterMpTickModifier((_, naturalAmount) =>
         {
             observedNaturalAmounts.Add(naturalAmount);
             return naturalAmount;
         });
 
-        var next = SystemTimelineTestDriver.AdvanceBy(machine, state, 7.0, key => 1);
+        var next = CombatStateMachine.CreateTimeline(machine, job, state, _ => 1).AdvanceTo(7.0);
 
         Assert.Equal(8400, next.Mp); // 8000 + 2 tick × 200
         Assert.Equal(new[] { 200, 200 }, observedNaturalAmounts);
@@ -92,10 +96,11 @@ public class SystemStateMachineTests
     public void 回蓝回调返回负值时按零处理()
     {
         var machine = CreateMachine();
+        var job = new JobStateRuntime();
         var state = machine.InitialState(fightRemaining: 600.0, maxMp: 10000);
-        machine.JobTimeline.RegisterMpTickModifier((_, _) => -50);
+        job.Timeline.RegisterMpTickModifier((_, _) => -50);
 
-        var next = SystemTimelineTestDriver.AdvanceBy(machine, state, 3.0, key => 1);
+        var next = CombatStateMachine.CreateTimeline(machine, job, state, _ => 1).AdvanceTo(3.0);
 
         Assert.Equal(10000, next.Mp);
     }
@@ -107,8 +112,8 @@ public class SystemStateMachineTests
     {
         var machine = CreateMachine();
         var state = machine.InitialState(fightRemaining: 600.0, maxMp: 10000);
-        machine.GrantRegisteredStatus(state, "burst_potion");
-        machine.GrantRegisteredStatus(state, "raid_buff_window");
+        machine.BuffState.GrantRegisteredStatus(state, "burst_potion");
+        machine.BuffState.GrantRegisteredStatus(state, "raid_buff_window");
 
         var resolved = machine.ResolveAppliedPotency(state, 100);
 
@@ -136,7 +141,7 @@ public class SystemStateMachineTests
     {
         var machine = CreateMachine();
         var state = machine.InitialState(fightRemaining: 600.0, maxMp: 10000);
-        machine.GrantRegisteredStatus(state, "burst_potion", remaining: 5.0);
+        machine.BuffState.GrantRegisteredStatus(state, "burst_potion", remaining: 5.0);
 
         Assert.Equal(100 * 1.08, machine.ResolveAppliedPotencyAtOffset(state, 100, 3.0));
         Assert.Equal(100.0, machine.ResolveAppliedPotencyAtOffset(state, 100, 6.0)); // 已过期
@@ -174,8 +179,10 @@ public class SystemStateMachineTests
     [Fact]
     public void 历史记录挂载量谱差分并限制长度()
     {
-        var machine = CreateMachine(maxHistory: 2);
-        machine.RegisterJobState(new JobStateRegistration(
+        var machine = CreateMachine();
+        var job = new JobStateRuntime();
+        var history = new ActionHistoryRuntime(job, maxHistory: 2);
+        job.Register(new JobStateRegistration(
             "black_mage",
             new Dictionary<string, JobResourceDefinition>
             {
@@ -183,12 +190,13 @@ public class SystemStateMachineTests
             },
             new Dictionary<string, StatusDefinition>()));
         var state = machine.InitialState(fightRemaining: 600.0, maxMp: 10000);
+        job.Initialize(state);
         var skill = Skill("fire", potency: 300);
-        machine.SetJobResource(state, "astral_fire", 3);
+        job.Resources.SetJobResource(state, "astral_fire", 3);
 
         for (var i = 0; i < 3; i++)
         {
-            machine.RecordActionHistory(
+            history.RecordActionHistory(
                 state, state, skill,
                 potency: 300,
                 value: 1.0,

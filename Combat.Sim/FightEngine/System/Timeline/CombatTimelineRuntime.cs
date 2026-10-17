@@ -115,11 +115,11 @@ public sealed class CombatTimelineRuntime
         _nextSequence = 1;
     }
 
-    private CombatTimelineRuntime(CombatTimelineRuntime source, bool includeHistory,
+    private CombatTimelineRuntime(CombatTimelineRuntime source,
         IReadOnlySet<TimelineEventKind>? excludedHandlers)
     {
         // 内部分支直接复制一次；不先创建对外快照再重复克隆快照中的状态。
-        _state = includeHistory ? source._state.Clone() : source._state.CloneWithoutHistory();
+        _state = source._state.Clone();
         _nextSequence = source._nextSequence;
 
         foreach (var pendingEvent in source._scheduledEvents.Values)
@@ -360,12 +360,11 @@ public sealed class CombatTimelineRuntime
         }
     }
 
-    public CombatTimelineRuntime Fork() => Fork(includeHistory: true);
+    public CombatTimelineRuntime Fork() => Fork(excludedHandlers: null);
 
-    internal CombatTimelineRuntime Fork(bool includeHistory,
-        IReadOnlySet<TimelineEventKind>? excludedHandlers = null)
+    internal CombatTimelineRuntime Fork(IReadOnlySet<TimelineEventKind>? excludedHandlers)
     {
-        var fork = new CombatTimelineRuntime(this, includeHistory, excludedHandlers);
+        var fork = new CombatTimelineRuntime(this, excludedHandlers);
         fork._resourceEvents = _resourceEvents;
         fork._resourceSequences.UnionWith(_resourceSequences);
         return fork;
@@ -487,8 +486,7 @@ public sealed class CombatTimelineRuntime
         target.CumulativeDotPotency = clone.CumulativeDotPotency;
         target.CurrentPotency = clone.CurrentPotency;
         target.CurrentGcdDotPotency = clone.CurrentGcdDotPotency;
-        target.JobResources = clone.JobResources;
-        target.JobTimelineDeadlines = clone.JobTimelineDeadlines;
+        target.Job = clone.Job;
         target.Cooldowns = clone.Cooldowns;
         target.Statuses = clone.Statuses;
         target.Dots = clone.Dots;
@@ -516,6 +514,7 @@ public sealed class CombatTimelineRuntime
     private static bool IsSameDispatch(TimelineEvent? previous, TimelineEvent current) =>
         previous is not null
         && previous.Kind == current.Kind
+        && previous.Scope == current.Scope
         && string.Equals(previous.OwnerKey, current.OwnerKey, StringComparison.Ordinal)
         && Math.Abs(previous.Timestamp - current.Timestamp) <= TimeEpsilon;
 }

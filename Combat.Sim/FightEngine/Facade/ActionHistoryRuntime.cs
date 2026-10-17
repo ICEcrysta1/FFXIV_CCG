@@ -6,15 +6,15 @@
 using Combat.Sim.Models.Combat;
 using Combat.Sim.Models.Definitions;
 using Combat.Sim.Outputs;
-using Combat.Sim.System.Registries;
+using Combat.Sim.Jobs;
 
-namespace Combat.Sim.System;
+namespace Combat.Sim.Facade;
 
 /// <summary>
-/// 系统层动作历史记录：统一记录动作元信息并挂载职业量谱前后快照，控制长度上限
-/// （对照 history.SystemHistoryRuntime）。
+/// 门面动作历史记录：统一记录动作元信息并挂载职业量谱前后快照，控制长度上限
+/// （对照 history.ActionHistoryRuntime）。
 /// </summary>
-public sealed class SystemHistoryRuntime
+public sealed class ActionHistoryRuntime
 {
     private readonly Func<CombatState, CombatState, (
         IReadOnlyDictionary<string, object> Before,
@@ -22,20 +22,16 @@ public sealed class SystemHistoryRuntime
         IReadOnlyDictionary<string, object> Consumed)> _buildTransition;
     private readonly HistoryRetention _retention;
 
-    public SystemHistoryRuntime(
-        ResourceStateRegistry resourceState,
-        int? maxHistory = null,
-        Func<CombatState, CombatState, (
-            IReadOnlyDictionary<string, object> Before,
-            IReadOnlyDictionary<string, object> After,
-            IReadOnlyDictionary<string, object> Consumed)>? buildTransition = null)
+    public ActionHistoryRuntime(
+        JobStateRuntime jobState,
+        int? maxHistory = null)
     {
-        ArgumentNullException.ThrowIfNull(resourceState);
+        ArgumentNullException.ThrowIfNull(jobState);
         if (maxHistory is < 0)
         {
             throw new InvalidOperationException($"max_history must be >= 0, got {maxHistory}");
         }
-        _buildTransition = buildTransition ?? resourceState.BuildJobResourceTransition;
+        _buildTransition = jobState.BuildResourceTransition;
         _retention = new HistoryRetention(maxHistory);
     }
 
