@@ -362,6 +362,7 @@ def test_corrupt_history_bank_manifest_falls_back_to_recompile(
         "shard_size": float("inf") if corruption == "overflow_shard_size" else 1,
         "shard_files": [],
         "history_bank": history_bank,
+        "history_markers": (),
     }
     if corruption == "missing_history_bank":
         payload.pop("history_bank")
@@ -455,6 +456,7 @@ def test_empty_compiled_cache_accepts_sentinel_history_bank(tmp_path, monkeypatc
         "vocab_signature": tuple(SkillVocab.build_from_job_tag("black_mage")),
         "shard_size": 1,
         "shard_files": [],
+        "history_markers": (),
         "history_bank": {
             "skill_ids": torch.zeros((1,), dtype=torch.int32),
             "skill_features": torch.zeros((1, 0)),

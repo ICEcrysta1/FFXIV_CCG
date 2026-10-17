@@ -46,14 +46,15 @@ internal static class PolicySequenceReplay
         for (var index = 0; index < suppliedFacts.Length; index++)
         {
             var fact = suppliedFacts[index];
-            if (fact is null || !double.IsFinite(fact.Timestamp) || fact.Timestamp <= simulator.Time
+            if (fact is null || !double.IsFinite(fact.Timestamp) || fact.Timestamp < simulator.Time
                 || (index > 0 && fact.Timestamp < facts[index - 1].Timestamp))
-                throw new ArgumentException("replay facts must be ordered strictly after the initial time", nameof(factsJson));
+                throw new ArgumentException("replay facts must be ordered at or after the initial time", nameof(factsJson));
             facts[index] = new ExternalCombatEvent(
                 fact.Timestamp, fact.EventKind, fact.Value, fact.TargetCount, fact.RemainingSeconds);
         }
 
         var observations = new List<Dictionary<string, object?>>();
+        var pendingMarkers = new List<Dictionary<string, object?>>();
         var factIndex = 0;
         var syncedTime = simulator.Time;
         var cursor = simulator.Time;
@@ -76,7 +77,7 @@ internal static class PolicySequenceReplay
                         var nextObservation = Math.Max(windowEnd, request.Timestamp);
                         var context = Observe(decisionTime, nextObservation);
                         policy.Record(simulator, decisionTime, policyActionKey, nextObservation);
-                        observations.Add(Frame(sourceIndex, isWait: true, decisionTime, context, submission: null));
+                        AddFrame(sourceIndex, isWait: true, decisionTime, context, submission: null);
                     }
                 }
             }
@@ -85,7 +86,7 @@ internal static class PolicySequenceReplay
             var nextRequest = sourceIndex + 1 < requests.Length ? requests[sourceIndex + 1].Timestamp : fightDuration;
             var realContext = Observe(request.Timestamp, Math.Max(request.Timestamp, nextRequest));
             var submission = simulator.SubmitAction(request.Timestamp, request.SkillKey, request.ActualCastSeconds);
-            observations.Add(Frame(sourceIndex, isWait: false, request.Timestamp, realContext, Submission(submission)));
+            AddFrame(sourceIndex, isWait: false, request.Timestamp, realContext, Submission(submission));
             // 拒绝帧仍返回给调用方，由其按自身标签、步号与错误契约处理；后续请求不再执行。
             if (!submission.Accepted) break;
             // 预测生效时刻只用于下一轮 wait 判断，不能提前推进并越过下一条日志请求。
@@ -105,6 +106,14 @@ internal static class PolicySequenceReplay
                 var applied = simulator.ApplyExternalEvents(batch);
                 if (!applied.Accepted)
                     throw new InvalidOperationException($"scene facts rejected at {batch[0].Timestamp:R}: {applied.Reason}");
+                if (applied.Token is { } token)
+                    pendingMarkers.Add(new Dictionary<string, object?>
+                    {
+                        ["token"] = token,
+                        ["timestamp"] = applied.Timestamp,
+                        ["after_history_length"] = simulator.HistoryCursor,
+                        ["step"] = observations.Count + 1,
+                    });
                 factIndex = batchEnd;
             }
             syncedTime = timestamp;
@@ -118,6 +127,18 @@ internal static class PolicySequenceReplay
             var context = policy.BuildVectorDeltaContext(simulator, nextObservation, historyCursor);
             historyCursor = (long)context["history_cursor"]!;
             return context;
+        }
+
+        void AddFrame(int sourceIndex, bool isWait, double timestamp,
+            Dictionary<string, object?> context, Dictionary<string, object?>? submission)
+        {
+            var frame = Frame(sourceIndex, isWait, timestamp, context, submission);
+            if (pendingMarkers.Count > 0)
+            {
+                frame["history_markers"] = pendingMarkers.ToArray();
+                pendingMarkers.Clear();
+            }
+            observations.Add(frame);
         }
     }
 

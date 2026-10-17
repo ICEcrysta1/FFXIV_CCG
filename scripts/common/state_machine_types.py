@@ -50,6 +50,7 @@ class ExternalEventResult:
     timestamp: float
     next_scheduled_event_time: float | None
     token: str | None = None
+    history_cursor: int | None = None
 
 
 @dataclass(frozen=True)

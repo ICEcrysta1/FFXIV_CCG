@@ -429,6 +429,7 @@ public sealed class JobSimulatorTests
 
         Assert.True(result.Accepted);
         Assert.Equal("<dead/>", result.Token);
+        Assert.Equal(1L, result.HistoryCursor);
         var state = simulator.GetState();
         Assert.Equal(0, state.Mp);
         Assert.Equal(10000, state.MaxMp);

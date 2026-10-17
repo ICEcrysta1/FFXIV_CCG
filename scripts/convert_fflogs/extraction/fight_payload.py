@@ -157,6 +157,16 @@ def build_fight_payload(
         "num_actions": len(annotated_actions),
         "gcd_time": _round_time(gcd_time),
         "scene_context": scene_context,
+        "external_events": [
+            {"timestamp": timestamp, "event_kind": "player_death"}
+            for timestamp in sorted({
+                _round_time(float(event["timestamp"]) / 1000.0 - fight_start)
+                for event in raw_events or []
+                if event.get("type") == "death"
+                and event.get("targetID") == source_id
+                and fight_start <= float(event["timestamp"]) / 1000.0 <= fight_end
+            })
+        ],
         "ranking": ranking,
         "annotation_status": annotation_status,
         "actions": annotated_actions,

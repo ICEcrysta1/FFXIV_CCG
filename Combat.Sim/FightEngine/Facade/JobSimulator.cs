@@ -197,7 +197,8 @@ public sealed class JobSimulator
                 item.Kind, Payload: item));
         }
         _timeline.AdvanceClockTo(timestamp);
-        return new(true, "", timestamp, kinds.Contains(ExternalCombatEventKinds.PlayerDeath) ? "<dead/>" : null);
+        var hasDeath = kinds.Contains(ExternalCombatEventKinds.PlayerDeath);
+        return new(true, "", timestamp, hasDeath ? "<dead/>" : null, hasDeath ? HistoryCursor : null);
     }
 
     public SimulationSnapshot CreateSnapshot() => _timeline.CreateSnapshot();

@@ -224,6 +224,7 @@ def test_death_returns_special_token_without_changing_model_inputs(require_engin
             {"timestamp": 0.0, "event_kind": "target_count_changed", "target_count": 1},
         ])
         assert ordinary.token is None
+        assert ordinary.history_cursor is None
         assert backend.submit_action(0.0, "fire_iii").accepted
         assert backend.submit_action(4.0, "high_thunder").accepted
 
@@ -233,6 +234,7 @@ def test_death_returns_special_token_without_changing_model_inputs(require_engin
 
         assert death.accepted
         assert death.token == "<dead/>"
+        assert death.history_cursor == 2
         context = backend.observe_at(6.0, format="vector", next_observation_timestamp=6.0).context
         current = context["current_state_context"]
         token = current["tokens"][0]

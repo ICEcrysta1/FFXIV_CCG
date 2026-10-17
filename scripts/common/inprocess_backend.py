@@ -315,6 +315,7 @@ class InProcessBackend:
             timestamp=float(result.Timestamp),
             next_scheduled_event_time=self._optional(response.NextScheduledEventTime),
             token=None if result.Token is None else str(result.Token),
+            history_cursor=None if result.HistoryCursor is None else int(result.HistoryCursor),
         )
 
     def observe_at(

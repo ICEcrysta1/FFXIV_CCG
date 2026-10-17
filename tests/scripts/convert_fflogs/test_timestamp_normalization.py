@@ -203,8 +203,23 @@ def test_fight_payload_translates_all_requests_to_earliest_zero():
         raid_buff_marker_keys=("raid_marker",),
         raid_buff_window_duration=20.0,
         movement_detection=load_convert_fflogs_config().movement_detection,
+        raw_events=[
+            {"type": "death", "targetID": 10, "timestamp": 1000},
+            {"type": "death", "targetID": 10, "timestamp": -3500},
+            {"type": "death", "targetID": 10, "timestamp": 1000},
+            {"type": "death", "sourceID": 10, "targetID": 20, "timestamp": 500},
+            {"type": "resurrect", "targetID": 10, "timestamp": 2000},
+            {"type": "death", "targetID": 10, "timestamp": -4000},
+            {"type": "death", "targetID": 10, "timestamp": 3000},
+        ],
     )
 
     normalized = [action["request_time_offset"] for action in payload["actions"]]
     assert normalized == pytest.approx([0.0, 3.61, 3.73, 3.75, 6.10])
     assert payload["duration"] == pytest.approx(6.10)
+    # 死亡和动作共用请求时间原点，只保留当前玩家、战斗范围内的死亡并去重排序。
+    assert payload["external_events"] == [
+        {"timestamp": 0.0, "event_kind": "player_death"},
+        {"timestamp": 4.5, "event_kind": "player_death"},
+    ]
+    assert "player_death" not in payload["scene_context"]
