@@ -27,8 +27,12 @@ public sealed class MpRecoveryRuntime
         Func<CombatState, int, int> resolveTickAmount) => new(ApplyState: target =>
     {
         // 回调读取 tick 当刻快照（职业 MP 修正已注册在 JobTimelineRegistry 上），不反推推进窗口。
-        var amount = Math.Max(0, resolveTickAmount(state, _config.InCombatAmount));
-        target.Mp = Math.Min(target.MaxMp, target.Mp + amount);
+        if (!target.IsDead)
+        {
+            var amount = Math.Max(0, resolveTickAmount(state, _config.InCombatAmount));
+            target.Mp = Math.Min(target.MaxMp, target.Mp + amount);
+        }
+        // 死亡期间仍推进公共 tick 相位，复活后不会补发死亡期间的回蓝。
         target.NaturalMpLastTickAt = item.Timestamp;
     });
 }

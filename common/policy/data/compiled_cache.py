@@ -63,8 +63,8 @@ CACHE_FORMAT = "raw_json_compiled_samples_v25_death_markers"
 # v26：从完整坐标观测提取移动区间，先按实测 GCD 合并，再剔除短于 GCD 减滑步时间的窗口。
 # v27：按无累计威力的模型状态契约重建完整 raw history bank。
 #      黑魔绝望最低 MP 改为 800，旧合法性与状态转移结果必须重编译。
-# v28：转换时提交死亡重置事实，并保存独立的 <dead/> 历史标记。
-DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v28_death_markers"
+# v28：提交死亡/复活事实并保存 <dead/> 历史标记；Boss 停手由全队实际命中推导。
+DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v28_player_lifecycle_party_downtime"
 # `weights_only=True` 的安全 unpickler 对 protocol 2 支持最稳定；compiled
 # cache 的样本数据只需要普通 mapping 和 tensor，不需要更高协议。
 CACHE_PICKLE_PROTOCOL = 2

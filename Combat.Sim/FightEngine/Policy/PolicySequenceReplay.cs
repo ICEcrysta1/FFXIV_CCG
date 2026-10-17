@@ -51,7 +51,7 @@ internal static class PolicySequenceReplay
                 || (index > 0 && fact.Timestamp < facts[index - 1].Timestamp))
                 throw new ArgumentException("replay facts must be ordered at or after the initial time", nameof(factsJson));
             facts[index] = new ExternalCombatEvent(
-                fact.Timestamp, fact.EventKind, fact.Value, fact.TargetCount, fact.RemainingSeconds);
+                fact.Timestamp, fact.EventKind, fact.Value, fact.TargetCount, fact.RemainingSeconds, fact.Mp);
         }
 
         var observations = new List<Dictionary<string, object?>>();
@@ -175,5 +175,6 @@ internal static class PolicySequenceReplay
         [JsonPropertyName("value")] public bool? Value { get; init; }
         [JsonPropertyName("target_count")] public int? TargetCount { get; init; }
         [JsonPropertyName("remaining_seconds")] public double? RemainingSeconds { get; init; }
+        [JsonPropertyName("mp")] public int? Mp { get; init; }
     }
 }

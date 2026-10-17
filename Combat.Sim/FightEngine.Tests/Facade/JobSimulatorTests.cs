@@ -457,7 +457,7 @@ public sealed class JobSimulatorTests
     }
 
     [Fact]
-    public void 同刻回蓝通晓和DoT先结算且死亡后公共周期继续()
+    public void 同刻旧周期先结算且死亡期间只暂停自然回蓝()
     {
         var machine = CombatStateMachine.FromDefaultConfig(FindRepoRoot(), "black_mage");
         var initial = machine.InitialState();
@@ -480,15 +480,67 @@ public sealed class JobSimulatorTests
         Assert.Empty(state.Job.TimelineDeadlines);
         Assert.Equal(50, state.CumulativeDotPotency);
         state = simulator.AdvanceTo(6);
-        Assert.Equal(200, state.Mp);
+        Assert.Equal(0, state.Mp);
         Assert.Equal(100, state.CumulativeDotPotency);
         Assert.True(state.Dots.ContainsKey("high_thunder"));
         state = simulator.AdvanceTo(33);
-        Assert.Equal(2000, state.Mp);
+        Assert.Equal(0, state.Mp);
         Assert.Equal(150, state.CumulativeDotPotency);
         Assert.Empty(state.Dots);
         Assert.Equal(0, state.Job.GetResource("polyglot"));
         Assert.Empty(state.Job.TimelineDeadlines);
+
+        var revived = simulator.ApplyExternalEvents(new[]
+        {
+            new ExternalCombatEvent(34, ExternalCombatEventKinds.PlayerRevived, Mp: 2000),
+        });
+        Assert.Null(revived.Token);
+        Assert.Equal(2000, simulator.AdvanceTo(35).Mp);
+        Assert.Equal(2200, simulator.AdvanceTo(36).Mp);
+    }
+
+    [Fact]
+    public void 死亡保留黑魔纹剩余充能和详述冷却且继续回充()
+    {
+        var machine = CombatStateMachine.FromDefaultConfig(FindRepoRoot(), "black_mage");
+        var initial = machine.InitialState();
+        initial.Job.SetResource("astral_fire", 3);
+        var simulator = new JobSimulator(machine, initial);
+        Assert.True(simulator.SubmitAction(0, "ley_lines").Accepted);
+        Assert.True(simulator.SubmitAction(0, "amplifier").Accepted);
+        var before = simulator.AdvanceTo(90);
+        var leyLines = machine.SkillBook.Get("ley_lines");
+        var amplifier = machine.SkillBook.Get("amplifier");
+        Assert.Equal((30.0, 1, 2), machine.SystemMachine.BuildCooldownSnapshot(before, leyLines));
+        Assert.Equal((30.0, 0, 1), machine.SystemMachine.BuildCooldownSnapshot(before, amplifier));
+
+        simulator.ApplyExternalEvents(new[] { new ExternalCombatEvent(90, ExternalCombatEventKinds.PlayerDeath) });
+        var dead = simulator.GetState();
+        Assert.Equal((30.0, 1, 2), machine.SystemMachine.BuildCooldownSnapshot(dead, leyLines));
+        Assert.Equal((30.0, 0, 1), machine.SystemMachine.BuildCooldownSnapshot(dead, amplifier));
+        Assert.Empty(dead.Job.Statuses);
+        var ready = simulator.AdvanceTo(120);
+        Assert.Equal((0.0, 2, 2), machine.SystemMachine.BuildCooldownSnapshot(ready, leyLines));
+        Assert.Equal((0.0, 1, 1), machine.SystemMachine.BuildCooldownSnapshot(ready, amplifier));
+        Assert.Equal(0, ready.Mp);
+    }
+
+    [Fact]
+    public void 死亡取消未接受的充能技能请求后不扣除到期充能()
+    {
+        var machine = CombatStateMachine.FromDefaultConfig(FindRepoRoot(), "black_mage");
+        var simulator = new JobSimulator(machine);
+        Assert.True(simulator.SubmitAction(0, "ley_lines").Accepted);
+        Assert.True(simulator.SubmitAction(20, "ley_lines").Accepted);
+        var queued = simulator.SubmitAction(119.7, "ley_lines");
+        Assert.True(queued.Accepted);
+        Assert.True(queued.Queued);
+        simulator.ApplyExternalEvents(new[] { new ExternalCombatEvent(119.8, ExternalCombatEventKinds.PlayerDeath) });
+        var firstReady = simulator.AdvanceTo(120);
+        Assert.Equal((20.0, 1, 2), machine.SystemMachine.BuildCooldownSnapshot(firstReady, machine.SkillBook.Get("ley_lines")));
+        var state = simulator.AdvanceTo(140);
+        Assert.Equal((0.0, 2, 2), machine.SystemMachine.BuildCooldownSnapshot(state, machine.SkillBook.Get("ley_lines")));
+        Assert.Equal(2, state.History.Count);
     }
 
     [Fact]
@@ -619,6 +671,8 @@ public sealed class JobSimulatorTests
     [InlineData(1)]
     [InlineData(2)]
     [InlineData(3)]
+    [InlineData(4)]
+    [InlineData(5)]
     public void 非法死亡批次先完整校验且不清状态或取消动作(int invalidKind)
     {
         var simulator = new JobSimulator(CombatStateMachine.FromDefaultConfig(FindRepoRoot(), "black_mage"));
@@ -629,6 +683,8 @@ public sealed class JobSimulatorTests
             0 => new ExternalCombatEvent(1, ExternalCombatEventKinds.PlayerDeath, true),
             1 => new ExternalCombatEvent(1, ExternalCombatEventKinds.TargetCountChanged, TargetCount: -1),
             2 => new ExternalCombatEvent(2, ExternalCombatEventKinds.MovementChanged, true),
+            4 => new ExternalCombatEvent(1, ExternalCombatEventKinds.PlayerRevived, Mp: -1),
+            5 => new ExternalCombatEvent(1, ExternalCombatEventKinds.PlayerDeath, Mp: 2000),
             _ => new ExternalCombatEvent(1, ExternalCombatEventKinds.PlayerDeath),
         };
 

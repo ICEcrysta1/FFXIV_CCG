@@ -315,6 +315,7 @@ class InProcessBackend:
             batch.Add(external_event(
                 float(event["timestamp"]), kind, event.get("value"),
                 event.get("target_count"), event.get("remaining_seconds"),
+                event.get("mp"),
             ))
         response = self._require_session().ApplyExternalEvents(batch)
         result = response.Value

@@ -191,10 +191,15 @@ public sealed class JobSimulator
         // 场景事实先于动作效果；死亡标记晚于旧效果和周期结算、早于新的动作接受。
         foreach (var item in batch)
         {
-            var death = item.Kind == ExternalCombatEventKinds.PlayerDeath;
+            var kind = item.Kind switch
+            {
+                ExternalCombatEventKinds.PlayerDeath => TimelineEventKind.PlayerDeath,
+                ExternalCombatEventKinds.PlayerRevived => TimelineEventKind.PlayerRevived,
+                _ => TimelineEventKind.SceneChanged,
+            };
             _timeline.Schedule(new TimelineEvent(timestamp,
-                death ? TimelineEventPriority.PlayerReset : TimelineEventPriority.ExternalScene,
-                death ? TimelineEventKind.PlayerDeath : TimelineEventKind.SceneChanged,
+                kind == TimelineEventKind.SceneChanged ? TimelineEventPriority.ExternalScene : TimelineEventPriority.PlayerReset,
+                kind,
                 item.Kind, Payload: item));
         }
         _timeline.AdvanceClockTo(timestamp);
@@ -239,9 +244,12 @@ public sealed class JobSimulator
 
     private void CompleteModelDecision(Guid decisionId, CombatState state)
     {
+        var completed = CaptureModelStateFrame(state);
+        // 单独保存最后已落实的动作后状态，供死亡取消新请求时恢复；不替代当前请求关联。
+        state.LastCompletedDecisionAfter = completed;
         // 仅新请求自己的效果可更新基准；捕获 mutation 已变更状态，不能重新读取旧 timeline 状态。
         if (state.LastDecisionId == decisionId)
-            state.LastDecisionAfter = CaptureModelStateFrame(state);
+            state.LastDecisionAfter = completed;
     }
 
     internal CombatStateMachine Rules => _machine;
@@ -256,6 +264,7 @@ public sealed class JobSimulator
         {
             state.LastDecisionId = decisionId;
             state.LastDecisionAfter = completed ? modelState.RequestState : null;
+            if (completed) state.LastCompletedDecisionAfter = modelState.RequestState;
             // 等待在决策落实时进入历史；真实技能在后续生效记录时领取序号。
             if (completed) historySequence = state.ReserveHistorySequence();
         }));
@@ -297,6 +306,7 @@ public sealed class JobSimulator
             target.WeaveEndsAt = target.Time;
             target.OgcdsWeaved = 0;
             target.LastDecisionId = null;
+            target.LastDecisionAfter = target.LastCompletedDecisionAfter;
         }, SequencesToCancel: cancelled);
     }
 

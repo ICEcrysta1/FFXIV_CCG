@@ -21,6 +21,7 @@ public enum TimelineEventKind
     SceneChanged,
     DecisionBoundary,
     PlayerDeath,
+    PlayerRevived,
 }
 
 /// <summary>

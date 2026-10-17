@@ -165,19 +165,23 @@ def build_training_samples(
 
 
 def _replay_facts(scheduler, external_events: object, start: float) -> list[dict[str, object]]:
-    """只在转换回放层合并提交计划；死亡不属于场景窗口。"""
+    """只在转换回放层合并提交计划；死亡与复活不属于场景窗口。"""
     facts = [asdict(fact) for fact in _state_facts(start, scheduler.state_at(start), None)]
     facts.extend(asdict(fact) for fact in scheduler.lookup.facts() if fact.timestamp > start)
     if not isinstance(external_events, list):
         raise ValueError("external_events must be a list")
     for event in external_events:
-        if not isinstance(event, dict) or set(event) != {"timestamp", "event_kind"}:
-            raise ValueError("external death events require only timestamp and event_kind")
+        if (not isinstance(event, dict) or not {"timestamp", "event_kind"} <= set(event)
+                or set(event) - {"timestamp", "event_kind", "mp"}):
+            raise ValueError("external player events require timestamp, event_kind and optional revival mp")
         timestamp = event["timestamp"]
-        if (event["event_kind"] != "player_death" or isinstance(timestamp, bool)
+        if (event["event_kind"] not in {"player_death", "player_revived"} or isinstance(timestamp, bool)
                 or not isinstance(timestamp, (int, float)) or not math.isfinite(timestamp) or timestamp < start):
-            raise ValueError("external death events require a finite, non-past timestamp")
-        facts.append({"timestamp": float(timestamp), "event_kind": "player_death"})
+            raise ValueError("external player events require a finite, non-past timestamp")
+        if "mp" in event and (event["event_kind"] != "player_revived"
+                or isinstance(event["mp"], bool) or not isinstance(event["mp"], int) or event["mp"] < 0):
+            raise ValueError("only revival events accept non-negative integer mp")
+        facts.append({**event, "timestamp": float(timestamp)})
     return sorted(facts, key=lambda fact: fact["timestamp"])
 
 

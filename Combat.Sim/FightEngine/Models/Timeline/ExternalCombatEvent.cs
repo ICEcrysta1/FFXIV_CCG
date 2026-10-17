@@ -13,6 +13,7 @@ public static class ExternalCombatEventKinds
     public const string RaidBuffWindowChanged = "raid_buff_window_changed";
     public const string TargetCountChanged = "target_count_changed";
     public const string PlayerDeath = "player_death";
+    public const string PlayerRevived = "player_revived";
 }
 
 /// <summary>带绝对时间戳的战斗外部事实。</summary>
@@ -21,4 +22,5 @@ public sealed record ExternalCombatEvent(
     string Kind,
     bool? Value = null,
     int? TargetCount = null,
-    double? RemainingSeconds = null);
+    double? RemainingSeconds = null,
+    int? Mp = null);
