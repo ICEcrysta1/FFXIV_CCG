@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- **FightEngine 状态职责拆分不保留旧版公开接口兼容层。** 依赖旧版 `FightEngine.dll` 的宿主、自定义职业和桥接程序集需同步迁移并重新编译，Python.NET 脚本需更新旧成员访问。项目 Python 调用方升级后执行 `dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj`，同步更新核心与桥接 DLL，并重启已加载旧 DLL 的进程。
+- `CombatState.JobResources`、`JobTimelineDeadlines` 分别迁移为 `state.Job.Resources`、`state.Job.TimelineDeadlines`；`GetJobResource`／`SetJobResource` 改为 `state.Job.GetResource`／`state.Job.SetResource`。职业 Buff 改存 `state.Job.Statuses`，查询改用 `state.Job.HasStatus`／`StatusStacks`；根 `Statuses` 只保存公共状态。直接序列化原始状态或 `SimulationSnapshot` 的调用方需同步迁移结构。
+- `IJobStateMachine` 新增必需的 `JobStateRuntime State { get; }`；`RegisterTimeline` 参数改用 `Combat.Sim.Jobs.Timeline.JobTimelineRegistry`。职业量谱、Buff 和计时规则由 `State` 持有；手工构造职业状态到期事件时须显式指定 `Scope: TimelineEventScope.Job`。
+- 类型命名空间调整：`ResourceStateRegistry` 移至 `Combat.Sim.Jobs`，`JobTimelineRegistry`／`JobTimerProjection` 移至 `Combat.Sim.Jobs.Timeline`，`BuffStateRegistry`／`StatusTimelineRuntime` 移至 `Combat.Sim.State`；`SystemHistoryRuntime` 更名为 `Combat.Sim.Facade.ActionHistoryRuntime`，构造时改传 `JobStateRuntime`。
+- `SystemStateMachine` 构造不再接受 `maxHistory`，`InitialState` 收为 internal，删除 `CreateTimeline` 及职业资源、职业计时和历史转发接口。完整初始化、技能提交和时间推进统一通过 `JobSimulator`／`SimulationEngine`；职业量谱快照与差分改用 `job.State.BuildResourceSnapshot`／`BuildResourceTransition`，包含职业计时器投影。
+- `BuffStateRegistry` 的系统／职业注册入口统一为各实例的 `RegisterStatuses`，定义查询统一为 `Definitions`；删除 registry 和系统层的技能级 `ValidateSharedBehavior`／`ApplySharedBehavior`，改走 `JobSimulator.ValidateActionAt`／`SubmitAction`。单状态操作通过 `system.BuffState` 或 `job.State.Buffs` 调用，职业到期钩子通过 `job.State.StatusTimeline` 注册。
+
+以上状态机拆分保持正式秒制、GCD 制及 canonical／tensor 输出契约不变，原始 CLR 状态与快照对象结构不再兼容旧版。
+
 ### Changed
 
 - 动作输出头与 ABS reset 投影改用原生 `nn.Linear`；显式调用这两层的 `reset_parameters()` 时改为标准随机初始化，分别替代原动作头的空操作与 reset 投影的清零。模块打印、TensorBoard／JIT 图中的类名随之变化，重新导出的 ONNX 诊断元数据及文件哈希可能变化；旧私有层类路径不再提供，外部依赖这些类的整模型 pickle 无法直接反序列化。
