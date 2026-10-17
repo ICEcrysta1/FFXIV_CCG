@@ -23,6 +23,7 @@ public sealed class JobSimulator
     private static readonly IReadOnlySet<TimelineEventKind> InstanceHandlers = new HashSet<TimelineEventKind>
     {
         TimelineEventKind.ActionAccepted, TimelineEventKind.CastCompleted, TimelineEventKind.ActionEffect,
+        TimelineEventKind.PlayerDeath,
     };
     private StateOutputRouter? _outputRouter;
     internal StateOutputRouter OutputRouter => _outputRouter ??= _machine.CreateOutputRouter();
@@ -165,7 +166,7 @@ public sealed class JobSimulator
 
     public double? GetNextScheduledEventTime() => _timeline.GetNextScheduledEventTime();
 
-    /// <summary>同刻事实全部校验、全部入队后再推进，效果不能读取半更新的场景。</summary>
+    /// <summary>同刻事实全部校验、全部入队后再推进；死亡标记在旧效果结算后重置。</summary>
     public ExternalEventResult ApplyExternalEvents(IReadOnlyList<ExternalCombatEvent> externalEvents)
     {
         ArgumentNullException.ThrowIfNull(externalEvents);
@@ -186,12 +187,17 @@ public sealed class JobSimulator
                 throw new ArgumentException("external event duration must be finite", nameof(externalEvents));
             _machine.SystemMachine.ValidateExternalEvent(item);
         }
-        // 保留调用方的稳定顺序，同刻全部 ExternalScene 均先于动作效果。
+        // 场景事实先于动作效果；死亡标记晚于旧效果和周期结算、早于新的动作接受。
         foreach (var item in batch)
-            _timeline.Schedule(new TimelineEvent(timestamp, TimelineEventPriority.ExternalScene,
-                TimelineEventKind.SceneChanged, item.Kind, Payload: item));
+        {
+            var death = item.Kind == ExternalCombatEventKinds.PlayerDeath;
+            _timeline.Schedule(new TimelineEvent(timestamp,
+                death ? TimelineEventPriority.PlayerReset : TimelineEventPriority.ExternalScene,
+                death ? TimelineEventKind.PlayerDeath : TimelineEventKind.SceneChanged,
+                item.Kind, Payload: item));
+        }
         _timeline.AdvanceClockTo(timestamp);
-        return new(true, "", timestamp);
+        return new(true, "", timestamp, kinds.Contains(ExternalCombatEventKinds.PlayerDeath) ? "<dead/>" : null);
     }
 
     public SimulationSnapshot CreateSnapshot() => _timeline.CreateSnapshot();
@@ -272,6 +278,24 @@ public sealed class JobSimulator
         timeline.RegisterHandler(TimelineEventKind.ActionAccepted, HandleActionAccepted);
         timeline.RegisterHandler(TimelineEventKind.CastCompleted, HandleCastCompleted);
         timeline.RegisterHandler(TimelineEventKind.ActionEffect, HandleActionEffect);
+        timeline.RegisterHandler(TimelineEventKind.PlayerDeath, HandleDeath);
+    }
+
+    private TimelineMutation HandleDeath(TimelineEvent item, CombatState state)
+    {
+        // 只取消这条队列里尚未完成的旧动作，已结算效果、DoT 和冷却均保留。
+        var cancelled = _timeline.PendingEvents
+            .Where(pending => pending.Kind is TimelineEventKind.ActionAccepted
+                or TimelineEventKind.ActionEffect or TimelineEventKind.CastCompleted)
+            .Select(pending => pending.Sequence).ToArray();
+        return new TimelineMutation(ApplyState: target =>
+        {
+            _machine.ApplyDeath(target);
+            target.CastEndsAt = target.Time;
+            target.WeaveEndsAt = target.Time;
+            target.OgcdsWeaved = 0;
+            target.LastDecisionId = null;
+        }, SequencesToCancel: cancelled);
     }
 
     private TimelineMutation HandleActionAccepted(TimelineEvent item, CombatState state)

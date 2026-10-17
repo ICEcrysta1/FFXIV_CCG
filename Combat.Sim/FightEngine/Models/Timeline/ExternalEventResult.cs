@@ -5,8 +5,9 @@
 
 namespace Combat.Sim.Models.Timeline;
 
-/// <summary>外部战斗事实提交结果。</summary>
+/// <summary>外部战斗事实提交结果；死亡重置成功时返回独立标记，不作为技能或模型向量。</summary>
 public sealed record ExternalEventResult(
     bool Accepted,
     string Reason,
-    double Timestamp);
+    double Timestamp,
+    string? Token = null);

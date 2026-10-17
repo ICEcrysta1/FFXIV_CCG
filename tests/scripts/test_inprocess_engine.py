@@ -216,3 +216,34 @@ def test_external_fact_batch_is_atomic_and_accepts_single_element(require_engine
             {"timestamp": 1.0, "event_kind": "movement_changed", "value": False},
         ]).accepted
         assert backend.validate_at(1.0, "fire_iii").legal
+
+
+def test_death_returns_special_token_without_changing_model_inputs(require_engine):
+    with InProcessEngine("black_mage", capacity=1) as engine, engine.create_backend(max_history=None) as backend:
+        ordinary = backend.apply_external_events([
+            {"timestamp": 0.0, "event_kind": "target_count_changed", "target_count": 1},
+        ])
+        assert ordinary.token is None
+        assert backend.submit_action(0.0, "fire_iii").accepted
+        assert backend.submit_action(4.0, "high_thunder").accepted
+
+        death = backend.apply_external_events([
+            {"timestamp": 6.0, "event_kind": "player_death"},
+        ])
+
+        assert death.accepted
+        assert death.token == "<dead/>"
+        context = backend.observe_at(6.0, format="vector", next_observation_timestamp=6.0).context
+        current = context["current_state_context"]
+        token = current["tokens"][0]
+        assert sum(len(values) for values in token.values()) == 132
+        assert len(context["action_keys"]) == 25
+        assert [row["skill_key"] for row in context["skill_history_context"]] == ["fire_iii", "high_thunder"]
+        fields = {
+            group: dict(zip(current[f"{group}_feature_keys"], values, strict=True))
+            for group, values in token.items()
+        }
+        assert fields["player_state"]["request_state.mp"] == 0
+        for group in ("buff_state", "resource_state"):
+            assert all(value == 0 for key, value in fields[group].items() if key.startswith("request_state."))
+        assert fields["target_buff_state"]["request_state.target.high_thunder.active"] == 1

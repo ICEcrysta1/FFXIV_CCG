@@ -20,6 +20,7 @@ public enum TimelineEventKind
     JobTimerExpired,
     SceneChanged,
     DecisionBoundary,
+    PlayerDeath,
 }
 
 /// <summary>
@@ -32,6 +33,7 @@ public enum TimelineEventPriority
     ConfirmedActionEffect = 20,
     PeriodicSettlement = 30,
     ExpirationAndCooldown = 40,
+    PlayerReset = 45,
     ActionAccepted = 50,
     DecisionBoundary = 50,
 }

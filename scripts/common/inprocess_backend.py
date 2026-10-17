@@ -314,6 +314,7 @@ class InProcessBackend:
             event_kind=kinds[0] if len(kinds) == 1 else "scene_batch",
             timestamp=float(result.Timestamp),
             next_scheduled_event_time=self._optional(response.NextScheduledEventTime),
+            token=None if result.Token is None else str(result.Token),
         )
 
     def observe_at(

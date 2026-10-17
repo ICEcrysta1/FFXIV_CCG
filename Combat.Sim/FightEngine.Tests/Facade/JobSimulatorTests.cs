@@ -1,5 +1,6 @@
 using Combat.Sim.Facade;
 using Combat.Sim.Models.Timeline;
+using Combat.Sim.System.Timeline;
 
 namespace FightEngine.Tests.Facade;
 
@@ -384,6 +385,260 @@ public sealed class JobSimulatorTests
         Assert.Throws<ArgumentException>(() => simulator.ApplyExternalEvents(new ExternalCombatEvent[] {
             new ExternalCombatEvent(5.0, "unsupported") }));
         Assert.Equal(0.0, simulator.Time, 9);
+    }
+
+    [Fact]
+    public void 死亡标记按系统和黑魔职责清理且保留战斗进度()
+    {
+        var machine = CombatStateMachine.FromDefaultConfig(FindRepoRoot(), "black_mage");
+        var simulator = new JobSimulator(machine);
+        Assert.True(simulator.SubmitAction(0, "potion").Accepted);
+        Assert.Null(simulator.ApplyExternalEvents(new[]
+        {
+            new ExternalCombatEvent(0, ExternalCombatEventKinds.TargetCountChanged, TargetCount: 2),
+        }).Token);
+        var snapshot = simulator.CreateSnapshot();
+        var initial = snapshot.State;
+        initial.Mp = 1234;
+        initial.GcdRemaining = 1.2;
+        initial.WeaveWindowRemaining = 1;
+        initial.OgcdsWeaved = 2;
+        initial.IsMoving = true;
+        initial.NextDowntimeEta = 20;
+        initial.FightRemaining = 500;
+        initial.CumulativePotency = 4321;
+        initial.CumulativeDotPotency = 123;
+        machine.SystemMachine.BuffState.GrantRegisteredStatus(initial, "raid_buff_window");
+        foreach (var key in machine.JobMachine.State.Buffs.Definitions.Keys)
+            machine.JobMachine.State.Buffs.GrantRegisteredStatus(initial, key);
+        foreach (var (key, definition) in machine.JobMachine.State.Resources.JobResourceDefinitions)
+            initial.Job.SetResource(key, definition.ResourceType switch
+            {
+                "bool" => (object)true,
+                "float" => 29.0,
+                _ => 1,
+            });
+        initial.Job.TimelineDeadlines["black_mage.polyglot"] = 30;
+        machine.SystemMachine.GrantRegisteredTargetDot(initial, "high_thunder", 9, 50);
+        simulator.RestoreSnapshot(snapshot);
+
+        var result = simulator.ApplyExternalEvents(new[]
+        {
+            new ExternalCombatEvent(0, ExternalCombatEventKinds.PlayerDeath),
+        });
+
+        Assert.True(result.Accepted);
+        Assert.Equal("<dead/>", result.Token);
+        var state = simulator.GetState();
+        Assert.Equal(0, state.Mp);
+        Assert.Equal(10000, state.MaxMp);
+        Assert.Empty(state.Statuses);
+        Assert.Empty(state.Job.Statuses);
+        Assert.Empty(state.Job.TimelineDeadlines);
+        Assert.Equal(9, state.Job.Resources.Count);
+        foreach (var (key, definition) in machine.JobMachine.State.Resources.JobResourceDefinitions)
+        {
+            if (definition.ResourceType == "bool") Assert.False(Assert.IsType<bool>(state.Job.Resources[key]));
+            else Assert.Equal(0, Convert.ToDouble(state.Job.Resources[key]));
+        }
+        Assert.Equal(1.2, state.GcdRemaining);
+        Assert.Equal(0, state.WeaveWindowRemaining);
+        Assert.Equal(0, state.OgcdsWeaved);
+        Assert.Equal(270, state.Cooldowns["potion"].RechargeTimers.Single());
+        Assert.Equal(9, state.Dots["high_thunder"].Remaining);
+        Assert.Equal("potion", Assert.Single(state.History).SkillKey);
+        Assert.Equal(4321, state.CumulativePotency);
+        Assert.Equal(123, state.CumulativeDotPotency);
+        Assert.True(state.IsMoving);
+        Assert.Equal(2, state.TargetCount);
+        Assert.Equal(20, state.NextDowntimeEta);
+        Assert.Equal(500, state.FightRemaining);
+    }
+
+    [Fact]
+    public void 同刻回蓝通晓和DoT先结算且死亡后公共周期继续()
+    {
+        var machine = CombatStateMachine.FromDefaultConfig(FindRepoRoot(), "black_mage");
+        var initial = machine.InitialState();
+        initial.Mp = 1000;
+        initial.Job.SetResource("umbral_ice", 3);
+        initial.Job.TimelineDeadlines["black_mage.polyglot"] = 3;
+        machine.JobMachine.State.Buffs.GrantRegisteredStatus(initial, "lucid_dreaming");
+        machine.SystemMachine.GrantRegisteredTargetDot(initial, "high_thunder", 9, 50);
+        var simulator = new JobSimulator(machine, initial);
+
+        simulator.ApplyExternalEvents(new[]
+        {
+            new ExternalCombatEvent(3, ExternalCombatEventKinds.PlayerDeath),
+        });
+
+        var state = simulator.GetState();
+        Assert.Equal(0, state.Mp);
+        Assert.Equal(3, state.NaturalMpLastTickAt);
+        Assert.Equal(0, state.Job.GetResource("polyglot"));
+        Assert.Empty(state.Job.TimelineDeadlines);
+        Assert.Equal(50, state.CumulativeDotPotency);
+        state = simulator.AdvanceTo(6);
+        Assert.Equal(200, state.Mp);
+        Assert.Equal(100, state.CumulativeDotPotency);
+        Assert.True(state.Dots.ContainsKey("high_thunder"));
+        state = simulator.AdvanceTo(33);
+        Assert.Equal(2000, state.Mp);
+        Assert.Equal(150, state.CumulativeDotPotency);
+        Assert.Empty(state.Dots);
+        Assert.Equal(0, state.Job.GetResource("polyglot"));
+        Assert.Empty(state.Job.TimelineDeadlines);
+    }
+
+    [Fact]
+    public void 死亡后近epsilon的旧通晓待结算不会重新生成量谱()
+    {
+        var machine = CombatStateMachine.FromDefaultConfig(FindRepoRoot(), "black_mage");
+        var initial = machine.InitialState();
+        initial.Job.SetResource("umbral_ice", 3);
+        initial.Job.TimelineDeadlines["black_mage.polyglot"] = 3 + CombatTimelineRuntime.TimeEpsilon / 2;
+        var simulator = new JobSimulator(machine, initial);
+
+        simulator.ApplyExternalEvents(new[]
+        {
+            new ExternalCombatEvent(3, ExternalCombatEventKinds.PlayerDeath),
+        });
+        var state = simulator.AdvanceTo(3 + CombatTimelineRuntime.TimeEpsilon * 2);
+
+        Assert.Equal(0, state.Job.GetResource("polyglot"));
+        Assert.Empty(state.Job.TimelineDeadlines);
+        Assert.DoesNotContain(simulator.CreateSnapshot().PendingEvents.Concat(simulator.CreateSnapshot().PendingSettlements),
+            item => item.Kind == TimelineEventKind.JobPeriodicTick);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void 死亡取消未结算读条与排队动作且保留Gcd(bool queued)
+    {
+        var simulator = new JobSimulator(CombatStateMachine.FromDefaultConfig(FindRepoRoot(), "black_mage"));
+        Assert.True(simulator.SubmitAction(0, "fire_iii", actualCastSeconds: 2.8).Accepted);
+        if (queued) Assert.True(simulator.SubmitAction(2.4, "blizzard_iii").Queued);
+        var deathAt = queued ? 2.5 : 1.0;
+        var gcdReadyAt = simulator.GetState().GcdReadyAt;
+
+        simulator.ApplyExternalEvents(new[]
+        {
+            new ExternalCombatEvent(deathAt, ExternalCombatEventKinds.PlayerDeath),
+        });
+
+        var state = simulator.GetState();
+        Assert.Equal(gcdReadyAt, state.GcdReadyAt);
+        Assert.Equal(0, state.CastRemaining);
+        Assert.Equal(0, state.WeaveWindowRemaining);
+        Assert.False(simulator.HasQueuedAction());
+        var snapshot = simulator.CreateSnapshot();
+        Assert.DoesNotContain(snapshot.PendingEvents.Concat(snapshot.PendingSettlements),
+            item => item.Kind is TimelineEventKind.ActionAccepted or TimelineEventKind.ActionEffect or TimelineEventKind.CastCompleted);
+        state = simulator.AdvanceTo(10);
+        Assert.Equal(queued ? 1 : 0, state.History.Count);
+        Assert.Equal(0, state.Job.GetResource("astral_fire"));
+        Assert.Equal(0, state.Job.GetResource("umbral_ice"));
+    }
+
+    [Fact]
+    public void 死亡同刻旧技能先结算而返回后提交的新技能正常生效()
+    {
+        var simulator = new JobSimulator(CombatStateMachine.FromDefaultConfig(FindRepoRoot(), "black_mage"));
+        var action = simulator.SubmitAction(0, "fire_iii", actualCastSeconds: 2.8);
+        var effectAt = action.EffectTimestamp!.Value;
+
+        simulator.ApplyExternalEvents(new[]
+        {
+            new ExternalCombatEvent(effectAt, ExternalCombatEventKinds.PlayerDeath),
+        });
+
+        var state = simulator.GetState();
+        Assert.Equal("fire_iii", Assert.Single(state.History).SkillKey);
+        Assert.True(state.CumulativePotency > 0);
+        Assert.Equal(0, state.Mp);
+        Assert.Equal(0, state.Job.GetResource("astral_fire"));
+        Assert.True(simulator.SubmitAction(effectAt, "potion").Accepted);
+        state = simulator.AdvanceTo(4);
+        Assert.True(state.HasStatus("burst_potion"));
+        Assert.Equal(new[] { "fire_iii", "potion" }, state.History.Select(item => item.SkillKey));
+    }
+
+    [Fact]
+    public void 死亡取消仅影响当前分支且快照恢复保留各自事件()
+    {
+        var machine = CombatStateMachine.FromDefaultConfig(FindRepoRoot(), "black_mage");
+        var simulator = new JobSimulator(machine);
+        Assert.True(simulator.SubmitAction(0, "fire_iii", actualCastSeconds: 2.8).Accepted);
+        var beforeDeath = simulator.CreateSnapshot();
+        var branch = simulator.Fork();
+        simulator.ApplyExternalEvents(new[]
+        {
+            new ExternalCombatEvent(1, ExternalCombatEventKinds.PlayerDeath),
+        });
+        var restored = new JobSimulator(machine);
+        restored.RestoreSnapshot(simulator.CreateSnapshot());
+
+        Assert.Empty(simulator.AdvanceTo(4).History);
+        Assert.Empty(restored.AdvanceTo(4).History);
+        Assert.Equal("fire_iii", Assert.Single(branch.AdvanceTo(4).History).SkillKey);
+        Assert.Equal(3, branch.GetState().Job.GetResource("astral_fire"));
+        simulator.RestoreSnapshot(beforeDeath);
+        Assert.Equal("fire_iii", Assert.Single(simulator.AdvanceTo(4).History).SkillKey);
+        Assert.Equal(3, simulator.GetState().Job.GetResource("astral_fire"));
+    }
+
+    [Fact]
+    public void 机工死亡由职业自行保留量谱和状态()
+    {
+        var machine = CombatStateMachine.FromDefaultConfig(FindRepoRoot(), "machinist");
+        var initial = machine.InitialState();
+        initial.Job.SetResource("heat", 80);
+        initial.Job.SetResource("battery", 60);
+        initial.Job.SetResource("wasted_heat", 12);
+        machine.JobMachine.State.Buffs.GrantRegisteredStatus(initial, "reassemble");
+        var simulator = new JobSimulator(machine, initial);
+
+        var result = simulator.ApplyExternalEvents(new[]
+        {
+            new ExternalCombatEvent(0, ExternalCombatEventKinds.PlayerDeath),
+        });
+
+        var state = simulator.GetState();
+        Assert.Equal("<dead/>", result.Token);
+        Assert.Equal(0, state.Mp);
+        Assert.Equal(80, state.Job.GetResource("heat"));
+        Assert.Equal(60, state.Job.GetResource("battery"));
+        Assert.Equal(12, state.Job.GetResource("wasted_heat"));
+        Assert.True(state.Job.HasStatus("reassemble"));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public void 非法死亡批次先完整校验且不清状态或取消动作(int invalidKind)
+    {
+        var simulator = new JobSimulator(CombatStateMachine.FromDefaultConfig(FindRepoRoot(), "black_mage"));
+        simulator.SubmitAction(0, "fire_iii", actualCastSeconds: 2.8);
+        var before = global::System.Text.Json.JsonSerializer.Serialize(simulator.CreateSnapshot());
+        var invalid = invalidKind switch
+        {
+            0 => new ExternalCombatEvent(1, ExternalCombatEventKinds.PlayerDeath, true),
+            1 => new ExternalCombatEvent(1, ExternalCombatEventKinds.TargetCountChanged, TargetCount: -1),
+            2 => new ExternalCombatEvent(2, ExternalCombatEventKinds.MovementChanged, true),
+            _ => new ExternalCombatEvent(1, ExternalCombatEventKinds.PlayerDeath),
+        };
+
+        Assert.Throws<ArgumentException>(() => simulator.ApplyExternalEvents(new[]
+        {
+            invalidKind == 0
+                ? new ExternalCombatEvent(1, ExternalCombatEventKinds.MovementChanged, true)
+                : new ExternalCombatEvent(1, ExternalCombatEventKinds.PlayerDeath),
+            invalid,
+        }));
+        Assert.Equal(before, global::System.Text.Json.JsonSerializer.Serialize(simulator.CreateSnapshot()));
     }
 
     private static string FindRepoRoot()

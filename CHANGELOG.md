@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- 状态机支持外部 `player_death` 死亡重置标记：系统清零 MP 和公共 Buff，黑魔清空职业 Buff、量谱与计时截止时刻；取消尚未结算的旧读条及排队动作，保留 DoT、GCD、技能冷却和历史。同刻旧效果及周期结算先完成，再执行重置；机工暂未实现职业死亡清理。
+- 死亡事件成功提交后，C# `ExternalEventResult.Token`／Python `result.token` 返回独立的 `<dead/>`，普通外部事实返回空值。标记不占用技能 ID；转换器及模型历史尚未接入，现有黑魔 132 维状态和 25 个可选动作保持不变。
+
 ### Breaking Changes
 
 - **FightEngine 状态职责拆分不保留旧版公开接口兼容层。** 依赖旧版 `FightEngine.dll` 的宿主、自定义职业和桥接程序集需同步迁移并重新编译，Python.NET 脚本需更新旧成员访问。项目 Python 调用方升级后执行 `dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj`，同步更新核心与桥接 DLL，并重启已加载旧 DLL 的进程。
