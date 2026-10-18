@@ -132,4 +132,18 @@ public class PlayerStateRuntimeTests
 
         Assert.True(result.Ok);
     }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void 死亡限制不因跳过时间锁而绕过(bool includeTemporalLocks)
+    {
+        var state = new CombatState { IsDead = true };
+        var result = CreateMachine().ValidateCommonAction(
+            state, Skill("skill"), isInstant: true, hasAvailableCharge: true,
+            includeTemporalLocks: includeTemporalLocks);
+
+        Assert.False(result.Ok);
+        Assert.Equal("player_dead", result.Reason);
+    }
 }

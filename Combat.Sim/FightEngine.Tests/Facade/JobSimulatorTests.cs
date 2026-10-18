@@ -669,8 +669,10 @@ public sealed class JobSimulatorTests
         Assert.Equal(0, state.Job.GetResource("umbral_ice"));
     }
 
-    [Fact]
-    public void 死亡同刻旧技能先结算而返回后提交的新技能正常生效()
+    [Theory]
+    [InlineData(ExternalCombatEventKinds.PlayerRevived)]
+    [InlineData(ExternalCombatEventKinds.PlayerRevivedLb3)]
+    public void 死亡同刻旧技能先结算且复活前拒绝新动作(string revivalKind)
     {
         var simulator = new JobSimulator(CombatStateMachine.FromDefaultConfig(FindRepoRoot(), "black_mage"));
         var action = simulator.SubmitAction(0, "fire_iii", actualCastSeconds: 2.8);
@@ -686,6 +688,21 @@ public sealed class JobSimulatorTests
         Assert.True(state.CumulativePotency > 0);
         Assert.Equal(0, state.Mp);
         Assert.Equal(0, state.Job.GetResource("astral_fire"));
+        var validation = simulator.ValidateActionAt(effectAt, "potion");
+        Assert.False(validation.Ok);
+        Assert.Equal("player_dead", validation.Reason);
+        Assert.Empty(simulator.AvailableActionKeysAt(effectAt));
+        var rejected = simulator.SubmitAction(effectAt, "potion");
+        Assert.False(rejected.Accepted);
+        Assert.False(rejected.Queued);
+        Assert.Equal("player_dead", rejected.Reason);
+        Assert.False(simulator.HasQueuedAction());
+        Assert.Equal(StateJson(state), StateJson(simulator.GetState()));
+        Assert.Equal("fire_iii", Assert.Single(simulator.GetState().History).SkillKey);
+
+        simulator.ApplyExternalEvents(new[] { new ExternalCombatEvent(effectAt, revivalKind) });
+        Assert.True(simulator.ValidateActionAt(effectAt, "potion").Ok);
+        Assert.Contains("potion", simulator.AvailableActionKeysAt(effectAt));
         Assert.True(simulator.SubmitAction(effectAt, "potion").Accepted);
         state = simulator.AdvanceTo(4);
         Assert.True(state.HasStatus("burst_potion"));
