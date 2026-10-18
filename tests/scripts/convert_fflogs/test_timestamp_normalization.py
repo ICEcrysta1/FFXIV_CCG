@@ -381,3 +381,117 @@ def test_same_timestamp_death_precedes_revival_and_each_later_death_can_revive_o
         {"timestamp": 25.0, "event_kind": "player_death"},
         {"timestamp": 30.0, "event_kind": "player_revived"},
     ]
+
+
+@pytest.mark.parametrize("ability_id", [208, 4247, 4248, 24859])
+def test_completed_healer_lb3_revives_at_target_protection_without_mp_override(ability_id):
+    """四职业完成 LB3 后按玩家实际保护标记复活，不采用任何 MP 快照判定来源。"""
+    payload = _lifecycle_payload([
+        {"type": "death", "targetID": 10, "timestamp": 110000},
+        {"type": "applybuff", "sourceID": -1, "targetID": 10, "timestamp": 115000,
+         "abilityGameID": 1000418, "duration": 6000, "targetResources": {"mp": 1800}},
+        {"type": "cast", "sourceID": 11, "targetID": -1, "timestamp": 114000,
+         "abilityGameID": ability_id, "sourceResources": {"mp": 9000}},
+    ])
+
+    assert payload["external_events"] == [
+        {"timestamp": 10.0, "event_kind": "player_death"},
+        {"timestamp": 15.0, "event_kind": "player_revived_lb3"},
+    ]
+
+
+@pytest.mark.parametrize(("event_type", "duration"), [
+    ("cast", 5000), ("cast", None), ("cast", 7000), ("begincast", 6000),
+])
+def test_lb3_revival_requires_completed_cast_and_known_target_protection(event_type, duration):
+    """同场 LB3 不改变普通保护；未知时长和未完成读条也不能证明 LB3 复活。"""
+    protection = {"type": "applybuff", "targetID": 10, "timestamp": 115000,
+                  "abilityGameID": 1000418, "targetResources": {"mp": 1800}}
+    if duration is not None:
+        protection["duration"] = duration
+    payload = _lifecycle_payload([
+        {"type": "death", "targetID": 10, "timestamp": 110000},
+        {"type": event_type, "sourceID": 11, "timestamp": 114000, "abilityGameID": 208},
+        protection,
+    ])
+
+    assert payload["external_events"] == [
+        {"timestamp": 10.0, "event_kind": "player_death"},
+        {"timestamp": 15.0, "event_kind": "player_revived", "mp": 1800},
+    ]
+
+
+@pytest.mark.parametrize(("cast_ms", "expected_kind"), [
+    (105000, "player_revived"), (110000, "player_revived_lb3"),
+    (115000, "player_revived_lb3"), (117000, "player_revived"),
+])
+def test_lb3_cast_must_be_between_current_death_and_protection(cast_ms, expected_kind):
+    payload = _lifecycle_payload([
+        {"type": "death", "targetID": 10, "timestamp": 110000},
+        {"type": "cast", "sourceID": 11, "timestamp": cast_ms, "abilityGameID": 208},
+        {"type": "applybuff", "targetID": 10, "timestamp": 115000,
+         "abilityGameID": 1000418, "duration": 6000},
+    ])
+
+    assert payload["external_events"] == [
+        {"timestamp": 10.0, "event_kind": "player_death"},
+        {"timestamp": 15.0, "event_kind": expected_kind},
+    ]
+
+
+def test_other_player_lb3_protection_does_not_upgrade_own_activity_fallback():
+    payload = _lifecycle_payload([
+        {"type": "death", "targetID": 10, "timestamp": 110000},
+        {"type": "cast", "sourceID": 11, "timestamp": 114000, "abilityGameID": 4247},
+        {"type": "applybuff", "targetID": 20, "timestamp": 115000,
+         "abilityGameID": 1000418, "duration": 6000},
+        {"type": "cast", "sourceID": 10, "timestamp": 120000,
+         "abilityGameID": 7561, "sourceResources": {"mp": 10000}},
+    ])
+
+    assert payload["external_events"] == [
+        {"timestamp": 10.0, "event_kind": "player_death"},
+        {"timestamp": 20.0, "event_kind": "player_revived", "mp": 10000},
+    ]
+
+
+def test_lb3_cast_does_not_cross_new_death_and_later_ordinary_revive_stays_ordinary():
+    payload = _lifecycle_payload([
+        {"type": "death", "targetID": 10, "timestamp": 110000},
+        {"type": "cast", "sourceID": 11, "timestamp": 114000, "abilityGameID": 4248},
+        {"type": "applybuff", "targetID": 10, "timestamp": 115000,
+         "abilityGameID": 1000418, "duration": 6000},
+        {"type": "death", "targetID": 10, "timestamp": 120000},
+        {"type": "applybuff", "targetID": 10, "timestamp": 125000,
+         "abilityGameID": 1000418, "duration": 6000, "targetResources": {"mp": 1800}},
+        {"type": "death", "targetID": 10, "timestamp": 130000},
+        {"type": "applybuff", "targetID": 10, "timestamp": 135000,
+         "abilityGameID": 1000418, "duration": 5000},
+    ])
+
+    assert payload["external_events"] == [
+        {"timestamp": 10.0, "event_kind": "player_death"},
+        {"timestamp": 15.0, "event_kind": "player_revived_lb3"},
+        {"timestamp": 20.0, "event_kind": "player_death"},
+        {"timestamp": 25.0, "event_kind": "player_revived", "mp": 1800},
+        {"timestamp": 30.0, "event_kind": "player_death"},
+        {"timestamp": 35.0, "event_kind": "player_revived"},
+    ]
+
+
+def test_ordinary_invitation_and_weakness_refresh_do_not_hide_actual_lb3_revival():
+    payload = _lifecycle_payload([
+        {"type": "death", "targetID": 10, "timestamp": 110000},
+        {"type": "applybuff", "sourceID": 12, "targetID": 10,
+         "timestamp": 112000, "abilityGameID": 1000148},
+        {"type": "cast", "sourceID": 11, "timestamp": 114000, "abilityGameID": 24859},
+        {"type": "refreshdebuff", "targetID": 10, "timestamp": 115000,
+         "abilityGameID": 1000043},
+        {"type": "applybuff", "targetID": 10, "timestamp": 115000,
+         "abilityGameID": 1000418, "duration": 6000},
+    ])
+
+    assert payload["external_events"] == [
+        {"timestamp": 10.0, "event_kind": "player_death"},
+        {"timestamp": 15.0, "event_kind": "player_revived_lb3"},
+    ]

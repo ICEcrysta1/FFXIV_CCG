@@ -156,8 +156,9 @@ def test_build_training_samples_rejects_non_normalized_request_origin(
     "death_time", [0.0, 5.0, 5.123456789, 6.0],
     ids=["initial", "cancel_pending_effect", "fractional_timestamp", "keep_completed_history"],
 )
+@pytest.mark.parametrize("revival_kind", ["player_revived", "player_revived_lb3"])
 def test_death_markers_and_reset_match_between_public_and_native_replay(
-    cs_backend, cs_skill_book, death_time,
+    cs_backend, cs_skill_book, death_time, revival_kind,
 ):
     """统一死亡输出保留原始时间和历史位置；两条回放路径的完整载荷保持一致。"""
     actions = []
@@ -173,7 +174,7 @@ def test_death_markers_and_reset_match_between_public_and_native_replay(
     fight = _payload(actions, duration=20.0)
     fight["external_events"] = [
         {"timestamp": death_time, "event_kind": "player_death"},
-        {"timestamp": 6.0 if death_time else 0.0, "event_kind": "player_revived"},
+        {"timestamp": 6.0 if death_time else 0.0, "event_kind": revival_kind},
     ]
     fight["scene_context"] = build_test_scene_context(targetable_tokens=[
         targetable_window_token(0.0, 5.0, targetable=True, segment_kind="combat"),
@@ -205,12 +206,14 @@ def test_death_markers_and_reset_match_between_public_and_native_replay(
     {"timestamp": 0.0, "event_kind": "player_revived", "mp": True},
     {"timestamp": 0.0, "event_kind": "player_revived", "mp": 2.5},
     {"timestamp": float("nan"), "event_kind": "player_revived"},
+    {"timestamp": 0.0, "event_kind": "player_revived_lb3", "mp": 0},
+    {"timestamp": 0.0, "event_kind": "player_revived_lb3", "mp": 2000},
 ])
 def test_player_lifecycle_facts_reject_invalid_payload(cs_backend, cs_skill_book, event):
     fight = _payload([{"request_time_offset": 0.0, "action_key": "lucid_dreaming"}])
     fight["external_events"] = [event]
     cs_backend.init(actual_base_gcd=2.46, fight_remaining=12.0)
-    with pytest.raises(ValueError, match="external player|only revival"):
+    with pytest.raises(ValueError, match="external player|revival events accept"):
         build_training_samples(cs_backend, cs_skill_book, fight)
 
 

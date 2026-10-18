@@ -175,7 +175,7 @@ def _replay_facts(scheduler, external_events: object, start: float) -> list[dict
                 or set(event) - {"timestamp", "event_kind", "mp"}):
             raise ValueError("external player events require timestamp, event_kind and optional revival mp")
         timestamp = event["timestamp"]
-        if (event["event_kind"] not in {"player_death", "player_revived"} or isinstance(timestamp, bool)
+        if (event["event_kind"] not in {"player_death", "player_revived", "player_revived_lb3"} or isinstance(timestamp, bool)
                 or not isinstance(timestamp, (int, float)) or not math.isfinite(timestamp) or timestamp < start):
             raise ValueError("external player events require a finite, non-past timestamp")
         if "mp" in event and (event["event_kind"] != "player_revived"

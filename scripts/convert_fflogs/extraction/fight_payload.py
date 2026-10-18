@@ -47,20 +47,23 @@ def _extract_lifecycle_events(fight_actions, raw_events, *, source_id, fight_sta
         action["raw_event_index"]: float(action.get("request_timestamp", action["timestamp"]))
         for action in fight_actions if action.get("raw_event_index") is not None
     }
-    protections, activities = [], []
+    protections, activities, lb3_casts = [], [], []
     for index, event in enumerate(raw_events):
         protection = (event.get("type") == "applybuff" and event.get("targetID") == source_id
                       and _get_ability_id(event) == 1000418)
         activity = event.get("type") in {"begincast", "cast"} and event.get("sourceID") == source_id
-        if not protection and not activity:
+        lb3_cast = event.get("type") == "cast" and _get_ability_id(event) in {208, 4247, 4248, 24859}
+        if not protection and not activity and not lb3_cast:
             continue
         timestamp = float(event["timestamp"]) / 1000.0
         if not fight_start <= timestamp <= fight_end:
             continue
         offset = _round_time(timestamp - fight_start)
+        if lb3_cast:
+            lb3_casts.append(offset)
         if protection:
             protections.append((offset, event))
-        else:
+        elif activity:
             request = _round_time(requests.get(index, timestamp) - fight_start)
             activities.append((request, offset, event))
 
@@ -70,9 +73,13 @@ def _extract_lifecycle_events(fight_actions, raw_events, *, source_id, fight_sta
         result.append({"timestamp": death, "event_kind": "player_death"})
         protection = min((item for item in protections if death <= item[0] < next_death),
                          key=lambda item: item[0], default=None)
+        revival_kind = "player_revived"
         if protection is not None:
             timestamp, event = protection
             observed_at, resources = timestamp, event.get("targetResources")
+            # LB3 的实际保护为 6000ms；同一死亡区间内还须有已完成的治疗 LB3。
+            if event.get("duration") == 6000 and any(death <= cast <= timestamp for cast in lb3_casts):
+                revival_kind = "player_revived_lb3"
         else:
             activity = min((item for item in activities
                             if death < item[0] < next_death and death < item[1] < next_death),
@@ -81,9 +88,9 @@ def _extract_lifecycle_events(fight_actions, raw_events, *, source_id, fight_sta
                 continue
             timestamp, observed_at, event = activity
             resources = event.get("sourceResources")
-        revival = {"timestamp": timestamp, "event_kind": "player_revived"}
+        revival = {"timestamp": timestamp, "event_kind": revival_kind}
         # 请求可能早于日志 cast；只采纳复活同刻的资源，不能把未来 MP 倒填到起读时刻。
-        if timestamp == observed_at and isinstance(resources, dict):
+        if revival_kind == "player_revived" and timestamp == observed_at and isinstance(resources, dict):
             observed_mp, maximum = resources.get("mp"), resources.get("maxMP", 10000)
             if type(observed_mp) is int and type(maximum) is int and 0 <= observed_mp <= maximum:
                 revival["mp"] = observed_mp

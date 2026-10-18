@@ -124,8 +124,9 @@ public sealed class SystemStateMachine
         {
             var external = (ExternalCombatEvent)item.Payload!;
             target.IsDead = false;
-            target.Mp = Math.Min(target.MaxMp,
-                external.Mp ?? (int)(target.MaxMp * _mpRecoveryConfig.RevivalRatio));
+            target.Mp = external.Kind == ExternalCombatEventKinds.PlayerRevivedLb3
+                ? target.MaxMp
+                : Math.Min(target.MaxMp, external.Mp ?? (int)(target.MaxMp * _mpRecoveryConfig.RevivalRatio));
         }));
     }
 
@@ -201,6 +202,11 @@ public sealed class SystemStateMachine
                 && external.TargetCount is null
                 && external.RemainingSeconds is null
                 && external.Mp is null or >= 0,
+            ExternalCombatEventKinds.PlayerRevivedLb3 =>
+                external.Value is null
+                && external.TargetCount is null
+                && external.RemainingSeconds is null
+                && external.Mp is null,
             _ => false,
         };
         if (!supported || (external.Mp is not null && external.Kind != ExternalCombatEventKinds.PlayerRevived))

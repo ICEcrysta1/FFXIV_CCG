@@ -14,6 +14,8 @@ public static class ExternalCombatEventKinds
     public const string TargetCountChanged = "target_count_changed";
     public const string PlayerDeath = "player_death";
     public const string PlayerRevived = "player_revived";
+    /// <summary>治疗 LB3 复活：系统恢复满 MP，不接受独立的 MP 覆盖。</summary>
+    public const string PlayerRevivedLb3 = "player_revived_lb3";
 }
 
 /// <summary>带绝对时间戳的战斗外部事实。</summary>

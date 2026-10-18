@@ -8,7 +8,7 @@ timing:
 mp_recovery:
   tick_interval_seconds: 3.0  # 公共自然回蓝 tick 间隔
   in_combat_amount: 200  # 战斗内每个自然回蓝 tick 恢复的 MP
-  revival_ratio: 0.2  # 无同刻 MP 观测时，复活恢复的 MP 占最大 MP 的比例
+  revival_ratio: 0.2  # 普通复活且无同刻 MP 观测时，恢复的 MP 占最大 MP 的比例
 
 potency:
   burst_potion_multiplier: 1.08  # 爆发药统一按 8% 伤害倍率折算

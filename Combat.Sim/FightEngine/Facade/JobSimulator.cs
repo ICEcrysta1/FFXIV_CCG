@@ -188,13 +188,16 @@ public sealed class JobSimulator
                 throw new ArgumentException("external event duration must be finite", nameof(externalEvents));
             _machine.SystemMachine.ValidateExternalEvent(item);
         }
+        if (kinds.Contains(ExternalCombatEventKinds.PlayerRevived)
+            && kinds.Contains(ExternalCombatEventKinds.PlayerRevivedLb3))
+            throw new ArgumentException("conflicting revival facts", nameof(externalEvents));
         // 场景事实先于动作效果；死亡标记晚于旧效果和周期结算、早于新的动作接受。
         foreach (var item in batch)
         {
             var kind = item.Kind switch
             {
                 ExternalCombatEventKinds.PlayerDeath => TimelineEventKind.PlayerDeath,
-                ExternalCombatEventKinds.PlayerRevived => TimelineEventKind.PlayerRevived,
+                ExternalCombatEventKinds.PlayerRevived or ExternalCombatEventKinds.PlayerRevivedLb3 => TimelineEventKind.PlayerRevived,
                 _ => TimelineEventKind.SceneChanged,
             };
             _timeline.Schedule(new TimelineEvent(timestamp,

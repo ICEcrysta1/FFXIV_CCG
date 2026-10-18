@@ -388,8 +388,10 @@ public sealed class JobSimulatorTests
         Assert.Equal(0.0, simulator.Time, 9);
     }
 
-    [Fact]
-    public void 死亡标记按系统和黑魔职责清理且保留战斗进度()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void 死亡及LB3复活按系统和黑魔职责处理且保留战斗进度(bool reviveWithLb3)
     {
         var machine = CombatStateMachine.FromDefaultConfig(FindRepoRoot(), "black_mage");
         var simulator = new JobSimulator(machine);
@@ -423,16 +425,18 @@ public sealed class JobSimulatorTests
         machine.SystemMachine.GrantRegisteredTargetDot(initial, "high_thunder", 9, 50);
         simulator.RestoreSnapshot(snapshot);
 
-        var result = simulator.ApplyExternalEvents(new[]
+        var events = new List<ExternalCombatEvent>
         {
             new ExternalCombatEvent(0, ExternalCombatEventKinds.PlayerDeath),
-        });
+        };
+        if (reviveWithLb3) events.Add(new ExternalCombatEvent(0, ExternalCombatEventKinds.PlayerRevivedLb3));
+        var result = simulator.ApplyExternalEvents(events);
 
         Assert.True(result.Accepted);
         Assert.Equal("<dead/>", result.Token);
         Assert.Equal(1L, result.HistoryCursor);
         var state = simulator.GetState();
-        Assert.Equal(0, state.Mp);
+        Assert.Equal(reviveWithLb3 ? state.MaxMp : 0, state.Mp);
         Assert.Equal(10000, state.MaxMp);
         Assert.Empty(state.Statuses);
         Assert.Empty(state.Job.Statuses);
@@ -530,6 +534,44 @@ public sealed class JobSimulatorTests
         Assert.Null(revived.Token);
         Assert.Equal(expectedMp, simulator.GetState().Mp);
         Assert.Equal(Math.Min(maxMp, expectedMp + 200), simulator.AdvanceTo(12).Mp);
+    }
+
+    [Fact]
+    public void LB3复活恢复完整最大MP且分支和快照互不影响()
+    {
+        var root = FindRepoRoot();
+        var project = ProjectConfigLoader.LoadProjectConfig(root, "black_mage");
+        project = project with
+        {
+            EngineResources = project.EngineResources with { MaxMp = 15000 },
+            System = project.System with
+            {
+                MpRecovery = project.System.MpRecovery with { RevivalRatio = 0 },
+            },
+        };
+        var machine = new CombatStateMachine(project, "black_mage", projectRoot: root);
+        var simulator = new JobSimulator(machine);
+        simulator.ApplyExternalEvents(new[] { new ExternalCombatEvent(1, ExternalCombatEventKinds.PlayerDeath) });
+        var deadSnapshot = simulator.CreateSnapshot();
+        var branch = simulator.Fork();
+        var restored = new JobSimulator(machine);
+        restored.RestoreSnapshot(deadSnapshot);
+
+        foreach (var revived in new[] { branch, restored })
+        {
+            var result = revived.ApplyExternalEvents(new[]
+            {
+                new ExternalCombatEvent(10, ExternalCombatEventKinds.PlayerRevivedLb3),
+            });
+            Assert.Null(result.Token);
+            Assert.Equal(15000, revived.GetState().Mp);
+            Assert.Equal(15000, revived.AdvanceTo(12).Mp);
+        }
+        Assert.Equal(StateJson(branch.GetState()), StateJson(restored.GetState()));
+        Assert.Equal(0, simulator.AdvanceTo(12).Mp);
+        simulator.RestoreSnapshot(deadSnapshot);
+        simulator.ApplyExternalEvents(new[] { new ExternalCombatEvent(10, ExternalCombatEventKinds.PlayerRevivedLb3) });
+        Assert.Equal(StateJson(branch.GetState()), StateJson(simulator.AdvanceTo(12)));
     }
 
     [Fact]
@@ -706,6 +748,10 @@ public sealed class JobSimulatorTests
     [InlineData(3)]
     [InlineData(4)]
     [InlineData(5)]
+    [InlineData(6)]
+    [InlineData(7)]
+    [InlineData(8)]
+    [InlineData(9)]
     public void 非法死亡批次先完整校验且不清状态或取消动作(int invalidKind)
     {
         var simulator = new JobSimulator(CombatStateMachine.FromDefaultConfig(FindRepoRoot(), "black_mage"));
@@ -718,14 +764,23 @@ public sealed class JobSimulatorTests
             2 => new ExternalCombatEvent(2, ExternalCombatEventKinds.MovementChanged, true),
             4 => new ExternalCombatEvent(1, ExternalCombatEventKinds.PlayerRevived, Mp: -1),
             5 => new ExternalCombatEvent(1, ExternalCombatEventKinds.PlayerDeath, Mp: 2000),
+            6 => new ExternalCombatEvent(1, ExternalCombatEventKinds.PlayerRevivedLb3, Mp: 0),
+            7 => new ExternalCombatEvent(1, ExternalCombatEventKinds.PlayerRevivedLb3, Mp: 2000),
+            8 => new ExternalCombatEvent(1, ExternalCombatEventKinds.PlayerRevivedLb3),
+            9 => new ExternalCombatEvent(1, ExternalCombatEventKinds.PlayerRevived),
+            _ => new ExternalCombatEvent(1, ExternalCombatEventKinds.PlayerDeath),
+        };
+        var first = invalidKind switch
+        {
+            0 => new ExternalCombatEvent(1, ExternalCombatEventKinds.MovementChanged, true),
+            8 => new ExternalCombatEvent(1, ExternalCombatEventKinds.PlayerRevived),
+            9 => new ExternalCombatEvent(1, ExternalCombatEventKinds.PlayerRevivedLb3),
             _ => new ExternalCombatEvent(1, ExternalCombatEventKinds.PlayerDeath),
         };
 
         Assert.Throws<ArgumentException>(() => simulator.ApplyExternalEvents(new[]
         {
-            invalidKind == 0
-                ? new ExternalCombatEvent(1, ExternalCombatEventKinds.MovementChanged, true)
-                : new ExternalCombatEvent(1, ExternalCombatEventKinds.PlayerDeath),
+            first,
             invalid,
         }));
         Assert.Equal(before, global::System.Text.Json.JsonSerializer.Serialize(simulator.CreateSnapshot()));
