@@ -740,6 +740,7 @@ def test_model_analysis_retries_after_compiling_missing_cache(monkeypatch, tmp_p
     result = analysis_common._load_analysis_dataset(
         source_path=source_path,
         cache_dir=cache_dir,
+        context_capacity=1024,
         max_history=240,
         history_reset_keep=8,
         cache_shard_size=768,
@@ -753,6 +754,7 @@ def test_model_analysis_retries_after_compiling_missing_cache(monkeypatch, tmp_p
     assert result is sentinel_dataset
     assert len(dataset_calls) == 2
     assert all(call[1]["max_history"] == 240 for call in dataset_calls)
+    assert all(call[1]["context_capacity"] == 1024 for call in dataset_calls)
     assert all(call[1]["expected_action_space"] == action_space for call in dataset_calls)
     assert compiled_calls == [
         {

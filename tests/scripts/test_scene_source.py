@@ -193,6 +193,7 @@ def test_readonly_cache_consumers_do_not_load_conversion_yaml(scene_cache, monke
     assert select_prepared_validation_sources(max_files=1, data_dir=root, job_tag="black_mage",
                                              shard_size=768, **args) == [validation_source]
     dataset = TrainingDataset([source], expected_action_space=actions, normalizer=normalizer,
+                              context_capacity=1024,
                               job_tag="black_mage", compiled_cache_shard_size=768, **args)
     restored = object.__new__(TrainingDataset)
     restored.__setstate__(dataset.__getstate__())
@@ -428,6 +429,7 @@ def test_model_cache_prepare_reuses_saved_actions_and_training_rejects_drift(sce
     assert reader.action_is_gcd == saved_actions.action_is_gcd
     dataset = TrainingDataset(
         [source], normalizer=normalizer, expected_action_space=saved_actions,
+        context_capacity=1024,
         skill_vocab=SkillVocab.build_from_job_tag("black_mage"), job_tag="black_mage",
         int_dtype=torch.int32, float_dtype=torch.float32, cache_dir=cache_dir,
         compiled_cache_shard_size=768,

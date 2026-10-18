@@ -510,8 +510,6 @@ def test_causal_model_appends_one_current_state_token():
     assert output["logits"].shape == (1, 2)
     encoded = model.input_encoder(batch)
     assert "attention_mask" not in encoded
-    assert encoded["history_length"] == 2
-    assert encoded["history_token_length"] == 4
     assert encoded["prefix_length"] == 5
     assert encoded["current_state_position"] == 5
     assert encoded["tokens"].shape == (1, 6, 8)
@@ -546,7 +544,7 @@ def test_input_encoder_enforces_shared_context_capacity():
         vocab_size=4,
     ).eval()
     # 场景、状态、动作和当前状态共同使用 9 个 token 的预算。
-    assert model.input_encoder.max_token_count == 9
+    assert model.config.context_capacity == 9
     batch = {
         "history_skill_ids": torch.ones((1, 2), dtype=torch.int64),
         "history_skill_features": torch.zeros((1, 2, 1)),
@@ -969,7 +967,8 @@ def test_value_preference_loads_values_from_job_yaml():
 def test_training_collator_truncates_only_early_history_and_preserves_scene(tmp_path):
     torch = pytest.importorskip("torch")
     pt_path = _make_demo_pt(tmp_path, ["fire_iii", "fire_iv"], fight_id="history_demo")
-    sample = dict(_make_dataset([pt_path])[1])
+    dataset = _make_dataset([pt_path])
+    sample = dict(dataset[1])
     state_width = sample["history_bank_state_abs_values"].shape[-1]
     feature_width = sample["history_bank_skill_features"].shape[-1]
     sample["history_action_keys"] = ["old", "middle", "latest"]
@@ -983,6 +982,12 @@ def test_training_collator_truncates_only_early_history_and_preserves_scene(tmp_
     sample["history_bank_state_null_mask"] = torch.zeros((4, state_width), dtype=torch.bool)
     sample["history_bank_state_delta_values"] = torch.zeros((4, state_width))
     sample["history_bank_state_delta_reset_mask"] = torch.zeros((4, state_width), dtype=torch.bool)
+    request_time_index = dataset.state_layout.request_time_index
+    sample["_history_budget"] = {
+        **sample["_history_budget"],
+        "total_history": 3,
+        "request_times": tuple(sample["history_bank_state_abs_values"][1:, request_time_index].tolist()),
+    }
     scene_before = sample["scene_abs_values"].clone()
     decision_before = {
         key: sample[key].clone()

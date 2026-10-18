@@ -13,8 +13,8 @@ from common.game.config import load_project_config
 from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
 from common.policy.data import ActionSpace, DataSpec, SkillVocab
 from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION, TRAINING_SOURCE_FORMAT, TrainingSchema
-from training.data.dataset import TrainingDataset
 from common.policy.data.compiled_cache import CACHE_FORMAT, CompiledShardCache, load_compiled_cache
+from tests.training._common_fixtures import make_dataset, make_demo_pt
 
 
 @pytest.mark.parametrize("job_tag", ["black_mage", "machinist"])
@@ -45,11 +45,14 @@ def test_disabled_skill_remains_input_vocabulary_but_is_never_an_output_action()
     assert selected.key not in ActionSpace.from_config(modified, skill_vocab=vocab).action_keys
 
 
-def test_dataset_rejects_action_order_drift_instead_of_reordering():
-    dataset = TrainingDataset.__new__(TrainingDataset)
-    dataset._action_keys = ("a", "b")
+def test_dataset_rejects_action_order_drift_instead_of_reordering(tmp_path, monkeypatch):
+    source = make_demo_pt(tmp_path, ["fire_iii"], fight_id="action_order_drift")
+    dataset = make_dataset([source])
+    reader = dataset._readers[0]
+    sample = dict(reader.sample(0), action_keys=list(reversed(dataset.action_keys)))
+    monkeypatch.setattr(reader, "sample", lambda _index: sample)
     with pytest.raises(ValueError, match="action output order mismatch"):
-        dataset._prepare_sample({"action_keys": ["b", "a"]})
+        dataset[0]
 
 
 @pytest.mark.parametrize("rows", [(0, 2), (1, 1), (1,)])

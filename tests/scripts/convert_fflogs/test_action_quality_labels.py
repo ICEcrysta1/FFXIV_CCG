@@ -282,6 +282,7 @@ def test_compiled_pt_and_batch_keep_label_outside_model_inputs(
     assert "quality_label_weights" not in saved
     dataset = TrainingDataset(
         [source], job_tag="black_mage", normalizer=normalizer,
+        context_capacity=1024,
         expected_action_space=ActionSpace.from_job_tag("black_mage"),
         int_dtype=torch.int32, float_dtype=torch.float32,
         cache_dir=cache_root, compiled_cache_shard_size=1,

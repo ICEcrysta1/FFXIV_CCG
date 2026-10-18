@@ -80,9 +80,7 @@ def load_policy_contracts(
     input_contract = ModelInputContract.from_checkpoint(checkpoint)
     model_config = _required_mapping(checkpoint, "model_config")
     model_variant = _required_text(checkpoint, "model_variant")
-    checkpoint_context_capacity = int(model_config.get("context_capacity", -1))
-    if checkpoint_context_capacity < 1:
-        raise ValueError("checkpoint.model_config.context_capacity must be >= 1")
+    checkpoint_context_capacity = policy.model.config.context_capacity
     resolved_profile_path = (
         DeploymentProfile.default_path(data_spec.job_tag)
         if deployment_profile_path is None

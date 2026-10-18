@@ -142,7 +142,6 @@ def run_grpo_training(
         top_k=data_spec.num_actions,
         top_p=grpo.top_p,
         temperature=grpo.temperature,
-        max_history=config.model.max_history_actions,
         device=device_name,
         job_tag=data_spec.job_tag,
         model_variant=config.model_variant,

@@ -544,11 +544,11 @@ def build_fixed_ort_inputs(
     scene_mask = _require_tensor(batch, "scene_mask")
     if scene_mask.ndim != 2 or scene_mask.shape[0] != 1:
         raise ValueError("ONNX fixed inputs require a single scene_mask row")
-    # 已编码场景只删除无效行；保持有效顺序和时间差分，不再次执行场景编码。
-    scene_indices = scene_mask[0].nonzero(as_tuple=True)[0].to(device)
-    scene_length = int(scene_indices.numel())
+    # ContextEncoder 已删除单样本过期场景；固定右 padding 输入也原样复制。
+    scene_mask_cpu = scene_mask.detach().cpu()
+    scene_length = int(scene_mask.shape[1])
     history_length = int(_require_tensor(batch, "history_skill_ids").shape[1])
-    valid_tokens = _require_tensor(batch, "scene_mask").sum(dim=1) + 2 * _require_tensor(batch, "history_mask").sum(dim=1) + 1
+    valid_tokens = scene_mask_cpu.sum(dim=1) + 2 * _require_tensor(batch, "history_mask").detach().cpu().sum(dim=1) + 1
     if bool((valid_tokens > contract.capacity.context_capacity).any()):
         raise ValueError("live valid context exceeds ONNX context_capacity")
     if scene_length > contract.capacity.scene_capacity:
@@ -569,7 +569,6 @@ def build_fixed_ort_inputs(
         if field.sequence_group == "scene":
             if source.shape[field.sequence_axis] != scene_mask.shape[1]:
                 raise ValueError(f"live {spec.name} scene axis differs from scene_mask")
-            source = source.index_select(field.sequence_axis, scene_indices)
         if field.dtype == "float32" and source.dtype != torch.float32:
             raise ValueError(f"host encoded {spec.name} must remain float32 until deployment casting")
         target = torch.full(spec.shape, field.padding_value, dtype=onnx_torch_dtype(spec.dtype), device=device)

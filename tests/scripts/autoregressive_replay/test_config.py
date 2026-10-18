@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from types import SimpleNamespace
 
 import pytest
 import torch
 
 from common.policy.data import ActionSpace, DataSpec
+from common.policy.config import load_model_config
 from scripts.autoregressive_replay import config as replay_config_module
 from scripts.autoregressive_replay.config import load_replay_config
 from scripts.common.json_io import atomic_write_json
@@ -115,7 +116,7 @@ def test_replay_config_reads_env_overrides(monkeypatch, tmp_path, prepare_replay
     assert config.top_k == 6
     assert config.top_p == 0.9
     assert config.temperature == 0.8
-    assert config.max_history == 511
+    assert config.max_history is None
     assert config.device == "cpu"
     assert config.job_tag == "black_mage"
     assert config.initial_action == "fire_iii"
@@ -124,10 +125,10 @@ def test_replay_config_reads_env_overrides(monkeypatch, tmp_path, prepare_replay
     assert config.use_kv_cache is False
 
 
-def test_replay_capacity_and_action_limit_follow_checkpoint_instead_of_yaml(prepare_replay_files):
+def test_replay_capacity_follows_checkpoint_without_default_history_limit(prepare_replay_files):
     checkpoint, _scene = prepare_replay_files
     payload = torch.load(checkpoint, weights_only=False)
-    assert replay_config_module.load_model_config(
+    assert load_model_config(
         replay_config_module.resolve_policy_model_config_path(),
     ).context_capacity == 1024
     payload["model_config"]["context_capacity"] = 2048
@@ -136,10 +137,40 @@ def test_replay_capacity_and_action_limit_follow_checkpoint_instead_of_yaml(prep
     config = load_replay_config()
     assert config.model_context_capacity == 2048
     assert asdict(config)["model_context_capacity"] == 2048
-    assert config.max_history == 1023
+    assert config.max_history is None
     assert load_replay_config(max_history=900).max_history == 900
-    with pytest.raises(ValueError, match="exceeds model capacity"):
-        load_replay_config(max_history=1024)
+    assert load_replay_config(max_history=4096).max_history == 4096
+
+
+def test_replay_does_not_parse_unused_local_model_config(monkeypatch, prepare_replay_files):
+    from common.policy import config as policy_config_module
+
+    path = replay_config_module.resolve_policy_model_config_path()
+    local = replay_config_module.load_policy_config(path)
+    local["model"] = {"context_capacity": 1, "n_heads": 0}
+    monkeypatch.setattr(policy_config_module, "load_policy_config", lambda _path: local)
+    monkeypatch.setattr(replay_config_module, "load_policy_config", lambda _path: local)
+
+    config = load_replay_config()
+    assert config.model_context_capacity == 1024
+    assert config.max_history is None
+
+
+@pytest.mark.parametrize(("value", "message"), (
+    (-1, "max_history must be >= 0"),
+    (True, "max_history must be an integer"),
+    (1.5, "max_history must be an integer"),
+    ("8", "max_history must be an integer"),
+))
+def test_replay_config_validates_history_limit_at_construction(prepare_replay_files, value, message):
+    config = load_replay_config()
+    assert replace(config, max_history=None).max_history is None
+    assert replace(config, max_history=0).max_history == 0
+    assert replace(config, max_history=4096).max_history == 4096
+    with pytest.raises(ValueError, match=message):
+        replace(config, max_history=value)
+    with pytest.raises(ValueError, match=message):
+        load_replay_config(max_history=value)
 
 
 def test_replay_config_rejects_checkpoint_missing_model_config(prepare_replay_files):
@@ -187,7 +218,7 @@ def test_replay_config_routes_onnx_job_from_manifest(monkeypatch, tmp_path):
     package = tmp_path / "deployment"
     package.mkdir()
     (package / "manifest.json").write_text(
-        '{"contract":{"job_tag":"black_mage","capacity":{"context_capacity":1024}},"model":{"model_variant":"artzip"}}',
+        '{"contract":{"job_tag":"black_mage","capacity":{"context_capacity":2048}},"model":{"model_variant":"artzip"}}',
         encoding="utf-8",
     )
     scene = tmp_path / "scene.json.br"
@@ -205,7 +236,9 @@ def test_replay_config_routes_onnx_job_from_manifest(monkeypatch, tmp_path):
     assert config.onnx_package_path == package.resolve()
     assert config.checkpoint_path is None
     assert config.job_tag == "black_mage"
-    assert config.max_history == 511
+    assert config.model_context_capacity == 2048
+    assert config.max_history is None
+    assert load_replay_config(onnx_package=package, max_history=4096).max_history == 4096
     assert config.cache_shard_size == 768
     assert config.cache_max_shards == 16
     assert config.device == "cpu"

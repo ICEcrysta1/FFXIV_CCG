@@ -412,9 +412,11 @@ def test_random_history_crop_also_rechecks_budget_without_mutating_the_source():
 
     sample = {
         "history_length": 2, "history_end": 3,
-        "history_bank_state_abs_values": torch.tensor([[0.0], [0.1], [0.0]]),
-        "current_state_abs_values": torch.tensor([0.2]),
-        "_context_window": (9, 2, 0, (0.05,) * 7),
+        "_history_budget": {
+            "context_capacity": 9, "total_history": 2,
+            "request_times": (0.1, 0.0), "scene_end_times": (0.05,) * 7,
+            "current_request_time": 0.2,
+        },
     }
     collator = TrainingCollator(history_truncation_enabled=True, history_truncation_probability=1.0)
     assert collator._truncate_early_history(sample)["history_length"] == 0
@@ -479,7 +481,6 @@ def test_model_context_defaults_and_no_history_boundary():
     assert ModelConfig().history_reset_keep == 8
     assert ModelConfig().time_delta_scale == 270
     assert ModelConfig().context_capacity == 1024
-    assert ModelConfig().max_history_actions == 511
     with pytest.raises(ValueError, match="context_capacity"):
         ModelConfig(context_capacity=16)
 

@@ -243,8 +243,6 @@ class DeploymentContract:
             raise ValueError(
                 "deployment model_config must contain context_capacity"
             ) from exc
-        if {"scene_capacity", "history_capacity"}.intersection(self.model_config):
-            raise ValueError("deployment model_config contains removed independent capacities")
         if model_context_capacity != self.capacity.context_capacity:
             raise ValueError("deployment context capacity differs from model_config")
         self.capacity.validate()

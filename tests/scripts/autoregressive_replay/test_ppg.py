@@ -538,7 +538,7 @@ def test_validation_ppg_uses_context_budget_and_retains_complete_raw_history(
 
     class FakeBatcher:
         def __init__(self, **kwargs):
-            captured["batcher_max_history"] = kwargs["max_history"]
+            captured["batcher_max_history"] = kwargs.get("max_history")
 
     monkeypatch.setattr(ppg_module, "_dataset_normalizer", lambda _dataset: FakeNormalizer())
     monkeypatch.setattr(
@@ -608,7 +608,7 @@ def test_validation_ppg_uses_context_budget_and_retains_complete_raw_history(
 
     assert captured == {
         "backend_max_history": None,
-        "batcher_max_history": 37,
+        "batcher_max_history": None,
     }
     assert result["val_ppg"] == pytest.approx(100.0)
     assert result["val_ppg_normalized"] == pytest.approx(0.1)

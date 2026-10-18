@@ -145,8 +145,6 @@ def test_interleaved_layout_keeps_action_positions_and_excludes_padding_from_rop
     batch["history_mask"] = torch.tensor([[False, True, False], [True, True, False]])
     encoded = model.input_encoder(batch)
     assert encoded["tokens"].shape == (2, 10, 8)
-    assert encoded["history_length"] == 3
-    assert encoded["history_token_length"] == 6
     assert encoded["prefix_length"] == encoded["current_state_position"] == 9
     assert encoded["current_state_positions"].tolist() == [9, 9]
     assert encoded["history_skill_positions"].tolist() == [[0, 3, 0], [4, 6, 0]]
@@ -168,9 +166,6 @@ def test_shared_capacity_counts_scene_state_and_action_tokens(history_length):
     batch = make_batch(model.data_spec, history_length=history_length, scene_length=4)
     encoded = model.input_encoder(batch)
     assert model.config.context_capacity == capacity
-    assert model.input_encoder.max_token_count == capacity
-    assert encoded["history_length"] == history_length
-    assert encoded["history_token_length"] == 2 * history_length
     assert encoded["tokens"].shape[1] == capacity
     excessive = make_batch(model.data_spec, history_length=history_length + 1, scene_length=4)
     with pytest.raises(ValueError, match="model.context_capacity"):
@@ -249,7 +244,6 @@ def test_packed_shared_budget_matches_full_forward_with_kv_cache(full_attention_
         actual = model(batch)["logits"]
         torch.testing.assert_close(actual, expected_logits, atol=2e-6, rtol=2e-6)
         assert model._kv_cache.prefix_tokens.shape[1] == 7
-        assert model._kv_cache.history_length == 3
 
 
 @pytest.mark.parametrize("history_length", [0, 2])

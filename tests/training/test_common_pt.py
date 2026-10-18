@@ -123,6 +123,7 @@ def test_training_dataset_requires_existing_compiled_cache(tmp_path):
     with pytest.raises(FileNotFoundError, match="compiled cache not found or stale for raw source"):
         TrainingDataset(
             [source_path],
+            context_capacity=1024,
             expected_action_space=ActionSpace.from_job_tag("black_mage"),
             normalizer=Normalizer(),
             int_dtype=torch.int32,
@@ -496,6 +497,7 @@ def test_empty_compiled_cache_accepts_sentinel_history_bank(tmp_path, monkeypatc
 
     dataset = TrainingDataset(
         [source_path], expected_action_space=space,
+        context_capacity=1024,
         normalizer=normalizer,
         int_dtype=torch.int32, float_dtype=torch.float32,
         cache_dir=tmp_path, compiled_cache_shard_size=1,

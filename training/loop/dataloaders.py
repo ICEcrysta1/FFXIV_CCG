@@ -158,7 +158,6 @@ def _build_dataset(paths, config, normalizer, int_dtype, float_dtype, cache_dir)
         job_tag=config.job_tag,
         expected_action_space=ActionSpace.from_job_tag(config.job_tag),
         context_capacity=config.model.context_capacity,
-        max_history=None,
         history_reset_keep=config.model.history_reset_keep,
         int_dtype=int_dtype,
         float_dtype=float_dtype,

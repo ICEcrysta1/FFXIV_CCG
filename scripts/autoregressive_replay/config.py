@@ -17,7 +17,6 @@ from common.configuration.environment import (
 from common.policy.config import (
     PROJECT_ROOT,
     load_policy_config,
-    load_model_config,
     resolve_policy_cache_dir,
     resolve_policy_checkpoint_path,
     resolve_policy_device,
@@ -83,7 +82,6 @@ def load_replay_config(
     )
     configured_job_tag = _optional_text(os.environ.get(PROJECT_JOB_TAG_ENV))
     model_config_path = resolve_policy_model_config_path()
-    model_config = load_model_config(model_config_path)
     model_job_tag = resolve_policy_model_job_tag(model_config_path)
     model_variant = resolve_policy_model_variant(model_config_path)
     source_config = load_policy_config(model_config_path)
@@ -96,7 +94,6 @@ def load_replay_config(
     )
     cache_shard_size = int(training_raw.get("compiled_cache_shard_size", 512))
     cache_max_shards = int(training_raw.get("compiled_cache_max_shards", 8))
-    model_context_capacity = model_config.context_capacity
     if configured_job_tag and configured_job_tag != model_job_tag:
         raise ValueError(
             f"{PROJECT_JOB_TAG_ENV}={configured_job_tag!r} does not match policy model "
@@ -125,11 +122,6 @@ def load_replay_config(
             )
         checkpoint_path = None
         model_context_capacity = int(onnx_metadata["context_capacity"])
-        if model_config.context_capacity != model_context_capacity:
-            raise ValueError(
-                "ONNX context capacity differs from training replay config: "
-                f"{model_context_capacity} != {model_config.context_capacity}"
-            )
     else:
         onnx_package_path = None
         checkpoint_path = _resolve_checkpoint(model_config_path, checkpoint)
@@ -145,20 +137,13 @@ def load_replay_config(
             artifact_name="checkpoint",
         )
         # PT 与实际 backend 共用 checkpoint 的严格模型配置，不能借本机 YAML 补容量。
-        model_config = CausalPolicyModel.checkpoint_model_config(checkpoint_payload)
-        model_context_capacity = model_config.context_capacity
+        model_context_capacity = CausalPolicyModel.checkpoint_model_config(checkpoint_payload).context_capacity
         job_tag = model_job_tag
         if checkpoint_job_tag and job_tag and checkpoint_job_tag != job_tag:
             raise ValueError(
                 f"checkpoint job_tag {checkpoint_job_tag!r} does not match configured "
                 f"job_tag {job_tag!r}"
             )
-        if job_tag and model_job_tag != job_tag:
-            raise ValueError(
-                f"configured job_tag {job_tag!r} does not match training model job "
-                f"{model_job_tag!r}"
-            )
-        job_tag = model_job_tag
 
     resolved_scene_json = _resolve_scene_json(
         scene_json, raw_root=raw_root, cache_dir=resolve_policy_cache_dir(job_tag),
@@ -219,10 +204,7 @@ def load_replay_config(
             AUTOREGRESSIVE_REPLAY_TEMPERATURE_ENV,
             0.0,
         ),
-        # 未显式做截断实验时，PT 以 checkpoint 为准，ORT 以 manifest 为准。
-        max_history=(
-            model_config.max_history_actions if max_history is None else int(max_history)
-        ),
+        max_history=max_history,
         device=(
             "cpu"
             if backend_name == "onnxruntime"
@@ -269,15 +251,6 @@ def load_replay_config(
         raise ValueError(
             "PyTorch policy precision override is unavailable for ONNX Runtime replay; "
             "the manifest precision is authoritative"
-        )
-    if result.max_history > (result.model_context_capacity - 1) // 2:
-        raise ValueError(
-            "autoregressive replay max_history exceeds model capacity: "
-            f"{result.max_history} > {(result.model_context_capacity - 1) // 2}"
-        )
-    if result.max_history < 0:
-        raise ValueError(
-            f"autoregressive replay max_history must be >= 0, got {result.max_history}"
         )
     if not result.ort_provider:
         raise ValueError(f"{AUTOREGRESSIVE_REPLAY_ORT_PROVIDER_ENV} must not be empty")

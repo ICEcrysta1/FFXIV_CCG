@@ -34,6 +34,7 @@ def test_runtime_debug_writes_batch_context_and_aggregates(tmp_path, compact_his
         device=torch.device("cpu"),
         config=RuntimeDebugConfig(enabled=True, max_steps=1, synchronize=False),
         output_path=output_path,
+        context_capacity=1024,
     )
     batch = {
         "label_index": torch.zeros(2, dtype=torch.int64),
@@ -79,6 +80,7 @@ def test_runtime_debug_records_transformer_attention_and_ffn(tmp_path):
         device=torch.device("cpu"),
         config=RuntimeDebugConfig(enabled=True, max_steps=1, synchronize=False),
         output_path=output_path,
+        context_capacity=1024,
     )
     layer = TraceableTransformerEncoderLayer(
         d_model=8,

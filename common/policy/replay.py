@@ -28,6 +28,7 @@ class AutoregressiveReplayConfig:
     top_k: int = 8
     top_p: float = 1.0
     temperature: float = 0.0
+    # 仅用于显式消融；未设置时完全由共享 token 预算决定窗口。
     max_history: int | None = None
     device: str = "cuda"
     job_tag: str | None = None
@@ -42,5 +43,9 @@ class AutoregressiveReplayConfig:
     policy_precision: str | None = None
 
     def __post_init__(self) -> None:
-        if self.max_history is None:
-            object.__setattr__(self, "max_history", (self.model_context_capacity - 1) // 2)
+        if type(self.model_context_capacity) is not int or self.model_context_capacity < 1:
+            raise ValueError("autoregressive replay model_context_capacity must be a positive integer")
+        if self.max_history is not None and type(self.max_history) is not int:
+            raise ValueError("autoregressive replay max_history must be an integer")
+        if self.max_history is not None and self.max_history < 0:
+            raise ValueError(f"autoregressive replay max_history must be >= 0, got {self.max_history}")

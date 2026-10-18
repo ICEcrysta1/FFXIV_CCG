@@ -43,13 +43,8 @@ class CausalInputEncoder(nn.Module):
         )
         nn.init.zeros_(self.state_reset_proj.weight)
 
-    @property
-    def max_token_count(self) -> int:
-        """场景、历史状态、动作与当前状态共享同一个物理 token 预算。"""
-        return self.config.context_capacity
-
     def forward(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-        self._validate_batch(batch)
+        history = self.embed_history(batch)
         scene_vectors = batch["scene_vectors"].float()
         batch_size, scene_length, _ = scene_vectors.shape
         history_length = batch["history_skill_ids"].shape[1]
@@ -74,7 +69,6 @@ class CausalInputEncoder(nn.Module):
             dim=2,
             index=scene_type_indices.expand(-1, -1, 1, d_model),
         ).squeeze(2)
-        history = self._embed_history(batch)
         # 请求时冻结的状态位于该次技能之前；技能只能读取此前已知的状态。
         history_tokens = torch.stack((history["state"], history["skill"]), dim=2).reshape(
             batch_size, history_token_length, d_model,
@@ -129,8 +123,6 @@ class CausalInputEncoder(nn.Module):
             "prefix_valid": prefix_valid,
             "valid": valid,
             "scene_length": scene_length,
-            "history_length": history_length,
-            "history_token_length": history_token_length,
             "prefix_length": prefix_width,
             "position_ids": position_ids,
             "role_ids": role_ids,
@@ -143,10 +135,6 @@ class CausalInputEncoder(nn.Module):
     def embed_history(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """返回历史技能、状态的原始 content；role 和 RMSNorm 由 forward 统一施加。"""
         self._validate_batch(batch)
-        return self._embed_history(batch)
-
-    def _embed_history(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-        """编码已经过入口校验的历史，避免完整前向重复检查同一批数据。"""
         with torch.autocast(device_type=batch["history_skill_features"].device.type, enabled=False):
             return {
                 "skill": self.skill_embed(batch["history_skill_ids"]).float()

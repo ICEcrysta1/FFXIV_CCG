@@ -575,7 +575,7 @@ def _load_analysis_dataset(
     source_path: Path,
     cache_dir: Path,
     max_history: int | None,
-    context_capacity: int | None = None,
+    context_capacity: int,
     history_reset_keep: int,
     cache_shard_size: int,
     cache_max_shards: int,

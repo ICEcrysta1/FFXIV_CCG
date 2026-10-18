@@ -53,16 +53,27 @@ def history_window_length(
             length = total_history - start
             if max_history is None:
                 return length
-            length = min(length, max_history)
-            # 冻结请求时间可能倒序；额外裁短后锚点回退，场景数量反而可能增加。
-            while True:
-                anchor = request_times[total_history - length] if length else current_request_time
-                scene_count = len(scene_end_times) - bisect_right(scene_end_times, anchor)
-                if scene_count + 2 * length + 1 <= context_capacity:
-                    return length
-                if length == 0:
-                    raise ValueError("model.context_capacity cannot hold the scene and current state")
-                length -= 1
+            return fit_history_suffix_length(
+                min(length, max_history), context_capacity,
+                total_history=total_history, request_times=request_times,
+                scene_end_times=scene_end_times, current_request_time=current_request_time,
+            )
         if capacity < reset_keep:
             raise ValueError("model.context_capacity cannot hold the scene and history_reset_keep actions")
         start = overflow - reset_keep
+
+
+def fit_history_suffix_length(
+    length: int, context_capacity: int, *, total_history: int,
+    request_times: Sequence[float], scene_end_times: Sequence[float], current_request_time: float,
+) -> int:
+    """只检查已选历史后缀的预算，不重新规划正式分块窗口。"""
+    # 冻结请求时间可能倒序；额外裁短后锚点回退，场景数量反而可能增加。
+    while True:
+        anchor = request_times[total_history - length] if length else current_request_time
+        scene_count = len(scene_end_times) - bisect_right(scene_end_times, anchor)
+        if scene_count + 2 * length + 1 <= context_capacity:
+            return length
+        if length == 0:
+            raise ValueError("model.context_capacity cannot hold the scene and current state")
+        length -= 1

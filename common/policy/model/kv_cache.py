@@ -20,8 +20,6 @@ class TransformerKVCache:
     key_cache: tuple[torch.Tensor, ...]
     value_cache: tuple[torch.Tensor, ...]
     scene_length: int
-    history_length: int
-    history_token_length: int
 
 
 def encode_with_kv_cache(encoder, encoded, cache=None):
@@ -41,18 +39,13 @@ def encode_with_kv_cache(encoder, encoded, cache=None):
     if not _cache_matches(cache, prefix_tokens, prefix_valid, prefix_positions, scene_length):
         cache = _build_prefix_cache(
             encoder, prefix_tokens, prefix_valid, prefix_positions, scene_length,
-            history_length=int(encoded["history_length"]),
             attention_residual=residual, rotary_position_encoding=rotary,
         )
     elif prefix_length > cache.prefix_tokens.shape[1]:
         cache = _append_prefix(
             encoder, cache, prefix_tokens, prefix_valid, prefix_positions,
-            history_length=int(encoded["history_length"]),
             attention_residual=residual, rotary_position_encoding=rotary,
         )
-    # 压紧后相同前缀可能来自不同的补齐宽度，动作元信息不能从物理轴反推。
-    cache.history_length = int(encoded["history_length"])
-    cache.history_token_length = int(encoded["history_token_length"])
     hidden = tokens[:, prefix_length:]
     initial_tokens = hidden
     sources = [hidden] if residual is not None else None
@@ -109,7 +102,6 @@ def _build_prefix_cache(
     prefix_position_ids: torch.Tensor,
     scene_length: int,
     *,
-    history_length: int,
     attention_residual=None,
     rotary_position_encoding,
 ) -> TransformerKVCache:
@@ -152,8 +144,6 @@ def _build_prefix_cache(
         key_cache=tuple(key_cache),
         value_cache=tuple(value_cache),
         scene_length=scene_length,
-        history_length=history_length,
-        history_token_length=2 * history_length,
     )
 
 
@@ -164,7 +154,6 @@ def _append_prefix(
     prefix_valid: torch.Tensor,
     prefix_position_ids: torch.Tensor,
     *,
-    history_length: int,
     attention_residual=None,
     rotary_position_encoding,
 ) -> TransformerKVCache:
@@ -211,6 +200,4 @@ def _append_prefix(
         key_cache=tuple(key_cache),
         value_cache=tuple(value_cache),
         scene_length=cache.scene_length,
-        history_length=history_length,
-        history_token_length=2 * history_length,
     )

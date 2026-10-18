@@ -199,7 +199,7 @@ def test_shared_context_reanchor_and_scene_clip_rebuild_kv(full_attention_residu
             if cursor in (5, 8):
                 assert length == 2
                 assert cached._kv_cache is not previous_cache
-                assert cached._kv_cache.history_length == 2
+                assert cached._kv_cache.prefix_tokens.shape[1] == 6
                 torch.testing.assert_close(batch["history_state_vectors"][0, 0, 1], torch.tensor(0.0))
                 assert batch["history_state_reset_mask"][0, 0].all()
                 assert batch["scene_vectors"].shape == (1, 2, 3)
@@ -291,8 +291,6 @@ def test_kv_cache_matches_full_forward_when_history_appends(norm_first: bool, ac
 
     assert model._kv_cache.prefix_tokens.shape[1] == 6
     assert model._kv_cache.key_cache[0].shape[2] == 6
-    assert model._kv_cache.history_length == 2
-    assert model._kv_cache.history_token_length == 4
     assert not hasattr(model._kv_cache, "layer_outputs")
 
 
@@ -478,8 +476,6 @@ def test_kv_cache_rebuilds_for_state_masks_and_sliding_window(
         cached_output["logits"], full_logits, rtol=1e-5, atol=1e-6,
     )
     assert model._kv_cache is not original_cache
-    assert model._kv_cache.history_length == 2
-    assert model._kv_cache.history_token_length == 4
     encoded = model.input_encoder(changed_batch)
     torch.testing.assert_close(model._kv_cache.prefix_valid, encoded["prefix_valid"])
     torch.testing.assert_close(

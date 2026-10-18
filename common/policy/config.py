@@ -187,11 +187,6 @@ class ModelConfig:
                 _parse_residual_mix_endpoint(getattr(self, name), field_name=f"model.{name}"),
             )
 
-    @property
-    def max_history_actions(self) -> int:
-        """不含场景时完整动作数的派生上界，不作为独立容量。"""
-        return (self.context_capacity - 1) // 2
-
     @classmethod
     def from_mapping(cls, raw: Mapping[str, object] | None = None) -> "ModelConfig":
         """从 YAML 的 ``model`` mapping 解析共享架构配置。"""
@@ -207,7 +202,7 @@ class ModelConfig:
         if "max_history" in values:
             raise ValueError("model.max_history is removed; configure model.context_capacity")
         if "max_history_actions" in values:
-            raise ValueError("model.max_history_actions is derived from model.context_capacity")
+            raise ValueError("model.max_history_actions is removed; configure model.context_capacity")
         removed_capacities = {"scene_capacity", "history_capacity"}.intersection(values)
         if removed_capacities:
             raise ValueError(

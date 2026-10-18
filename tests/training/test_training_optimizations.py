@@ -293,6 +293,13 @@ def _sample(history_length, scene_length):
     sample.pop("current_state_reset_mask")
     sample["current_state_delta_values"] = torch.zeros(spec.base_state_dim)
     sample["current_state_delta_reset_mask"] = torch.zeros(spec.base_state_dim, dtype=torch.bool)
+    sample["_history_budget"] = {
+        "context_capacity": ModelConfig.context_capacity,
+        "total_history": history_length,
+        "request_times": tuple(states[:, 0].tolist()),
+        "scene_end_times": (200.0,) * scene_length,
+        "current_request_time": float(sample["current_state_abs_values"][0]),
+    }
     sample.pop("scene_vectors")
     sample["scene_abs_values"] = torch.tensor([0.0, 200.0, 200.0]).expand(scene_length, -1).clone()
     return sample

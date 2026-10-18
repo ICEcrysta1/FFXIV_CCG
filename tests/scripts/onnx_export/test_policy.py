@@ -370,7 +370,7 @@ def test_maximum_action_window_uses_two_independent_tokens_per_action(history_ca
     batch = _make_batch((0,) * 200, history_length=history_capacity)
     encoded = model.input_encoder(batch)
     total_token_count = 200 + 2 * history_capacity + 1
-    assert model.input_encoder.max_token_count == total_token_count
+    assert model.config.context_capacity == total_token_count
     assert encoded["tokens"].shape == (1, total_token_count, model.config.d_model)
     assert encoded["current_state_position"] == total_token_count - 1
     assert encoded["history_skill_positions"][0, -1].item() == total_token_count - 2
