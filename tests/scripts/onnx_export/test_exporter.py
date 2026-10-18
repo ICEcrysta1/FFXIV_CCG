@@ -104,24 +104,28 @@ def test_exception_note_uses_supported_add_note(capsys):
 
 
 def test_capacity_contract_rejects_invalid_or_oversized_layout():
-    with pytest.raises(ValueError, match="scene_capacity"):
-        CapacityContract(0, 1).validate()
-    contract = CapacityContract(3, 8)
+    with pytest.raises(ValueError, match="context_capacity"):
+        CapacityContract(0).validate()
+    contract = CapacityContract(20)
     contract.validate()
     assert contract.total_token_count == 20
-    assert CapacityContract(200, 300).total_token_count == 801
-    assert CapacityContract(200, 384).total_token_count == 969
+    assert contract.scene_capacity == 19
+    assert contract.history_capacity == 9
+    assert CapacityContract(1024).total_token_count == 1024
     assert CapacityContract.from_dict(contract.to_dict()) == contract
+    old_layout = dict(contract.to_dict(), scene_capacity=3, history_capacity=8)
+    with pytest.raises(ValueError, match="fields"):
+        CapacityContract.from_dict(old_layout)
 
 
 @pytest.mark.parametrize(("field", "value", "message"), (
     ("history_tokens_per_action", 1, "two tokens per action"),
-    ("history_capacity_unit", "tokens", "two tokens per action"),
+    ("capacity_unit", "actions", "represent tokens"),
     ("token_order", "scene, (skill_i, state_i)*H, current_state", "token order"),
     ("total_token_count", 12, "total token count"),
 ))
 def test_capacity_contract_rejects_old_fusion_or_wrong_token_semantics(field, value, message):
-    payload = CapacityContract(3, 8).to_dict()
+    payload = CapacityContract(20).to_dict()
     payload[field] = value
     with pytest.raises(ValueError, match=message):
         CapacityContract.from_dict(payload)
@@ -129,7 +133,7 @@ def test_capacity_contract_rejects_old_fusion_or_wrong_token_semantics(field, va
 
 @pytest.mark.parametrize(("field", "value"), (
     ("history_tokens_per_action", 1),
-    ("history_capacity_unit", "tokens"),
+    ("capacity_unit", "actions"),
     ("token_order", "scene, fused_pair_i, current_state"),
     ("token_order", "scene, (skill_i, state_i)*H, current_state"),
     ("effective_sequence_length", "scene_valid + history_valid + 1"),
@@ -141,7 +145,7 @@ def test_manifest_schema_strictly_rejects_fused_capacity_metadata(field, value):
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     capacity_schema = schema["$defs"]["contract"]["properties"]["capacity"]
     validator = jsonschema.Draft202012Validator(capacity_schema)
-    payload = CapacityContract(3, 8).to_dict()
+    payload = CapacityContract(20).to_dict()
     validator.validate(payload)
     payload[field] = value
     with pytest.raises(jsonschema.ValidationError):
@@ -314,7 +318,7 @@ def test_zero_padding_fill_clears_all_padding_dtypes():
         state_dim=9,
         num_actions=2,
     )
-    contract = CapacityContract(3, 4)
+    contract = CapacityContract(12)
     values = make_inputs(
         data_spec,
         contract,
@@ -336,11 +340,18 @@ def test_zero_padding_fill_clears_all_padding_dtypes():
     assert torch.count_nonzero(values[0][:, :1]) > 0
     assert torch.count_nonzero(values[3][:, :2]) > 0
 
+    # 两个原始轴各自都未越界，也不能同时消耗超过统一预算的有效 token。
+    with pytest.raises(ValueError, match="shared context_capacity"):
+        make_inputs(
+            data_spec, contract, vocab_size=8, scene_valid=contract.scene_capacity,
+            history_valid=1, dtype=torch.float32, seed=17,
+        )
+
 
 def test_dynamic_slice_and_padding_follow_fields_when_input_order_changes(monkeypatch):
     """输入次序变化时，历史 reset 等序列字段仍按各自轴裁剪和补位。"""
     spec = SimpleNamespace(scene_dim=2, num_scene_types=4, skill_feature_dim=3, base_state_dim=5, state_dim=9, num_actions=2)
-    inputs = make_inputs(spec, CapacityContract(3, 4), vocab_size=8,
+    inputs = make_inputs(spec, CapacityContract(12), vocab_size=8,
                          scene_valid=1, history_valid=2, dtype=torch.float32, seed=17)
     fields = tuple(reversed(MODEL_INPUT_FIELDS))
     monkeypatch.setattr(tensor_contract_module, "MODEL_INPUT_FIELDS", fields)
@@ -603,16 +614,13 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
     assert manifest["contract"]["contract_version"] == DEPLOYMENT_CONTRACT_VERSION
     assert manifest["contract"]["model_input_contract"] == json.loads(json.dumps(_input_contract.to_dict()))
     assert manifest["contract"]["capacity"]["padding_direction"] == "right"
-    assert manifest["contract"]["capacity"]["history_capacity"] == 4
-    assert manifest["contract"]["capacity"]["history_capacity_unit"] == "actions"
+    assert manifest["contract"]["capacity"]["context_capacity"] == 12
+    assert manifest["contract"]["capacity"]["capacity_unit"] == "tokens"
     assert manifest["contract"]["capacity"]["history_tokens_per_action"] == 2
     assert manifest["contract"]["capacity"]["total_token_count"] == 12
     assert manifest["contract"]["capacity"]["token_order"] == "scene, (state_i, skill_i)*H, current_state"
     provenance = manifest["contract"]["capacity_provenance"]
-    assert provenance["history_capacity_source"] == (
-        "checkpoint.model_config.history_capacity"
-    )
-    assert provenance["scene_capacity_source"] == "checkpoint.model_config.scene_capacity"
+    assert provenance["context_capacity_source"] == "checkpoint.model_config.context_capacity"
     assert manifest["contract"]["model_config"]["d_model"] == 16
     assert manifest["contract"]["model_config"]["transformer_activation"] == activation
     assert manifest["contract"]["model_config"]["qk_norm_scale"] == 1.7
@@ -1231,6 +1239,10 @@ def test_small_bf16_model_exports_and_runs_on_strict_cuda(tmp_path, activation):
     assert model_metadata["ffxiv.compute_precision"] == "float32"
     assert model_metadata["ffxiv.history_tokens_per_action"] == "2"
     assert model_metadata["ffxiv.total_token_count"] == "12"
+    assert model_metadata["ffxiv.context_capacity"] == "12"
+    assert model_metadata["ffxiv.capacity_unit"] == "tokens"
+    assert "ffxiv.history_capacity" not in model_metadata
+    assert "ffxiv.scene_capacity" not in model_metadata
     report = json.loads((output / "export_report.json").read_text(encoding="utf-8"))
     assert report["status"] == "graph_validated"
     assert report["release_gate"] == "requires_rollout_parity"
@@ -1324,6 +1336,11 @@ def test_deployment_state_masks_use_base_width_and_outer_layout_cannot_override_
                          dtype=torch.float32, seed=19)
     contract.validate_tensor_inputs(inputs)
     named = dict(zip(TENSOR_INPUT_NAMES, inputs, strict=True))
+    original_scene_mask = named["scene_mask"].clone()
+    named["scene_mask"].fill_(True)
+    with pytest.raises(ValueError, match="shared context_capacity"):
+        contract.validate_tensor_inputs(inputs)
+    named["scene_mask"].copy_(original_scene_mask)
     named["current_state_vectors"][0, spec.base_state_dim] = .5
     with pytest.raises(ValueError, match="absolute binary"):
         contract.validate_tensor_inputs(inputs)
@@ -1675,9 +1692,8 @@ def _write_small_checkpoint(
         n_heads=2,
         ff_dim=32,
         dropout=0.0,
-        history_capacity=4,
+        context_capacity=12,
         history_reset_keep=4,
-        scene_capacity=3,
         transformer_activation=activation,
         full_attention_residuals=full_attention_residuals,
         qk_norm_scale=qk_norm_scale,

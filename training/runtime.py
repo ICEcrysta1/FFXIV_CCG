@@ -37,10 +37,12 @@ class RuntimeDebugRecorder:
         device: torch.device,
         config: RuntimeDebugConfig,
         output_path: Path,
+        context_capacity: int | None = None,
     ) -> None:
         self.device = device
         self.config = config
         self.output_path = Path(output_path)
+        self.context_capacity = context_capacity
         self.enabled = bool(config.enabled)
         self._recorded_steps = 0
         self._active = False
@@ -79,7 +81,7 @@ class RuntimeDebugRecorder:
             "epoch": int(epoch),
             "step": int(step),
             "global_debug_step": self._recorded_steps + 1,
-            "batch": summarize_batch(batch),
+            "batch": summarize_batch(batch, context_capacity=self.context_capacity),
         }
 
     @contextmanager
@@ -232,7 +234,7 @@ def aggregate_events(events: list[dict[str, object]]) -> dict[str, dict[str, obj
     return grouped
 
 
-def summarize_batch(batch: Mapping[str, object]) -> dict[str, object]:
+def summarize_batch(batch: Mapping[str, object], *, context_capacity: int | None = None) -> dict[str, object]:
     """提取与显存缩放相关的 batch 形状，方便直接按 history 分析结果。"""
     shapes: dict[str, list[int]] = {}
     for key, value in batch.items():
@@ -249,6 +251,8 @@ def summarize_batch(batch: Mapping[str, object]) -> dict[str, object]:
     sequence_length = None
     if scene_length is not None and history_length is not None:
         sequence_length = scene_length + history_token_length + 1
+        if context_capacity is not None:
+            sequence_length = min(sequence_length, context_capacity)
     return {
         "batch_size": batch_size,
         "history_length": history_length,

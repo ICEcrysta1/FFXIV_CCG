@@ -302,6 +302,18 @@ def test_serialized_token_descriptor_does_not_mutate_contract_authority():
     assert contract.to_dict()["token_encoding"] == TOKEN_ENCODING_CONTRACT
 
 
+def test_input_contract_requires_shared_context_token_budget():
+    payload = _build_contract().to_dict()
+    encoding = payload["token_encoding"]
+    assert encoding["context_capacity_unit"] == "tokens"
+    assert encoding["history_reset_keep_unit"] == "complete_actions"
+    assert encoding["context_encoding"]["history_window"] == "shared_context_token_budget_block_reset"
+    encoding.pop("context_capacity_unit")
+    encoding["history_capacity_unit"] = "actions"
+    with pytest.raises(ValueError, match="token_encoding"):
+        ModelInputContract.from_dict(payload)
+
+
 def test_model_input_contract_describes_both_residual_paths():
     """归一化后的初始 token 逐层注入，Full AttnRes 不叠加普通混合。"""
     residual = _build_contract().to_dict()["token_encoding"]["backbone_residual"]

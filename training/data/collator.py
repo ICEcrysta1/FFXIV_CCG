@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from common.pytorch.precision import load_precision_config
 from common.pytorch.dependencies import import_torch
 from common.policy.data.context_fields import CURRENT_STATE_RAW_FIELDS, ENCODING_BANK_FIELDS, RAW_SCENE_FIELDS
+from common.policy.data.history_window import history_window_length
 
 
 class TrainingCollator:
@@ -112,6 +113,15 @@ class TrainingCollator:
             return sample
 
         keep_length = self._rng.randint(self.history_min_recent, history_length - 1)
+        if "_context_window" in sample:
+            capacity, reset_keep, time_index, ends = sample["_context_window"]
+            keep_length = history_window_length(
+                int(sample["history_end"]) - 1, capacity, reset_keep,
+                request_times=sample["history_bank_state_abs_values"][1:, time_index].tolist(),
+                scene_end_times=ends,
+                current_request_time=float(sample["current_state_abs_values"][time_index]),
+                max_history=keep_length,
+            )
         truncated = dict(sample)
         truncated["history_length"] = keep_length
         return truncated

@@ -8,7 +8,6 @@ from pathlib import Path
 
 import torch
 
-from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, ModelInputContract
 from common.policy.model import (
     CausalPolicyModel,
@@ -81,9 +80,9 @@ def load_policy_contracts(
     input_contract = ModelInputContract.from_checkpoint(checkpoint)
     model_config = _required_mapping(checkpoint, "model_config")
     model_variant = _required_text(checkpoint, "model_variant")
-    checkpoint_history_capacity = int(model_config.get("history_capacity", -1))
-    if checkpoint_history_capacity < 1:
-        raise ValueError("checkpoint.model_config.history_capacity must be >= 1")
+    checkpoint_context_capacity = int(model_config.get("context_capacity", -1))
+    if checkpoint_context_capacity < 1:
+        raise ValueError("checkpoint.model_config.context_capacity must be >= 1")
     resolved_profile_path = (
         DeploymentProfile.default_path(data_spec.job_tag)
         if deployment_profile_path is None
@@ -92,28 +91,19 @@ def load_policy_contracts(
     profile = DeploymentProfile.load(resolved_profile_path)
     if profile.job_tag != data_spec.job_tag:
         raise ValueError("deployment profile job differs from checkpoint DataSpec")
-    # scene 容量以职业模型配置为权威来源（随 checkpoint 的 model_config
-    # 进入部署契约），profile 只提供语料统计证据佐证该容量；
-    # 旧 checkpoint 缺失该字段时与训练路径的恢复逻辑一致，回退默认值。
-    scene_capacity = int(
-        model_config.get("scene_capacity", ModelConfig.scene_capacity)
-    )
-    if scene_capacity < 1:
-        raise ValueError("checkpoint.model_config.scene_capacity must be >= 1")
+    # 统一预算以 checkpoint 为权威；profile 只提供场景长度统计证据。
     measured_scene_max = int(profile.evidence.get("scene_length_max", 0))
-    if measured_scene_max > scene_capacity:
+    if measured_scene_max + 1 > checkpoint_context_capacity:
         raise ValueError(
-            "model_config.scene_capacity is below the measured corpus maximum: "
-            f"{scene_capacity} < {measured_scene_max}"
+            "model_config.context_capacity cannot contain the measured scene and current state: "
+            f"{checkpoint_context_capacity} < {measured_scene_max + 1}"
         )
     capacity_report = profile.to_capacity_report(
-        scene_capacity=scene_capacity,
-        history_capacity=checkpoint_history_capacity,
+        context_capacity=checkpoint_context_capacity,
         vocab_entries=input_contract.skill_vocab_entries,
     )
     contract = CapacityContract(
-        scene_capacity=scene_capacity,
-        history_capacity=checkpoint_history_capacity,
+        context_capacity=checkpoint_context_capacity,
     )
     deployment_contract = DeploymentContract.create(
         precision=precision,

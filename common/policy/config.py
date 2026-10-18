@@ -150,26 +150,22 @@ class ModelConfig:
     rope_theta: float = 10_000.0
     qk_norm_scale: float = 1.2
     logit_softcap: float = 15.0
-    history_capacity: int = 128
+    context_capacity: int = 1024
     history_reset_keep: int = 8
     time_delta_scale: float = field(default_factory=_default_time_delta_scale)
-    scene_capacity: int = 160
 
     def __post_init__(self) -> None:
         if self.ff_dim < 1:
             raise ValueError("model.ff_dim must be positive")
         if self.transformer_activation not in TRANSFORMER_ACTIVATIONS:
             raise ValueError("model.transformer_activation must be gelu, relu or swiglu")
-        _parse_history_integer(self.history_capacity, field_name="model.history_capacity")
+        _parse_history_integer(self.context_capacity, field_name="model.context_capacity")
         _parse_history_integer(self.history_reset_keep, field_name="model.history_reset_keep")
-        if self.history_capacity == 0:
-            if self.history_reset_keep != 0:
-                raise ValueError("model.history_reset_keep must be zero when history_capacity is zero")
-        elif not 1 <= self.history_reset_keep <= self.history_capacity:
-            raise ValueError("model.history_reset_keep must be between one and history_capacity")
+        if self.history_reset_keep < 1:
+            raise ValueError("model.history_reset_keep must be >= 1")
+        if self.context_capacity < 2 * self.history_reset_keep + 1:
+            raise ValueError("model.context_capacity must be >= 2 * model.history_reset_keep + 1")
         object.__setattr__(self, "time_delta_scale", _parse_time_delta_scale(self.time_delta_scale))
-        if self.scene_capacity < 1:
-            raise ValueError("model.scene_capacity must be >= 1")
         if self.n_heads <= 0:
             raise ValueError("model.n_heads must be positive")
         if self.num_kv_heads <= 0 or self.num_kv_heads > self.n_heads:
@@ -191,6 +187,11 @@ class ModelConfig:
                 _parse_residual_mix_endpoint(getattr(self, name), field_name=f"model.{name}"),
             )
 
+    @property
+    def max_history_actions(self) -> int:
+        """不含场景时完整动作数的派生上界，不作为独立容量。"""
+        return (self.context_capacity - 1) // 2
+
     @classmethod
     def from_mapping(cls, raw: Mapping[str, object] | None = None) -> "ModelConfig":
         """从 YAML 的 ``model`` mapping 解析共享架构配置。"""
@@ -201,11 +202,18 @@ class ModelConfig:
             raise ValueError("model.position_encoding is removed; the model always uses RoPE")
         if "max_sequence_length" in values:
             raise ValueError(
-                "model.max_sequence_length is removed; physical token capacity is derived "
-                "from scene_capacity, history_capacity and the current state"
+                "model.max_sequence_length is removed; configure model.context_capacity"
             )
         if "max_history" in values:
-            raise ValueError("model.max_history is removed; configure model.history_capacity")
+            raise ValueError("model.max_history is removed; configure model.context_capacity")
+        if "max_history_actions" in values:
+            raise ValueError("model.max_history_actions is derived from model.context_capacity")
+        removed_capacities = {"scene_capacity", "history_capacity"}.intersection(values)
+        if removed_capacities:
+            raise ValueError(
+                "removed model capacity options: " + ", ".join(sorted(removed_capacities))
+                + "; configure model.context_capacity"
+            )
         if "pair_embedding_dim" in values:
             raise ValueError(
                 "model.pair_embedding_dim is removed; skill/state tokens use model.d_model directly"
@@ -259,9 +267,9 @@ class ModelConfig:
             rope_theta=float(values.get("rope_theta", cls.rope_theta)),
             qk_norm_scale=_parse_qk_norm_scale(values.get("qk_norm_scale", cls.qk_norm_scale)),
             logit_softcap=_parse_logit_softcap(values.get("logit_softcap", cls.logit_softcap)),
-            history_capacity=_parse_history_integer(
-                values.get("history_capacity", cls.history_capacity),
-                field_name="model.history_capacity",
+            context_capacity=_parse_history_integer(
+                values.get("context_capacity", cls.context_capacity),
+                field_name="model.context_capacity",
             ),
             history_reset_keep=_parse_history_integer(
                 values.get("history_reset_keep", cls.history_reset_keep),
@@ -270,7 +278,6 @@ class ModelConfig:
             time_delta_scale=_parse_time_delta_scale(
                 values["time_delta_scale"] if "time_delta_scale" in values else _default_time_delta_scale(),
             ),
-            scene_capacity=int(values.get("scene_capacity", cls.scene_capacity)),
         )
 
 

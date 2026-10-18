@@ -82,7 +82,7 @@ def test_cache_uses_caller_action_contract_when_current_configuration_changes(tm
         "job_tag": "black_mage", "num_samples": 0, "num_actions": len(space.action_keys),
         "skill_feature_names": (), "action_keys": space.action_keys,
         "action_to_vocab_id": space.action_to_vocab_id, "action_is_gcd": space.action_is_gcd, "vocab_signature": ((0, 1),),
-        "shard_size": 1, "shard_files": [],
+        "shard_size": 1, "shard_files": [], "history_markers": (),
         "history_bank": {"skill_ids": torch.zeros(1, dtype=torch.long), "skill_features": torch.zeros(1, 0),
                          "state_abs_values": torch.zeros(1, 1), "state_delta_values": torch.zeros(1, 1),
                          "state_null_mask": torch.zeros(1, 1, dtype=torch.bool), "state_delta_reset_mask": torch.zeros(1, 1, dtype=torch.bool),

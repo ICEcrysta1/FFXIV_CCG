@@ -134,7 +134,7 @@ def test_bf16_float_compute_reference_keeps_quantized_checkpoint_weights(tmp_pat
 
     inputs = make_inputs(
         data_spec,
-        CapacityContract(3, 4),
+        CapacityContract(context_capacity=12),
         vocab_size=8,
         scene_valid=1,
         history_valid=1,
@@ -200,7 +200,7 @@ def test_parity_fixed_capacity_batch_stays_on_reference_device(tmp_path):
         device="cuda",
         use_kv_cache=False,
     )
-    contract = CapacityContract(3, 4)
+    contract = CapacityContract(context_capacity=12)
     dynamic_inputs = slice_dynamic_inputs(
         make_inputs(
             data_spec,
@@ -289,7 +289,7 @@ def test_parity_failure_writes_auditable_partial_report(
             self.name = name
             self.logits = logits
             self.source_path = tmp_path / f"{name}.model"
-            self.model_config = SimpleNamespace(history_capacity=128, history_reset_keep=8, time_delta_scale=120.0)
+            self.model_config = SimpleNamespace(context_capacity=1024, history_reset_keep=8, time_delta_scale=120.0)
             self.input_device = torch.device("cpu")
             self.data_spec = DataSpec(
                 "black_mage", 3, 7, 1, 1, 1, 1, ("fire_iii", "fire_iv", "blizzard_iii"),
@@ -385,7 +385,7 @@ def test_parity_failure_writes_auditable_partial_report(
         output_path=tmp_path / "rollout.md",
         scene_json_path=tmp_path / "scene.json",
         cache_dir=tmp_path / "cache",
-        model_history_capacity=8,
+        model_context_capacity=33,
         cache_shard_size=4,
         cache_max_shards=2,
         max_history=8,
@@ -482,7 +482,7 @@ def test_parity_rejects_non_finite_or_negative_tolerance(
         output_path=tmp_path / "rollout.md",
         scene_json_path=tmp_path / "scene.json",
         cache_dir=tmp_path / "cache",
-        model_history_capacity=8,
+        model_context_capacity=33,
         cache_shard_size=4,
         cache_max_shards=2,
     )

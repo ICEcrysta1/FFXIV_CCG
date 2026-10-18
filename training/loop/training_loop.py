@@ -155,6 +155,7 @@ def run_training(
         device=device,
         config=config.runtime_debug,
         output_path=config.output_dir / config.runtime_debug.output_filename,
+        context_capacity=config.model.context_capacity,
     )
     debug_recorder = runtime_debug if runtime_debug.enabled else None
     set_runtime_debug = getattr(model, "set_runtime_debug", None)

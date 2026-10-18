@@ -14,7 +14,7 @@ class AutoregressiveReplayConfig:
     output_path: Path
     scene_json_path: Path
     cache_dir: Path
-    model_history_capacity: int
+    model_context_capacity: int
     cache_shard_size: int
     cache_max_shards: int
     scene_mode: str = "cache"
@@ -28,7 +28,7 @@ class AutoregressiveReplayConfig:
     top_k: int = 8
     top_p: float = 1.0
     temperature: float = 0.0
-    max_history: int = 128
+    max_history: int | None = None
     device: str = "cuda"
     job_tag: str | None = None
     model_variant: str | None = None
@@ -40,3 +40,7 @@ class AutoregressiveReplayConfig:
     onnx_package_path: Path | None = None
     ort_provider: str = "CUDAExecutionProvider"
     policy_precision: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.max_history is None:
+            object.__setattr__(self, "max_history", (self.model_context_capacity - 1) // 2)

@@ -128,7 +128,7 @@ def test_read_side_training_settings_and_other_job_routing_are_excluded(config_r
     rewrite(path, ("decision_timing", "post_gcd_delay_seconds"), 0.9)
     rewrite(path, ("runtime", "job_configs", "machinist"), "missing-other-job.yaml")
     model_path = config_root / "config/models/black_mage/artzip/model.yaml"
-    rewrite(model_path, ("model", "history_capacity"), 1)
+    rewrite(model_path, ("model", "context_capacity"), 17)
     rewrite(model_path, ("model", "history_reset_keep"), 1)
     rewrite(model_path, ("model", "time_delta_scale"), 99)
     training_path = config_root / "config/models/black_mage/artzip/training.yaml"

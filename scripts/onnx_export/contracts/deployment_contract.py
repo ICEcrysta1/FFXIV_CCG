@@ -47,6 +47,7 @@ from ..runtime.tensor_runtime import golden_encoding
 # 26：模型状态删除累计威力，并使用统一的资源/充能/时间/单次威力缩放契约。
 #     黑魔绝望最低 MP 修正为 800，拒绝旧输入与旧状态机规则的部署产物。
 #     同版本统一数值入口与输入投影为 FP32，主干及输出沿用部署精度。
+#     同版本将场景、历史和当前状态收敛为统一 token 预算，拒绝旧容量结构。
 DEPLOYMENT_CONTRACT_VERSION = 26
 DEPLOYMENT_MANIFEST_VERSION = 16
 MANIFEST_SCHEMA_FILENAME = "manifest.schema.json"
@@ -101,8 +102,7 @@ class DeploymentContract:
         normalized_vocab = tuple(SkillVocab.from_entries(vocab_entries))
         capacity_report_sha256 = str(capacity_report.get("semantic_sha256", ""))
         capacity_evidence = {
-            "scene_capacity": int(capacity_report["scene_capacity"]),
-            "history_capacity": int(capacity_report["history_capacity"]),
+            "context_capacity": int(capacity_report["context_capacity"]),
             "evidence": dict(capacity_report["evidence"]),
         }
         contract = cls(
@@ -238,16 +238,15 @@ class DeploymentContract:
         if removed:
             raise ValueError("deployment model_config contains removed fusion options: " + ", ".join(sorted(removed)))
         try:
-            model_scene_capacity = int(self.model_config["scene_capacity"])
-            model_history_capacity = int(self.model_config["history_capacity"])
+            model_context_capacity = int(self.model_config["context_capacity"])
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(
-                "deployment model_config must contain scene_capacity and history_capacity"
+                "deployment model_config must contain context_capacity"
             ) from exc
-        if model_scene_capacity != self.capacity.scene_capacity:
-            raise ValueError("deployment scene capacity differs from model_config")
-        if model_history_capacity != self.capacity.history_capacity:
-            raise ValueError("deployment history capacity differs from model_config")
+        if {"scene_capacity", "history_capacity"}.intersection(self.model_config):
+            raise ValueError("deployment model_config contains removed independent capacities")
+        if model_context_capacity != self.capacity.context_capacity:
+            raise ValueError("deployment context capacity differs from model_config")
         self.capacity.validate()
         if len(self.data_spec.action_keys) != self.data_spec.num_actions:
             raise ValueError("action order length differs from num_actions")
@@ -262,17 +261,11 @@ class DeploymentContract:
             raise ValueError("scene type ids must be ordered and contiguous from zero")
         if not self.capacity_report_sha256 or len(self.capacity_report_sha256) != 64:
             raise ValueError("capacity report signature is invalid")
-        scene_capacity = int(self.capacity_evidence["scene_capacity"])
-        history_capacity = int(self.capacity_evidence["history_capacity"])
-        if self.capacity.scene_capacity != scene_capacity:
+        context_capacity = int(self.capacity_evidence["context_capacity"])
+        if context_capacity != self.capacity.context_capacity:
             raise ValueError(
-                "scene capacity must equal the fixed deployment profile: "
-                f"{self.capacity.scene_capacity} != {scene_capacity}"
-            )
-        if history_capacity != self.capacity.history_capacity:
-            raise ValueError(
-                "capacity report history differs from checkpoint full-history boundary: "
-                f"{history_capacity} != {self.capacity.history_capacity}"
+                "capacity report context differs from checkpoint token budget: "
+                f"{context_capacity} != {self.capacity.context_capacity}"
             )
 
     def to_dict(self) -> dict[str, object]:
@@ -353,6 +346,9 @@ class DeploymentContract:
             raise ValueError("history_skill_ids contains an id outside the deployment vocab")
         _validate_right_padding(named_inputs["scene_mask"], "scene_mask")
         _validate_right_padding(named_inputs["history_mask"], "history_mask")
+        valid_tokens = named_inputs["scene_mask"].sum(dim=1) + 2 * named_inputs["history_mask"].sum(dim=1) + 1
+        if bool((valid_tokens > self.capacity.context_capacity).any()):
+            raise ValueError("valid scene and history exceed shared context_capacity")
         for prefix in ("history", "current"):
             availability = named_inputs[f"{prefix}_state_vectors"][..., self.data_spec.base_state_dim:]
             if prefix == "history":
@@ -417,8 +413,7 @@ class DeploymentContract:
                 "sampling_policy": "host",
             },
             "capacity_provenance": {
-                "history_capacity_source": "checkpoint.model_config.history_capacity",
-                "scene_capacity_source": "checkpoint.model_config.scene_capacity",
+                "context_capacity_source": "checkpoint.model_config.context_capacity",
                 "over_capacity": "reject",
                 "report_filename": "capacity_report.json",
                 "semantic_sha256": self.capacity_report_sha256,

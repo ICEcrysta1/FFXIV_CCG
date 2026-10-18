@@ -12,6 +12,7 @@
 
 ### Breaking Changes
 
+- 模型容量配置由 `model.scene_capacity`／`model.history_capacity` 改为统一的 `model.context_capacity`，旧字段不再接受。checkpoint 输入描述和 ONNX 部署容量契约同步调整，旧 checkpoint 与部署包明确拒绝复用，需重新训练、导出；本次读取侧窗口调整不要求重新转换已符合当前缓存契约的完整 PT。
 - **FightEngine 状态职责拆分不保留旧版公开接口兼容层。** 依赖旧版 `FightEngine.dll` 的宿主、自定义职业和桥接程序集需同步迁移并重新编译，Python.NET 脚本需更新旧成员访问。项目 Python 调用方升级后执行 `dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj`，同步更新核心与桥接 DLL，并重启已加载旧 DLL 的进程。
 - `CombatState.JobResources`、`JobTimelineDeadlines` 分别迁移为 `state.Job.Resources`、`state.Job.TimelineDeadlines`；`GetJobResource`／`SetJobResource` 改为 `state.Job.GetResource`／`state.Job.SetResource`。职业 Buff 改存 `state.Job.Statuses`，查询改用 `state.Job.HasStatus`／`StatusStacks`；根 `Statuses` 只保存公共状态。直接序列化原始状态或 `SimulationSnapshot` 的调用方需同步迁移结构。
 - `IJobStateMachine` 新增必需的 `JobStateRuntime State { get; }`；`RegisterTimeline` 参数改用 `Combat.Sim.Jobs.Timeline.JobTimelineRegistry`。职业量谱、Buff 和计时规则由 `State` 持有；手工构造职业状态到期事件时须显式指定 `Scope: TimelineEventScope.Job`。
@@ -23,6 +24,8 @@
 
 ### Changed
 
+- 训练、回放、PPG、GRPO、KV cache 与 ONNX 统一使用场景、历史状态／动作及当前状态的 token 总预算，黑魔 Artzip 默认总容量由 `801` 调整为 `1024`。超限时保留最近 `history_reset_keep` 条完整状态／动作记录（默认 `8` 条），清除更早上下文后重新累积；按历史锚点重新计算有效场景，消融和随机截窗也需满足总预算。原始 PT 保留完整历史与场景，`<dead/>` 仍未接入模型输入。
+- 混合 batch 进入 Transformer 前按各样本的有效顺序压紧场景和历史 token，物理序列长度也受共享容量约束；位置编号排除 padding，KV cache 同步适配压紧与上下文重置。
 - 动作输出头与 ABS reset 投影改用原生 `nn.Linear`；显式调用这两层的 `reset_parameters()` 时改为标准随机初始化，分别替代原动作头的空操作与 reset 投影的清零。模块打印、TensorBoard／JIT 图中的类名随之变化，重新导出的 ONNX 诊断元数据及文件哈希可能变化；旧私有层类路径不再提供，外部依赖这些类的整模型 pickle 无法直接反序列化。
 - 统一训练、回放和部署的输入归一化配置：MP 与实际耗蓝除以 `10000`，公共时间尺度为 `270` 秒，场景目标数截断到 `0～5` 后除以 `5`，单次技能威力及状态绝对威力截断到 `0～2000` 后除以 `2000`。状态锚点与场景时间默认继承公共配置，显式 `model.time_delta_scale` 仍只影响读取侧，不进入 compiled cache 签名；状态 DELTA 保留符号且不截断。
 - 职业计数资源和已注册 Buff 层数继续使用 YAML 上限；时间量谱通过 `unit: seconds` 明确声明并使用公共时间尺度。技能可用充能与最大充能均除以该条冻结记录的原始 `max_charges`，支持不同技能的充能上限，拒绝缺失、非有限或非法上限；checkpoint 保存完整归一化契约，离线恢复不重新读取本机职业 YAML。
@@ -35,6 +38,7 @@
 
 ### Fixed
 
+- 编码结果实际删除相对上下文锚点已过期的场景 token，混合 batch 仅保留必要 padding；ONNX 宿主在固定容量检查和补齐前同步移除无效场景行，修复有效总长度合法却因场景物理行数超限而被拒绝的问题。有效场景的顺序、类型及时间差分保持不变。
 - 修复死亡取消已提交但尚未生效的动作后，转换器将后续执行历史误判为标签泄漏的问题：按明确的死亡边界分段校验历史前缀，允许取消死亡前未结算的尾部，继续拒绝段内跳过动作。
 - GRPO 的 KL 项改用 `expm1(x) - x`，避免 FP32 下近零对数比的非零 KL 被舍入为零；KL 指标、损失及梯度的浮点结果可能变化，后续 GRPO 训练权重不保证与旧实现逐位复现。
 - 修正绝望的最低施放 MP 为 YAML 配置的 `800`，与核爆相同；补充 Python／C# 真实状态机在 AF1／AF3 下的 `799` 拒绝、`800` 接受、技能可用性及拒绝无副作用回归。

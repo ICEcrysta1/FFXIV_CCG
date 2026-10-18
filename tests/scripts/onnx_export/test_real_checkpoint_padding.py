@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 import torch
 
-from common.policy.config import ModelConfig
 from common.policy.data.input_contract import INPUT_CONTRACT_VERSION
 from common.pytorch.serialization import safe_torch_load
 from scripts.onnx_export import CapacityContract, DeploymentManifest
@@ -54,6 +53,8 @@ def _load_current_checkpoint() -> dict[str, object]:
             "real checkpoint uses an older model input contract; "
             "retrain it with the fixed action vocabulary and causal architecture"
         )
+    if not isinstance(model_config, dict) or "context_capacity" not in model_config:
+        pytest.skip("real checkpoint uses removed independent capacities; retrain with shared context capacity")
     return checkpoint
 
 
@@ -66,24 +67,9 @@ def test_real_bf16_checkpoint_padding_matrix_cuda():
         precision="bf16",
     )
     profile = DeploymentProfile.load(DeploymentProfile.default_path(data_spec.job_tag))
-    # scene 容量以 checkpoint 的职业模型配置为准（旧 checkpoint 缺失时回退
-    # ModelConfig 默认值），与导出侧读取逻辑保持一致，不硬编码具体数值。
-    scene_capacity = int(
-        checkpoint["model_config"].get(
-            "scene_capacity",
-            ModelConfig.scene_capacity,
-        )
-    )
-    contract = CapacityContract(
-        scene_capacity=scene_capacity,
-        history_capacity=int(checkpoint["model_config"]["history_capacity"]),
-    )
+    contract = CapacityContract(context_capacity=int(checkpoint["model_config"]["context_capacity"]))
     assert vocab_size == len(profile.vocab_entries) + 1
-    required_positions = (
-        contract.scene_capacity
-        + 2 * contract.history_capacity
-        + 1
-    )
+    required_positions = int(checkpoint["model_config"]["context_capacity"])
     assert contract.total_token_count == required_positions
     contract.validate()
     assert torch.cuda.is_bf16_supported()
@@ -120,14 +106,7 @@ def test_real_checkpoint_full_export_profile_and_ort(tmp_path):
         str(checkpoint["data_spec"]["job_tag"])
     )
     profile = DeploymentProfile.load(profile_path)
-    history_capacity = int(checkpoint["model_config"]["history_capacity"])
-    scene_capacity = int(
-        checkpoint["model_config"].get(
-            "scene_capacity",
-            ModelConfig.scene_capacity,
-        )
-    )
-    required_positions = scene_capacity + 2 * history_capacity + 1
+    required_positions = int(checkpoint["model_config"]["context_capacity"])
     embedding = checkpoint["model_state_dict"]["input_encoder.skill_embed.weight"]
 
     output = export_package(
@@ -150,13 +129,7 @@ def test_real_checkpoint_full_export_profile_and_ort(tmp_path):
     assert manifest.payload["opset"] == 18
     assert contract.precision == "bf16"
     assert contract.data_spec.job_tag == "black_mage"
-    assert contract.capacity.scene_capacity == int(
-        checkpoint["model_config"].get(
-            "scene_capacity",
-            ModelConfig.scene_capacity,
-        )
-    )
-    assert contract.capacity.history_capacity == history_capacity
+    assert contract.capacity.context_capacity == required_positions
     assert contract.data_spec.num_actions == len(contract.data_spec.action_keys)
     assert contract.vocab_entries == profile.vocab_entries
     assert contract.capacity.total_token_count == required_positions

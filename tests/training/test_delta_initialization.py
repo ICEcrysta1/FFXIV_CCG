@@ -21,7 +21,7 @@ def test_state_reset_projection_preserves_common_initialization(monkeypatch, ful
     )
     config = ModelConfig(
         n_layers=4, d_model=256, n_heads=4, ff_dim=1024,
-        transformer_activation="swiglu", history_capacity=300,
+        transformer_activation="swiglu", context_capacity=1024,
         full_attention_residuals=full_attention_residuals,
     )
     projection_rng = {}

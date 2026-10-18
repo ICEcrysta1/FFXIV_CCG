@@ -386,7 +386,7 @@ class AutoregressiveReplaySession:
         if self._state_machine is None:
             self._state_machine = self._engine.create_backend(
                 actual_base_gcd=self._initial_config.base_gcd,
-                max_history=self._initial_config.max_history,
+                max_history=None,
             )
         return self._state_machine
 
@@ -435,7 +435,7 @@ class AutoregressiveReplaySession:
             fight_remaining = max(0.0, fight_end - float(initial_timestamp))
         init_kwargs = {
             "actual_base_gcd": config.base_gcd,
-            "max_history": config.max_history,
+            "max_history": None,
             "initial_timestamp": initial_timestamp,
         }
         if fight_remaining is not None:

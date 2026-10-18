@@ -45,21 +45,18 @@ class CausalInputEncoder(nn.Module):
 
     @property
     def max_token_count(self) -> int:
-        """返回由各上下文块容量自动换算出的最大物理 token 数。"""
-        return (
-            self.config.scene_capacity
-            + 2 * self.config.history_capacity
-            + 1
-        )
+        """场景、历史状态、动作与当前状态共享同一个物理 token 预算。"""
+        return self.config.context_capacity
 
     def forward(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         self._validate_batch(batch)
         scene_vectors = batch["scene_vectors"].float()
         batch_size, scene_length, _ = scene_vectors.shape
         history_length = batch["history_skill_ids"].shape[1]
-        # 物理 token 布局仍按 batch 的最大 scene/history 宽度补齐；
-        # RoPE 使用的逻辑位置由有效长度单独生成，不再把 padding 当成时间步。
+        # 输入各块可以独立补齐；进入 Transformer 前按每个样本的有效顺序压紧，
+        # 避免不同样本的场景/历史最大宽度相加后超过共享预算。
         history_token_length = 2 * history_length
+        prefix_width = min(self.config.context_capacity - 1, scene_length + history_token_length)
         device = scene_vectors.device
         d_model = self.config.d_model
 
@@ -89,36 +86,33 @@ class CausalInputEncoder(nn.Module):
             batch["current_state_reset_mask"],
         ).unsqueeze(1)
 
-        content_tokens = torch.cat(
-            (scene_embeds, history_tokens, current_state),
-            dim=1,
+        source_valid = torch.cat(
+            (batch["scene_mask"], batch["history_mask"].repeat_interleave(2, dim=1)), dim=1,
         )
-
-        position_ids = build_position_ids(
-            batch_size=batch_size,
-            scene_length=scene_length,
-            history_length=history_length,
-            scene_mask=batch["scene_mask"],
-            history_mask=batch["history_mask"],
-        )
+        source_positions = source_valid.to(torch.long).cumsum(dim=1) - 1
+        source_tokens = torch.cat((scene_embeds, history_tokens), dim=1)
+        # 无效项不能通过乘零消除：补齐内容即使为 NaN，也不得污染 scatter 的有效结果。
+        source_tokens = source_tokens.masked_fill(~source_valid.unsqueeze(-1), 0)
+        packed_prefix = source_tokens.new_zeros((batch_size, prefix_width, d_model))
+        if prefix_width:
+            packed_prefix = packed_prefix.scatter_add(
+                1, source_positions.clamp(min=0).unsqueeze(-1).expand(-1, -1, d_model), source_tokens,
+            )
+        prefix_counts = source_valid.to(torch.long).sum(dim=1)
+        prefix_valid = torch.arange(prefix_width, device=device)[None, :] < prefix_counts[:, None]
+        content_tokens = torch.cat((packed_prefix, current_state), dim=1)
+        position_ids = build_position_ids(prefix_valid=prefix_valid)
         role_ids = build_role_ids(
-            batch_size=batch_size,
-            scene_length=scene_length,
-            history_length=history_length,
-            device=device,
+            scene_mask=batch["scene_mask"], history_mask=batch["history_mask"], prefix_width=prefix_width,
         )
         with torch.autocast(device_type=device.type, enabled=False):
             tokens = content_tokens + self.role_embed(role_ids).float()
             # 全部角色在 FP32 中合成和统一尺度，不去均值，也不引入仿射参数。
             tokens = torch.nn.functional.rms_norm(tokens, (d_model,), eps=1e-5)
 
-        current_state_position = scene_length + history_token_length
+        current_state_position = prefix_width
         current_state_positions = torch.full(
             (batch_size,), current_state_position, dtype=torch.long, device=device,
-        )
-        prefix_valid = torch.cat(
-            (batch["scene_mask"], batch["history_mask"].repeat_interleave(2, dim=1)),
-            dim=1,
         )
         current_state_valid = torch.ones(
             (batch_size, 1),
@@ -126,9 +120,9 @@ class CausalInputEncoder(nn.Module):
             device=device,
         )
         valid = torch.cat((prefix_valid, current_state_valid), dim=1)
-        history_state_positions = (
-            scene_length + 2 * torch.arange(history_length, device=device, dtype=torch.long)
-        ).unsqueeze(0).expand(batch_size, -1)
+        history_state_positions = source_positions[:, scene_length::2]
+        history_state_positions = history_state_positions.masked_fill(~batch["history_mask"], 0)
+        history_skill_positions = (history_state_positions + 1).masked_fill(~batch["history_mask"], 0)
         return {
             "tokens": tokens,
             "padding_mask": ~valid,
@@ -137,10 +131,10 @@ class CausalInputEncoder(nn.Module):
             "scene_length": scene_length,
             "history_length": history_length,
             "history_token_length": history_token_length,
-            "prefix_length": scene_length + history_token_length,
+            "prefix_length": prefix_width,
             "position_ids": position_ids,
             "role_ids": role_ids,
-            "history_skill_positions": history_state_positions + 1,
+            "history_skill_positions": history_skill_positions,
             "history_state_positions": history_state_positions,
             "current_state_position": current_state_position,
             "current_state_positions": current_state_positions,
@@ -177,94 +171,44 @@ class CausalInputEncoder(nn.Module):
         expected = self.data_spec
         scene_length = batch["scene_vectors"].shape[1]
         history_length = batch["history_skill_ids"].shape[1]
-        if scene_length > self.config.scene_capacity:
-            raise ValueError(
-                "scene context length exceeds model.scene_capacity: "
-                f"{scene_length} > {self.config.scene_capacity}"
-            )
-        if history_length > self.config.history_capacity:
-            raise ValueError(
-                "skill history context length exceeds model.history_capacity: "
-                f"{history_length} > {self.config.history_capacity}"
-            )
         dimensions = tensor_dimensions(expected, batch=batch["scene_vectors"].shape[0], scene=scene_length, history=history_length)
         for field in MODEL_INPUT_FIELDS:
             if field.name not in batch:
                 raise ValueError(f"missing model input: {field.name}")
             # 数值入口固定为 FP32，禁止在投影之前提前量化。
             field.validate_tensor(batch[field.name], dimensions, torch=torch)
+        if (batch["scene_mask"].device.type == "cpu"
+                and not torch.onnx.is_in_onnx_export() and not torch.compiler.is_compiling()):
+            token_counts = batch["scene_mask"].sum(dim=1) + 2 * batch["history_mask"].sum(dim=1) + 1
+            if bool((token_counts > self.config.context_capacity).any()):
+                raise ValueError("context token count exceeds model.context_capacity")
         if "action_legal_mask" in batch and batch["action_legal_mask"].shape != (
             batch["scene_vectors"].shape[0], expected.num_actions,
         ):
             raise ValueError("action legal mask does not match the data spec")
 
 
-def build_position_ids(
-    *,
-    batch_size: int,
-    scene_length: int,
-    history_length: int,
-    scene_mask: torch.Tensor,
-    history_mask: torch.Tensor,
-) -> torch.Tensor:
-    """构造按样本有效长度生成的 RoPE 逻辑位置编号。
-
-    物理布局可以包含任意位置的 padding，但有效 token 的编号始终遵循：
-    ``scene -> state, skill -> current state``。scene/history 的位置按各自
-    mask 的有效计数生成，不依赖有效 token 是否位于物理布局前段；无效
-    scene/history token 的位置固定为 0，并由 attention mask 完全排除。
-    """
-    if tuple(scene_mask.shape) != (batch_size, scene_length):
-        raise ValueError("scene_mask shape does not match the physical scene layout")
-    if tuple(history_mask.shape) != (batch_size, history_length):
-        raise ValueError("history_mask shape does not match the physical history layout")
-
-    scene_mask_long = scene_mask.to(dtype=torch.long)
-    history_token_mask = history_mask.repeat_interleave(2, dim=1)
-    history_mask_long = history_token_mask.to(dtype=torch.long)
-    scene_valid_lengths = scene_mask_long.sum(dim=1)
-    history_valid_lengths = history_mask_long.sum(dim=1)
-    scene_positions = torch.cumsum(scene_mask_long, dim=1) - 1
-    scene_positions = torch.where(
-        scene_mask,
-        scene_positions,
-        torch.zeros_like(scene_positions),
-    )
-    history_positions = (
-        torch.cumsum(history_mask_long, dim=1) - 1
-    ) + scene_valid_lengths.unsqueeze(1)
-    history_positions = torch.where(
-        history_token_mask,
-        history_positions,
-        torch.zeros_like(history_positions),
-    )
-    current_state_positions = (scene_valid_lengths + history_valid_lengths).unsqueeze(1)
-    return torch.cat(
-        (
-            scene_positions,
-            history_positions,
-            current_state_positions,
-        ),
-        dim=1,
-    )
+def build_position_ids(*, prefix_valid: torch.Tensor) -> torch.Tensor:
+    """压紧后的有效前缀连续编号，补齐位置为零，当前状态接在有效前缀之后。"""
+    prefix_counts = prefix_valid.to(torch.long).sum(dim=1)
+    positions = prefix_valid.to(torch.long).cumsum(dim=1) - 1
+    positions = positions.masked_fill(~prefix_valid, 0)
+    return torch.cat((positions, prefix_counts[:, None]), dim=1)
 
 
 def build_role_ids(
-    *, batch_size: int, scene_length: int, history_length: int, device
+    *, scene_mask: torch.Tensor, history_mask: torch.Tensor, prefix_width: int,
 ) -> torch.Tensor:
-    """按场景、状态、技能顺序编号；最新状态不拥有单独的类型。"""
-    history_roles = torch.stack(
-        (
-            torch.full((history_length,), ROLE_STATE, dtype=torch.long, device=device),
-            torch.full((history_length,), ROLE_SKILL, dtype=torch.long, device=device),
-        ),
-        dim=1,
-    ).reshape(2 * history_length)
-    role_ids = torch.cat(
-        (
-            torch.full((scene_length,), ROLE_SCENE, dtype=torch.long, device=device),
-            history_roles,
-            torch.full((1,), ROLE_STATE, dtype=torch.long, device=device),
-        )
-    ).unsqueeze(0).expand(batch_size, -1)
-    return role_ids
+    """按压紧后的场景、状态、技能生成角色；末尾为共用投影的当前状态。"""
+    batch_size = scene_mask.shape[0]
+    device = scene_mask.device
+    scene_counts = scene_mask.to(torch.long).sum(dim=1)
+    prefix_counts = scene_counts + 2 * history_mask.to(torch.long).sum(dim=1)
+    positions = torch.arange(prefix_width, dtype=torch.long, device=device)[None, :].expand(batch_size, -1)
+    roles = torch.where(
+        positions < scene_counts[:, None], ROLE_SCENE,
+        torch.where((positions - scene_counts[:, None]) % 2 == 0, ROLE_STATE, ROLE_SKILL),
+    )
+    roles = roles.masked_fill(positions >= prefix_counts[:, None], ROLE_SCENE)
+    current_role = torch.full((batch_size, 1), ROLE_STATE, dtype=torch.long, device=device)
+    return torch.cat((roles, current_role), dim=1)

@@ -453,7 +453,7 @@ def _live_builder_fixture(*, max_history=2, reorder_state_fields=False):
         scene_provider=SimpleNamespace(at_time=lambda _: (torch.empty((0, 3)), torch.empty(0, dtype=torch.int32)),
                                        state_at=lambda _: SimpleNamespace(next_downtime_eta=0.0, downtime_remaining=0.0)),
         device=torch.device("cpu"), max_history=max_history,
-        model_config=ModelConfig(history_capacity=max_history, history_reset_keep=max_history),
+        model_config=ModelConfig(context_capacity=max(3, 2 * max_history + 1), history_reset_keep=max(1, max_history)),
         action_keys=("fire", "ogcd_wait"), action_is_gcd=(True, False),
     )
     return builder, canonical
@@ -700,8 +700,8 @@ def test_live_history_rejects_old_skill_timestamp_even_with_new_state_schema():
         builder.build_from_canonical(canonical, gcd_phase=True, max_history=2)
 
 
-def test_live_window_uses_accumulated_cursor_after_canonical_retention():
-    """留存一直是 300 行，分段窗口仍由累计 301/593/594 游标决定。"""
+def test_live_window_reconstructs_resets_from_complete_history():
+    """完整历史只用于重建窗口，模型在溢出后仍只看到最近八条再累积。"""
     from dataclasses import replace
 
     builder, canonical = _live_builder_fixture(max_history=300)
@@ -709,8 +709,6 @@ def test_live_window_uses_accumulated_cursor_after_canonical_retention():
     expected_lengths = {300: 300, 301: 8, 593: 300, 594: 8}
     for index in range(1, 595):
         _append_live_history(canonical, index, after=100.0)
-        canonical["skill_history_context"] = canonical["skill_history_context"][-300:]
-        canonical["state_history_context"]["tokens"] = canonical["state_history_context"]["tokens"][-300:]
         if index not in expected_lengths:
             continue
         actual, _ = builder.build_from_canonical(canonical, gcd_phase=True, max_history=300)
@@ -724,6 +722,42 @@ def test_live_window_uses_accumulated_cursor_after_canonical_retention():
         repeated, _ = builder.build_from_canonical(canonical, gcd_phase=True, max_history=300)
         torch.testing.assert_close(repeated["history_state_vectors"], actual["history_state_vectors"])
         assert canonical["history_cursor"] == index
+
+
+def test_live_shared_budget_uses_new_anchor_after_scene_windows_expire():
+    from dataclasses import replace
+
+    builder, canonical = _live_builder_fixture(max_history=30)
+    builder._model_config = replace(builder._model_config, context_capacity=24, history_reset_keep=2)
+    # 初始八个场景使第一块只容纳七个动作；重置后的锚点晚于结束时刻。
+    builder._scene_provider.at_time = lambda _: (
+        torch.tensor([[0.0, 4.0, 4.0]] * 8), torch.zeros(8, dtype=torch.int32),
+    )
+    expected_lengths = {7: 7, 8: 2, 17: 11, 18: 2}
+    for index in range(1, 19):
+        _append_live_history(canonical, index, request_time=index - 1)
+        if index in expected_lengths:
+            batch, _ = builder.build_from_canonical(canonical, gcd_phase=True, max_history=30)
+            assert int(batch["history_mask"].sum()) == expected_lengths[index]
+            assert int(batch["scene_mask"].sum() + 2 * batch["history_mask"].sum() + 1) <= 24
+
+
+def test_live_history_ablation_rechecks_budget_for_nonmonotonic_request_times():
+    from dataclasses import replace
+
+    builder, canonical = _live_builder_fixture(max_history=4)
+    builder._model_config = replace(builder._model_config, context_capacity=9, history_reset_keep=2)
+    builder._scene_provider.at_time = lambda _: (
+        torch.tensor([[0.0, 0.05, 0.05]] * 7), torch.zeros(7, dtype=torch.int32),
+    )
+    _append_live_history(canonical, 1, request_time=0.1)
+    _append_live_history(canonical, 2, request_time=0.0)
+    canonical["current_state_context"]["tokens"][0]["player_state"][builder._history_request_time_index] = 0.2
+    full, _ = builder.build_from_canonical(canonical, gcd_phase=True, max_history=4)
+    cropped, _ = builder.build_from_canonical(canonical, gcd_phase=True, max_history=1)
+    assert int(full["history_mask"].sum()) == 2
+    assert int(cropped["history_mask"].sum()) == 0
+    assert int(cropped["scene_mask"].sum()) == 0
 
 
 @pytest.mark.parametrize("cursor", [None, True, -1, 1.0])

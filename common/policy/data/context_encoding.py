@@ -216,4 +216,8 @@ class ContextEncoder(nn.Module):
         values = torch.where(self.scene_count_mask[types], counts, values)
         values = values.masked_fill(~self.scene_feature_mask[types] | ~mask[..., None], 0.0)
         types = types.masked_fill(~mask, 0)
-        return {"scene_vectors": values, "scene_types": types, "scene_mask": mask}
+        # 删除整个 batch 都已失效的场景列，只保留不同样本长度所需的补齐。
+        visible_columns = mask.any(dim=0).nonzero(as_tuple=True)[0]
+        return {"scene_vectors": values.index_select(1, visible_columns),
+                "scene_types": types.index_select(1, visible_columns),
+                "scene_mask": mask.index_select(1, visible_columns)}

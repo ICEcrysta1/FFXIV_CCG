@@ -36,7 +36,10 @@ def test_real_model_variable_history_matches_serial(dataset, use_cache, precisio
     model = CausalPolicyModel(
         spec, ModelConfig(d_model=16, n_heads=2, n_layers=1, ff_dim=32, dropout=0),
         vocab_size=SkillVocab.build_from_job_tag(spec.job_tag).size(),
-    ).eval().to(device=device, dtype=torch.float32 if precision == "float32" else torch.bfloat16)
+    ).eval().to(device=device)
+    parameter_dtype = torch.float32 if precision == "float32" else torch.bfloat16
+    model.encoder.to(dtype=parameter_dtype)
+    model.output_head.to(dtype=parameter_dtype)
     policy = TrainingPolicyBackend(model, data_spec=spec, device=device, precision=precision)
     encoder = ContextEncoder(dataset.normalizer, dataset.schema, model.config, layout=dataset.state_layout).to(device=device)
     samples = [encoder.encode(move_batch(TrainingCollator()([dataset[index]]), device))
@@ -87,7 +90,7 @@ def test_same_canonical_compact_training_live_and_onnx_host_encode_identically(t
         fight_id="same_canonical",
     )
     dataset = make_dataset(
-        [source], max_history=4, history_reset_keep=2,
+        [source], context_capacity=9, max_history=4, history_reset_keep=2,
         float_dtype=torch.float32, int_dtype=torch.int32,
     )
     payload = _TEST_TRAINING_PAYLOADS[source.resolve()]
@@ -95,7 +98,7 @@ def test_same_canonical_compact_training_live_and_onnx_host_encode_identically(t
     vocab = SkillVocab.build_from_job_tag(spec.job_tag)
     config = ModelConfig(
         d_model=16, n_layers=1, n_heads=2, num_kv_heads=1, ff_dim=32,
-        dropout=0.0, history_capacity=4, history_reset_keep=2, scene_capacity=8,
+        dropout=0.0, context_capacity=9, history_reset_keep=2,
     )
     encoder = ContextEncoder(dataset.normalizer, dataset.schema, config, layout=dataset.state_layout)
     scene_provider = SceneTemplateProvider(
@@ -108,14 +111,14 @@ def test_same_canonical_compact_training_live_and_onnx_host_encode_identically(t
         model_config=config, action_keys=spec.action_keys, action_is_gcd=spec.action_is_gcd,
     )
     contract = DeploymentContract.create(
-        precision=precision, capacity=CapacityContract(scene_capacity=8, history_capacity=4),
+        precision=precision, capacity=CapacityContract(context_capacity=9),
         data_spec=spec,
         input_contract=ModelInputContract.from_training(
             skill_vocab=vocab, data_spec=spec, schema=dataset.schema, normalizer=dataset.normalizer,
         ),
         model_config=asdict(config), repetition_config={}, vocab_entries=tuple(vocab),
         capacity_report={
-            "semantic_sha256": "0" * 64, "scene_capacity": 8, "history_capacity": 4,
+            "semantic_sha256": "0" * 64, "context_capacity": 9,
             "evidence": {"fixture": "same_real_canonical"},
         },
         embedding_vocab_size=vocab.size(),
@@ -128,7 +131,7 @@ def test_same_canonical_compact_training_live_and_onnx_host_encode_identically(t
         assert "history_skill_ids" not in raw
         training = encoder.encode(raw)
         canonical = row["context"]
-        saw_overflow |= canonical["history_cursor"] > config.history_capacity
+        saw_overflow |= canonical["history_cursor"] > config.max_history_actions
         live, keys = builder.build_from_canonical(canonical, gcd_phase=True, max_history=4)
         assert tuple(keys) == spec.action_keys
         for name in TENSOR_INPUT_NAMES:
@@ -162,6 +165,94 @@ def test_same_canonical_compact_training_live_and_onnx_host_encode_identically(t
     assert saw_overflow
 
 
+def test_onnx_host_removes_invalid_scene_rows_before_shared_capacity_padding(tmp_path):
+    """七个有效场景和当前状态恰好占满八槽；无效行不能占用运输容量。"""
+    ort = pytest.importorskip("onnxruntime")
+    pytest.importorskip("onnxscript")
+    from common.policy.data.context_fields import MODEL_INPUT_FIELDS_BY_NAME
+    from scripts.autoregressive_replay.backends import build_fixed_ort_inputs, _to_fixed_capacity_batch
+    from scripts.onnx_export import TENSOR_INPUT_NAMES
+    from scripts.onnx_export.contracts.contract import make_inputs
+    from scripts.onnx_export.export.checkpoint import load_policy_contracts
+    from scripts.onnx_export.runtime.tensor_runtime import run_ort_tensors
+    from tests.scripts.onnx_export.test_exporter import _write_small_checkpoint, _write_small_profile
+
+    checkpoint, profile = tmp_path / "model.pt", tmp_path / "profile.json"
+    spec, _ = _write_small_checkpoint(checkpoint)
+    saved = torch.load(checkpoint, weights_only=True)
+    saved["model_config"].update(context_capacity=8, history_reset_keep=3)
+    torch.save(saved, checkpoint)
+    _write_small_profile(profile)
+    contracts = load_policy_contracts(
+        checkpoint_path=checkpoint, deployment_profile_path=profile, precision="float32",
+    )
+    inputs = make_inputs(
+        spec, contracts.contract, vocab_size=contracts.vocab_size,
+        scene_valid=7, history_valid=0, dtype=torch.float32, seed=97,
+    )
+    batch = dict(zip(TENSOR_INPUT_NAMES, inputs, strict=True))
+    for name, value in tuple(batch.items()):
+        field = MODEL_INPUT_FIELDS_BY_NAME[name]
+        if field.sequence_group == "scene":
+            extra = torch.full_like(value[:, :1], field.padding_value)
+            if name == "scene_vectors":
+                extra.fill_(91.0)
+            batch[name] = torch.cat((value[:, :3], extra, value[:, 3:]), dim=1)
+    batch["action_legal_mask"] = torch.ones((1, spec.num_actions), dtype=torch.bool)
+    original = {name: value.clone() for name, value in batch.items()}
+    assert batch["scene_mask"].shape == (1, 8)
+    assert int(batch["scene_mask"].sum()) == 7
+
+    fixed = build_fixed_ort_inputs(batch, contracts.deployment_contract)
+    reference_batch = _to_fixed_capacity_batch(
+        batch, contracts.deployment_contract, device=torch.device("cpu"),
+    )
+    for name, expected, actual in zip(TENSOR_INPUT_NAMES, inputs, fixed, strict=True):
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0, msg=name)
+        torch.testing.assert_close(reference_batch[name], expected, rtol=0, atol=0, msg=name)
+    for name, value in batch.items():
+        torch.testing.assert_close(value, original[name], rtol=0, atol=0, msg=name)
+
+    policy = contracts.policy
+    with torch.no_grad():
+        expected_logits = policy(*(batch[name] for name in TENSOR_INPUT_NAMES))
+        host_logits = policy(*fixed)
+    torch.testing.assert_close(host_logits, expected_logits, rtol=1e-5, atol=1e-6)
+    model_path = tmp_path / "model.onnx"
+    torch.onnx.export(
+        policy, fixed, model_path, input_names=TENSOR_INPUT_NAMES, output_names=("raw_logits",),
+        opset_version=18, dynamo=True, external_data=False,
+    )
+    session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
+    actual_logits, = run_ort_tensors(session, dict(zip(TENSOR_INPUT_NAMES, fixed, strict=True)))
+    torch.testing.assert_close(actual_logits, expected_logits, rtol=1e-5, atol=1e-6)
+
+    # 全部过期时保留零个有效场景，同一部署图仍能正常执行当前状态。
+    expired = dict(batch, scene_mask=torch.zeros_like(batch["scene_mask"]))
+    expired_fixed = build_fixed_ort_inputs(expired, contracts.deployment_contract)
+    expired_named = dict(zip(TENSOR_INPUT_NAMES, expired_fixed, strict=True))
+    assert not expired_named["scene_mask"].any()
+    assert torch.count_nonzero(expired_named["scene_vectors"]) == 0
+    assert torch.count_nonzero(expired_named["scene_types"]) == 0
+    with torch.no_grad():
+        expired_pytorch_logits = policy(*(expired[name] for name in TENSOR_INPUT_NAMES))
+        expired_host_logits = policy(*expired_fixed)
+    expired_ort_logits, = run_ort_tensors(session, expired_named)
+    torch.testing.assert_close(expired_host_logits, expired_pytorch_logits, rtol=1e-5, atol=1e-6)
+    torch.testing.assert_close(expired_ort_logits, expired_pytorch_logits, rtol=1e-5, atol=1e-6)
+
+    overflow = dict(batch, scene_mask=torch.ones_like(batch["scene_mask"]))
+    for adapt in (
+        lambda: build_fixed_ort_inputs(overflow, contracts.deployment_contract),
+        lambda: _to_fixed_capacity_batch(overflow, contracts.deployment_contract, device=torch.device("cpu")),
+    ):
+        with pytest.raises(ValueError, match="context_capacity"):
+            adapt()
+    mismatched = dict(batch, scene_types=batch["scene_types"][:, :-1])
+    with pytest.raises(ValueError, match="scene axis differs from scene_mask"):
+        build_fixed_ort_inputs(mismatched, contracts.deployment_contract)
+
+
 @pytest.mark.parametrize("workers", [1, 3, 16])
 def test_validation_real_queues_match_serial_and_release(dataset, monkeypatch, workers):
     spec = DataSpec.from_dataset(dataset)
@@ -171,7 +262,7 @@ def test_validation_real_queues_match_serial_and_release(dataset, monkeypatch, w
         def __init__(self):
             super().__init__()
             self.batch_sizes = []
-            self.config = ModelConfig(history_capacity=4, history_reset_keep=4)
+            self.config = ModelConfig(context_capacity=12, history_reset_keep=4)
 
         def forward(self, batch):
             self.batch_sizes.append(batch["action_legal_mask"].shape[0])
@@ -181,7 +272,7 @@ def test_validation_real_queues_match_serial_and_release(dataset, monkeypatch, w
             return {"logits": values}
 
     config = SimpleNamespace(
-        model=ModelConfig(history_capacity=4, history_reset_keep=4),
+        model=ModelConfig(context_capacity=12, history_reset_keep=4),
         ppg=SimpleNamespace(enabled=True, normalization=1000, use_kv_cache=False),
         precision="float32",
     )
@@ -211,7 +302,7 @@ def test_grpo_sampling_is_independent_of_worker_count(dataset, tmp_path):
         supports_batch_inference = True
         data_spec = spec
         input_device = torch.device("cpu")
-        model_config = ModelConfig(history_capacity=4, history_reset_keep=4)
+        model_config = ModelConfig(context_capacity=12, history_reset_keep=4)
         input_contract = ModelInputContract.from_training(
             skill_vocab=vocab,
             data_spec=spec, schema=dataset.schema, normalizer=dataset.normalizer,
@@ -238,7 +329,7 @@ def test_grpo_sampling_is_independent_of_worker_count(dataset, tmp_path):
     config = AutoregressiveReplayConfig(
         checkpoint_path=Policy.source_path, output_path=tmp_path / "unused.md",
         scene_json_path=paths[0], cache_dir=tmp_path / ".cache",
-        model_history_capacity=4, cache_shard_size=512, cache_max_shards=2,
+        model_context_capacity=12, cache_shard_size=512, cache_max_shards=2,
         max_steps=None, max_duration_seconds=10, max_history=4, initial_action=None,
         temperature=1, top_p=0.95, use_kv_cache=False, device="cpu", job_tag=spec.job_tag,
     )
@@ -283,7 +374,7 @@ def test_sixteen_real_queues_keep_bounded_history_for_180_seconds():
     keys = ("heated_split_shot", "ogcd_wait")
     batch_sizes = []
     class FixedPolicy(torch.nn.Module):
-        config = ModelConfig(history_capacity=4, history_reset_keep=4)
+        config = ModelConfig(context_capacity=12, history_reset_keep=4)
         def forward(self, batch):
             size = batch["action_legal_mask"].shape[0]
             batch_sizes.append(size)

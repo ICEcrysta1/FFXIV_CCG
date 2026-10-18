@@ -11,12 +11,11 @@ from common.policy.model.input_encoder import ROLE_SCENE, ROLE_SKILL, ROLE_STATE
 from tests.training._causal_fixtures import make_batch, make_data_spec
 
 
-def _model(*, full_attention_residuals=False, history_capacity=4, scene_capacity=3):
+def _model(*, full_attention_residuals=False, context_capacity=12):
     spec = make_data_spec(num_scene_types=2)
     config = ModelConfig(d_model=8, n_heads=2, num_kv_heads=1, n_layers=2,
-                         ff_dim=16, dropout=0.0, scene_capacity=scene_capacity,
-                         history_capacity=history_capacity,
-                         history_reset_keep=min(8, history_capacity),
+                         ff_dim=16, dropout=0.0, context_capacity=context_capacity,
+                         history_reset_keep=min(8, (context_capacity - 1) // 2),
                          full_attention_residuals=full_attention_residuals)
     return CausalPolicyModel(spec, config, vocab_size=3).eval()
 
@@ -150,28 +149,107 @@ def test_interleaved_layout_keeps_action_positions_and_excludes_padding_from_rop
     assert encoded["history_token_length"] == 6
     assert encoded["prefix_length"] == encoded["current_state_position"] == 9
     assert encoded["current_state_positions"].tolist() == [9, 9]
-    assert encoded["history_skill_positions"].tolist() == [[4, 6, 8]] * 2
-    assert encoded["history_state_positions"].tolist() == [[3, 5, 7]] * 2
-    assert encoded["role_ids"].tolist() == [[ROLE_SCENE] * 3 + [ROLE_STATE, ROLE_SKILL] * 3 + [ROLE_STATE]] * 2
-    assert encoded["position_ids"].tolist() == [[0, 0, 1, 0, 0, 2, 3, 0, 0, 4],
+    assert encoded["history_skill_positions"].tolist() == [[0, 3, 0], [4, 6, 0]]
+    assert encoded["history_state_positions"].tolist() == [[0, 2, 0], [3, 5, 0]]
+    assert encoded["role_ids"].tolist() == [
+        [ROLE_SCENE] * 2 + [ROLE_STATE, ROLE_SKILL] + [ROLE_SCENE] * 5 + [ROLE_STATE],
+        [ROLE_SCENE] * 3 + [ROLE_STATE, ROLE_SKILL] * 2 + [ROLE_SCENE] * 2 + [ROLE_STATE],
+    ]
+    assert encoded["position_ids"].tolist() == [[0, 1, 2, 3, 0, 0, 0, 0, 0, 4],
                                                 [0, 1, 2, 3, 4, 5, 6, 0, 0, 7]]
-    assert encoded["valid"].tolist() == [[True, False, True, False, False, True, True, False, False, True],
+    assert encoded["valid"].tolist() == [[True, True, True, True, False, False, False, False, False, True],
                                         [True, True, True, True, True, True, True, False, False, True]]
 
 
-@pytest.mark.parametrize("history_capacity", [300, 384])
-def test_history_capacity_still_counts_actions(history_capacity):
-    model = _model(history_capacity=history_capacity, scene_capacity=4)
-    batch = make_batch(model.data_spec, history_length=history_capacity, scene_length=4)
+@pytest.mark.parametrize("history_length", [300, 384])
+def test_shared_capacity_counts_scene_state_and_action_tokens(history_length):
+    capacity = 4 + 2 * history_length + 1
+    model = _model(context_capacity=capacity)
+    batch = make_batch(model.data_spec, history_length=history_length, scene_length=4)
     encoded = model.input_encoder(batch)
-    assert model.config.history_capacity == history_capacity
-    assert model.input_encoder.max_token_count == 4 + 2 * history_capacity + 1
-    assert encoded["history_length"] == history_capacity
-    assert encoded["history_token_length"] == 2 * history_capacity
-    assert encoded["tokens"].shape[1] == 4 + 2 * history_capacity + 1
-    excessive = make_batch(model.data_spec, history_length=history_capacity + 1, scene_length=4)
-    with pytest.raises(ValueError, match="model.history_capacity"):
+    assert model.config.context_capacity == capacity
+    assert model.input_encoder.max_token_count == capacity
+    assert encoded["history_length"] == history_length
+    assert encoded["history_token_length"] == 2 * history_length
+    assert encoded["tokens"].shape[1] == capacity
+    excessive = make_batch(model.data_spec, history_length=history_length + 1, scene_length=4)
+    with pytest.raises(ValueError, match="model.context_capacity"):
         model.input_encoder(excessive)
+
+
+@pytest.mark.parametrize("scene_length,history_length", [(7, 0), (1, 3), (3, 2)])
+def test_shared_budget_accepts_different_scene_history_allocations(scene_length, history_length):
+    model = _model(context_capacity=8)
+    batch = make_batch(model.data_spec, scene_length=scene_length, history_length=history_length)
+    encoded = model.input_encoder(batch)
+    assert encoded["tokens"].shape == (1, 8, 8)
+    assert encoded["valid"].all()
+    assert encoded["position_ids"].tolist() == [list(range(8))]
+
+
+def test_current_state_is_included_in_scene_only_budget():
+    model = _model(context_capacity=5)
+    encoded = model.input_encoder(make_batch(model.data_spec, scene_length=4, history_length=0))
+    assert encoded["tokens"].shape[1] == 5
+    with pytest.raises(ValueError, match="model.context_capacity"):
+        model.input_encoder(make_batch(model.data_spec, scene_length=5, history_length=0))
+
+
+def test_complementary_batch_padding_is_compacted_within_shared_budget():
+    torch.manual_seed(915)
+    model = _model(context_capacity=8)
+    batch = make_batch(model.data_spec, batch_size=2, scene_length=7, history_length=3)
+    batch["scene_vectors"].normal_()
+    batch["history_state_vectors"].normal_()
+    batch["history_skill_features"].normal_()
+    batch["scene_mask"][1, 1:] = False
+    batch["history_mask"][0] = False
+    encoded = model.input_encoder(batch)
+    assert encoded["tokens"].shape == (2, 8, 8)
+    assert encoded["valid"].all()
+    assert encoded["current_state_positions"].tolist() == [7, 7]
+    assert encoded["history_state_positions"][1].tolist() == [1, 3, 5]
+    assert encoded["history_skill_positions"][1].tolist() == [2, 4, 6]
+    batch_logits = model(batch)["logits"]
+    for row, (scene_length, history_length) in enumerate(((7, 0), (1, 3))):
+        single = {}
+        for key, value in batch.items():
+            if not isinstance(value, torch.Tensor):
+                continue
+            value = value[row:row + 1]
+            if key.startswith("scene_"):
+                value = value[:, :scene_length]
+            elif key.startswith("history_"):
+                value = value[:, :history_length]
+            single[key] = value
+        standalone = model.input_encoder(single)
+        torch.testing.assert_close(encoded["tokens"][row:row + 1], standalone["tokens"])
+        torch.testing.assert_close(batch_logits[row:row + 1], model(single)["logits"], atol=2e-6, rtol=2e-6)
+
+    # 补齐内容不参与散射求和，即使非有限值也不能污染有效 token。
+    batch["scene_vectors"][1, 1:] = float("nan")
+    batch["history_state_vectors"][0] = float("nan")
+    batch["history_skill_features"][0] = float("nan")
+    masked = model.input_encoder(batch)
+    torch.testing.assert_close(masked["tokens"], encoded["tokens"], atol=0, rtol=0)
+
+
+@pytest.mark.parametrize("full_attention_residuals", [False, True])
+def test_packed_shared_budget_matches_full_forward_with_kv_cache(full_attention_residuals):
+    torch.manual_seed(916)
+    model = _model(context_capacity=8, full_attention_residuals=full_attention_residuals)
+    batch = make_batch(model.data_spec, batch_size=2, scene_length=7, history_length=3)
+    batch["scene_mask"][1, 1:] = False
+    batch["history_mask"][0] = False
+    model.enable_kv_cache(True)
+    for offset in (0.0, 0.2):
+        batch["current_state_vectors"].fill_(offset)
+        expected = model.trace(batch)
+        expected_logits = model.score_hidden(expected.encoded, expected.hidden, batch)
+        actual = model(batch)["logits"]
+        torch.testing.assert_close(actual, expected_logits, atol=2e-6, rtol=2e-6)
+        assert model._kv_cache.prefix_tokens.shape[1] == 7
+        assert model._kv_cache.history_length == 3
 
 
 @pytest.mark.parametrize("history_length", [0, 2])
