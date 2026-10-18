@@ -56,6 +56,7 @@ internal static class PolicySequenceReplay
 
         var observations = new List<Dictionary<string, object?>>();
         var pendingMarkers = new List<Dictionary<string, object?>>();
+        ExternalCombatEvent[]? pendingDeath = null;
         var factIndex = 0;
         var syncedTime = simulator.Time;
         var cursor = simulator.Time;
@@ -83,19 +84,26 @@ internal static class PolicySequenceReplay
                 }
             }
 
-            SyncAndAdvance(request.Timestamp);
+            SyncAndAdvance(request.Timestamp, beforeAction: true);
             var nextRequest = sourceIndex + 1 < requests.Length ? requests[sourceIndex + 1].Timestamp : fightDuration;
             var realContext = Observe(request.Timestamp, Math.Max(request.Timestamp, nextRequest));
             var submission = simulator.SubmitAction(request.Timestamp, request.SkillKey, request.ActualCastSeconds);
             AddFrame(sourceIndex, isWait: false, request.Timestamp, realContext, Submission(submission));
             // 拒绝帧仍返回给调用方，由其按自身标签、步号与错误契约处理；后续请求不再执行。
             if (!submission.Accepted) break;
+            if (pendingDeath is not null
+                && (sourceIndex + 1 == requests.Length || requests[sourceIndex + 1].Timestamp != request.Timestamp))
+            {
+                // 同刻旧请求全部提交后才死亡；标记由下一帧携带，末尾无后继帧则不输出。
+                ApplyFacts(pendingDeath);
+                pendingDeath = null;
+            }
             // 预测生效时刻只用于下一轮 wait 判断，不能提前推进并越过下一条日志请求。
             cursor = submission.EffectTimestamp ?? request.Timestamp;
         }
         return new Dictionary<string, object?> { ["observations"] = observations };
 
-        double SyncAndAdvance(double timestamp)
+        double SyncAndAdvance(double timestamp, bool beforeAction = false)
         {
             if (timestamp < syncedTime)
                 throw new InvalidOperationException("scene fact cursor cannot move backwards; reset the trajectory first");
@@ -104,20 +112,33 @@ internal static class PolicySequenceReplay
                 var batchEnd = factIndex + 1;
                 while (batchEnd < facts.Length && facts[batchEnd].Timestamp == facts[factIndex].Timestamp) batchEnd++;
                 var batch = facts[factIndex..batchEnd];
-                var applied = simulator.ApplyExternalEvents(batch);
-                if (!applied.Accepted)
-                    throw new InvalidOperationException($"scene facts rejected at {batch[0].Timestamp:R}: {applied.Reason}");
-                if (applied.Token is not null)
+                // 同刻已有复活时保持整批先执行；否则只将死亡留到同刻旧请求之后。
+                if (beforeAction && batch[0].Timestamp == timestamp
+                    && batch.Any(fact => fact.Kind == ExternalCombatEventKinds.PlayerDeath)
+                    && !batch.Any(fact => fact.Kind is ExternalCombatEventKinds.PlayerRevived or ExternalCombatEventKinds.PlayerRevivedLb3))
                 {
-                    var marker = DeathTokenBuilder.Build(applied.Timestamp, applied.HistoryCursor!.Value);
-                    marker["step"] = observations.Count + 1;
-                    pendingMarkers.Add(marker);
+                    pendingDeath = batch.Where(fact => fact.Kind == ExternalCombatEventKinds.PlayerDeath).ToArray();
+                    batch = batch.Where(fact => fact.Kind != ExternalCombatEventKinds.PlayerDeath).ToArray();
                 }
+                if (batch.Length > 0) ApplyFacts(batch);
                 factIndex = batchEnd;
             }
             syncedTime = timestamp;
             simulator.AdvanceClockTo(timestamp);
             return simulator.Time;
+        }
+
+        void ApplyFacts(ExternalCombatEvent[] batch)
+        {
+            var applied = simulator.ApplyExternalEvents(batch);
+            if (!applied.Accepted)
+                throw new InvalidOperationException($"scene facts rejected at {batch[0].Timestamp:R}: {applied.Reason}");
+            if (applied.Token is not null)
+            {
+                var marker = DeathTokenBuilder.Build(applied.Timestamp, applied.HistoryCursor!.Value);
+                marker["step"] = observations.Count + 1;
+                pendingMarkers.Add(marker);
+            }
         }
 
         Dictionary<string, object?> Observe(double timestamp, double nextObservation)

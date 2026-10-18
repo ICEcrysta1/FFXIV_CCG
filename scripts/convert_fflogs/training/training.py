@@ -95,22 +95,34 @@ def build_training_samples(
     next_step_index = 1
     fact_index = 0
     synced_time = cursor
+    pending_death = None
 
-    def sync_facts(timestamp: float) -> None:
-        nonlocal fact_index, synced_time
+    def apply_facts(batch, *, record_marker: bool = True) -> None:
+        result = backend.apply_external_events(batch)
+        if not result.accepted:
+            raise ValueError(f"external facts rejected at {result.timestamp}: {result.reason}")
+        if result.token is not None and record_marker:
+            marker = _build_death_token(result)
+            marker["step"] = len(samples) + 1
+            history_markers.append(marker)
+
+    def sync_facts(timestamp: float, *, before_action: bool = False) -> None:
+        nonlocal fact_index, synced_time, pending_death
         if timestamp < synced_time:
             raise ValueError("external fact cursor cannot move backwards; reset the trajectory first")
         while fact_index < len(facts) and float(facts[fact_index]["timestamp"]) <= timestamp:
             batch_end = fact_index + 1
             while batch_end < len(facts) and facts[batch_end]["timestamp"] == facts[fact_index]["timestamp"]:
                 batch_end += 1
-            result = backend.apply_external_events(facts[fact_index:batch_end])
-            if not result.accepted:
-                raise ValueError(f"external facts rejected at {result.timestamp}: {result.reason}")
-            if result.token is not None:
-                marker = _build_death_token(result)
-                marker["step"] = len(samples) + 1
-                history_markers.append(marker)
+            batch = facts[fact_index:batch_end]
+            # 死亡同刻的日志动作属于旧活动；同刻已有复活时则先完成死亡和复活。
+            if (before_action and batch[0]["timestamp"] == timestamp
+                    and any(fact["event_kind"] == "player_death" for fact in batch)
+                    and not any(fact["event_kind"] in {"player_revived", "player_revived_lb3"} for fact in batch)):
+                pending_death = [fact for fact in batch if fact["event_kind"] == "player_death"]
+                batch = [fact for fact in batch if fact["event_kind"] != "player_death"]
+            if batch:
+                apply_facts(batch)
             fact_index = batch_end
         synced_time = timestamp
 
@@ -160,6 +172,10 @@ def build_training_samples(
         samples.append(sample)
         resolved_sequence.append(str(raw_action["action_key"]))
         next_step_index += 1
+        if pending_death is not None and next_request_offset != _request_time_offset(raw_action):
+            # 标记从下一条观测起可见；末条仍执行死亡，但没有后继样本可以携带标记。
+            apply_facts(pending_death, record_marker=next_request_offset is not None)
+            pending_death = None
 
     return _training_payload(backend, fight_payload, scene_context, samples, resolved_sequence, history_markers)
 
@@ -294,7 +310,7 @@ def _run_real_action(
             "normalized action request timestamp must be non-negative: "
             f"step={step_index}, action={action_key}, request_time={logged_request:.4f}"
         )
-    request_time, _ = _advance_to_with_facts(backend, sync_facts, logged_request)
+    request_time, _ = _advance_to_with_facts(backend, sync_facts, logged_request, before_action=True)
 
     observation_timestamp = _resolve_next_observation(next_request_offset, request_time, fight_duration)
     context = observer.observe(
@@ -436,12 +452,14 @@ def _advance_to_with_facts(
     backend,
     sync_facts,
     timestamp: float,
+    *,
+    before_action: bool = False,
 ) -> tuple[float, float]:
     """提交所有不晚于 `timestamp` 的外部事实，再把时钟推进到该时刻。
 
-    同刻事实全部入队后才统一推进。返回 (请求时刻, 状态机当前时刻)。
+    请求前同步允许将同刻死亡留到该批动作提交之后。返回 (请求时刻, 状态机当前时刻)。
     """
-    sync_facts(timestamp)
+    sync_facts(timestamp, before_action=before_action)
     return timestamp, backend.advance_to(timestamp).timestamp
 
 

@@ -47,9 +47,9 @@ from ..runtime.tensor_runtime import golden_encoding
 # 26：模型状态删除累计威力，并使用统一的资源/充能/时间/单次威力缩放契约。
 #     黑魔绝望最低 MP 修正为 800，拒绝旧输入与旧状态机规则的部署产物。
 #     同版本统一数值入口与输入投影为 FP32，主干及输出沿用部署精度。
-#     同版本将场景、历史和当前状态收敛为统一 token 预算，拒绝旧容量结构。
-DEPLOYMENT_CONTRACT_VERSION = 26
-DEPLOYMENT_MANIFEST_VERSION = 16
+# 27：将场景、历史和当前状态收敛为统一 token 预算，拒绝旧容量结构。
+DEPLOYMENT_CONTRACT_VERSION = 27
+DEPLOYMENT_MANIFEST_VERSION = 17
 MANIFEST_SCHEMA_FILENAME = "manifest.schema.json"
 
 

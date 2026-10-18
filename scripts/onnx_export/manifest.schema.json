@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ffxiv-ccg.local/schemas/onnx-manifest-v16.json",
+  "$id": "https://ffxiv-ccg.local/schemas/onnx-manifest-v17.json",
   "title": "FFXIV_CCG ONNX Deployment Manifest",
   "type": "object",
   "additionalProperties": false,
@@ -21,7 +21,7 @@
       "const": "manifest.schema.json"
     },
     "manifest_version": {
-      "const": 16
+      "const": 17
     },
     "format": {
       "const": "onnx"
@@ -273,7 +273,7 @@
       ],
       "properties": {
         "contract_version": {
-          "const": 26
+          "const": 27
         },
         "job_tag": {
           "type": "string",
