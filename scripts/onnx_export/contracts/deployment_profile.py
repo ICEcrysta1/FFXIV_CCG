@@ -73,15 +73,13 @@ class DeploymentProfile:
     def to_capacity_report(
         self,
         *,
-        scene_capacity: int,
-        history_capacity: int,
+        context_capacity: int,
         vocab_entries: Sequence[tuple[int, int]],
     ) -> dict[str, object]:
         core = {
             "report_version": 1,
             "job_tag": self.job_tag,
-            "scene_capacity": int(scene_capacity),
-            "history_capacity": int(history_capacity),
+            "context_capacity": int(context_capacity),
             "vocab_entries": [
                 {"raw_skill_id": raw_skill_id, "vocab_id": vocab_id}
                 for raw_skill_id, vocab_id in vocab_entries

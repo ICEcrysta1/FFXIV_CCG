@@ -194,7 +194,7 @@ def test_real_ppg_counts_queued_gcds_and_masks_policy_wait(cs_backend, monkeypat
         scene_provider=SimpleNamespace(at_time=lambda _: (torch.zeros((0, 3)), torch.zeros(0, dtype=torch.int32)),
                                        state_at=lambda _: SimpleNamespace(next_downtime_eta=0.0, downtime_remaining=0.0)),
         device=torch.device("cpu"), max_history=20,
-        model_config=ModelConfig(history_capacity=20),
+        model_config=ModelConfig(context_capacity=42),
         action_keys=keys, action_is_gcd=action_space.action_is_gcd,
     )
 
@@ -470,7 +470,7 @@ def test_real_validation_runs_to_end_with_a_small_history_window():
 
 @pytest.mark.parametrize("cache_was_enabled", [False, True])
 @pytest.mark.parametrize("use_kv_cache", [False, True])
-def test_validation_ppg_reads_history_capacity_from_model_config(
+def test_validation_ppg_uses_context_budget_and_retains_complete_raw_history(
     monkeypatch, cache_was_enabled, use_kv_cache
 ):
     captured = {}
@@ -538,7 +538,7 @@ def test_validation_ppg_reads_history_capacity_from_model_config(
 
     class FakeBatcher:
         def __init__(self, **kwargs):
-            captured["batcher_max_history"] = kwargs["max_history"]
+            captured["batcher_max_history"] = kwargs.get("max_history")
 
     monkeypatch.setattr(ppg_module, "_dataset_normalizer", lambda _dataset: FakeNormalizer())
     monkeypatch.setattr(
@@ -561,7 +561,7 @@ def test_validation_ppg_reads_history_capacity_from_model_config(
     monkeypatch.setattr(ppg_module, "_run_rollout_until_time", fake_rollout)
 
     config = SimpleNamespace(
-        model=SimpleNamespace(history_capacity=37),
+        model=ModelConfig(context_capacity=75),
         ppg=SimpleNamespace(
             enabled=True, normalization=1000.0, use_kv_cache=use_kv_cache
         ),
@@ -607,8 +607,8 @@ def test_validation_ppg_reads_history_capacity_from_model_config(
     )
 
     assert captured == {
-        "backend_max_history": 37,
-        "batcher_max_history": 37,
+        "backend_max_history": None,
+        "batcher_max_history": None,
     }
     assert result["val_ppg"] == pytest.approx(100.0)
     assert result["val_ppg_normalized"] == pytest.approx(0.1)

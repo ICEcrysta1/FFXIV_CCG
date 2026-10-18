@@ -29,14 +29,16 @@ class MatrixCaseResult:
 
 
 def padding_matrix(contract: CapacityContract) -> tuple[tuple[int, int], ...]:
-    """返回 Issue 3 约定的六类边界组合，并去除小容量下的重复项。"""
+    """覆盖空输入、单独满轴和混合满预算，不让两个运输轴同时占满。"""
+    mixed_scene = min(3, contract.scene_capacity)
+    mixed_history = (contract.context_capacity - mixed_scene - 1) // 2
     cases = (
         (0, 0),
-        (0, 1),
+        (0, min(1, contract.history_capacity)),
         (0, contract.history_capacity),
-        (1, 0),
-        (contract.scene_capacity - 1, contract.history_capacity - 1),
-        (contract.scene_capacity, contract.history_capacity),
+        (min(1, contract.scene_capacity), 0),
+        (mixed_scene, mixed_history),
+        (contract.scene_capacity, 0),
     )
     return tuple(dict.fromkeys(cases))
 
@@ -276,13 +278,8 @@ def _assert_padding_keys_blocked(
     history_valid: int,
     contract: CapacityContract,
 ) -> None:
-    padding_keys = list(range(scene_valid, contract.scene_capacity))
-    padding_keys.extend(
-        range(
-            contract.scene_capacity + 2 * history_valid,
-            contract.scene_capacity + 2 * contract.history_capacity,
-        )
-    )
+    # 有效前缀已经压紧；当前状态固定占末槽，空位都在二者之间。
+    padding_keys = list(range(scene_valid + 2 * history_valid, trace.hidden.shape[1] - 1))
     if not padding_keys:
         return
     indices = torch.tensor(

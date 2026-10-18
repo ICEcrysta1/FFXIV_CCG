@@ -119,6 +119,7 @@ def scene_cache(tmp_path):
             "action_keys": actions["action_keys"], "action_to_vocab_id": actions["action_to_vocab_id"],
             "action_is_gcd": actions["action_is_gcd"], "shard_size": 768,
             "history_bank": bank, "shard_files": [shard.name],
+            "history_markers": (),
             "vocab_signature": tuple(SkillVocab.build_from_job_tag("black_mage")),
         }
         if invalid == "stale":
@@ -192,6 +193,7 @@ def test_readonly_cache_consumers_do_not_load_conversion_yaml(scene_cache, monke
     assert select_prepared_validation_sources(max_files=1, data_dir=root, job_tag="black_mage",
                                              shard_size=768, **args) == [validation_source]
     dataset = TrainingDataset([source], expected_action_space=actions, normalizer=normalizer,
+                              context_capacity=1024,
                               job_tag="black_mage", compiled_cache_shard_size=768, **args)
     restored = object.__new__(TrainingDataset)
     restored.__setstate__(dataset.__getstate__())
@@ -301,6 +303,8 @@ def test_default_replay_uses_saved_contract_without_recompiling(
 ):
     from scripts.autoregressive_replay import config as config_module
     from scripts.autoregressive_replay import replay as replay_module
+    from dataclasses import asdict
+    from common.policy.config import ModelConfig
 
     root, cache_dir, create = scene_cache
     normalizer = Normalizer()
@@ -324,13 +328,13 @@ def test_default_replay_uses_saved_contract_without_recompiling(
         "ZZZ/80-90/saved.json.br", cache_normalizer=contract.create_normalizer(),
     )
     checkpoint = tmp_path / "model.pt"
-    torch.save({"data_spec": saved_spec, "model_variant": "artzip",
+    torch.save({"data_spec": saved_spec, "model_variant": "artzip", "model_config": asdict(ModelConfig()),
                 "input_contract": contract.to_dict()}, checkpoint)
     package = tmp_path / "deployment"
     package.mkdir()
     (package / "manifest.json").write_text(json.dumps({
         "model": {"model_variant": "artzip"},
-        "contract": {"job_tag": "black_mage", "capacity": {"history_capacity": 300},
+        "contract": {"job_tag": "black_mage", "capacity": {"context_capacity": 1024},
                      "model_input_contract": contract.to_dict()},
     }), encoding="utf-8", newline="\n")
 
@@ -389,7 +393,7 @@ def test_model_cache_prepare_reuses_saved_actions_and_training_rejects_drift(sce
         scene_json_path=source, cache_dir=cache_dir, job_tag="black_mage",
         cache_shard_size=768, cache_max_shards=2,
         compiled_cache_shard_size=768, compiled_cache_max_shards=2,
-        model=SimpleNamespace(history_capacity=4, history_reset_keep=2),
+        model=SimpleNamespace(context_capacity=17, history_reset_keep=2),
     )
     before = {path: path.read_bytes() for path in cache_dir.rglob("*.pt")}
     monkeypatch.setattr(ActionSpace, "from_job_tag", lambda _job: changed)
@@ -425,6 +429,7 @@ def test_model_cache_prepare_reuses_saved_actions_and_training_rejects_drift(sce
     assert reader.action_is_gcd == saved_actions.action_is_gcd
     dataset = TrainingDataset(
         [source], normalizer=normalizer, expected_action_space=saved_actions,
+        context_capacity=1024,
         skill_vocab=SkillVocab.build_from_job_tag("black_mage"), job_tag="black_mage",
         int_dtype=torch.int32, float_dtype=torch.float32, cache_dir=cache_dir,
         compiled_cache_shard_size=768,

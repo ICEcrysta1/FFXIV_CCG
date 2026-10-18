@@ -64,6 +64,7 @@ def rewrite(path: Path, keys: tuple[str, ...], value: object):
     ("convert_fflogs/action_quality/black_mage.yaml", ("action_quality", "skill_label_enabled", "fight_suggestions", "aoe_usages", "core.aoeusages.suggestion.content"), False, "convert_fflogs.action_quality"),
     ("default.yaml", ("engine_timing", "action_queue_window_seconds"), 0.7, "engine"),
     ("system.yaml", ("potency", "burst_potion_multiplier"), 1.09, "system"),
+    ("system.yaml", ("mp_recovery", "revival_ratio"), 0.3, "system"),
     ("skills/black_mage.yaml", ("skills", "fire_iv", "potency"), 301, "job.black_mage"),
     ("schema.yaml", ("contracts", "slidecast_window_seconds"), 0.4, "schema"),
     ("policy_actions.yaml", ("policy_actions", "ogcd_wait", "value"), 1.1, "policy_actions"),
@@ -73,6 +74,28 @@ def test_semantic_yaml_changes_require_rebuild(config_root, filename, keys, valu
     saved = dependencies()
     rewrite(config_root / "config" / filename, keys, value)
     assert changed_config_dependencies(saved, dependencies()) == (dependency,)
+
+
+@pytest.mark.parametrize("ratio", [-0.1, 1.1, float("nan"), float("inf"), float("-inf"), None, "invalid"])
+def test_revival_ratio_rejects_invalid_config(config_root, ratio):
+    rewrite(config_root / "config/system.yaml", ("mp_recovery", "revival_ratio"), ratio)
+    with pytest.raises(ValueError, match=r"mp_recovery\.revival_ratio"):
+        project_config.load_project_config(job_tag="black_mage")
+
+
+def test_revival_ratio_is_required(config_root):
+    path = config_root / "config/system.yaml"
+    payload = load_yaml_mapping(path)
+    del payload["mp_recovery"]["revival_ratio"]
+    path.write_text(yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), encoding="utf-8", newline="\n")
+    with pytest.raises(ValueError, match=r"mp_recovery\.revival_ratio"):
+        project_config.load_project_config(job_tag="black_mage")
+
+
+@pytest.mark.parametrize("ratio", [0.0, 1.0, 0.35])
+def test_revival_ratio_uses_configured_value(config_root, ratio):
+    rewrite(config_root / "config/system.yaml", ("mp_recovery", "revival_ratio"), ratio)
+    assert project_config.load_project_config(job_tag="black_mage").system.mp_recovery.revival_ratio == ratio
 
 
 def test_comments_and_mapping_key_order_do_not_change_dependencies(config_root):
@@ -105,7 +128,7 @@ def test_read_side_training_settings_and_other_job_routing_are_excluded(config_r
     rewrite(path, ("decision_timing", "post_gcd_delay_seconds"), 0.9)
     rewrite(path, ("runtime", "job_configs", "machinist"), "missing-other-job.yaml")
     model_path = config_root / "config/models/black_mage/artzip/model.yaml"
-    rewrite(model_path, ("model", "history_capacity"), 1)
+    rewrite(model_path, ("model", "context_capacity"), 17)
     rewrite(model_path, ("model", "history_reset_keep"), 1)
     rewrite(model_path, ("model", "time_delta_scale"), 99)
     training_path = config_root / "config/models/black_mage/artzip/training.yaml"

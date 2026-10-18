@@ -786,7 +786,7 @@ def test_real_raw_cache_reused_across_windows_scales_and_random_crops(tmp_path, 
 
     from common.policy.config import ModelConfig
     from common.policy.data.context_encoding import ContextEncoder
-    from common.policy.data.history_window import history_window_length
+    from common.policy.data.history_window import history_window_length, scene_window_end_times
     from training import TrainingCollator, TrainingDataset
 
     torch = pytest.importorskip("torch")
@@ -821,14 +821,27 @@ def test_real_raw_cache_reused_across_windows_scales_and_random_crops(tmp_path, 
         dataset = TrainingDataset(
             [source], expected_action_space=actions, normalizer=normalizer, job_tag="black_mage",
             int_dtype=torch.int32, float_dtype=torch.float32, cache_dir=cache_dir,
-            compiled_cache_shard_size=4, max_history=capacity, history_reset_keep=keep,
+            compiled_cache_shard_size=4, context_capacity=2 * capacity + 6, history_reset_keep=keep,
         )
         reader = dataset._readers[0]
         assert reader._cache_path == manifest
         signatures.append(reader._payload["cache_signature"])
         total = reader.sample(len(dataset) - 1)["history_length"]
         sample = dataset[len(dataset) - 1]
-        expected = history_window_length(total, capacity, keep)
+        # 总预算窗口由完整前缀决定，不能受 DataLoader 的随机或批量读取顺序影响。
+        order = [len(dataset) - 1, 0, min(2, len(dataset) - 1), len(dataset) - 1]
+        separate = [dataset[index] for index in order]
+        together = dataset.__getitems__(order)
+        assert [(row["history_end"], row["history_length"]) for row in separate] == [
+            (row["history_end"], row["history_length"]) for row in together
+        ]
+        time_index = dataset.state_layout.request_time_index
+        expected = history_window_length(
+            total, 2 * capacity + 6, keep,
+            request_times=reader.history_bank["state_abs_values"][1:, time_index].tolist(),
+            scene_end_times=scene_window_end_times(sample["scene_abs_values"], sample["scene_types"], dataset.schema),
+            current_request_time=float(sample["current_state_abs_values"][time_index]),
+        )
         assert sample["history_length"] == expected
         batch = TrainingCollator(
             int_dtype=torch.int32, index_dtype=torch.int64, float_dtype=torch.float32,
@@ -844,7 +857,7 @@ def test_real_raw_cache_reused_across_windows_scales_and_random_crops(tmp_path, 
         keys = layout.base_feature_keys
         time_index = keys.index("request_state.time_seconds")
         encoded = ContextEncoder(normalizer, dataset.schema, ModelConfig(
-            history_capacity=capacity, history_reset_keep=keep, time_delta_scale=time_scale,
+            context_capacity=2 * capacity + 6, history_reset_keep=keep, time_delta_scale=time_scale,
         ), layout=layout).encode(batch)
         assert encoded["history_state_vectors"][0, 0, time_index].item() == 0.0
         assert encoded["history_state_reset_mask"][0, 0, time_index]
@@ -947,6 +960,13 @@ def test_non_state_tokens_match_frozen_pre_refactor_baseline():
         assert len(current_case["model"]) == len(saved_case["model"])
         for current_batch, saved_batch in zip(current_case["model"], saved_case["model"], strict=True):
             current_inputs, saved_inputs = current_batch["inputs"], saved_batch["inputs"]
+            # 旧基线保留了失效场景的空行；只移除这些行，其余有效值继续逐项对照。
+            mask_payload = saved_inputs["scene_mask"]
+            visible_columns = torch.tensor(mask_payload["values"], dtype=torch.bool).reshape(mask_payload["shape"]).any(dim=0)
+            for key in ("scene_vectors", "scene_types", "scene_mask"):
+                field = saved_inputs[key]
+                values = torch.tensor(field["values"]).reshape(field["shape"])[:, visible_columns]
+                field["shape"], field["values"] = list(values.shape), values.tolist()
             check_scaled_values(current_inputs["history_skill_features"], saved_inputs["history_skill_features"])
             check_scaled_values(current_inputs["scene_vectors"], saved_inputs["scene_vectors"],
                                 scene_types=saved_inputs["scene_types"])

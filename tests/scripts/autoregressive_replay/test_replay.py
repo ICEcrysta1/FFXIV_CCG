@@ -80,7 +80,7 @@ def test_backend_restores_parameter_precision_without_changing_bf16_compute(
         for value in saved["model_state_dict"].values() if value.is_floating_point()
     )
     inputs = make_inputs(
-        spec, CapacityContract(3, 4), vocab_size=8, scene_valid=1, history_valid=1,
+        spec, CapacityContract(context_capacity=12), vocab_size=8, scene_valid=1, history_valid=1,
         dtype=torch.float32, seed=7,
     )
     batch = dict(zip(TENSOR_INPUT_NAMES, inputs, strict=True))
@@ -128,7 +128,7 @@ def test_default_precast_replay_accepts_negative_scene_facts(tmp_path, scene_mod
     )
     model_config = ModelConfig(
         d_model=8, n_layers=1, n_heads=2, num_kv_heads=1, ff_dim=16,
-        dropout=0.0, scene_capacity=8, history_capacity=4, history_reset_keep=4,
+        dropout=0.0, context_capacity=17, history_reset_keep=4,
     )
     model = CausalPolicyModel(spec, model_config, vocab_size=vocab.size()).eval()
     checkpoint = tmp_path / "model.pt"
@@ -140,7 +140,7 @@ def test_default_precast_replay_accepts_negative_scene_facts(tmp_path, scene_mod
     config = AutoregressiveReplayConfig(
         checkpoint_path=checkpoint, output_path=tmp_path / "replay.md", scene_json_path=source,
         cache_dir=tmp_path / ".cache", cache_shard_size=512, cache_max_shards=2,
-        model_history_capacity=4, max_history=4, max_steps=1, scene_duration_seconds=10.0,
+        model_context_capacity=17, max_history=4, max_steps=1, scene_duration_seconds=10.0,
         scene_mode=scene_mode, initial_time_seconds=initial_time, device="cpu", use_kv_cache=False,
     )
     assert config.initial_action == "fire_iii"
@@ -214,7 +214,7 @@ def test_checkpoint_restores_history_embedding_and_logits_after_yaml_vocab_drift
     normalizer.ensure_job_resources("black_mage")
     contract = ModelInputContract.from_training(data_spec=spec, schema=schema, normalizer=normalizer, skill_vocab=vocab)
     config = ModelConfig(d_model=8, n_layers=1, n_heads=2, num_kv_heads=1, ff_dim=16,
-                         dropout=0.0, scene_capacity=1, history_capacity=4, history_reset_keep=4)
+                         dropout=0.0, context_capacity=10, history_reset_keep=4)
     with torch.random.fork_rng():
         torch.manual_seed(20261004)
         model = CausalPolicyModel(spec, config, vocab_size=vocab.size()).eval()
@@ -367,7 +367,7 @@ def test_replay_compiles_missing_cache_and_retries(monkeypatch, tmp_path):
     config = SimpleNamespace(
         scene_json_path=tmp_path / "scene.json",
         cache_dir=tmp_path / "cache",
-        model_history_capacity=240,
+        model_context_capacity=1024,
         cache_shard_size=768,
         cache_max_shards=24,
     )
@@ -425,7 +425,7 @@ def test_replay_cache_store_reuses_reader_for_unchanged_scene(monkeypatch, tmp_p
     config = SimpleNamespace(
         scene_json_path=source_path,
         cache_dir=tmp_path / "cache",
-        model_history_capacity=240,
+        model_context_capacity=1024,
         cache_shard_size=768,
         cache_max_shards=24,
     )
@@ -464,7 +464,7 @@ def test_replay_cache_store_reuses_reader_for_unchanged_scene(monkeypatch, tmp_p
 
 def test_replay_session_reset_reinitializes_backend_and_state_machine():
     class FakeBackend:
-        model_config = SimpleNamespace(history_capacity=8, history_reset_keep=8, time_delta_scale=120.0)
+        model_config = SimpleNamespace(context_capacity=33, history_reset_keep=8, time_delta_scale=120.0)
         input_device = torch.device("cpu")
 
         def __init__(self):
@@ -501,8 +501,8 @@ def test_replay_session_reset_reinitializes_backend_and_state_machine():
 
     assert session.backend.cache_calls == [False, False]
     assert session.state_machine.init_calls == [
-        {"actual_base_gcd": 2.5, "max_history": 768, "initial_timestamp": 0.0},
-        {"actual_base_gcd": 2.5, "max_history": 768, "initial_timestamp": 0.0},
+        {"actual_base_gcd": 2.5, "max_history": None, "initial_timestamp": 0.0},
+        {"actual_base_gcd": 2.5, "max_history": None, "initial_timestamp": 0.0},
     ]
     session.close()
     session.close()
@@ -539,7 +539,7 @@ def constructor_config(tmp_path):
         output_path=tmp_path / "rollout.md",
         scene_json_path=tmp_path / "scene.json",
         cache_dir=tmp_path / "cache",
-        model_history_capacity=8,
+        model_context_capacity=33,
         cache_shard_size=4,
         cache_max_shards=2,
         scene_duration_seconds=10.0,
@@ -576,7 +576,7 @@ def test_replay_uses_session_normalizer_for_batch_builder(monkeypatch, construct
 
     class FakeBackend:
         input_device = torch.device("cpu")
-        model_config = SimpleNamespace(history_capacity=8, history_reset_keep=8, time_delta_scale=120.0)
+        model_config = SimpleNamespace(context_capacity=33, history_reset_keep=8, time_delta_scale=120.0)
 
         def __init__(self):
             self.cache_calls = []

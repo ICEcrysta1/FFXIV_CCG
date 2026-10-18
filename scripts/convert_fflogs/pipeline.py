@@ -66,6 +66,7 @@ def convert_report_payload(
         raid_buff_window_duration=project_config.system.raid_buff_window_duration,
         movement_detection=convert_job_config.movement_detection,
         raw_events=report_payload.get("events", []),
+        raw_report=report_payload,
         skill_book=skill_book,
         ranking=report_payload.get("ranking"),
         annotation_status="partial" if report_payload.get("analysis") is not None else "unannotated",

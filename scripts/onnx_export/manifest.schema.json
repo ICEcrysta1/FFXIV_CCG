@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ffxiv-ccg.local/schemas/onnx-manifest-v16.json",
+  "$id": "https://ffxiv-ccg.local/schemas/onnx-manifest-v17.json",
   "title": "FFXIV_CCG ONNX Deployment Manifest",
   "type": "object",
   "additionalProperties": false,
@@ -21,7 +21,7 @@
       "const": "manifest.schema.json"
     },
     "manifest_version": {
-      "const": 16
+      "const": 17
     },
     "format": {
       "const": "onnx"
@@ -273,7 +273,7 @@
       ],
       "properties": {
         "contract_version": {
-          "const": 26
+          "const": 27
         },
         "job_tag": {
           "type": "string",
@@ -290,24 +290,23 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "scene_capacity", "history_capacity", "batch_size", "padding_direction",
+            "context_capacity", "batch_size", "padding_direction",
             "scene_padding_mask_value", "history_padding_mask_value", "position_ids", "over_capacity",
-            "history_capacity_unit", "history_tokens_per_action", "token_order",
+            "capacity_unit", "history_tokens_per_action", "token_order",
             "total_token_count", "effective_sequence_length"
           ],
           "properties": {
-            "scene_capacity": {"type": "integer", "minimum": 1},
-            "history_capacity": {"type": "integer", "minimum": 1},
+            "context_capacity": {"type": "integer", "minimum": 1},
             "batch_size": {"const": 1},
             "padding_direction": {"const": "right"},
             "scene_padding_mask_value": {"const": false},
             "history_padding_mask_value": {"const": false},
             "position_ids": {"const": "logical per-sample positions; right padding excluded; separate skill/state positions; RoPE applied to Q/K"},
             "over_capacity": {"const": "reject"},
-            "history_capacity_unit": {"const": "actions"},
+            "capacity_unit": {"const": "tokens"},
             "history_tokens_per_action": {"const": 2},
             "token_order": {"const": "scene, (state_i, skill_i)*H, current_state"},
-            "total_token_count": {"type": "integer", "minimum": 4},
+            "total_token_count": {"type": "integer", "minimum": 1},
             "effective_sequence_length": {"const": "scene_valid + 2 * history_valid + 1"}
           }
         },
@@ -418,7 +417,7 @@
                   "scene_time": "first_anchor_offset_then_separate_start_end_DELTA",
                   "scene_duration": "own_clipped_duration",
                   "time_scale": "model_config.time_delta_scale",
-                  "history_window": "block_reset_from_full_history_cursor",
+                  "history_window": "shared_context_token_budget_block_reset",
                   "overflow_keep": "model_config.history_reset_keep",
                   "time_clipping": false
                 },
@@ -437,7 +436,9 @@
                   "position": "after_output_projection_before_repetition_penalty_and_legal_mask"
                 },
                 "token_order": "scene, (state_i, skill_i)*H, current_state",
-                "history_capacity_unit": "actions",
+                "context_capacity_unit": "tokens",
+                "context_budget": "scene_tokens + history_state_tokens + history_skill_tokens + current_state_token <= model.context_capacity",
+                "history_reset_keep_unit": "complete_actions",
                 "history_tokens_per_action": 2
               }
             }
@@ -453,6 +454,7 @@
             "full_attention_residuals",
             "qk_norm_scale",
             "logit_softcap",
+            "context_capacity",
             "history_reset_keep",
             "time_delta_scale"
           ],
@@ -480,6 +482,10 @@
               "type": "number",
               "minimum": 1.1754943508222875e-38,
               "maximum": 3.4028234663852886e+38
+            },
+            "context_capacity": {
+              "type": "integer",
+              "minimum": 1
             },
             "history_reset_keep": {
               "type": "integer",
@@ -745,19 +751,15 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "history_capacity_source",
-            "scene_capacity_source",
+            "context_capacity_source",
             "over_capacity",
             "report_filename",
             "semantic_sha256",
             "evidence"
           ],
           "properties": {
-            "history_capacity_source": {
-              "const": "checkpoint.model_config.history_capacity"
-            },
-            "scene_capacity_source": {
-              "const": "checkpoint.model_config.scene_capacity"
+            "context_capacity_source": {
+              "const": "checkpoint.model_config.context_capacity"
             },
             "over_capacity": {
               "const": "reject"
@@ -770,10 +772,9 @@
             },
             "evidence": {
               "type": "object",
-              "required": ["scene_capacity", "history_capacity", "evidence"],
+              "required": ["context_capacity", "evidence"],
               "properties": {
-                "scene_capacity": {"type": "integer", "minimum": 1},
-                "history_capacity": {"type": "integer", "minimum": 1},
+                "context_capacity": {"type": "integer", "minimum": 1},
                 "evidence": {"type": "object"}
               },
               "additionalProperties": false

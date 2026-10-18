@@ -3,6 +3,59 @@
 from __future__ import annotations
 
 from ..config.constants import DOWNTIME_BOUNDARY_MARGIN
+from .extraction import _collect_begincasts, _get_ability_id, _take_begincast
+
+
+def _collect_party_cast_actions(
+    report: dict[str, object], *, fight_start: float, fight_end: float,
+    match_tolerance_seconds: float,
+) -> list[dict[str, object]] | None:
+    """收集本场玩家对敌方的 cast，恢复请求优先使用配对的 begincast。"""
+    friendlies, enemies = report.get("friendlies"), report.get("enemies")
+    fight_id = report.get("fight_id")
+    if fight_id is None:
+        fights = report.get("fights", [])
+        if len(fights) == 1:
+            fight_id = fights[0].get("id")
+    # 旧的手工载荷没有完整原始角色表，保留原有单玩家动作退回路径。
+    if not friendlies or not enemies or fight_id is None:
+        return None
+
+    def in_fight(actor):
+        return any(member.get("id") == fight_id for member in actor.get("fights", []))
+
+    players = {actor["id"] for actor in friendlies if in_fight(actor)
+               and actor.get("type") not in {"Pet", "NPC", "Boss", "LimitBreak"}
+               and actor.get("petOwner") is None}
+    targets = {actor["id"] for actor in enemies if in_fight(actor)
+               and actor.get("type") != "Pet" and actor.get("petOwner") is None}
+    events_by_player = {actor_id: [] for actor_id in players}
+    for event in report.get("events", []):
+        if (not isinstance(event, dict) or event.get("type") not in {"cast", "begincast"}
+                or event.get("sourceID") not in players
+                or event.get("fight", fight_id) != fight_id):
+            continue
+        events_by_player[event["sourceID"]].append(event)
+
+    result = []
+    for actor_id, events in events_by_player.items():
+        begincasts = _collect_begincasts(events, actor_id)
+        cursors = {}
+        for event in sorted(events, key=lambda item: item["timestamp"]):
+            if event.get("type") != "cast" or event.get("targetID") not in targets:
+                continue
+            timestamp = float(event["timestamp"]) / 1000.0
+            if not fight_start <= timestamp <= fight_end:
+                continue
+            skill_id = _get_ability_id(event)
+            begin = _take_begincast(
+                begincasts.get(skill_id), cursors, skill_id,
+                effect_timestamp=timestamp, match_tolerance_seconds=match_tolerance_seconds,
+            )
+            # 左界仍取 cast；右界优先起读时刻，瞬发或缺少有效起读时退回 cast。
+            result.append({"timestamp": timestamp, "request_timestamp": begin[0] if begin else timestamp,
+                           "is_damaging": True})
+    return sorted(result, key=lambda action: action["timestamp"])
 
 
 def detect_downtime_windows(
@@ -13,18 +66,14 @@ def detect_downtime_windows(
     gap_seconds: float,
     boundary_margin: float = DOWNTIME_BOUNDARY_MARGIN,
 ) -> list[dict[str, float]]:
-    """通过伤害动作间隔检测 Boss 不可输出窗口。
+    """通过攻击事件间隔检测 Boss 停手窗口。
 
-    窗口端点就是"停手前的最后一击"和"恢复后的第一击"。两者都发生在 Boss 可选中时，
-    因此停手区间是**开区间**，且两端的参照时刻不同：
-
-    - 起点用最后一击的**生效时刻**——停手发生在那次命中结算之后。
-    - 终点用第一个恢复动作的**请求时刻**——状态机的合法性校验发生在请求时刻，
-      读条技能的请求时刻天然早于生效时刻，用生效时刻会把恢复动作圈进窗口。
-
-    边界额外内缩 `boundary_margin`，覆盖端点动作被状态机推迟执行的最坏情况。
+    正式载荷左界取停手前最后一个 cast；右界取恢复段中最早的配对起读时刻，
+    没有有效 begincast 的动作使用 cast，再以 boundary_margin 内缩窗口。
+    缺少完整角色表的手工载荷沿用个人动作的请求时刻退回路径。
     """
-    damaging_actions = [action for action in actions if action["is_damaging"]]
+    damaging_actions = sorted((action for action in actions if action["is_damaging"]),
+                             key=lambda action: action["timestamp"])
     if not damaging_actions:
         return [
             _narrow_window(
@@ -33,13 +82,18 @@ def detect_downtime_windows(
             )
         ]
 
+    phases = [[damaging_actions[0]]]
+    for action in damaging_actions[1:]:
+        if float(action["timestamp"]) - float(phases[-1][-1]["timestamp"]) > gap_seconds:
+            phases.append([])
+        phases[-1].append(action)
+
     windows: list[dict[str, float]] = []
-    for index in range(1, len(damaging_actions)):
-        previous = float(damaging_actions[index - 1]["timestamp"])
-        current = float(damaging_actions[index]["timestamp"])
-        gap = current - previous
-        if gap > gap_seconds:
-            end = min(current, _request_timestamp(damaging_actions[index]))
+    for previous_phase, next_phase in zip(phases, phases[1:]):
+        previous = float(previous_phase[-1]["timestamp"])
+        # 恢复段第一发完成的动作未必最早起读，右界取全队最早的有效请求。
+        end = min(_request_timestamp(action) for action in next_phase)
+        if end > previous:
             windows.append({"start": previous, "end": end, "duration": end - previous})
 
     first_damaging_timestamp = float(damaging_actions[0]["timestamp"])
@@ -48,8 +102,8 @@ def detect_downtime_windows(
             0,
             {
                 "start": fight_start,
-                "end": first_damaging_timestamp,
-                "duration": first_damaging_timestamp - fight_start,
+                "end": max(fight_start, min(_request_timestamp(action) for action in phases[0])),
+                "duration": max(0.0, min(_request_timestamp(action) for action in phases[0]) - fight_start),
             },
         )
 

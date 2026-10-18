@@ -190,13 +190,12 @@ def test_resources_timers_and_buff_refresh_reconstruct_raw_and_keep_signed_scale
 
 def test_scene_clip_sort_and_separate_signed_start_end_deltas():
     output = _encoder().encode(_raw_batch())
-    assert output["scene_mask"].tolist() == [[True, True, True, False]]
-    assert output["scene_types"].tolist() == [[0, 0, 1, 0]]
+    assert output["scene_mask"].tolist() == [[True, True, True]]
+    assert output["scene_types"].tolist() == [[0, 0, 1]]
     torch.testing.assert_close(output["scene_vectors"], torch.tensor([[
         [0, 100 / 270, 100 / 270, 1],
         [20 / 270, 300 / 270, 380 / 270, 1],
         [3 / 5, 10 / 270, -350 / 270, 20 / 270],
-        [0, 0, 0, 0],
     ]]))
 
 
@@ -266,7 +265,7 @@ def test_window_reanchors_from_selected_absolute_row_and_preserves_later_delta()
 
 
 @pytest.mark.parametrize("scene_width", (0, 4))
-def test_empty_history_anchors_current_state_and_keeps_padded_scene_width(scene_width):
+def test_empty_history_anchors_current_state_and_deletes_invalid_scenes(scene_width):
     batch = _raw_batch()
     for key in tuple(batch):
         if key.startswith("history_") and key != "history_cursor":
@@ -281,11 +280,32 @@ def test_empty_history_anchors_current_state_and_keeps_padded_scene_width(scene_
     torch.testing.assert_close(output["current_state_vectors"][0, :6], torch.tensor(
         [0.7, 1, 0, 1050 / 2000, -2 / 270, 0.6],
     ))
-    assert output["scene_vectors"].shape == (1, scene_width, 4)
+    assert output["scene_vectors"].shape == (1, 0, 4)
     assert output["scene_types"].dtype == torch.long
     assert output["scene_mask"].dtype == torch.bool
     assert not output["scene_mask"].any()
     assert torch.count_nonzero(output["scene_vectors"]) == 0
+
+
+def test_expired_scenes_are_removed_and_only_mixed_batch_padding_remains():
+    batch = {key: value.repeat(2, *([1] * (value.ndim - 1))) for key, value in _raw_batch().items()}
+    batch["history_state_abs_values"][1, :, 2] += 200
+    raw_scenes = batch["scene_abs_values"].clone()
+    output = _encoder().encode(batch)
+    assert output["scene_vectors"].shape == (2, 3, 4)
+    assert output["scene_mask"].tolist() == [[True, True, True], [True, False, False]]
+    for index, count in enumerate((3, 1)):
+        separate = _encoder().encode({key: value[index:index + 1] for key, value in batch.items()})
+        torch.testing.assert_close(output["scene_vectors"][index, :count], separate["scene_vectors"][0], rtol=0, atol=0)
+        torch.testing.assert_close(output["scene_types"][index, :count], separate["scene_types"][0], rtol=0, atol=0)
+    assert not output["scene_vectors"][1, 1:].any()
+    torch.testing.assert_close(batch["scene_abs_values"], raw_scenes, rtol=0, atol=0)
+
+
+def test_scene_ending_at_the_anchor_is_physically_deleted():
+    batch = _raw_batch()
+    batch["scene_abs_values"][0, 2, 1] = 1200.0
+    assert _encoder().encode(batch)["scene_vectors"].shape[1] == 3
 
 
 def test_compact_gather_matches_dense_and_does_not_cross_bank_boundaries():
@@ -343,18 +363,64 @@ def test_null_to_known_time_reset_is_reanchored_and_padding_is_inert():
 @pytest.mark.parametrize("total,expected", [(0, 0), (299, 299), (300, 300), (301, 8),
                                            (302, 9), (593, 300), (594, 8), (887, 8)])
 def test_history_window_resets_instead_of_sliding(total, expected):
-    assert history_window_length(total, 300, 8) == expected
+    assert history_window_length(
+        total, 602, 8, request_times=range(total),
+        scene_end_times=(1e9,), current_request_time=float(total),
+    ) == expected
 
 
 @pytest.mark.parametrize("args", [(True, 300, 8), (-1, 300, 8), (1, 3, 4),
                                   (1, 3, 0), (1, 0, 1), (1, 300, False), (1.0, 300, 8)])
 def test_history_window_rejects_invalid_parameters(args):
     with pytest.raises(ValueError):
-        history_window_length(*args)
+        history_window_length(*args, request_times=range(10), scene_end_times=(), current_request_time=0.0)
 
 
-def test_no_history_window_is_explicit():
-    assert history_window_length(1000, 0, 0) == 0
+def test_shared_budget_recomputes_scene_at_each_reset():
+    # 开始时八个场景占用预算，第一次溢出后均已过去，下一块可以保留更多历史。
+    expected = {0: 0, 7: 7, 8: 2, 17: 11, 18: 2}
+    for total, length in expected.items():
+        assert history_window_length(
+            total, 24, 2, request_times=range(30),
+            scene_end_times=(4.0,) * 8, current_request_time=float(total),
+        ) == length
+
+
+@pytest.mark.parametrize("total,ends", [(0, (100.0,) * 18), (8, (100.0,) * 2)])
+def test_shared_budget_rejects_scene_that_cannot_fit_with_required_history(total, ends):
+    with pytest.raises(ValueError, match="cannot hold"):
+        history_window_length(total, 17, 8, request_times=range(10),
+                              scene_end_times=ends, current_request_time=float(total))
+
+
+def test_shared_budget_1024_counts_scene_and_latest_state():
+    for total, expected in ((411, 411), (412, 8), (413, 9)):
+        assert history_window_length(
+            total, 1024, 8, request_times=range(500),
+            scene_end_times=(1e9,) * 200, current_request_time=float(total),
+        ) == expected
+
+
+def test_additional_history_crop_rechecks_budget_when_request_times_go_backwards():
+    kwargs = dict(request_times=(0.1, 0.0), scene_end_times=(0.05,) * 7, current_request_time=0.2)
+    assert history_window_length(2, 9, 2, **kwargs) == 2
+    assert history_window_length(2, 9, 2, max_history=1, **kwargs) == 0
+
+
+def test_random_history_crop_also_rechecks_budget_without_mutating_the_source():
+    from training.data.collator import TrainingCollator
+
+    sample = {
+        "history_length": 2, "history_end": 3,
+        "_history_budget": {
+            "context_capacity": 9, "total_history": 2,
+            "request_times": (0.1, 0.0), "scene_end_times": (0.05,) * 7,
+            "current_request_time": 0.2,
+        },
+    }
+    collator = TrainingCollator(history_truncation_enabled=True, history_truncation_probability=1.0)
+    assert collator._truncate_early_history(sample)["history_length"] == 0
+    assert sample["history_length"] == 2
 
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float64])
@@ -414,14 +480,14 @@ def test_model_context_config_is_strict(field, value):
 def test_model_context_defaults_and_no_history_boundary():
     assert ModelConfig().history_reset_keep == 8
     assert ModelConfig().time_delta_scale == 270
-    assert ModelConfig(history_capacity=0, history_reset_keep=0).history_capacity == 0
-    with pytest.raises(ValueError, match="must be zero"):
-        ModelConfig(history_capacity=0)
+    assert ModelConfig().context_capacity == 1024
+    with pytest.raises(ValueError, match="context_capacity"):
+        ModelConfig(context_capacity=16)
 
 
 @pytest.mark.parametrize("compact", [False, True])
 @pytest.mark.parametrize("scene_width, all_masked", [(0, False), (1, False), (4, False), (4, True)])
-def test_cuda_encoding_matches_cpu_without_device_scalar_reads(monkeypatch, compact, scene_width, all_masked):
+def test_cuda_encoding_matches_cpu_without_explicit_device_scalar_reads(monkeypatch, compact, scene_width, all_masked):
     if not torch.cuda.is_available():
         pytest.skip("需要 CUDA 验证共享编码热路径")
     batch = _raw_batch()

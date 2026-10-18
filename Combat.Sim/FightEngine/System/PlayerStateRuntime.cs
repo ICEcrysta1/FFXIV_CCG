@@ -32,6 +32,10 @@ public sealed class PlayerStateRuntime
         bool hasAvailableCharge,
         bool includeTemporalLocks = true)
     {
+        if (state.IsDead)
+        {
+            return new ValidationResult(false, "player_dead");
+        }
         if (!state.BossTargetable && skill.RequiresTarget)
         {
             return new ValidationResult(false, "boss_untargetable");

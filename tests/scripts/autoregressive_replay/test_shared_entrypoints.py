@@ -27,7 +27,7 @@ def policy_config(tmp_path):
     vocab = SkillVocab.build_from_job_tag(spec.job_tag)
 
     class Policy:
-        model_config = SimpleNamespace(history_capacity=4, history_reset_keep=2, time_delta_scale=120.0)
+        model_config = SimpleNamespace(context_capacity=17, history_reset_keep=2, time_delta_scale=120.0)
         supports_batch_inference = True
         data_spec = spec
         input_device = torch.device("cpu")
@@ -56,7 +56,7 @@ def policy_config(tmp_path):
     config = AutoregressiveReplayConfig(
         checkpoint_path=Policy.source_path, output_path=tmp_path / "unused.md",
         scene_json_path=source, cache_dir=tmp_path / ".cache",
-        model_history_capacity=4, cache_shard_size=512, cache_max_shards=2,
+        model_context_capacity=17, cache_shard_size=512, cache_max_shards=2,
         max_steps=None, max_duration_seconds=8, max_history=4, initial_action=None,
         temperature=0, use_kv_cache=False, device="cpu", job_tag="black_mage",
     )
@@ -96,7 +96,7 @@ def test_cold_cache_compiles_parallel_before_replays_and_ablation_reuses_engine(
     actual_build = InProcessEngine.create_backend
     def build(self, **kwargs):
         backend = actual_build(self, **kwargs)
-        if kwargs["max_history"] is None:
+        if len(converted) < len(configs):
             assert self is engines[0]
             converted.append(backend)
             try:
@@ -115,10 +115,8 @@ def test_cold_cache_compiles_parallel_before_replays_and_ablation_reuses_engine(
     results = list(run_replays(configs, backend=policy, workers=3))
     assert len(engines) == 1 and engines[0]._engine is None
     assert all(result.output_gcds > 0 for result in results)
-    def existing_only(self, **kwargs):
-        assert kwargs["max_history"] is not None, "有效缓存不应重新编译"
-        return actual_build(self, **kwargs)
-    monkeypatch.setattr(InProcessEngine, "create_backend", existing_only)
+    monkeypatch.setattr(cache_compile.ProcessCompilePool, "submit",
+                        lambda *_args, **_kwargs: pytest.fail("有效缓存不应重新编译"))
     ablations = list(run_replays(configs, backend=policy, workers=3, history_limits=(0, 2)))
     assert len(engines) == 2 and engines[1]._engine is None
     assert len(ablations) == 3

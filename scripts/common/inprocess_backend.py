@@ -105,6 +105,16 @@ def _load_dotnet_types() -> tuple[Any, Any, Any]:
         return _DOTNET_TYPES
 
 
+def _build_death_token(result: ExternalEventResult) -> dict[str, object]:
+    """复用 C# 死亡 token 装配；首次可见步号由转换回放层补充。"""
+    *_, context_packet_encoder = _load_dotnet_types()
+    from Combat.Sim.Outputs.TokenBuilders import DeathTokenBuilder
+
+    encoded = context_packet_encoder.Encode(DeathTokenBuilder.Build(result.timestamp, result.history_cursor))
+    with memoryview(encoded) as buffer:
+        return pickle.loads(buffer)
+
+
 class InProcessEngine:
     """一个 C# 引擎管理多个独立队列，供转换、验证和回放共同使用。
 
@@ -305,6 +315,7 @@ class InProcessBackend:
             batch.Add(external_event(
                 float(event["timestamp"]), kind, event.get("value"),
                 event.get("target_count"), event.get("remaining_seconds"),
+                event.get("mp"),
             ))
         response = self._require_session().ApplyExternalEvents(batch)
         result = response.Value
@@ -314,6 +325,8 @@ class InProcessBackend:
             event_kind=kinds[0] if len(kinds) == 1 else "scene_batch",
             timestamp=float(result.Timestamp),
             next_scheduled_event_time=self._optional(response.NextScheduledEventTime),
+            token=None if result.Token is None else str(result.Token),
+            history_cursor=None if result.HistoryCursor is None else int(result.HistoryCursor),
         )
 
     def observe_at(

@@ -247,8 +247,8 @@ class CausalPolicyModel(nn.Module):
         payload = checkpoint.get("model_config")
         if not isinstance(payload, Mapping):
             raise ValueError("checkpoint missing model_config")
-        if "history_capacity" not in payload:
-            raise ValueError("checkpoint missing model.history_capacity")
+        if "context_capacity" not in payload:
+            raise ValueError("checkpoint missing model.context_capacity; retrain")
         for key in ("history_reset_keep", "time_delta_scale"):
             if key not in payload:
                 raise ValueError(f"checkpoint missing model.{key}; retrain")

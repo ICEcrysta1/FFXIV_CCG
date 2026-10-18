@@ -164,7 +164,7 @@ TOKEN_ENCODING_CONTRACT = {
         "scene_time": "first_anchor_offset_then_separate_start_end_DELTA",
         "scene_duration": "own_clipped_duration",
         "time_scale": "model_config.time_delta_scale",
-        "history_window": "block_reset_from_full_history_cursor",
+        "history_window": "shared_context_token_budget_block_reset",
         "overflow_keep": "model_config.history_reset_keep",
         "time_clipping": False,
     },
@@ -183,7 +183,9 @@ TOKEN_ENCODING_CONTRACT = {
         "position": "after_output_projection_before_repetition_penalty_and_legal_mask",
     },
     "token_order": "scene, (state_i, skill_i)*H, current_state",
-    "history_capacity_unit": "actions",
+    "context_capacity_unit": "tokens",
+    "context_budget": "scene_tokens + history_state_tokens + history_skill_tokens + current_state_token <= model.context_capacity",
+    "history_reset_keep_unit": "complete_actions",
     "history_tokens_per_action": 2,
 }
 

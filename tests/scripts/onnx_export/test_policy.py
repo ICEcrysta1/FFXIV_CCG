@@ -40,7 +40,7 @@ def _make_model(
     full_attention_residuals: bool = False,
     activation: str = "gelu",
     action_to_vocab_id: tuple[int, ...] = (1, 2, 3),
-    history_capacity: int = 384,
+    context_capacity: int = 1024,
     logit_softcap: float = 15.0,
 ):
     data_spec = DataSpec(
@@ -64,9 +64,8 @@ def _make_model(
             n_heads=2,
             ff_dim=32,
             dropout=0.0,
-            history_capacity=history_capacity,
-            history_reset_keep=min(8, history_capacity),
-            scene_capacity=200,
+            context_capacity=context_capacity,
+            history_reset_keep=min(8, (context_capacity - 1) // 2),
             full_attention_residuals=full_attention_residuals,
             transformer_activation=activation,
             logit_softcap=logit_softcap,
@@ -367,11 +366,11 @@ def test_float16_softcap_boundaries_keep_saturated_outputs_finite(
 
 @pytest.mark.parametrize("history_capacity", (300, 384))
 def test_maximum_action_window_uses_two_independent_tokens_per_action(history_capacity):
-    model = _make_model(history_capacity=history_capacity)
+    model = _make_model(context_capacity=200 + 2 * history_capacity + 1)
     batch = _make_batch((0,) * 200, history_length=history_capacity)
     encoded = model.input_encoder(batch)
     total_token_count = 200 + 2 * history_capacity + 1
-    assert model.input_encoder.max_token_count == total_token_count
+    assert model.config.context_capacity == total_token_count
     assert encoded["tokens"].shape == (1, total_token_count, model.config.d_model)
     assert encoded["current_state_position"] == total_token_count - 1
     assert encoded["history_skill_positions"][0, -1].item() == total_token_count - 2
@@ -388,7 +387,7 @@ def test_padding_validation_checks_both_skill_and_state_keys(padding_key):
     attention[0, 0, 5, padding_key] = 1.0
     trace = SimpleNamespace(hidden=torch.zeros((1, 6, 2)), attentions=(attention,))
     with pytest.raises(AssertionError, match="padding attention keys"):
-        _assert_padding_keys_blocked(trace, scene_valid=1, history_valid=1, contract=CapacityContract(1, 2))
+        _assert_padding_keys_blocked(trace, scene_valid=1, history_valid=1, contract=CapacityContract(6))
 
 
 @pytest.mark.parametrize("full_attention_residuals", (False, True))
@@ -563,10 +562,7 @@ def test_padding_matrix_validates_hidden_attention_logits_and_argmax():
     results = validate_pytorch_matrix(
         OnnxPolicy(model),
         model.data_spec,
-        CapacityContract(
-            scene_capacity=3,
-            history_capacity=4,
-        ),
+        CapacityContract(12),
         vocab_size=8,
         dtype=torch.float32,
         device=torch.device("cpu"),
@@ -575,10 +571,10 @@ def test_padding_matrix_validates_hidden_attention_logits_and_argmax():
     assert {(row["scene_valid"], row["history_valid"]) for row in results} == {
         (0, 0),
         (0, 1),
-        (0, 4),
+        (0, 5),
         (1, 0),
-        (2, 3),
         (3, 4),
+        (11, 0),
     }
 
 
@@ -629,10 +625,7 @@ def test_padding_matrix_does_not_compare_trace_with_forward_argmax():
     results = validate_pytorch_matrix(
         policy,
         _make_model().data_spec,
-        CapacityContract(
-            scene_capacity=1,
-            history_capacity=1,
-        ),
+        CapacityContract(4),
         vocab_size=8,
         dtype=torch.float32,
         device=torch.device("cpu"),

@@ -95,6 +95,14 @@ public sealed partial class BlackMageJobStateMachine : JobResourceAccessors, IJo
             },
             new Dictionary<string, StatusDefinition>(Job.Statuses, StringComparer.Ordinal));
 
+    /// <summary>死亡后清空黑魔量谱、职业 Buff 与职业计时截止时刻。</summary>
+    public void OnDeath(CombatState state)
+    {
+        State.Initialize(state);
+        state.Job.Statuses.Clear();
+        state.Job.TimelineDeadlines.Clear();
+    }
+
     /// <summary>返回黑魔职业机是否负责这个行为名（对照 supports_behavior）。</summary>
     public bool SupportsBehavior(string behavior) => behavior is not null && _behaviors.ContainsKey(behavior);
 
@@ -128,8 +136,14 @@ public sealed partial class BlackMageJobStateMachine : JobResourceAccessors, IJo
             "polyglot_timer",
             // 只在元素态内计时；元素态结束后不再描述下一次结算。
             state => EnochianActive(state) ? TimelineDeadline(state, PolyglotTimelineKey) : null,
-            (_, state) => new TimelineMutation(ApplyState: target =>
+            (item, _) => new TimelineMutation(ApplyState: target =>
             {
+                // 已毕业的旧结算不会被时间线撤销，死亡或重开周期后必须拒绝旧事件。
+                if (!EnochianActive(target)
+                    || TimelineDeadline(target, PolyglotTimelineKey) is not double deadline
+                    || Math.Max(target.Time, deadline) != item.Timestamp)
+                    return;
+
                 // 结算一层通晓，并把下一次结算推进一个完整周期。
                 GainPolyglot(target);
                 SetTimelineDeadline(

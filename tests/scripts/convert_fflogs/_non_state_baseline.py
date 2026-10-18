@@ -74,7 +74,7 @@ def capture_cases():
                     backend=backend, vocab=vocabulary, normalizer=normalizer, schema=reader.schema,
                     skill_feature_names=reader.skill_feature_names, scene_provider=provider,
                     device=torch.device("cpu"), max_history=5,
-                    model_config=ModelConfig(history_capacity=5, history_reset_keep=2),
+                    model_config=ModelConfig(context_capacity=len(scene_values) + 2 * 5 + 1, history_reset_keep=2),
                     action_keys=reader.action_keys, action_is_gcd=reader.action_is_gcd,
                 )
                 encoded = []

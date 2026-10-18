@@ -62,6 +62,16 @@ def _write_config(tmp_path: Path, payload: object) -> Path:
     return path
 
 
+def test_model_capacity_uses_one_token_budget():
+    config = ModelConfig()
+    assert config.context_capacity == 1024
+    assert config.history_reset_keep == 8
+    assert not hasattr(config, "max_history_actions")
+    assert not hasattr(config, "scene_capacity")
+    assert not hasattr(config, "history_capacity")
+    assert ModelConfig.from_mapping(asdict(config)) == config
+
+
 @pytest.mark.parametrize("seed", (0, 42, -7))
 def test_seed_everything_seeds_python_cpu_and_available_cuda(seed):
     """默认生成器与同种子的独立生成器一致，覆盖所有可用 GPU。"""
@@ -124,9 +134,15 @@ def test_seed_everything_seeds_python_cpu_and_available_cuda(seed):
             "model.max_history is removed",
         ),
         (
-            {"model": {"history_capacity": -1}},
-            "model.history_capacity must be a non-negative integer",
+            {"model": {"context_capacity": -1}},
+            "model.context_capacity must be a non-negative integer",
         ),
+        ({"model": {"context_capacity": True}}, "model.context_capacity must be a non-negative integer"),
+        ({"model": {"context_capacity": 16}}, "model.context_capacity must be >= 2"),
+        ({"model": {"history_reset_keep": 0}}, "model.history_reset_keep must be >= 1"),
+        ({"model": {"history_capacity": 300}}, "removed model capacity options: history_capacity"),
+        ({"model": {"scene_capacity": 200}}, "removed model capacity options: scene_capacity"),
+        ({"model": {"max_history_actions": 128}}, "model.max_history_actions is removed"),
         (
             {"model": {"scorer_use_raw_projection": True}},
             "removed model options",

@@ -76,7 +76,7 @@ def evaluate_none_ppg(
     def run_empty(_item, policy, engine):
         policy.configure_cache(cache_was_enabled)
         with engine.create_backend(
-            max_history=config.model.history_capacity,
+            max_history=None,
         ) as backend:
             batcher = LiveBatchBuilder(
                 backend=backend,
@@ -86,7 +86,6 @@ def evaluate_none_ppg(
                 skill_feature_names=dataset.skill_feature_names,
                 scene_provider=EmptySceneProvider(data_spec.scene_dim),
                 device=device,
-                max_history=config.model.history_capacity,
                 model_config=config.model,
                 action_keys=data_spec.action_keys,
                 action_is_gcd=data_spec.action_is_gcd,
@@ -152,7 +151,7 @@ def evaluate_validation_ppg(
         source_index, reader = item
         policy.configure_cache(ppg_config.use_kv_cache)
         with engine.create_backend(
-            max_history=config.model.history_capacity,
+            max_history=None,
         ) as backend:
             initial_metadata = reader.step_metadata(0)
             initial_time = float(initial_metadata["time_offset"])
@@ -188,7 +187,6 @@ def evaluate_validation_ppg(
                 skill_feature_names=dataset.skill_feature_names,
                 scene_provider=scene_provider,
                 device=device,
-                max_history=config.model.history_capacity,
                 model_config=config.model,
                 action_keys=data_spec.action_keys,
                 action_is_gcd=data_spec.action_is_gcd,

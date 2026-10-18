@@ -412,7 +412,7 @@ def test_grpo_checkpoint_preserves_complete_input_vocab(tmp_path):
     input_contract = replace(make_input_contract(spec, vocab_size=5),
                              skill_vocab_entries=((152, 1), (3577, 2), (900001, 3), (0, 4)))
     model_config = ModelConfig(d_model=8, n_layers=1, n_heads=2, num_kv_heads=1,
-                               ff_dim=16, scene_capacity=1, history_capacity=4, history_reset_keep=4, dropout=0.0)
+                               ff_dim=16, context_capacity=10, history_reset_keep=4, dropout=0.0)
     config = GrpoRunConfig(raw_data_dir=tmp_path / "raw", output_dir=tmp_path,
                            job_tag="black_mage", model_variant="artzip", model=model_config)
     model = CausalPolicyModel(spec, model_config, vocab_size=5)

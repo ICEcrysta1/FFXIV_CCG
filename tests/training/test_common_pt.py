@@ -123,6 +123,7 @@ def test_training_dataset_requires_existing_compiled_cache(tmp_path):
     with pytest.raises(FileNotFoundError, match="compiled cache not found or stale for raw source"):
         TrainingDataset(
             [source_path],
+            context_capacity=1024,
             expected_action_space=ActionSpace.from_job_tag("black_mage"),
             normalizer=Normalizer(),
             int_dtype=torch.int32,
@@ -175,7 +176,7 @@ def test_compiled_history_and_current_state_use_compact_state_contract(tmp_path)
         assert sample[f"{prefix}_state_null_mask"].shape == sample[f"{prefix}_state_abs_values"].shape
 
 
-@pytest.mark.parametrize("old_contract", ["cache_format", "conversion_version", "unstable_history_order", "movement_windows", "cumulative_state_format", "cumulative_state_conversion", "skill_time"])
+@pytest.mark.parametrize("old_contract", ["cache_format", "conversion_version", "unstable_history_order", "movement_windows", "cumulative_state_format", "cumulative_state_conversion", "same_timestamp_revival", "ordinary_revival_only", "umbral_soul_downtime_only", "party_damage_only_downtime", "party_cast_only_recovery", "skill_time"])
 def test_previous_state_layout_cache_is_rejected(tmp_path, old_contract):
     """旧输入字段缓存不可复用，即使 raw 文件身份和其余编译参数一致。"""
     torch = pytest.importorskip("torch")
@@ -201,6 +202,21 @@ def test_previous_state_layout_cache_is_rejected(tmp_path, old_contract):
         payload["cache_format"] = "raw_json_compiled_samples_v23_state_skill_availability"
     elif old_contract == "cumulative_state_conversion":
         payload["cache_signature"]["conversion_version"] = "raw_json_to_compiled_v26_gcd_movement_windows"
+    elif old_contract == "same_timestamp_revival":
+        # 旧活动兜底会把死亡同刻的旧请求视为复活，状态和历史边界需要重建。
+        payload["cache_signature"]["conversion_version"] = "raw_json_to_compiled_v28_player_lifecycle_party_downtime"
+    elif old_contract == "ordinary_revival_only":
+        # 旧复活事实不区分治疗 LB3，会错误地按普通比例恢复 MP。
+        payload["cache_signature"]["conversion_version"] = "raw_json_to_compiled_v28_strict_player_lifecycle_party_downtime"
+    elif old_contract == "umbral_soul_downtime_only":
+        # 旧冻结技能表会把 Boss 可选中时的灵极魂标记为不可用。
+        payload["cache_signature"]["conversion_version"] = "raw_json_to_compiled_v28_lb3_player_lifecycle_party_downtime"
+    elif old_contract == "party_damage_only_downtime":
+        # 旧停机窗口只采纳正伤害，场景和冻结技能可用性需要按全队 cast 重建。
+        payload["cache_signature"]["conversion_version"] = "raw_json_to_compiled_v28_lb3_player_lifecycle_party_downtime_umbral_soul"
+    elif old_contract == "party_cast_only_recovery":
+        # 旧恢复边界只取 cast，会把真实起读请求圈进停机窗口。
+        payload["cache_signature"]["conversion_version"] = "raw_json_to_compiled_v28_lb3_player_lifecycle_party_downtime_umbral_soul_party_cast_endpoints"
     else:
         # 即使格式和签名冒用新版，旧技能时间列仍必须明确拒绝。
         payload["skill_feature_names"] = (*payload["skill_feature_names"], "time_seconds")
@@ -362,6 +378,7 @@ def test_corrupt_history_bank_manifest_falls_back_to_recompile(
         "shard_size": float("inf") if corruption == "overflow_shard_size" else 1,
         "shard_files": [],
         "history_bank": history_bank,
+        "history_markers": (),
     }
     if corruption == "missing_history_bank":
         payload.pop("history_bank")
@@ -455,6 +472,7 @@ def test_empty_compiled_cache_accepts_sentinel_history_bank(tmp_path, monkeypatc
         "vocab_signature": tuple(SkillVocab.build_from_job_tag("black_mage")),
         "shard_size": 1,
         "shard_files": [],
+        "history_markers": (),
         "history_bank": {
             "skill_ids": torch.zeros((1,), dtype=torch.int32),
             "skill_features": torch.zeros((1, 0)),
@@ -488,6 +506,7 @@ def test_empty_compiled_cache_accepts_sentinel_history_bank(tmp_path, monkeypatc
 
     dataset = TrainingDataset(
         [source_path], expected_action_space=space,
+        context_capacity=1024,
         normalizer=normalizer,
         int_dtype=torch.int32, float_dtype=torch.float32,
         cache_dir=tmp_path, compiled_cache_shard_size=1,

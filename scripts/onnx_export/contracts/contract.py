@@ -21,25 +21,32 @@ POSITION_ID_SEMANTICS = (
 
 @dataclass(frozen=True)
 class CapacityContract:
-    """部署图固定容量；历史仍按动作条数计量，每条占技能和状态两个 token。"""
+    """部署图共用 token 预算；原始输入轴上界不代表独立可用容量。"""
 
-    scene_capacity: int
-    history_capacity: int
+    context_capacity: int
     batch_size: int = 1
     padding_direction: str = "right"
 
     @property
+    def scene_capacity(self) -> int:
+        """场景输入的运输上界，另一个槽始终留给当前状态。"""
+        return self.context_capacity - 1
+
+    @property
+    def history_capacity(self) -> int:
+        """动作输入的运输上界，每条动作占状态和技能两个 token。"""
+        return (self.context_capacity - 1) // 2
+
+    @property
     def total_token_count(self) -> int:
-        """阶段 2 使用独立技能/状态 token；末尾追加一个当前状态。"""
-        return self.scene_capacity + 2 * self.history_capacity + 1
+        """场景、历史与当前状态共用的物理 token 上限。"""
+        return self.context_capacity
 
     def validate(self) -> None:
         if self.batch_size != 1:
             raise ValueError("ONNX v1 contract requires batch_size=1")
-        if self.scene_capacity < 1:
-            raise ValueError("scene_capacity must be >= 1 to represent empty scene")
-        if self.history_capacity < 1:
-            raise ValueError("history_capacity must be >= 1 to represent empty history")
+        if type(self.context_capacity) is not int or self.context_capacity < 1:
+            raise ValueError("context_capacity must be a positive integer")
         if self.padding_direction != "right":
             raise ValueError("ONNX v1 contract only supports right padding")
 
@@ -48,15 +55,14 @@ class CapacityContract:
         if not isinstance(payload, dict):
             raise ValueError("capacity contract must be an object")
         expected = {
-            "scene_capacity",
-            "history_capacity",
+            "context_capacity",
             "batch_size",
             "padding_direction",
             "scene_padding_mask_value",
             "history_padding_mask_value",
             "position_ids",
             "over_capacity",
-            "history_capacity_unit",
+            "capacity_unit",
             "history_tokens_per_action",
             "token_order",
             "total_token_count",
@@ -72,24 +78,22 @@ class CapacityContract:
             raise ValueError("deployment contract v1 only supports reject over-capacity")
         if payload["position_ids"] != POSITION_ID_SEMANTICS:
             raise ValueError("unsupported deployment position id semantics")
-        if (
-            payload["history_capacity_unit"] != TOKEN_ENCODING_CONTRACT["history_capacity_unit"]
-            or payload["history_tokens_per_action"] != TOKEN_ENCODING_CONTRACT["history_tokens_per_action"]
-        ):
+        if payload["capacity_unit"] != "tokens":
+            raise ValueError("deployment context capacity must represent tokens")
+        if payload["history_tokens_per_action"] != TOKEN_ENCODING_CONTRACT["history_tokens_per_action"]:
             raise ValueError("deployment history capacity must represent two tokens per action")
         if payload["token_order"] != TOKEN_ORDER:
             raise ValueError("unsupported deployment token order")
         if payload["effective_sequence_length"] != "scene_valid + 2 * history_valid + 1":
             raise ValueError("unsupported deployment effective sequence length")
         contract = cls(
-            scene_capacity=int(payload["scene_capacity"]),
-            history_capacity=int(payload["history_capacity"]),
+            context_capacity=payload["context_capacity"],
             batch_size=int(payload["batch_size"]),
             padding_direction=str(payload["padding_direction"]),
         )
         contract.validate()
         if payload["total_token_count"] != contract.total_token_count:
-            raise ValueError("deployment total token count differs from independent token capacities")
+            raise ValueError("deployment total token count differs from shared context capacity")
         return contract
 
     def to_dict(self) -> dict[str, object]:
@@ -99,7 +103,7 @@ class CapacityContract:
             "history_padding_mask_value": False,
             "position_ids": POSITION_ID_SEMANTICS,
             "over_capacity": "reject",
-            "history_capacity_unit": TOKEN_ENCODING_CONTRACT["history_capacity_unit"],
+            "capacity_unit": "tokens",
             "history_tokens_per_action": TOKEN_ENCODING_CONTRACT["history_tokens_per_action"],
             "token_order": TOKEN_ORDER,
             "total_token_count": self.total_token_count,
@@ -123,6 +127,8 @@ def make_inputs(
         raise ValueError("scene_valid is outside capacity")
     if not 0 <= history_valid <= contract.history_capacity:
         raise ValueError("history_valid is outside capacity")
+    if scene_valid + 2 * history_valid + 1 > contract.context_capacity:
+        raise ValueError("valid scene and history exceed shared context_capacity")
     if padding_fill not in {"zero", "random"}:
         raise ValueError("padding_fill must be zero or random")
     generator = torch.Generator(device="cpu").manual_seed(seed)

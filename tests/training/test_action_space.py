@@ -13,8 +13,8 @@ from common.game.config import load_project_config
 from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
 from common.policy.data import ActionSpace, DataSpec, SkillVocab
 from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION, TRAINING_SOURCE_FORMAT, TrainingSchema
-from training.data.dataset import TrainingDataset
 from common.policy.data.compiled_cache import CACHE_FORMAT, CompiledShardCache, load_compiled_cache
+from tests.training._common_fixtures import make_dataset, make_demo_pt
 
 
 @pytest.mark.parametrize("job_tag", ["black_mage", "machinist"])
@@ -45,11 +45,14 @@ def test_disabled_skill_remains_input_vocabulary_but_is_never_an_output_action()
     assert selected.key not in ActionSpace.from_config(modified, skill_vocab=vocab).action_keys
 
 
-def test_dataset_rejects_action_order_drift_instead_of_reordering():
-    dataset = TrainingDataset.__new__(TrainingDataset)
-    dataset._action_keys = ("a", "b")
+def test_dataset_rejects_action_order_drift_instead_of_reordering(tmp_path, monkeypatch):
+    source = make_demo_pt(tmp_path, ["fire_iii"], fight_id="action_order_drift")
+    dataset = make_dataset([source])
+    reader = dataset._readers[0]
+    sample = dict(reader.sample(0), action_keys=list(reversed(dataset.action_keys)))
+    monkeypatch.setattr(reader, "sample", lambda _index: sample)
     with pytest.raises(ValueError, match="action output order mismatch"):
-        dataset._prepare_sample({"action_keys": ["b", "a"]})
+        dataset[0]
 
 
 @pytest.mark.parametrize("rows", [(0, 2), (1, 1), (1,)])
@@ -82,7 +85,7 @@ def test_cache_uses_caller_action_contract_when_current_configuration_changes(tm
         "job_tag": "black_mage", "num_samples": 0, "num_actions": len(space.action_keys),
         "skill_feature_names": (), "action_keys": space.action_keys,
         "action_to_vocab_id": space.action_to_vocab_id, "action_is_gcd": space.action_is_gcd, "vocab_signature": ((0, 1),),
-        "shard_size": 1, "shard_files": [],
+        "shard_size": 1, "shard_files": [], "history_markers": (),
         "history_bank": {"skill_ids": torch.zeros(1, dtype=torch.long), "skill_features": torch.zeros(1, 0),
                          "state_abs_values": torch.zeros(1, 1), "state_delta_values": torch.zeros(1, 1),
                          "state_null_mask": torch.zeros(1, 1, dtype=torch.bool), "state_delta_reset_mask": torch.zeros(1, 1, dtype=torch.bool),

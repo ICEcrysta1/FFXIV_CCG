@@ -495,6 +495,95 @@ def _batch_components(int_dtype_name="int32", float_dtype_name="float32"):
     return torch, payload, reader, bank, builder
 
 
+def test_death_marker_prefix_is_independent_of_equal_skill_history_lengths():
+    from scripts.convert_fflogs.source.source_reader import TrainingSourceReader
+
+    payload = _batch_source()
+    marker = {"token": "<dead/>", "timestamp": 2.0, "after_history_length": 1, "step": 3}
+    payload["history_markers"] = [marker]
+    reader = TrainingSourceReader(payload)
+    assert reader.history_length(1) == reader.history_length(2) == 1
+    assert reader.history_markers(1) == ()
+    assert reader.history_markers(2) == (marker,)
+    reader.history_markers(2)[0]["token"] = "changed"
+    reader.history_marker_bank[0]["step"] = 1
+    assert reader.history_markers(2) == (marker,)
+    assert TrainingSourceReader(_batch_source()).history_marker_bank == ()
+
+
+@pytest.mark.parametrize("change", [
+    {"token": "fire_iii"}, {"timestamp": float("nan")}, {"timestamp": True},
+    {"step": 0}, {"step": 8}, {"step": True},
+    {"after_history_length": -1}, {"after_history_length": True}, {"after_history_length": 2},
+])
+def test_source_reader_rejects_invalid_death_marker_boundaries(change):
+    from scripts.convert_fflogs.source.source_reader import TrainingSourceReader
+
+    payload = _batch_source()
+    payload["history_markers"] = [{
+        "token": "<dead/>", "timestamp": 2.0, "after_history_length": 1, "step": 3, **change,
+    }]
+    with pytest.raises(ValueError, match="history marker"):
+        TrainingSourceReader(payload)
+
+
+@pytest.mark.parametrize("field,value", [("timestamp", 1.0), ("step", 2), ("after_history_length", 0)])
+def test_source_reader_rejects_reordered_death_markers(field, value):
+    from scripts.convert_fflogs.source.source_reader import TrainingSourceReader
+
+    payload = _batch_source()
+    payload["history_markers"] = [
+        {"token": "<dead/>", "timestamp": 2.0, "after_history_length": 1, "step": 3},
+        {"token": "<dead/>", "timestamp": 4.0, "after_history_length": 3, "step": 5, field: value},
+    ]
+    with pytest.raises(ValueError, match="history marker"):
+        TrainingSourceReader(payload)
+
+
+def test_death_markers_roundtrip_pt_without_entering_numeric_history(tmp_path):
+    from common.policy.data.compiled_cache import CompiledCacheReader, CompiledShardCache
+    from scripts.convert_fflogs.cache.cache_writer import write_compiled_cache_stream
+    from scripts.convert_fflogs.source.source_reader import TrainingSourceReader
+
+    torch, payload, _, bank, builder = _batch_components()
+    payload["history_markers"] = [
+        {"token": "<dead/>", "timestamp": 2.0, "after_history_length": 1, "step": 3},
+        {"token": "<dead/>", "timestamp": 4.0, "after_history_length": 3, "step": 5},
+    ]
+    source_reader = TrainingSourceReader(payload)
+    source = tmp_path / "source.json"
+    source.write_text("{}", encoding="utf-8")
+    cache = tmp_path / "markers.compiled.pt"
+    written = write_compiled_cache_stream(
+        cache, source, signature={}, config_dependencies={}, reader=source_reader,
+        sample_batches=(builder.build_batch(source_reader, start, min(start + 2, source_reader.num_samples))
+                        for start in range(0, source_reader.num_samples, 2)),
+        num_samples=source_reader.num_samples, vocab_signature=(), shard_size=2, history_bank=bank,
+    )
+    stored = torch.load(cache, weights_only=False)
+    assert stored["history_markers"] == tuple(payload["history_markers"])
+    assert set(stored["history_bank"]) == set(bank)
+    restored = CompiledCacheReader(stored, cache_path=cache, shard_cache=CompiledShardCache())
+    for index in range(source_reader.num_samples):
+        expected = source_reader.history_markers(index)
+        assert written.history_markers(index) == restored.history_markers(index) == expected
+        assert restored.sample(index).keys() == builder.build(source_reader, index).keys()
+    assert restored.history_markers(1) == ()
+    assert len(restored.history_markers(2)) == len(restored.history_markers(3)) == 1
+    assert len(restored.history_markers(4)) == 2
+    restored.history_markers(4)[0]["token"] = "changed"
+    assert restored.history_markers(4) == tuple(payload["history_markers"])
+
+    for invalid in (None, ({**payload["history_markers"][0], "after_history_length": 2},)):
+        corrupted = dict(stored, history_markers=invalid)
+        with pytest.raises(ValueError, match="history marker"):
+            CompiledCacheReader(corrupted, cache_path=cache, shard_cache=CompiledShardCache())
+    corrupted = dict(stored)
+    corrupted.pop("history_markers")
+    with pytest.raises(KeyError, match="history_markers"):
+        CompiledCacheReader(corrupted, cache_path=cache, shard_cache=CompiledShardCache())
+
+
 def _assert_compiled_equal(left, right):
     import torch
 

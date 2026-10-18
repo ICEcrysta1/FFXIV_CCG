@@ -11,7 +11,7 @@ import torch
 from scripts.common.numeric import flatten_numeric_mapping
 from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
 from common.policy.data.context_encoding import ContextEncoder, raw_state_delta
-from common.policy.data.history_window import history_window_length
+from common.policy.data.history_window import history_window_length, scene_window_end_times
 from common.policy.data.state_features import read_state_tokens, validate_state_feature_keys
 from scripts.common.scene_state import SceneFactScheduler, rewrite_scene_player_state
 
@@ -119,7 +119,7 @@ class LiveBatchBuilder:
         skill_feature_names,
         scene_provider,
         device,
-        max_history: int,
+        max_history: int | None = None,
         model_config,
         action_keys=None,
         action_is_gcd=None,
@@ -151,12 +151,11 @@ class LiveBatchBuilder:
             normalizer, schema, model_config, layout=self._layout,
         ).to(device=device)
         self._state_dim = self._layout.base_state_dim
-        self._scene_dim = schema.scene_feature_dim()
         player_group = next(group for group in self._layout.base_groups if group.group_key == "player_state")
         self._history_request_time_index = player_group.feature_keys.index("request_state.time_seconds")
         self._cached_history_rows: list[_CachedHistoryFeatureRow] = []
-        self._cached_history_max_history: int | None = None
         self._cached_scene_batch: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None = None
+        self._scene_end_times: tuple[float, ...] = ()
         self._cached_history_device_rows: tuple[_CachedHistoryFeatureRow, ...] | None = None
         self._cached_history_device_tensors: tuple[
             torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
@@ -202,7 +201,7 @@ class LiveBatchBuilder:
         canonical,
         *,
         gcd_phase: bool,
-        max_history: int,
+        max_history: int | None = None,
     ):
         """复用决策上下文和调用方阶段；调度计时不从模型特征反推。"""
         return self._build_batch_from_canonical(
@@ -216,7 +215,7 @@ class LiveBatchBuilder:
         canonical,
         *,
         gcd_phase: bool,
-        max_history: int,
+        max_history: int | None,
     ):
         if canonical.get("schema_version") != self._schema.context_schema_version:
             raise ValueError("live canonical context schema version differs from saved input contract")
@@ -236,16 +235,23 @@ class LiveBatchBuilder:
         cursor = canonical.get("history_cursor")
         if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0:
             raise ValueError("live canonical context requires a nonnegative history_cursor")
-        if isinstance(max_history, bool) or not isinstance(max_history, int) or max_history < 0:
-            raise ValueError("max_history must be a non-negative integer")
-        # 正式重置周期只由模型配置决定；消融仅裁短已经选出的窗口。
-        visible_length = min(history_window_length(
-            cursor, self._model_config.history_capacity, self._model_config.history_reset_keep,
-        ), max_history)
-        if len(canonical["skill_history_context"]) < visible_length:
-            raise ValueError("retained canonical history cannot supply the planned context window")
-        if cursor < len(canonical["skill_history_context"]):
-            raise ValueError("history_cursor cannot be smaller than retained canonical history")
+        # 动态场景会改变每块历史的容量；正式回放保留完整记录以重建相同的重置边界。
+        all_states = canonical["state_history_context"]["tokens"]
+        if len(all_states) != cursor:
+            raise ValueError("complete canonical history is required for shared context planning")
+        scene_abs_values, scene_types, scene_mask = self._scene_batch_tensors()
+        request_times = torch.tensor(
+            [self._history_row_identity(skill, state)[2] for skill, state in zip(
+                canonical["skill_history_context"], all_states, strict=True,
+            )],
+            dtype=torch.float32,
+        ).tolist()
+        visible_length = history_window_length(
+            cursor, self._model_config.context_capacity, self._model_config.history_reset_keep,
+            request_times=request_times, scene_end_times=self._scene_end_times,
+            current_request_time=float(current_state.base_values[0, self._layout.request_time_index]),
+            max_history=max_history,
+        )
         skill_history = _tail_history(canonical["skill_history_context"], visible_length)
         state_history = canonical["state_history_context"]
         state_history_tokens = _tail_history(state_history["tokens"], visible_length)
@@ -260,9 +266,7 @@ class LiveBatchBuilder:
             skill_history,
             state_history_tokens,
             state_context=history_context,
-            max_history=max_history,
         )
-        scene_abs_values, scene_types, scene_mask = self._scene_batch_tensors()
         current_state_vectors, current_state_null_mask = current_state.base_values, current_state.base_null_mask
         current_state_vectors = current_state_vectors.to(self._device)
         current_state_null_mask = current_state_null_mask.to(self._device)
@@ -325,21 +329,8 @@ class LiveBatchBuilder:
         state_tokens,
         *,
         state_context,
-        max_history: int,
     ):
         """只转换新增历史行；缓存不匹配时安全地重建当前窗口。"""
-        if len(skill_tokens) != len(state_tokens):
-            raise ValueError(
-                "live skill and state history rows must have the same length: "
-                f"skills={len(skill_tokens)} states={len(state_tokens)}"
-            )
-
-        if self._cached_history_max_history != max_history:
-            self._cached_history_rows.clear()
-            self._cached_history_max_history = max_history
-            self._cached_history_device_rows = None
-            self._cached_history_device_tensors = None
-
         identities = [
             self._history_row_identity(skill_token, state_token)
             for skill_token, state_token in zip(skill_tokens, state_tokens, strict=True)
@@ -360,9 +351,8 @@ class LiveBatchBuilder:
                 )
             )
 
-        # 输入已经按 max_history 裁剪；这里再限制一次，避免缓存持有旧窗口。
-        self._cached_history_rows = rows[-max_history:] if max_history > 0 else []
-        rows = self._cached_history_rows
+        # 只缓存正式窗口与显式消融已经选出的行，不再次按动作数限窗。
+        self._cached_history_rows = rows
         history_tensors = self._history_tensors_for_rows(rows)
         return (*history_tensors, [row.action_key for row in rows])
 
@@ -372,6 +362,7 @@ class LiveBatchBuilder:
         """每个验证副本只把固定 scene 张量搬到目标设备一次。"""
         if self._cached_scene_batch is None:
             scene_abs_values, scene_types = self._scene_provider.at_time(0.0)
+            self._scene_end_times = scene_window_end_times(scene_abs_values, scene_types, self._schema)
             scene_abs_values = scene_abs_values.unsqueeze(0).to(self._device)
             scene_types = scene_types.unsqueeze(0).to(self._device)
             scene_mask = torch.ones(
@@ -573,10 +564,8 @@ class LiveBatchBuilder:
         return self._normalizer.normalize_skill_features(values, self._skill_feature_names)
 
 
-def _tail_history(values, max_history: int):
-    """保留最近的历史；0 明确表示不提供历史。"""
-    if max_history < 0:
-        raise ValueError(f"max_history must be >= 0, got {max_history}")
-    if max_history == 0:
+def _tail_history(values, length: int):
+    """取已规划长度的历史后缀；0 明确表示不提供历史。"""
+    if length == 0:
         return []
-    return values[-max_history:]
+    return values[-length:]

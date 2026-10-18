@@ -45,6 +45,8 @@ public sealed class CombatState
     }
     public int Mp { get; set; } = 10000;
     public int MaxMp { get; set; } = 10000;
+    // 死亡期间只暂停自然回蓝；冷却、充能和目标 DoT 继续沿统一时间线结算。
+    internal bool IsDead { get; set; }
     public double NaturalMpLastTickAt { get; internal set; }
     public double NaturalMpTickProgress { get => Math.Max(0, Time - NaturalMpLastTickAt); internal set => NaturalMpLastTickAt = Time - value; }
     public double CastEndsAt { get; internal set; } = 0.0;
@@ -79,6 +81,8 @@ public sealed class CombatState
     // 与历史保留窗口独立；只跟踪最近一次已接受的真实或 policy 请求。
     internal Guid? LastDecisionId { get; set; }
     internal ModelStateFrame? LastDecisionAfter { get; set; }
+    // 最近一次已落实动作的基准，供死亡取消尚未完成的请求后恢复。
+    internal ModelStateFrame? LastCompletedDecisionAfter { get; set; }
     // 真实技能生效与 policy 记录共用递增序号，独立于历史裁剪和输出时间舍入。
     internal long LastHistorySequence { get; set; }
     internal long ReserveHistorySequence() => LastHistorySequence = checked(LastHistorySequence + 1);
@@ -101,6 +105,7 @@ public sealed class CombatState
             _downtimeDuration = _downtimeDuration,
             Mp = Mp,
             MaxMp = MaxMp,
+            IsDead = IsDead,
             NaturalMpLastTickAt = NaturalMpLastTickAt,
             CastEndsAt = CastEndsAt,
             GcdReadyAt = GcdReadyAt,
@@ -121,6 +126,7 @@ public sealed class CombatState
             History = copyHistory ? new List<ActionHistoryEntry>(History) : History,
             LastDecisionId = LastDecisionId,
             LastDecisionAfter = LastDecisionAfter,
+            LastCompletedDecisionAfter = LastCompletedDecisionAfter,
             LastHistorySequence = LastHistorySequence,
         };
         clone.SetTimelineTime(Time);

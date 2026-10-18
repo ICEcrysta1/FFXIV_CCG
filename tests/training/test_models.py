@@ -339,59 +339,33 @@ def test_swiglu_training_updates_all_ffn_projections_with_checkpointing(tmp_path
 
 def test_position_ids_are_logical_sequential_when_all_tokens_are_valid():
     torch = pytest.importorskip("torch")
-    position_ids = build_position_ids(
-        batch_size=1,
-        scene_length=3,
-        history_length=2,
-        scene_mask=torch.ones((1, 3), dtype=torch.bool),
-        history_mask=torch.ones((1, 2), dtype=torch.bool),
-    )[0].tolist()
-
+    position_ids = build_position_ids(prefix_valid=torch.ones((1, 7), dtype=torch.bool))[0].tolist()
     assert position_ids == [0, 1, 2, 3, 4, 5, 6, 7]
-    assert position_ids[-1] == 7
 
 
 def test_position_ids_ignore_right_padding_per_sample():
     torch = pytest.importorskip("torch")
-    position_ids = build_position_ids(
-        batch_size=2,
-        scene_length=3,
-        history_length=4,
-        scene_mask=torch.tensor([[True, True, False], [True, True, True]]),
-        history_mask=torch.tensor(
-            [[True, False, False, False], [True, True, True, False]]
-        ),
-    )
-
+    position_ids = build_position_ids(prefix_valid=torch.tensor([
+        [True] * 4 + [False] * 7,
+        [True] * 9 + [False] * 2,
+    ]))
     assert position_ids.tolist() == [
-        [0, 1, 0, 2, 3, 0, 0, 0, 0, 0, 0, 4],
+        [0, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 4],
         [0, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 9],
     ]
 
 
 def test_position_ids_count_valid_tokens_without_right_padding():
     torch = pytest.importorskip("torch")
-    position_ids = build_position_ids(
-        batch_size=1,
-        scene_length=3,
-        history_length=4,
-        scene_mask=torch.tensor([[False, True, True]]),
-        history_mask=torch.tensor([[False, True, False, True]]),
-    )
-
+    position_ids = build_position_ids(prefix_valid=torch.tensor([
+        [False, True, True, False, False, True, True, False, False, True, True],
+    ]))
     assert position_ids.tolist() == [[0, 0, 1, 0, 0, 2, 3, 0, 0, 4, 5, 6]]
 
 
 def test_current_state_rope_position_follows_scene_and_history():
     torch = pytest.importorskip("torch")
-    position_ids = build_position_ids(
-        batch_size=1,
-        scene_length=2,
-        history_length=2,
-        scene_mask=torch.ones((1, 2), dtype=torch.bool),
-        history_mask=torch.ones((1, 2), dtype=torch.bool),
-    )
-
+    position_ids = build_position_ids(prefix_valid=torch.ones((1, 6), dtype=torch.bool))
     assert position_ids.tolist() == [[0, 1, 2, 3, 4, 5, 6]]
 
 
@@ -536,8 +510,6 @@ def test_causal_model_appends_one_current_state_token():
     assert output["logits"].shape == (1, 2)
     encoded = model.input_encoder(batch)
     assert "attention_mask" not in encoded
-    assert encoded["history_length"] == 2
-    assert encoded["history_token_length"] == 4
     assert encoded["prefix_length"] == 5
     assert encoded["current_state_position"] == 5
     assert encoded["tokens"].shape == (1, 6, 8)
@@ -546,7 +518,7 @@ def test_causal_model_appends_one_current_state_token():
     assert not any(key.startswith("cls_") for key in encoded)
 
 
-def test_input_encoder_derives_context_capacity_from_context_blocks():
+def test_input_encoder_enforces_shared_context_capacity():
     torch = pytest.importorskip("torch")
     data_spec = DataSpec(
         job_tag="black_mage",
@@ -566,14 +538,13 @@ def test_input_encoder_derives_context_capacity_from_context_blocks():
             n_heads=2,
             ff_dim=16,
             dropout=0.0,
-            scene_capacity=4,
-            history_capacity=2,
+            context_capacity=9,
             history_reset_keep=2,
         ),
         vocab_size=4,
     ).eval()
-    # 历史容量按动作计数：scene 4 + 技能/状态 2 * 2 + 当前状态 1 = 9。
-    assert model.input_encoder.max_token_count == 9
+    # 场景、状态、动作和当前状态共同使用 9 个 token 的预算。
+    assert model.config.context_capacity == 9
     batch = {
         "history_skill_ids": torch.ones((1, 2), dtype=torch.int64),
         "history_skill_features": torch.zeros((1, 2, 1)),
@@ -597,7 +568,7 @@ def test_input_encoder_derives_context_capacity_from_context_blocks():
     batch["scene_vectors"] = torch.zeros((1, 5, 2))
     batch["scene_types"] = torch.zeros((1, 5), dtype=torch.int64)
     batch["scene_mask"] = torch.ones((1, 5), dtype=torch.bool)
-    with pytest.raises(ValueError, match="model.scene_capacity"):
+    with pytest.raises(ValueError, match="model.context_capacity"):
         model(batch)
 
 
@@ -863,7 +834,7 @@ def test_black_mage_artzip_uses_current_mainline_architecture():
     assert config.model.ff_dim == 1536
     assert config.model.transformer_norm_first is True
     assert config.model.transformer_activation == "swiglu"
-    assert config.model.history_capacity == 300
+    assert config.model.context_capacity == 1024
     assert config.model.full_attention_residuals is False
     assert "candidate_shuffle_enabled" not in config.__dict__
     assert "candidate_order_file" not in config.__dict__
@@ -996,7 +967,8 @@ def test_value_preference_loads_values_from_job_yaml():
 def test_training_collator_truncates_only_early_history_and_preserves_scene(tmp_path):
     torch = pytest.importorskip("torch")
     pt_path = _make_demo_pt(tmp_path, ["fire_iii", "fire_iv"], fight_id="history_demo")
-    sample = dict(_make_dataset([pt_path])[1])
+    dataset = _make_dataset([pt_path])
+    sample = dict(dataset[1])
     state_width = sample["history_bank_state_abs_values"].shape[-1]
     feature_width = sample["history_bank_skill_features"].shape[-1]
     sample["history_action_keys"] = ["old", "middle", "latest"]
@@ -1010,6 +982,12 @@ def test_training_collator_truncates_only_early_history_and_preserves_scene(tmp_
     sample["history_bank_state_null_mask"] = torch.zeros((4, state_width), dtype=torch.bool)
     sample["history_bank_state_delta_values"] = torch.zeros((4, state_width))
     sample["history_bank_state_delta_reset_mask"] = torch.zeros((4, state_width), dtype=torch.bool)
+    request_time_index = dataset.state_layout.request_time_index
+    sample["_history_budget"] = {
+        **sample["_history_budget"],
+        "total_history": 3,
+        "request_times": tuple(sample["history_bank_state_abs_values"][1:, request_time_index].tolist()),
+    }
     scene_before = sample["scene_abs_values"].clone()
     decision_before = {
         key: sample[key].clone()

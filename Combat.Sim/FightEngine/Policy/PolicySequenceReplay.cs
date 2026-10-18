@@ -9,6 +9,7 @@ using Combat.Sim.Config;
 using Combat.Sim.Facade;
 using Combat.Sim.Models.Definitions;
 using Combat.Sim.Models.Timeline;
+using Combat.Sim.Outputs.TokenBuilders;
 
 namespace Combat.Sim.Policy;
 
@@ -46,14 +47,16 @@ internal static class PolicySequenceReplay
         for (var index = 0; index < suppliedFacts.Length; index++)
         {
             var fact = suppliedFacts[index];
-            if (fact is null || !double.IsFinite(fact.Timestamp) || fact.Timestamp <= simulator.Time
+            if (fact is null || !double.IsFinite(fact.Timestamp) || fact.Timestamp < simulator.Time
                 || (index > 0 && fact.Timestamp < facts[index - 1].Timestamp))
-                throw new ArgumentException("replay facts must be ordered strictly after the initial time", nameof(factsJson));
+                throw new ArgumentException("replay facts must be ordered at or after the initial time", nameof(factsJson));
             facts[index] = new ExternalCombatEvent(
-                fact.Timestamp, fact.EventKind, fact.Value, fact.TargetCount, fact.RemainingSeconds);
+                fact.Timestamp, fact.EventKind, fact.Value, fact.TargetCount, fact.RemainingSeconds, fact.Mp);
         }
 
         var observations = new List<Dictionary<string, object?>>();
+        var pendingMarkers = new List<Dictionary<string, object?>>();
+        ExternalCombatEvent[]? pendingDeath = null;
         var factIndex = 0;
         var syncedTime = simulator.Time;
         var cursor = simulator.Time;
@@ -76,24 +79,31 @@ internal static class PolicySequenceReplay
                         var nextObservation = Math.Max(windowEnd, request.Timestamp);
                         var context = Observe(decisionTime, nextObservation);
                         policy.Record(simulator, decisionTime, policyActionKey, nextObservation);
-                        observations.Add(Frame(sourceIndex, isWait: true, decisionTime, context, submission: null));
+                        AddFrame(sourceIndex, isWait: true, decisionTime, context, submission: null);
                     }
                 }
             }
 
-            SyncAndAdvance(request.Timestamp);
+            SyncAndAdvance(request.Timestamp, beforeAction: true);
             var nextRequest = sourceIndex + 1 < requests.Length ? requests[sourceIndex + 1].Timestamp : fightDuration;
             var realContext = Observe(request.Timestamp, Math.Max(request.Timestamp, nextRequest));
             var submission = simulator.SubmitAction(request.Timestamp, request.SkillKey, request.ActualCastSeconds);
-            observations.Add(Frame(sourceIndex, isWait: false, request.Timestamp, realContext, Submission(submission)));
+            AddFrame(sourceIndex, isWait: false, request.Timestamp, realContext, Submission(submission));
             // 拒绝帧仍返回给调用方，由其按自身标签、步号与错误契约处理；后续请求不再执行。
             if (!submission.Accepted) break;
+            if (pendingDeath is not null
+                && (sourceIndex + 1 == requests.Length || requests[sourceIndex + 1].Timestamp != request.Timestamp))
+            {
+                // 同刻旧请求全部提交后才死亡；标记由下一帧携带，末尾无后继帧则不输出。
+                ApplyFacts(pendingDeath);
+                pendingDeath = null;
+            }
             // 预测生效时刻只用于下一轮 wait 判断，不能提前推进并越过下一条日志请求。
             cursor = submission.EffectTimestamp ?? request.Timestamp;
         }
         return new Dictionary<string, object?> { ["observations"] = observations };
 
-        double SyncAndAdvance(double timestamp)
+        double SyncAndAdvance(double timestamp, bool beforeAction = false)
         {
             if (timestamp < syncedTime)
                 throw new InvalidOperationException("scene fact cursor cannot move backwards; reset the trajectory first");
@@ -102,14 +112,33 @@ internal static class PolicySequenceReplay
                 var batchEnd = factIndex + 1;
                 while (batchEnd < facts.Length && facts[batchEnd].Timestamp == facts[factIndex].Timestamp) batchEnd++;
                 var batch = facts[factIndex..batchEnd];
-                var applied = simulator.ApplyExternalEvents(batch);
-                if (!applied.Accepted)
-                    throw new InvalidOperationException($"scene facts rejected at {batch[0].Timestamp:R}: {applied.Reason}");
+                // 同刻已有复活时保持整批先执行；否则只将死亡留到同刻旧请求之后。
+                if (beforeAction && batch[0].Timestamp == timestamp
+                    && batch.Any(fact => fact.Kind == ExternalCombatEventKinds.PlayerDeath)
+                    && !batch.Any(fact => fact.Kind is ExternalCombatEventKinds.PlayerRevived or ExternalCombatEventKinds.PlayerRevivedLb3))
+                {
+                    pendingDeath = batch.Where(fact => fact.Kind == ExternalCombatEventKinds.PlayerDeath).ToArray();
+                    batch = batch.Where(fact => fact.Kind != ExternalCombatEventKinds.PlayerDeath).ToArray();
+                }
+                if (batch.Length > 0) ApplyFacts(batch);
                 factIndex = batchEnd;
             }
             syncedTime = timestamp;
             simulator.AdvanceClockTo(timestamp);
             return simulator.Time;
+        }
+
+        void ApplyFacts(ExternalCombatEvent[] batch)
+        {
+            var applied = simulator.ApplyExternalEvents(batch);
+            if (!applied.Accepted)
+                throw new InvalidOperationException($"scene facts rejected at {batch[0].Timestamp:R}: {applied.Reason}");
+            if (applied.Token is not null)
+            {
+                var marker = DeathTokenBuilder.Build(applied.Timestamp, applied.HistoryCursor!.Value);
+                marker["step"] = observations.Count + 1;
+                pendingMarkers.Add(marker);
+            }
         }
 
         Dictionary<string, object?> Observe(double timestamp, double nextObservation)
@@ -118,6 +147,18 @@ internal static class PolicySequenceReplay
             var context = policy.BuildVectorDeltaContext(simulator, nextObservation, historyCursor);
             historyCursor = (long)context["history_cursor"]!;
             return context;
+        }
+
+        void AddFrame(int sourceIndex, bool isWait, double timestamp,
+            Dictionary<string, object?> context, Dictionary<string, object?>? submission)
+        {
+            var frame = Frame(sourceIndex, isWait, timestamp, context, submission);
+            if (pendingMarkers.Count > 0)
+            {
+                frame["history_markers"] = pendingMarkers.ToArray();
+                pendingMarkers.Clear();
+            }
+            observations.Add(frame);
         }
     }
 
@@ -155,5 +196,6 @@ internal static class PolicySequenceReplay
         [JsonPropertyName("value")] public bool? Value { get; init; }
         [JsonPropertyName("target_count")] public int? TargetCount { get; init; }
         [JsonPropertyName("remaining_seconds")] public double? RemainingSeconds { get; init; }
+        [JsonPropertyName("mp")] public int? Mp { get; init; }
     }
 }

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Combat.Sim.Common;
 using Combat.Sim.Facade;
+using Combat.Sim.Models.Timeline;
 using Combat.Sim.Outputs;
 using Combat.Sim.Policy;
 using FightEngine.Tests.Facade;
@@ -172,6 +173,116 @@ public sealed class ModelStateSemanticsTests
         Assert.True(Read("buff_state", "request_state.system.burst_potion.remaining_seconds") < Read("buff_state", "previous_action_after.system.burst_potion.remaining_seconds"));
         Assert.True(Read("target_buff_state", "request_state.target.high_thunder.remaining_seconds") < Read("target_buff_state", "previous_action_after.target.high_thunder.remaining_seconds"));
         Assert.Equal(frozen, JsonSerializer.Serialize(Context(after, "state_history_context")));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void 死亡取消待完成请求后恢复最后已落实动作且保留原请求回退(bool queued)
+    {
+        var simulator = Create();
+        var policy = PolicySession.Create(RepoRootLocator.Find(), simulator);
+        var first = simulator.SubmitAction(0, "fire_iii", actualCastSeconds: queued ? 2.8 : 0);
+        var requestTime = queued ? 2.4 : 2.5;
+        simulator.AdvanceTo(requestTime);
+        var completed = Assert.Single(simulator.GetState().History).StateAfter;
+        var frozenHistory = JsonSerializer.Serialize(Context(policy.BuildVectorContext(simulator, 10), "state_history_context"));
+        var pending = simulator.SubmitAction(requestTime, "blizzard_iii", actualCastSeconds: 10);
+        Assert.True(pending.Accepted);
+        Assert.Equal(queued, pending.Queued);
+        EqualSegments(Context(policy.BuildVectorContext(simulator, 10), "current_state_context"));
+
+        var deathTime = queued ? 2.5 : 3.0;
+        var death = simulator.ApplyExternalEvents(new[]
+        {
+            new ExternalCombatEvent(deathTime, ExternalCombatEventKinds.PlayerDeath),
+        });
+
+        Assert.Equal(1L, death.HistoryCursor);
+        var output = policy.BuildVectorContext(simulator, 10);
+        var current = Context(output, "current_state_context");
+        Assert.Equal(first.EffectTimestamp!.Value, Value(current, "previous_action_after.time_seconds"));
+        Assert.Equal(completed.Player.Mp, Value(current, "previous_action_after.mp"));
+        Assert.Equal(deathTime, Value(current, "request_state.time_seconds"));
+        Assert.Equal(0, Value(current, "request_state.mp"));
+        Assert.Equal(3, OutputsTestKit.HistoryVectorValue(current, "resource_state", "previous_action_after.astral_fire"));
+        Assert.Equal(0, OutputsTestKit.HistoryVectorValue(current, "resource_state", "request_state.astral_fire"));
+        Assert.Equal(frozenHistory, JsonSerializer.Serialize(Context(output, "state_history_context")));
+        Assert.Equal(new[] { "fire_iii" }, simulator.GetState().History.Select(entry => entry.SkillKey));
+    }
+
+    [Fact]
+    public void 死亡恢复Wait基准且待完成请求的备份随Fork和快照保存()
+    {
+        var simulator = Create();
+        var policy = PolicySession.Create(RepoRootLocator.Find(), simulator);
+        Assert.True(simulator.SubmitAction(0, "fire_iii", actualCastSeconds: 0).Accepted);
+        simulator.AdvanceTo(0.5);
+        policy.Record(simulator, 0.5, "ogcd_wait", 10);
+        Assert.True(simulator.SubmitAction(2.4, "blizzard_iii").Queued);
+        var snapshot = simulator.CreateSnapshot();
+        var policySnapshot = policy.CreateSnapshot();
+        var fork = simulator.Fork();
+        var forkPolicy = PolicySession.Create(RepoRootLocator.Find(), fork);
+        forkPolicy.RestoreSnapshot(policySnapshot);
+        var restored = Create();
+        restored.RestoreSnapshot(snapshot);
+        var restoredPolicy = PolicySession.Create(RepoRootLocator.Find(), restored);
+        restoredPolicy.RestoreSnapshot(policySnapshot);
+        string? expected = null;
+        foreach (var (runtime, session) in new[] { (simulator, policy), (fork, forkPolicy), (restored, restoredPolicy) })
+        {
+            var death = runtime.ApplyExternalEvents(new[]
+            {
+                new ExternalCombatEvent(2.45, ExternalCombatEventKinds.PlayerDeath),
+            });
+            Assert.Equal(2L, death.HistoryCursor);
+            var output = session.BuildVectorContext(runtime, 10);
+            var current = Context(output, "current_state_context");
+            Assert.Equal(0.5, Value(current, "previous_action_after.time_seconds"));
+            Assert.Equal(8000, Value(current, "previous_action_after.mp"));
+            Assert.Equal(2.45, Value(current, "request_state.time_seconds"));
+            Assert.Equal(0, Value(current, "request_state.mp"));
+            var actual = JsonSerializer.Serialize(output);
+            if (expected is not null) Assert.Equal(expected, actual);
+            expected = actual;
+            Assert.Equal(0, runtime.AdvanceTo(9).Mp);
+            runtime.ApplyExternalEvents(new[]
+            {
+                new ExternalCombatEvent(9, ExternalCombatEventKinds.PlayerRevived, Mp: 2000),
+            });
+            Assert.Equal(2000, runtime.GetState().Mp);
+            Assert.Equal(2200, runtime.AdvanceTo(12).Mp);
+        }
+    }
+
+    [Fact]
+    public void 旧效果不覆盖后续Wait可见基准而死亡使用最新已落实历史行()
+    {
+        var simulator = Create();
+        var policy = PolicySession.Create(RepoRootLocator.Find(), simulator);
+        var first = simulator.SubmitAction(0, "fire_iii", actualCastSeconds: 2.8);
+        simulator.AdvanceTo(0.1);
+        policy.Record(simulator, 0.1, "ogcd_wait", 10);
+        simulator.AdvanceTo(2.4);
+        var before = Context(policy.BuildVectorContext(simulator, 10), "current_state_context");
+        Assert.Equal(0.1, Value(before, "previous_action_after.time_seconds"));
+        Assert.Equal(10000, Value(before, "previous_action_after.mp"));
+
+        var death = simulator.ApplyExternalEvents(new[]
+        {
+            new ExternalCombatEvent(2.4, ExternalCombatEventKinds.PlayerDeath),
+        });
+
+        Assert.Equal(2L, death.HistoryCursor);
+        var output = policy.BuildVectorContext(simulator, 10);
+        var history = (List<Dictionary<string, object?>>)output["skill_history_context"]!;
+        Assert.Equal(new[] { "ogcd_wait", "fire_iii" }, history.Select(token => (string)token["skill_key"]!));
+        var current = Context(output, "current_state_context");
+        Assert.Equal(first.EffectTimestamp!.Value, Value(current, "previous_action_after.time_seconds"));
+        Assert.Equal(8000, Value(current, "previous_action_after.mp"));
+        Assert.Equal(2.4, Value(current, "request_state.time_seconds"));
+        Assert.Equal(0, Value(current, "request_state.mp"));
     }
 
     private static JobSimulator Create(int? historyLimit = null) => new(

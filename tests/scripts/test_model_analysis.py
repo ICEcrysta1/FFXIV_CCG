@@ -365,11 +365,8 @@ def _history_input_encoding(skill, state, history_mask, *, scene_length=2):
         'tokens': tokens, 'padding_mask': ~valid, 'valid': valid, 'prefix_valid': prefix_valid,
         'scene_length': scene_length, 'history_length': history_length,
         'history_token_length': 2 * history_length, 'prefix_length': current,
-        'position_ids': build_position_ids(
-            batch_size=batch_size, scene_length=scene_length, history_length=history_length,
-            scene_mask=scene_mask, history_mask=history_mask),
-        'role_ids': build_role_ids(
-            batch_size=batch_size, scene_length=scene_length, history_length=history_length, device='cpu'),
+        'position_ids': build_position_ids(prefix_valid=prefix_valid),
+        'role_ids': build_role_ids(scene_mask=scene_mask, history_mask=history_mask, prefix_width=current),
         'history_skill_positions': skill_positions, 'history_state_positions': state_positions,
         'current_state_position': current,
         'current_state_positions': torch.full((batch_size,), current, dtype=torch.long),
@@ -679,7 +676,7 @@ def test_analysis_restores_saved_input_contract_without_current_yaml(
         assert parameter.dtype == parameter_dtype, name
         torch.testing.assert_close(parameter, payload["model_state_dict"][name].to(parameter_dtype), rtol=0, atol=0)
     inputs = make_inputs(
-        spec, CapacityContract(3, 4), vocab_size=8, scene_valid=1, history_valid=1,
+        spec, CapacityContract(context_capacity=12), vocab_size=8, scene_valid=1, history_valid=1,
         dtype=torch.float32, seed=7,
     )
     forward_dtypes = []
@@ -743,6 +740,7 @@ def test_model_analysis_retries_after_compiling_missing_cache(monkeypatch, tmp_p
     result = analysis_common._load_analysis_dataset(
         source_path=source_path,
         cache_dir=cache_dir,
+        context_capacity=1024,
         max_history=240,
         history_reset_keep=8,
         cache_shard_size=768,
@@ -756,6 +754,7 @@ def test_model_analysis_retries_after_compiling_missing_cache(monkeypatch, tmp_p
     assert result is sentinel_dataset
     assert len(dataset_calls) == 2
     assert all(call[1]["max_history"] == 240 for call in dataset_calls)
+    assert all(call[1]["context_capacity"] == 1024 for call in dataset_calls)
     assert all(call[1]["expected_action_space"] == action_space for call in dataset_calls)
     assert compiled_calls == [
         {
@@ -881,7 +880,7 @@ def test_compact_causal_analysis_preserves_gathered_skill_ids_and_absolute_state
     model = CausalPolicyModel(
         data_spec,
         ModelConfig(d_model=16, n_layers=1, n_heads=2, num_kv_heads=1, ff_dim=32,
-                    dropout=0.0, history_capacity=4, history_reset_keep=2),
+                    dropout=0.0, context_capacity=17, history_reset_keep=2),
         vocab_size=SkillVocab.build_from_job_tag(data_spec.job_tag).size(),
     ).eval()
     layout = dataset.schema.state_layout(data_spec.action_keys)
@@ -1431,7 +1430,7 @@ def test_model_analysis_attention_output_and_main(monkeypatch, tmp_path):
     monkeypatch.setattr(analysis_main, "resolve_policy_checkpoint_path", lambda _path: tmp_path / "best.pt")
     monkeypatch.setattr(analysis_main, "load_run_config", lambda _path: SimpleNamespace(
         raw_data_dir=tmp_path,
-        model=SimpleNamespace(history_capacity=128),
+        model=SimpleNamespace(context_capacity=1024),
         compiled_cache_shard_size=512,
         compiled_cache_max_shards=8,
         precision="float32",

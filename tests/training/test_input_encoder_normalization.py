@@ -66,7 +66,13 @@ def test_input_rms_is_applied_once_after_content_and_role():
     interleaved = torch.stack((history['state'], history['skill']), dim=2).reshape(2, 4, 8)
     state = encoder.state_proj(batch['current_state_vectors']) + encoder.state_null_proj(
         batch['current_state_null_mask'].float())
-    content = torch.cat((scene, interleaved, state.unsqueeze(1)), dim=1)
+    # 独立按有效输入顺序构造预期内容，不让补齐行参与归一化。
+    content = torch.zeros_like(encoded['tokens'])
+    for row in range(2):
+        prefix = torch.cat((scene[row, batch['scene_mask'][row]],
+                            interleaved[row, batch['history_mask'][row].repeat_interleave(2)]))
+        content[row, :prefix.shape[0]] = prefix
+        content[row, -1] = state[row]
     raw = content + encoder.role_embed(encoded['role_ids'])
     expected = raw / (raw.square().mean(dim=-1, keepdim=True) + 1e-5).sqrt()
     assert encoded['tokens'].dtype == torch.float32

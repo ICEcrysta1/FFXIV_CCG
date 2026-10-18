@@ -13,6 +13,7 @@ public class ProjectConfigLoaderTests
         mp_recovery:
           tick_interval_seconds: 3.0
           in_combat_amount: 200
+          revival_ratio: 0.2
         potency:
           burst_potion_multiplier: 1.08
           raid_buff_window_multiplier: 1.10
@@ -146,6 +147,7 @@ public class ProjectConfigLoaderTests
         Assert.Equal(2.5, config.System.SkillTableBaseGcd);
         Assert.Equal(3.0, config.System.MpRecovery.TickIntervalSeconds);
         Assert.Equal(200, config.System.MpRecovery.InCombatAmount);
+        Assert.Equal(0.2, config.System.MpRecovery.RevivalRatio);
         Assert.Equal(1.08, config.System.Potency.BurstPotionMultiplier);
         Assert.Equal(1.10, config.System.Potency.RaidBuffWindowMultiplier);
         Assert.Equal(new[] { "amplifier" }, config.System.RaidBuffWindowMarkerSkills);
@@ -206,6 +208,46 @@ public class ProjectConfigLoaderTests
     }
 
     // ---------- 校验错误路径 ----------
+
+    [Theory]
+    [InlineData("-0.1")]
+    [InlineData("1.1")]
+    [InlineData("NaN")]
+    [InlineData("Infinity")]
+    [InlineData("-Infinity")]
+    [InlineData("invalid")]
+    [InlineData("null")]
+    public void 复活MP比例非法抛错(string value) =>
+        AssertLoadFails(
+            BaseSystemYaml.Replace("revival_ratio: 0.2", $"revival_ratio: {value}"),
+            BaseJobYaml,
+            "mp_recovery.revival_ratio");
+
+    [Fact]
+    public void 缺少复活MP比例抛错() =>
+        AssertLoadFails(
+            BaseSystemYaml.Replace("  revival_ratio: 0.2\n", ""),
+            BaseJobYaml,
+            "mp_recovery.revival_ratio");
+
+    [Theory]
+    [InlineData("0", 0.0)]
+    [InlineData("1", 1.0)]
+    [InlineData("0.35", 0.35)]
+    public void 复活MP比例按配置读取(string value, double expected)
+    {
+        var root = CreateTempRoot();
+        try
+        {
+            WriteTree(root, BaseSystemYaml.Replace("revival_ratio: 0.2", $"revival_ratio: {value}"), BaseJobYaml);
+            var config = ProjectConfigLoader.LoadProjectConfig(root, "black_mage");
+            Assert.Equal(expected, config.System.MpRecovery.RevivalRatio);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
 
     [Fact]
     public void 团辅标记为空抛错() =>

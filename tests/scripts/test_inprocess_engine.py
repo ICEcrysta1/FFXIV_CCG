@@ -1,7 +1,9 @@
 """统一多队列引擎的 Python.NET 并发、生命周期和转换接入回归。"""
 
 from concurrent.futures import ThreadPoolExecutor
+import sys
 from threading import Barrier
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -134,6 +136,53 @@ def test_invalid_capacity_is_rejected_before_loading_runtime(capacity, monkeypat
         InProcessEngine("black_mage", capacity=capacity)
 
 
+@pytest.mark.parametrize("old_contract", [True, False], ids=["reject_v18", "accept_current"])
+def test_loader_checks_assembly_contract_before_creating_engine(old_contract, monkeypatch, tmp_path):
+    """通过真实加载入口校验版本门禁，不依赖本机已有旧 DLL 或启动 CLR。"""
+    expected_version = backend_module.SIDECAR_CONTRACT_VERSION
+    assert expected_version > 18
+    assembly_version = 18 if old_contract else expected_version
+    engine_type = type("FakeSimulationEngine", (), {})
+    event_type = type("FakeExternalCombatEvent", (), {})
+    encoder_type = type("FakeContextPacketEncoder", (), {})
+    references = []
+    modules = {
+        "pythonnet": {
+            "get_runtime_info": lambda: SimpleNamespace(kind="CoreCLR"),
+            "load": lambda *args, **kwargs: pytest.fail("版本门禁测试不应启动真实 CLR"),
+        },
+        "clr": {"AddReference": references.append},
+        "Combat.Sim.Config": {
+            "SchemaConfigLoader": SimpleNamespace(AssemblySidecarContractVersion=assembly_version),
+        },
+        "Combat.Sim.Models.Timeline": {"ExternalCombatEvent": event_type},
+        "Combat.Sim.Sessions": {"SimulationEngine": engine_type},
+        "Combat.Sim.PythonBridge": {"ContextPacketEncoder": encoder_type},
+    }
+    for name, attributes in modules.items():
+        module = ModuleType(name)
+        module.__dict__.update(attributes)
+        monkeypatch.setitem(sys.modules, name, module)
+    for name in ("_RUNTIME_CONFIG", "_FIGHT_ENGINE_DLL", "_YAML_DOTNET_DLL", "_PYTHON_BRIDGE_DLL"):
+        path = tmp_path / name
+        path.touch()
+        monkeypatch.setattr(backend_module, name, path)
+    monkeypatch.setattr(backend_module, "_DOTNET_TYPES", None)
+
+    if old_contract:
+        with pytest.raises(RuntimeError, match=rf"expected={expected_version}, dll=18"):
+            InProcessEngine("black_mage", capacity=1)
+        assert backend_module._DOTNET_TYPES is None
+    else:
+        loaded = backend_module._load_dotnet_types()
+        assert loaded == (engine_type, event_type, encoder_type)
+        assert backend_module._load_dotnet_types() is loaded
+    assert references == [
+        str(backend_module._YAML_DOTNET_DLL), str(backend_module._FIGHT_ENGINE_DLL),
+        str(backend_module._PYTHON_BRIDGE_DLL),
+    ]
+
+
 def test_python_queue_capacity_matches_csharp_limit(require_engine):
     engine_type, _, _ = backend_module._load_dotnet_types()
     assert MAX_QUEUE_CAPACITY == int(engine_type.MaxCapacity) == 100
@@ -216,3 +265,36 @@ def test_external_fact_batch_is_atomic_and_accepts_single_element(require_engine
             {"timestamp": 1.0, "event_kind": "movement_changed", "value": False},
         ]).accepted
         assert backend.validate_at(1.0, "fire_iii").legal
+
+
+def test_death_returns_special_token_without_changing_model_inputs(require_engine):
+    with InProcessEngine("black_mage", capacity=1) as engine, engine.create_backend(max_history=None) as backend:
+        ordinary = backend.apply_external_events([
+            {"timestamp": 0.0, "event_kind": "target_count_changed", "target_count": 1},
+        ])
+        assert ordinary.token is None
+        assert ordinary.history_cursor is None
+        assert backend.submit_action(0.0, "fire_iii").accepted
+        assert backend.submit_action(4.0, "high_thunder").accepted
+
+        death = backend.apply_external_events([
+            {"timestamp": 6.0, "event_kind": "player_death"},
+        ])
+
+        assert death.accepted
+        assert death.token == "<dead/>"
+        assert death.history_cursor == 2
+        context = backend.observe_at(6.0, format="vector", next_observation_timestamp=6.0).context
+        current = context["current_state_context"]
+        token = current["tokens"][0]
+        assert sum(len(values) for values in token.values()) == 132
+        assert len(context["action_keys"]) == 25
+        assert [row["skill_key"] for row in context["skill_history_context"]] == ["fire_iii", "high_thunder"]
+        fields = {
+            group: dict(zip(current[f"{group}_feature_keys"], values, strict=True))
+            for group, values in token.items()
+        }
+        assert fields["player_state"]["request_state.mp"] == 0
+        for group in ("buff_state", "resource_state"):
+            assert all(value == 0 for key, value in fields[group].items() if key.startswith("request_state."))
+        assert fields["target_buff_state"]["request_state.target.high_thunder.active"] == 1

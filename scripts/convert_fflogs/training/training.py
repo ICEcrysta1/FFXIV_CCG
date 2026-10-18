@@ -14,11 +14,13 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import math
 
 from common.context.contracts import SCENE_EPSILON
 from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION
 
-from scripts.common.scene_state import SceneFactScheduler, rewrite_scene_player_state
+from scripts.common.inprocess_backend import _build_death_token
+from scripts.common.scene_state import SceneFactScheduler, _state_facts, rewrite_scene_player_state
 from scripts.common.state_machine_types import ActionSubmissionResult
 
 from ..config.constants import _round_time
@@ -77,19 +79,52 @@ def build_training_samples(
     fight_duration = float(fight_payload.get("duration", 0.0))
     # 转换层已把最早请求归一化到 0。
     cursor = resolve_initial_timestamp(fight_payload)
-    scheduler.sync_through(backend, cursor)
+    facts = _replay_facts(scheduler, fight_payload.get("external_events", []), cursor)
+    history_markers: list[dict[str, object]] = []
 
     if deduplicate_history:
         samples, resolved_sequence = _collect_native_samples(
-            backend, skill_book, fight_payload, scheduler,
+            backend, skill_book, fight_payload, scheduler, facts, history_markers,
             fight_duration=fight_duration, policy_action_key=policy_action_key,
         )
-        return _training_payload(backend, fight_payload, scene_context, samples, resolved_sequence)
+        return _training_payload(backend, fight_payload, scene_context, samples, resolved_sequence, history_markers)
 
     samples: list[dict[str, object]] = []
     observer = _TrainingObserver(backend, scheduler, incremental=deduplicate_history)
     resolved_sequence: list[str] = []
     next_step_index = 1
+    fact_index = 0
+    synced_time = cursor
+    pending_death = None
+
+    def apply_facts(batch, *, record_marker: bool = True) -> None:
+        result = backend.apply_external_events(batch)
+        if not result.accepted:
+            raise ValueError(f"external facts rejected at {result.timestamp}: {result.reason}")
+        if result.token is not None and record_marker:
+            marker = _build_death_token(result)
+            marker["step"] = len(samples) + 1
+            history_markers.append(marker)
+
+    def sync_facts(timestamp: float, *, before_action: bool = False) -> None:
+        nonlocal fact_index, synced_time, pending_death
+        if timestamp < synced_time:
+            raise ValueError("external fact cursor cannot move backwards; reset the trajectory first")
+        while fact_index < len(facts) and float(facts[fact_index]["timestamp"]) <= timestamp:
+            batch_end = fact_index + 1
+            while batch_end < len(facts) and facts[batch_end]["timestamp"] == facts[fact_index]["timestamp"]:
+                batch_end += 1
+            batch = facts[fact_index:batch_end]
+            # 死亡同刻的日志动作属于旧活动；同刻已有复活时则先完成死亡和复活。
+            if (before_action and batch[0]["timestamp"] == timestamp
+                    and any(fact["event_kind"] == "player_death" for fact in batch)
+                    and not any(fact["event_kind"] in {"player_revived", "player_revived_lb3"} for fact in batch)):
+                pending_death = [fact for fact in batch if fact["event_kind"] == "player_death"]
+                batch = [fact for fact in batch if fact["event_kind"] != "player_death"]
+            if batch:
+                apply_facts(batch)
+            fact_index = batch_end
+        synced_time = timestamp
 
     for source_step, raw_action in enumerate(actions, 1):
         if not isinstance(raw_action, dict):
@@ -103,6 +138,7 @@ def build_training_samples(
             scheduler,
             skill_book,
             observer=observer,
+            sync_facts=sync_facts,
             cursor=cursor,
             next_action=raw_action,
             action_request_offset=_request_time_offset(raw_action),
@@ -118,16 +154,17 @@ def build_training_samples(
 
         sample, cursor = _run_real_action(
             backend,
-            scheduler,
             skill_book,
             raw_action,
             observer=observer,
+            sync_facts=sync_facts,
             cursor=cursor,
             next_request_offset=next_request_offset,
             fight_duration=fight_duration,
             step_index=next_step_index,
             source_step=source_step,
             resolved_sequence=resolved_sequence,
+            history_markers=history_markers,
             policy_action_key=policy_action_key,
         )
         sample["step"] = next_step_index
@@ -135,13 +172,39 @@ def build_training_samples(
         samples.append(sample)
         resolved_sequence.append(str(raw_action["action_key"]))
         next_step_index += 1
+        if pending_death is not None and next_request_offset != _request_time_offset(raw_action):
+            # 标记从下一条观测起可见；末条仍执行死亡，但没有后继样本可以携带标记。
+            apply_facts(pending_death, record_marker=next_request_offset is not None)
+            pending_death = None
 
-    return _training_payload(backend, fight_payload, scene_context, samples, resolved_sequence)
+    return _training_payload(backend, fight_payload, scene_context, samples, resolved_sequence, history_markers)
+
+
+def _replay_facts(scheduler, external_events: object, start: float) -> list[dict[str, object]]:
+    """只在转换回放层合并提交计划；死亡与复活不属于场景窗口。"""
+    facts = [asdict(fact) for fact in _state_facts(start, scheduler.state_at(start), None)]
+    facts.extend(asdict(fact) for fact in scheduler.lookup.facts() if fact.timestamp > start)
+    if not isinstance(external_events, list):
+        raise ValueError("external_events must be a list")
+    for event in external_events:
+        if (not isinstance(event, dict) or not {"timestamp", "event_kind"} <= set(event)
+                or set(event) - {"timestamp", "event_kind", "mp"}):
+            raise ValueError("external player events require timestamp, event_kind and optional revival mp")
+        timestamp = event["timestamp"]
+        if (event["event_kind"] not in {"player_death", "player_revived", "player_revived_lb3"} or isinstance(timestamp, bool)
+                or not isinstance(timestamp, (int, float)) or not math.isfinite(timestamp) or timestamp < start):
+            raise ValueError("external player events require a finite, non-past timestamp")
+        if "mp" in event and (event["event_kind"] != "player_revived"
+                or isinstance(event["mp"], bool) or not isinstance(event["mp"], int) or event["mp"] < 0):
+            raise ValueError("only revival events accept non-negative integer mp")
+        facts.append({**event, "timestamp": float(timestamp)})
+    return sorted(facts, key=lambda fact: fact["timestamp"])
 
 
 def _training_payload(
     backend, fight_payload: dict[str, object], scene_context: dict[str, object],
     samples: list[dict[str, object]], resolved_sequence: list[str],
+    history_markers: list[dict[str, object]],
 ) -> dict[str, object]:
     return {
         "sample_schema_version": TRAINING_SAMPLE_SCHEMA_VERSION,
@@ -154,17 +217,18 @@ def _training_payload(
         "fight_scene_context": scene_context,
         "num_samples": len(samples),
         "resolved_sequence": resolved_sequence,
+        "history_markers": history_markers,
         "samples": samples,
     }
 
 
 def _collect_native_samples(
     backend, skill_book, fight_payload: dict[str, object], scheduler: SceneFactScheduler,
+    facts: list[dict[str, object]], history_markers: list[dict[str, object]],
     *, fight_duration: float, policy_action_key: str,
 ) -> tuple[list[dict[str, object]], list[str]]:
     """托管执行只负责时间线和决策；样本、标签及场景合成仍留在转换模块。"""
     actions = fight_payload["actions"]
-    start = resolve_initial_timestamp(fight_payload)
     requests = []
     for source_step, action in enumerate(actions, 1):
         if not isinstance(action, dict):
@@ -175,7 +239,6 @@ def _collect_native_samples(
             "skill_key": str(action["action_key"]),
             "actual_cast_seconds": None if cast_seconds is None else float(cast_seconds),
         })
-    facts = [asdict(fact) for fact in scheduler.lookup.facts() if fact.timestamp > start]
     frames = backend.replay_policy_sequence(
         requests, facts, fight_duration=fight_duration, policy_action_key=policy_action_key,
     )
@@ -183,6 +246,7 @@ def _collect_native_samples(
     samples: list[dict[str, object]] = []
     resolved_sequence: list[str] = []
     for frame in frames:
+        history_markers.extend(frame.get("history_markers", []))
         source_index = int(frame["source_index"])
         raw_action = actions[source_index]
         timestamp = float(frame["timestamp"])
@@ -196,6 +260,7 @@ def _collect_native_samples(
             _assert_no_label_leak(
                 context, expected_history_sequence=resolved_sequence, policy_action_key=policy_action_key,
                 current_action_key=action_key, current_step=step_index,
+                history_markers=history_markers,
             )
             raw_submission = frame["submission"]
             submission = ActionSubmissionResult(
@@ -222,17 +287,18 @@ def _collect_native_samples(
 
 def _run_real_action(
     backend,
-    scheduler: SceneFactScheduler,
     skill_book,
     raw_action: dict[str, object],
     *,
     observer: _TrainingObserver,
+    sync_facts,
     cursor: float,
     next_request_offset: float | None,
     fight_duration: float,
     step_index: int,
     source_step: int,
     resolved_sequence: list[str],
+    history_markers: list[dict[str, object]],
     policy_action_key: str,
 ) -> tuple[dict[str, object], float]:
     """在日志请求时刻提交一条真实动作并装配对应样本。"""
@@ -244,7 +310,7 @@ def _run_real_action(
             "normalized action request timestamp must be non-negative: "
             f"step={step_index}, action={action_key}, request_time={logged_request:.4f}"
         )
-    request_time, _ = _advance_to_with_facts(backend, scheduler, logged_request)
+    request_time, _ = _advance_to_with_facts(backend, sync_facts, logged_request, before_action=True)
 
     observation_timestamp = _resolve_next_observation(next_request_offset, request_time, fight_duration)
     context = observer.observe(
@@ -257,6 +323,7 @@ def _run_real_action(
         policy_action_key=policy_action_key,
         current_action_key=action_key,
         current_step=step_index,
+        history_markers=history_markers,
     )
 
     observed_cast_seconds = raw_action.get("actual_cast_seconds")
@@ -324,6 +391,7 @@ def _build_ogcd_wait_sample(
     skill_book,
     *,
     observer: _TrainingObserver,
+    sync_facts,
     cursor: float,
     next_action: dict[str, object],
     action_request_offset: float,
@@ -338,7 +406,7 @@ def _build_ogcd_wait_sample(
     if cursor >= action_request_offset - SCENE_EPSILON:
         return None, cursor
 
-    decision_time, cursor = _advance_to_with_facts(backend, scheduler, cursor)
+    decision_time, cursor = _advance_to_with_facts(backend, sync_facts, cursor)
     probe = backend.observe_at(decision_time, format="seconds").context
     gcd_remaining = float(probe.get("gcd_remaining_seconds") or 0.0)
     if gcd_remaining <= SCENE_EPSILON:
@@ -382,14 +450,16 @@ def _wait_sample(context, scheduler, decision_time, fight_duration, policy_actio
 
 def _advance_to_with_facts(
     backend,
-    scheduler: SceneFactScheduler,
+    sync_facts,
     timestamp: float,
+    *,
+    before_action: bool = False,
 ) -> tuple[float, float]:
-    """提交所有不晚于 `timestamp` 的场景事实，再把时钟推进到该时刻。
+    """提交所有不晚于 `timestamp` 的外部事实，再把时钟推进到该时刻。
 
-    同刻事实全部入队后才统一推进。返回 (请求时刻, 状态机当前时刻)。
+    请求前同步允许将同刻死亡留到该批动作提交之后。返回 (请求时刻, 状态机当前时刻)。
     """
-    scheduler.sync_through(backend, timestamp)
+    sync_facts(timestamp, before_action=before_action)
     return timestamp, backend.advance_to(timestamp).timestamp
 
 
@@ -439,32 +509,49 @@ def _assert_no_label_leak(
     policy_action_key: str,
     current_action_key: str,
     current_step: int,
+    history_markers: list[dict[str, object]],
 ) -> None:
     """验证当前样本输入只包含 step<t 的真实动作历史。
 
     policy 决策与真实动作共用同一条历史，但只有真实动作会被提交状态机，
     因此两侧都先剔除 policy 条目再对齐。动作在接受之后要等到生效时刻才写入
-    历史，所以历史始终是已解析序列的**前缀**，不能用尾部对齐。
+    历史。死亡可以取消已提交但未生效的尾部，因此按明确的死亡边界逐段校验前缀，
+    不允许借死亡跳过段内已经提交的中间动作。
     """
     skill_history = context["skill_history_context"]
     assert isinstance(skill_history, list)
-    exported_sequence = [
-        str(token["skill_key"])
-        for token in skill_history
-        if not _is_policy_entry(token)
-    ]
-    expected_runtime_sequence = [
-        action_key
-        for action_key in expected_history_sequence
-        if action_key != policy_action_key
-    ]
-    expected_sequence = expected_runtime_sequence[: len(exported_sequence)]
-    if exported_sequence != expected_sequence:
-        raise AssertionError(
-            "label leak: exported skill_history_context is not a prefix of the resolved "
-            f"pre-label sequence: step={current_step}, action={current_action_key}, "
-            f"expected={expected_sequence}, actual={exported_sequence}"
-        )
+    history_start = action_start = 0
+    boundaries = []
+    for marker in history_markers:
+        history_end = marker["after_history_length"]
+        action_end = marker["step"] - 1
+        if (marker["token"] != "<dead/>"
+                or not history_start <= history_end <= len(skill_history)
+                or not action_start <= action_end <= len(expected_history_sequence)):
+            raise AssertionError("death marker does not match the observed history boundary")
+        boundaries.append((history_end, action_end))
+        history_start, action_start = history_end, action_end
+    boundaries.append((len(skill_history), len(expected_history_sequence)))
+    history_start = action_start = 0
+    for history_end, action_end in boundaries:
+        exported_sequence = [
+            str(token["skill_key"])
+            for token in skill_history[history_start:history_end]
+            if not _is_policy_entry(token)
+        ]
+        expected_runtime_sequence = [
+            action_key
+            for action_key in expected_history_sequence[action_start:action_end]
+            if action_key != policy_action_key
+        ]
+        expected_sequence = expected_runtime_sequence[:len(exported_sequence)]
+        if exported_sequence != expected_sequence:
+            raise AssertionError(
+                "label leak: exported skill_history_context is not a prefix of the resolved "
+                f"pre-label sequence: step={current_step}, action={current_action_key}, "
+                f"expected={expected_sequence}, actual={exported_sequence}"
+            )
+        history_start, action_start = history_end, action_end
 
     state_history_count = len(context["state_history_context"]["tokens"])
     if state_history_count != len(skill_history):

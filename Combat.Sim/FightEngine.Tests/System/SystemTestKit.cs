@@ -18,7 +18,8 @@ public static class SystemTestKit
 
     public static readonly SystemMpRecoveryConfig MpRecovery = new(
         TickIntervalSeconds: 3.0,
-        InCombatAmount: 200);
+        InCombatAmount: 200,
+        RevivalRatio: 0.2);
 
     public static CombatState AdvancePublic(CombatState state, double seconds, Func<string, int>? getMaxCharges = null)
     {

@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from common.pytorch.precision import load_precision_config
 from common.pytorch.dependencies import import_torch
 from common.policy.data.context_fields import CURRENT_STATE_RAW_FIELDS, ENCODING_BANK_FIELDS, RAW_SCENE_FIELDS
+from common.policy.data.history_window import fit_history_suffix_length
 
 
 class TrainingCollator:
@@ -112,6 +113,7 @@ class TrainingCollator:
             return sample
 
         keep_length = self._rng.randint(self.history_min_recent, history_length - 1)
+        keep_length = fit_history_suffix_length(keep_length, **sample["_history_budget"])
         truncated = dict(sample)
         truncated["history_length"] = keep_length
         return truncated

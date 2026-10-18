@@ -6,6 +6,7 @@
 using Combat.Sim.Models.Combat;
 using Combat.Sim.Models.Timeline;
 using Combat.Sim.Outputs;
+using Combat.Sim.Outputs.TokenBuilders;
 using Combat.Sim.System.Timeline;
 
 namespace Combat.Sim.Facade;
@@ -23,6 +24,7 @@ public sealed class JobSimulator
     private static readonly IReadOnlySet<TimelineEventKind> InstanceHandlers = new HashSet<TimelineEventKind>
     {
         TimelineEventKind.ActionAccepted, TimelineEventKind.CastCompleted, TimelineEventKind.ActionEffect,
+        TimelineEventKind.PlayerDeath,
     };
     private StateOutputRouter? _outputRouter;
     internal StateOutputRouter OutputRouter => _outputRouter ??= _machine.CreateOutputRouter();
@@ -165,7 +167,7 @@ public sealed class JobSimulator
 
     public double? GetNextScheduledEventTime() => _timeline.GetNextScheduledEventTime();
 
-    /// <summary>同刻事实全部校验、全部入队后再推进，效果不能读取半更新的场景。</summary>
+    /// <summary>同刻事实全部校验、全部入队后再推进；死亡标记在旧效果结算后重置。</summary>
     public ExternalEventResult ApplyExternalEvents(IReadOnlyList<ExternalCombatEvent> externalEvents)
     {
         ArgumentNullException.ThrowIfNull(externalEvents);
@@ -174,6 +176,7 @@ public sealed class JobSimulator
         ArgumentNullException.ThrowIfNull(batch[0]);
         var timestamp = batch[0].Timestamp;
         var kinds = new HashSet<string>(StringComparer.Ordinal);
+        var isDead = _timeline.GetStateWithoutHistory().IsDead;
         foreach (var item in batch)
         {
             ArgumentNullException.ThrowIfNull(item);
@@ -185,13 +188,35 @@ public sealed class JobSimulator
             if (item.RemainingSeconds is { } remaining && !double.IsFinite(remaining))
                 throw new ArgumentException("external event duration must be finite", nameof(externalEvents));
             _machine.SystemMachine.ValidateExternalEvent(item);
+            // 只预演批次内的生死转换；整批通过后才允许入队和修改真实状态。
+            if (item.Kind == ExternalCombatEventKinds.PlayerDeath) isDead = true;
+            else if (item.Kind is ExternalCombatEventKinds.PlayerRevived or ExternalCombatEventKinds.PlayerRevivedLb3)
+            {
+                if (!isDead)
+                    throw new ArgumentException("revival requires a dead player", nameof(externalEvents));
+                isDead = false;
+            }
         }
-        // 保留调用方的稳定顺序，同刻全部 ExternalScene 均先于动作效果。
+        if (kinds.Contains(ExternalCombatEventKinds.PlayerRevived)
+            && kinds.Contains(ExternalCombatEventKinds.PlayerRevivedLb3))
+            throw new ArgumentException("conflicting revival facts", nameof(externalEvents));
+        // 场景事实先于动作效果；死亡标记晚于旧效果和周期结算、早于新的动作接受。
         foreach (var item in batch)
-            _timeline.Schedule(new TimelineEvent(timestamp, TimelineEventPriority.ExternalScene,
-                TimelineEventKind.SceneChanged, item.Kind, Payload: item));
+        {
+            var kind = item.Kind switch
+            {
+                ExternalCombatEventKinds.PlayerDeath => TimelineEventKind.PlayerDeath,
+                ExternalCombatEventKinds.PlayerRevived or ExternalCombatEventKinds.PlayerRevivedLb3 => TimelineEventKind.PlayerRevived,
+                _ => TimelineEventKind.SceneChanged,
+            };
+            _timeline.Schedule(new TimelineEvent(timestamp,
+                kind == TimelineEventKind.SceneChanged ? TimelineEventPriority.ExternalScene : TimelineEventPriority.PlayerReset,
+                kind,
+                item.Kind, Payload: item));
+        }
         _timeline.AdvanceClockTo(timestamp);
-        return new(true, "", timestamp);
+        var hasDeath = kinds.Contains(ExternalCombatEventKinds.PlayerDeath);
+        return new(true, "", timestamp, hasDeath ? DeathTokenBuilder.Token : null, hasDeath ? HistoryCursor : null);
     }
 
     public SimulationSnapshot CreateSnapshot() => _timeline.CreateSnapshot();
@@ -231,9 +256,12 @@ public sealed class JobSimulator
 
     private void CompleteModelDecision(Guid decisionId, CombatState state)
     {
+        var completed = CaptureModelStateFrame(state);
+        // 单独保存最后已落实的动作后状态，供死亡取消新请求时恢复；不替代当前请求关联。
+        state.LastCompletedDecisionAfter = completed;
         // 仅新请求自己的效果可更新基准；捕获 mutation 已变更状态，不能重新读取旧 timeline 状态。
         if (state.LastDecisionId == decisionId)
-            state.LastDecisionAfter = CaptureModelStateFrame(state);
+            state.LastDecisionAfter = completed;
     }
 
     internal CombatStateMachine Rules => _machine;
@@ -248,6 +276,7 @@ public sealed class JobSimulator
         {
             state.LastDecisionId = decisionId;
             state.LastDecisionAfter = completed ? modelState.RequestState : null;
+            if (completed) state.LastCompletedDecisionAfter = modelState.RequestState;
             // 等待在决策落实时进入历史；真实技能在后续生效记录时领取序号。
             if (completed) historySequence = state.ReserveHistorySequence();
         }));
@@ -272,6 +301,25 @@ public sealed class JobSimulator
         timeline.RegisterHandler(TimelineEventKind.ActionAccepted, HandleActionAccepted);
         timeline.RegisterHandler(TimelineEventKind.CastCompleted, HandleCastCompleted);
         timeline.RegisterHandler(TimelineEventKind.ActionEffect, HandleActionEffect);
+        timeline.RegisterHandler(TimelineEventKind.PlayerDeath, HandleDeath);
+    }
+
+    private TimelineMutation HandleDeath(TimelineEvent item, CombatState state)
+    {
+        // 只取消这条队列里尚未完成的旧动作，已结算效果、DoT 和冷却均保留。
+        var cancelled = _timeline.PendingEvents
+            .Where(pending => pending.Kind is TimelineEventKind.ActionAccepted
+                or TimelineEventKind.ActionEffect or TimelineEventKind.CastCompleted)
+            .Select(pending => pending.Sequence).ToArray();
+        return new TimelineMutation(ApplyState: target =>
+        {
+            _machine.ApplyDeath(target);
+            target.CastEndsAt = target.Time;
+            target.WeaveEndsAt = target.Time;
+            target.OgcdsWeaved = 0;
+            target.LastDecisionId = null;
+            target.LastDecisionAfter = target.LastCompletedDecisionAfter;
+        }, SequencesToCancel: cancelled);
     }
 
     private TimelineMutation HandleActionAccepted(TimelineEvent item, CombatState state)

@@ -21,6 +21,137 @@ from scripts.convert_fflogs import (
 from tests.helpers import DEFAULT_BASE_GCD, raid_buff_window_token, targetable_window_token
 
 
+def _party_report(events):
+    return {
+        "fight_id": 7, "fights": [{"id": 7, "start_time": 0, "end_time": 30000}],
+        "friendlies": [
+            {"id": actor, "type": "BlackMage" if actor == 10 else "Dancer", "fights": [{"id": 7}]}
+            for actor in range(10, 18)
+        ] + [
+            {"id": 99, "type": "Pet", "petOwner": 10, "fights": [{"id": 7}]},
+            {"id": 98, "type": "LimitBreak", "fights": [{"id": 7}]},
+            {"id": 97, "type": "NPC", "fights": [{"id": 7}]},
+            {"id": 96, "type": "Dancer", "fights": [{"id": 8}]},
+        ],
+        "enemies": [
+            {"id": 100, "type": "Boss", "fights": [{"id": 7}]},
+            {"id": 200, "type": "Boss", "fights": [{"id": 8}]},
+            {"id": 300, "type": "Pet", "petOwner": 100, "fights": [{"id": 7}]},
+        ],
+        "events": events,
+    }
+
+
+@pytest.mark.parametrize("damage_amount", [None, 0, 100], ids=["missing_damage", "zero_damage", "positive_damage"])
+def test_party_downtime_uses_cast_boundaries_independently_of_damage(damage_amount):
+    """左端采用完成施法，右端优先采用配对起读，不依赖伤害事件。"""
+    from scripts.convert_fflogs.extraction.downtime import _collect_party_cast_actions, detect_downtime_windows
+
+    def cast(timestamp, **fields):
+        return {"type": "cast", "sourceID": 11, "targetID": 100, "fight": 7,
+                "timestamp": timestamp, "abilityGameID": 999, **fields}
+
+    events = [
+        cast(20500, sourceID=12, abilityGameID=123456, packetID=42),
+        cast(1000, sourceID=10), cast(3000, sourceID=12), cast(5000), cast(20000),
+        cast(-1000), cast(22000),
+        cast(8000, sourceID=99), cast(9000, sourceID=98), cast(10000, sourceID=97),
+        cast(11000, sourceID=96), cast(12000, targetID=200), cast(13000, targetID=12),
+        cast(14000, fight=8), cast(15000, targetID=300),
+        cast(8000, type="damage", amount=100),
+        cast(10000, type="damage", amount=100, tick=True),
+        cast(12000, type="calculateddamage", amount=100),
+        # 同技能取消或时长不匹配的起读不能覆盖真正配对的恢复请求。
+        cast(14000, type="begincast", duration=10000, sourceID=12, abilityGameID=123456),
+        cast(17000, type="begincast", duration=4000, sourceID=12, abilityGameID=123456),
+        cast(19000, type="begincast", duration=10000, sourceID=12, abilityGameID=123456),
+    ]
+    if damage_amount is not None:
+        events.extend([
+            cast(8000, type="damage", amount=damage_amount),
+            cast(20700, type="damage", amount=damage_amount, sourceID=12, abilityGameID=123456, packetID=42),
+        ])
+    attacks = _collect_party_cast_actions(
+        _party_report(events), fight_start=0, fight_end=21, match_tolerance_seconds=0.5,
+    )
+    assert [action["timestamp"] for action in attacks] == [1.0, 3.0, 5.0, 20.0, 20.5]
+    assert [action["request_timestamp"] for action in attacks] == [1.0, 3.0, 5.0, 20.0, 17.0]
+    windows = detect_downtime_windows(attacks, fight_start=0, fight_end=21,
+                                     gap_seconds=6, boundary_margin=0.5)
+    assert windows == [{"start": 5.5, "end": 16.5, "duration": 11.0}]
+
+
+@pytest.mark.parametrize("deduplicate_history", [False, True], ids=["public_replay", "native_replay"])
+def test_report_downtime_preserves_resumed_request_and_completes_training_conversion(cs_backend, deduplicate_history):
+    """恢复首个读条在日志请求时刻通过完整转换，不为迁就停机窗口移动动作。"""
+    from scripts.convert_fflogs import build_skill_book
+
+    events = [
+        {"type": "cast", "sourceID": 10, "targetID": 10, "timestamp": 0,
+         "abilityGameID": 7561, "fight": 7},
+        {"type": "cast", "sourceID": 11, "targetID": 100, "timestamp": 1000,
+         "abilityGameID": 999, "fight": 7},
+        {"type": "begincast", "sourceID": 10, "targetID": 100, "timestamp": 17000,
+         "abilityGameID": 152, "duration": 4000, "fight": 7},
+        {"type": "cast", "sourceID": 11, "targetID": 100, "timestamp": 20000,
+         "abilityGameID": 999, "fight": 7},
+        {"type": "cast", "sourceID": 10, "targetID": 100, "timestamp": 20500, "abilityGameID": 152,
+         "packetID": 42, "fight": 7},
+    ]
+    project = load_job_project_config("black_mage")
+    skill_book = build_skill_book(project)
+    payload, _ = convert_report_payload(
+        _party_report(events), job_tag="black_mage", project_config=project,
+        skill_book=skill_book, source_id=10, encounter_name="Demo",
+        report_code="party", player_name="Tester", generated_at="2026-10-18",
+    )
+    assert payload["actions"][-1]["request_time_offset"] == 17.0
+    assert payload["actions"][-1]["time_offset"] == 20.5
+    assert payload["actions"][-1]["actual_cast_seconds"] == 4.0
+    downtime = [token for token in payload["scene_context"]["targetable_window_context"]["tokens"] if token[3] == 0]
+    assert downtime == [targetable_window_token(1.6, 16.4, targetable=False, segment_kind="downtime")]
+    training_payload, _ = convert_report_to_training_payload(
+        _party_report(events), backend=cs_backend, project_config=project,
+        skill_book=skill_book, source_id=10, encounter_name="Demo",
+        report_code="party", player_name="Tester", generated_at="2026-10-18",
+        deduplicate_history=deduplicate_history,
+    )
+    assert training_payload["resolved_sequence"] == ["swiftcast", "fire_iii"]
+    sample = training_payload["samples"][-1]
+    assert sample["time_offset"] == 17.0
+    assert sample["label"]["is_legal"] is True
+    assert sample["label"]["cast_time_seconds"] == 4.0
+    assert sample["label"]["accepted_offset"] == 0.0
+    assert sample["label"]["request_time_clamped"] == 0.0
+
+
+def test_report_pipeline_does_not_treat_player_death_gap_as_boss_downtime():
+    """正式流水线使用本场八人完成施法，队友持续输出时个人死亡不关 Boss。"""
+    from scripts.convert_fflogs import build_skill_book
+
+    events = [
+        {"type": "cast", "sourceID": 10, "targetID": 100, "timestamp": 2000,
+         "abilityGameID": 152, "fight": 7},
+        {"type": "death", "targetID": 10, "timestamp": 5000, "fight": 7},
+        {"type": "cast", "sourceID": 10, "targetID": 100, "timestamp": 24000,
+         "abilityGameID": 154, "fight": 7},
+        *({"type": "cast", "sourceID": 11, "targetID": 100, "timestamp": timestamp,
+           "abilityGameID": 123456, "fight": 7}
+          for timestamp in range(2000, 24001, 2000)),
+    ]
+    project = load_job_project_config("black_mage")
+    payload, _ = convert_report_payload(
+        _party_report(events), job_tag="black_mage", project_config=project,
+        skill_book=build_skill_book(project), source_id=10, encounter_name="Demo",
+        report_code="party", player_name="Tester", generated_at="2026-10-18",
+    )
+    assert all(token[3] == 1 for token in payload["scene_context"]["targetable_window_context"]["tokens"])
+    assert payload["external_events"] == [
+        {"timestamp": 3.0, "event_kind": "player_death"},
+        {"timestamp": 22.0, "event_kind": "player_revived"},
+    ]
+
+
 def test_extract_supported_actions_resolves_action_keys_and_potion(cs_backend, cs_skill_book):
     raw_payload = {
         "events": [

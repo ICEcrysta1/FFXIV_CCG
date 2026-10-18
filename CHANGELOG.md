@@ -4,8 +4,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- 状态机支持外部 `player_death` 死亡重置标记：系统清零 MP 和公共 Buff，黑魔清空职业 Buff、量谱与计时截止时刻；取消尚未结算的旧读条及排队动作，保留 DoT、GCD、技能冷却和历史。同刻旧效果及周期结算先完成，再执行重置；机工暂未实现职业死亡清理。
+- 死亡事件成功提交后，C# `ExternalEventResult.Token`／Python `result.token` 返回独立的 `<dead/>`，普通外部事实返回空值。标记不占用技能 ID；模型历史尚未接入，现有黑魔 132 维状态和 25 个可选动作保持不变。
+- FFLogs 转换器读取当前玩家的 `death` 日志，按统一时间线向状态机提交死亡重置事实，支持初始时刻死亡及与场景事实同刻结算。转换后的 PT 独立保存 `history_markers`，记录 `<dead/>` 的时间、已生效历史插入位置和首次可见样本步号；读取器只返回当前样本可见的标记前缀，不扩展技能词表、数值状态或模型输入。
+
 ### Breaking Changes
 
+- 模型容量配置由 `model.scene_capacity`／`model.history_capacity` 改为统一的 `model.context_capacity`，旧字段不再接受。checkpoint 输入描述和 ONNX 部署容量契约同步调整，旧 checkpoint 与部署包明确拒绝复用，需重新训练、导出；本次读取侧窗口调整不要求重新转换已符合当前缓存契约的完整 PT。
 - **FightEngine 状态职责拆分不保留旧版公开接口兼容层。** 依赖旧版 `FightEngine.dll` 的宿主、自定义职业和桥接程序集需同步迁移并重新编译，Python.NET 脚本需更新旧成员访问。项目 Python 调用方升级后执行 `dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj`，同步更新核心与桥接 DLL，并重启已加载旧 DLL 的进程。
 - `CombatState.JobResources`、`JobTimelineDeadlines` 分别迁移为 `state.Job.Resources`、`state.Job.TimelineDeadlines`；`GetJobResource`／`SetJobResource` 改为 `state.Job.GetResource`／`state.Job.SetResource`。职业 Buff 改存 `state.Job.Statuses`，查询改用 `state.Job.HasStatus`／`StatusStacks`；根 `Statuses` 只保存公共状态。直接序列化原始状态或 `SimulationSnapshot` 的调用方需同步迁移结构。
 - `IJobStateMachine` 新增必需的 `JobStateRuntime State { get; }`；`RegisterTimeline` 参数改用 `Combat.Sim.Jobs.Timeline.JobTimelineRegistry`。职业量谱、Buff 和计时规则由 `State` 持有；手工构造职业状态到期事件时须显式指定 `Scope: TimelineEventScope.Job`。
@@ -17,6 +24,8 @@
 
 ### Changed
 
+- 训练、回放、PPG、GRPO、KV cache 与 ONNX 统一使用场景、历史状态／动作及当前状态的 token 总预算，黑魔 Artzip 默认总容量由 `801` 调整为 `1024`。超限时保留最近 `history_reset_keep` 条完整状态／动作记录（默认 `8` 条），清除更早上下文后重新累积；按历史锚点重新计算有效场景，消融和随机截窗也需满足总预算。原始 PT 保留完整历史与场景，`<dead/>` 仍未接入模型输入。
+- 混合 batch 进入 Transformer 前按各样本的有效顺序压紧场景和历史 token，物理序列长度也受共享容量约束；位置编号排除 padding，KV cache 同步适配压紧与上下文重置。
 - 动作输出头与 ABS reset 投影改用原生 `nn.Linear`；显式调用这两层的 `reset_parameters()` 时改为标准随机初始化，分别替代原动作头的空操作与 reset 投影的清零。模块打印、TensorBoard／JIT 图中的类名随之变化，重新导出的 ONNX 诊断元数据及文件哈希可能变化；旧私有层类路径不再提供，外部依赖这些类的整模型 pickle 无法直接反序列化。
 - 统一训练、回放和部署的输入归一化配置：MP 与实际耗蓝除以 `10000`，公共时间尺度为 `270` 秒，场景目标数截断到 `0～5` 后除以 `5`，单次技能威力及状态绝对威力截断到 `0～2000` 后除以 `2000`。状态锚点与场景时间默认继承公共配置，显式 `model.time_delta_scale` 仍只影响读取侧，不进入 compiled cache 签名；状态 DELTA 保留符号且不截断。
 - 职业计数资源和已注册 Buff 层数继续使用 YAML 上限；时间量谱通过 `unit: seconds` 明确声明并使用公共时间尺度。技能可用充能与最大充能均除以该条冻结记录的原始 `max_charges`，支持不同技能的充能上限，拒绝缺失、非有限或非法上限；checkpoint 保存完整归一化契约，离线恢复不重新读取本机职业 YAML。
@@ -24,11 +33,15 @@
 - 技能、状态和场景数值输入、输入投影、token 合成与统一 RMSNorm 固定使用 FP32，输入编码器权重也保留 FP32，避免 BF16／FP16 提前舍入合并细微数值差异；BC 训练、回放和模型分析同步采用这一精度边界，主干与独立动作头沿用原参数和计算精度配置。
 - ONNX 的数值输入统一为 FP32，输入编码器权重在导出时保留 FP32，主干权重与输出继续采用部署目标精度；BF16 部署仍使用 FP32 计算影子模型。同步更新输入契约描述、manifest schema 和参数精度审计，覆盖匿名转置权重与折叠后的角色 embedding 常量，不再次提升本分支已升级的契约版本。
 - 黑魔 23 个技能统一为相同顺序的 20 个 YAML 字段，补全耗蓝、冷却、充能、DoT、目标与状态定义的既有默认值，不增加 `enabled` 字段；悖论仅备注其耗蓝由职业状态机按元素态计算，保留原有执行规则。
-- 同步升级 canonical 输出到 `16`、PythonBridge 契约到 `18`、checkpoint 输入契约到 `23`、归一化契约到 `3`、compiled cache 到 `v24`／转换版本到 `v27`、ONNX deployment contract 到 `26`，每种契约在本分支仅升级一次。旧缓存进入重编译路径，旧 checkpoint 与部署包明确拒绝复用，需重新训练和导出。
+- 同步升级 canonical 输出到 `16`、PythonBridge 契约到 `18`、checkpoint 输入契约到 `23`、归一化契约到 `3`、compiled cache 到 `v25`／转换版本到 `v28`、ONNX deployment contract 到 `27`／manifest 到 `17`。部署版本与 Schema 同步区分共享容量结构，拒绝旧版部署包。旧缓存进入重编译路径，其中死亡重置及独立历史标记要求已有 PT 从 raw 重新转换；旧 checkpoint 与部署包明确拒绝复用，需重新训练和导出。
 - 黑魔 Artzip 训练文件上限由 `1280` 调整为 `1430`，验证文件数由 `30` 调整为 `44`；同步更新项目结构说明与契约升级协作约定。
 
 ### Fixed
 
+- 死亡期间真实技能和药水在校验与提交时统一返回 `player_dead`，可用性查询不再提供真实技能候选，不排队、不消耗冷却或新增动作历史；普通／LB3 复活后恢复可用，保留策略等待动作。
+- 修复 FFLogs 日志动作与死亡同刻时，先执行死亡导致 `player_dead` 拒绝动作并中止转换的问题：逐步与批量回放均在该刻旧请求全部提交后执行死亡，场景事实仍先于请求；同刻已有复活时先执行死亡和复活。死亡标记从下一条观测起可见，末条后的死亡仍重置状态，但不生成越界历史标记。
+- 编码结果实际删除相对上下文锚点已过期的场景 token，混合 batch 仅保留必要 padding；ONNX 宿主在固定容量检查和补齐前同步移除无效场景行，修复有效总长度合法却因场景物理行数超限而被拒绝的问题。有效场景的顺序、类型及时间差分保持不变。
+- 修复死亡取消已提交但尚未生效的动作后，转换器将后续执行历史误判为标签泄漏的问题：按明确的死亡边界分段校验历史前缀，允许取消死亡前未结算的尾部，继续拒绝段内跳过动作。
 - GRPO 的 KL 项改用 `expm1(x) - x`，避免 FP32 下近零对数比的非零 KL 被舍入为零；KL 指标、损失及梯度的浮点结果可能变化，后续 GRPO 训练权重不保证与旧实现逐位复现。
 - 修正绝望的最低施放 MP 为 YAML 配置的 `800`，与核爆相同；补充 Python／C# 真实状态机在 AF1／AF3 下的 `799` 拒绝、`800` 接受、技能可用性及拒绝无副作用回归。
 - 回放 PPG 改从秒制观测的独立真实执行 metadata 读取累计威力，避免模型累计字段移除后指标失效，并覆盖最后一次请求之后的 DoT 结算。补充缓存、在线上下文、checkpoint 和 ONNX 契约回归，保留旧非状态 token 基线，仅允许本次明确调整的归一化尺度变化。

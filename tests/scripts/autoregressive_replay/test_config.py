@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from types import SimpleNamespace
 
 import pytest
 import torch
 
 from common.policy.data import ActionSpace, DataSpec
+from common.policy.config import load_model_config
 from scripts.autoregressive_replay import config as replay_config_module
 from scripts.autoregressive_replay.config import load_replay_config
 from scripts.common.json_io import atomic_write_json
@@ -53,7 +54,7 @@ def test_replay_config_loads_dotenv_before_resolving_backend(monkeypatch, tmp_pa
     package = tmp_path / "deployment"
     package.mkdir()
     (package / "manifest.json").write_text(
-        '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":300}},"model":{"model_variant":"artzip"}}',
+        '{"contract":{"job_tag":"black_mage","capacity":{"context_capacity":1024}},"model":{"model_variant":"artzip"}}',
         encoding="utf-8",
     )
     scene = tmp_path / "scene.json.br"
@@ -82,7 +83,7 @@ def test_replay_config_loads_dotenv_before_resolving_backend(monkeypatch, tmp_pa
     assert config.checkpoint_path is None
 
 
-def test_replay_config_reads_env_overrides(monkeypatch, tmp_path):
+def test_replay_config_reads_env_overrides(monkeypatch, tmp_path, prepare_replay_files):
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_CHECKPOINT", str(tmp_path / "model.pt"))
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_OUTPUT", str(tmp_path / "rollout.md"))
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_SCENE_JSON", str(tmp_path / "scene.json.br"))
@@ -102,14 +103,6 @@ def test_replay_config_reads_env_overrides(monkeypatch, tmp_path):
 
     checkpoint = tmp_path / "model.pt"
     scene = tmp_path / "scene.json.br"
-    torch.save(
-        {
-            "job_tag": "black_mage",
-            "model_variant": "artzip",
-            "data_spec": {"job_tag": "black_mage"},
-        },
-        checkpoint,
-    )
     atomic_write_json(scene, {})
     config = load_replay_config()
 
@@ -123,13 +116,71 @@ def test_replay_config_reads_env_overrides(monkeypatch, tmp_path):
     assert config.top_k == 6
     assert config.top_p == 0.9
     assert config.temperature == 0.8
-    assert config.max_history == 300
+    assert config.max_history is None
     assert config.device == "cpu"
     assert config.job_tag == "black_mage"
     assert config.initial_action == "fire_iii"
     assert config.initial_time_seconds == -3.5
     assert config.base_gcd == 2.17
     assert config.use_kv_cache is False
+
+
+def test_replay_capacity_follows_checkpoint_without_default_history_limit(prepare_replay_files):
+    checkpoint, _scene = prepare_replay_files
+    payload = torch.load(checkpoint, weights_only=False)
+    assert load_model_config(
+        replay_config_module.resolve_policy_model_config_path(),
+    ).context_capacity == 1024
+    payload["model_config"]["context_capacity"] = 2048
+    torch.save(payload, checkpoint)
+
+    config = load_replay_config()
+    assert config.model_context_capacity == 2048
+    assert asdict(config)["model_context_capacity"] == 2048
+    assert config.max_history is None
+    assert load_replay_config(max_history=900).max_history == 900
+    assert load_replay_config(max_history=4096).max_history == 4096
+
+
+def test_replay_does_not_parse_unused_local_model_config(monkeypatch, prepare_replay_files):
+    from common.policy import config as policy_config_module
+
+    path = replay_config_module.resolve_policy_model_config_path()
+    local = replay_config_module.load_policy_config(path)
+    local["model"] = {"context_capacity": 1, "n_heads": 0}
+    monkeypatch.setattr(policy_config_module, "load_policy_config", lambda _path: local)
+    monkeypatch.setattr(replay_config_module, "load_policy_config", lambda _path: local)
+
+    config = load_replay_config()
+    assert config.model_context_capacity == 1024
+    assert config.max_history is None
+
+
+@pytest.mark.parametrize(("value", "message"), (
+    (-1, "max_history must be >= 0"),
+    (True, "max_history must be an integer"),
+    (1.5, "max_history must be an integer"),
+    ("8", "max_history must be an integer"),
+))
+def test_replay_config_validates_history_limit_at_construction(prepare_replay_files, value, message):
+    config = load_replay_config()
+    assert replace(config, max_history=None).max_history is None
+    assert replace(config, max_history=0).max_history == 0
+    assert replace(config, max_history=4096).max_history == 4096
+    with pytest.raises(ValueError, match=message):
+        replace(config, max_history=value)
+    with pytest.raises(ValueError, match=message):
+        load_replay_config(max_history=value)
+
+
+def test_replay_config_rejects_checkpoint_missing_model_config(prepare_replay_files):
+    checkpoint, _scene = prepare_replay_files
+    payload = torch.load(checkpoint, weights_only=False)
+    del payload["model_config"]
+    torch.save(payload, checkpoint)
+
+    with pytest.raises(ValueError, match="checkpoint missing model_config"):
+        load_replay_config()
 
 
 def test_replay_config_enables_kv_cache_by_default(monkeypatch, tmp_path, prepare_replay_files):
@@ -167,7 +218,7 @@ def test_replay_config_routes_onnx_job_from_manifest(monkeypatch, tmp_path):
     package = tmp_path / "deployment"
     package.mkdir()
     (package / "manifest.json").write_text(
-        '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":300}},"model":{"model_variant":"artzip"}}',
+        '{"contract":{"job_tag":"black_mage","capacity":{"context_capacity":2048}},"model":{"model_variant":"artzip"}}',
         encoding="utf-8",
     )
     scene = tmp_path / "scene.json.br"
@@ -185,7 +236,9 @@ def test_replay_config_routes_onnx_job_from_manifest(monkeypatch, tmp_path):
     assert config.onnx_package_path == package.resolve()
     assert config.checkpoint_path is None
     assert config.job_tag == "black_mage"
-    assert config.max_history == 300
+    assert config.model_context_capacity == 2048
+    assert config.max_history is None
+    assert load_replay_config(onnx_package=package, max_history=4096).max_history == 4096
     assert config.cache_shard_size == 768
     assert config.cache_max_shards == 16
     assert config.device == "cpu"
@@ -206,7 +259,7 @@ def test_replay_config_derives_onnx_package_from_explicit_checkpoint(monkeypatch
     package = tmp_path / "artifacts" / "exports" / "black_mage" / "artzip_hotstart"
     package.mkdir(parents=True)
     (package / "manifest.json").write_text(
-        '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":300}},'
+        '{"contract":{"job_tag":"black_mage","capacity":{"context_capacity":1024}},'
         '"model":{"model_variant":"artzip"}}',
         encoding="utf-8",
     )
@@ -227,7 +280,7 @@ def test_replay_config_rejects_onnx_job_mismatch(monkeypatch, tmp_path):
     package = tmp_path / "deployment"
     package.mkdir()
     (package / "manifest.json").write_text(
-        '{"contract":{"job_tag":"machinist","capacity":{"history_capacity":384}},"model":{"model_variant":"artzip"}}',
+        '{"contract":{"job_tag":"machinist","capacity":{"context_capacity":1024}},"model":{"model_variant":"artzip"}}',
         encoding="utf-8",
     )
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_BACKEND", "onnxruntime")
@@ -241,7 +294,7 @@ def test_replay_config_rejects_onnx_model_variant_mismatch(monkeypatch, tmp_path
     package = tmp_path / "deployment"
     package.mkdir()
     (package / "manifest.json").write_text(
-        '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":384}},"model":{"model_variant":"other_variant"}}',
+        '{"contract":{"job_tag":"black_mage","capacity":{"context_capacity":1024}},"model":{"model_variant":"other_variant"}}',
         encoding="utf-8",
     )
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_BACKEND", "onnxruntime")
@@ -258,7 +311,7 @@ def test_replay_config_reports_missing_onnx_model_variant_for_reexport(
     package = tmp_path / "deployment"
     package.mkdir()
     (package / "manifest.json").write_text(
-        '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":384}},"model":{}}',
+        '{"contract":{"job_tag":"black_mage","capacity":{"context_capacity":1024}},"model":{}}',
         encoding="utf-8",
     )
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_BACKEND", "onnxruntime")
@@ -278,7 +331,7 @@ def test_replay_config_reports_the_actual_missing_onnx_routing_field(
     package = tmp_path / "deployment"
     package.mkdir()
     (package / "manifest.json").write_text(
-        '{"contract":{"capacity":{"history_capacity":384}},"model":{"model_variant":"artzip"}}',
+        '{"contract":{"capacity":{"context_capacity":1024}},"model":{"model_variant":"artzip"}}',
         encoding="utf-8",
     )
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_BACKEND", "onnxruntime")
@@ -299,7 +352,7 @@ def test_replay_config_reports_the_actual_missing_onnx_routing_field(
             "contract",
         ),
         (
-            '{"contract":{"job_tag":"black_mage","capacity":{"history_capacity":384}}}',
+            '{"contract":{"job_tag":"black_mage","capacity":{"context_capacity":1024}}}',
             "model",
         ),
         (
@@ -308,7 +361,7 @@ def test_replay_config_reports_the_actual_missing_onnx_routing_field(
         ),
         (
             '{"contract":{"job_tag":"black_mage","capacity":{}},"model":{"model_variant":"artzip"}}',
-            "history_capacity",
+            "context_capacity",
         ),
     ],
 )

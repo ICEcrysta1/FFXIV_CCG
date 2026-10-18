@@ -200,7 +200,7 @@ def load_run_config(path: Path) -> RunConfig:
         raise ValueError("training.compiled_cache_max_shards must be >= 1")
     if "max_history" in training_raw:
         raise ValueError(
-            "training.max_history is removed; configure model.history_capacity"
+            "training.max_history is removed; configure model.context_capacity"
         )
     max_files_raw = training_raw.get("max_files")
     if max_files_raw is None:

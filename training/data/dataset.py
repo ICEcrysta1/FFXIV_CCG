@@ -21,7 +21,7 @@ from common.policy.data.compiled_cache import (
     load_compiled_cache_for_source,
 )
 from common.policy.data.normalizer import Normalizer
-from common.policy.data.history_window import history_window_length
+from common.policy.data.history_window import history_window_length, scene_window_end_times
 from common.policy.data.skill_vocab import SkillVocab
 from common.policy.data.context_fields import HISTORY_BANK_FIELDS, HISTORY_BANK_METADATA_NAMES, RAW_SCENE_FIELDS
 
@@ -37,7 +37,8 @@ class TrainingDataset(Dataset):
         normalizer: Normalizer | None = None,
         job_tag: str | None = None,
         skill_vocab: SkillVocab | None = None,
-        max_history: int | None = 128,
+        max_history: int | None = None,
+        context_capacity: int,
         history_reset_keep: int = 8,
         int_dtype,
         float_dtype,
@@ -57,10 +58,12 @@ class TrainingDataset(Dataset):
         self._expected_action_space = expected_action_space
         if job_tag is not None and normalizer is not None:
             normalizer.ensure_job_resources(job_tag)
-        if max_history is not None and max_history < 0:
-            raise ValueError(f"max_history must be >= 0, got {max_history}")
         self._max_history = max_history
+        self._context_capacity = context_capacity
         self._history_reset_keep = history_reset_keep
+        self._context_request_times: dict[str, tuple[float, ...]] = {}
+        if type(context_capacity) is not int or context_capacity < 1:
+            raise ValueError("context_capacity must be a positive integer")
         if compiled_cache_shard_size < 1:
             raise ValueError("compiled_cache_shard_size must be >= 1")
         if compiled_cache_max_shards < 1:
@@ -256,24 +259,36 @@ class TrainingDataset(Dataset):
     def _prepare_sample(
         self,
         sample: dict[str, object],
-        reader: CompiledCacheReader | None = None,
+        reader: CompiledCacheReader,
     ) -> dict[str, object]:
-        if reader is not None:
-            sample = self._attach_history_bank(sample, reader)
-            sample = self._apply_history_limit(sample)
+        sample = self._attach_history_bank(sample, reader)
+        sample = self._apply_history_limit(sample)
         if tuple(sample["action_keys"]) != self._action_keys:
             raise ValueError("compiled sample action output order mismatch")
         return sample
 
     def _apply_history_limit(self, sample: dict[str, object]) -> dict[str, object]:
         """在读取时裁剪完整历史 bank 的引用窗口，不改变磁盘 cache。"""
-        if self._max_history is None:
-            return sample
         history_length = int(sample["history_length"])
-        limited_length = (
-            history_window_length(history_length, self._max_history, self._history_reset_keep)
-            if self._max_history else 0
-        )
+        bank_id = sample["history_bank_id"]
+        time_index = self.state_layout.request_time_index
+        ends = scene_window_end_times(sample["scene_abs_values"], sample["scene_types"], self.schema)
+        if bank_id not in self._context_request_times:
+            self._context_request_times[bank_id] = tuple(
+                sample["history_bank_state_abs_values"][1:, time_index].tolist()
+            )
+        # 正式窗口只在这里规划；随机裁短只需具名预算与缓存时间，不接触 bank 布局。
+        budget = {
+            "context_capacity": self._context_capacity,
+            "total_history": int(sample["history_end"]) - 1,
+            "request_times": self._context_request_times[bank_id],
+            "scene_end_times": ends,
+            "current_request_time": float(sample["current_state_abs_values"][time_index]),
+        }
+        sample = dict(sample, _history_budget=budget)
+        limited_length = min(history_length, history_window_length(
+            reset_keep=self._history_reset_keep, max_history=self._max_history, **budget,
+        ))
         if limited_length == history_length:
             return sample
         limited = dict(sample)

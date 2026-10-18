@@ -114,17 +114,12 @@ public sealed partial class BlackMageJobStateMachine
         return new ValidationResult(true);
     }
 
-    /// <summary>灵极魂：需要 UI 且 Boss 不可选中（对照 _validate_umbral_soul）。</summary>
+    /// <summary>灵极魂：需要 UI，无需目标。</summary>
     private ValidationResult ValidateUmbralSoul(CombatState state, SkillDefinition _skill)
     {
         if (!InUmbralIce(state))
         {
             return new ValidationResult(false, "requires_ui");
-        }
-
-        if (state.BossTargetable)
-        {
-            return new ValidationResult(false, "downtime_only");
         }
 
         return new ValidationResult(true);

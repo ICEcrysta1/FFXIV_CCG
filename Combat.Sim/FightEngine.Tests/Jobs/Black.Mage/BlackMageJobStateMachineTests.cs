@@ -648,6 +648,7 @@ public class BlackMageJobStateMachineTests
     [InlineData("flare", "requires_af")]
     [InlineData("blizzard_iv", "requires_ui")]
     [InlineData("freeze", "requires_ui")]
+    [InlineData("umbral_soul", "requires_ui")]
     [InlineData("paradox", "requires_paradox")]
     public void JobPrerequisitesAreCheckedBeforeMp(string skillKey, string expectedReason)
     {
@@ -685,16 +686,21 @@ public class BlackMageJobStateMachineTests
         Assert.False(state.Job.HasStatus("lucid_dreaming"));
     }
 
-    [Fact]
-    public void UmbralSoulStacksUiAndHearts()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void 灵极魂不依赖Boss可选中状态且增加冰层与冰心(bool bossTargetable)
     {
         var machine = BuildMachine();
         var state = TimelineTestDriver.Execute(machine, machine.InitialState(), "fire_iii").NextState;
         state = TimelineTestDriver.AdvanceBy(machine, state, 2.5);
         var transpose = TimelineTestDriver.Execute(machine, state, "transpose");
         state = TimelineTestDriver.AdvanceBy(machine, transpose.NextState, transpose.NextGcdWindowSeconds);
-        state.BossTargetable = false;
-        state.DowntimeRemaining = 30.0;
+        state.BossTargetable = bossTargetable;
+        state.DowntimeRemaining = bossTargetable ? 0 : 30.0;
+        var simulator = new JobSimulator(machine, state);
+        Assert.True(simulator.ValidateActionAt(state.Time, "umbral_soul").Ok);
+        Assert.Contains("umbral_soul", simulator.AvailableActionKeysAt(state.Time));
         var firstSoul = TimelineTestDriver.Execute(machine, state, "umbral_soul");
         state = TimelineTestDriver.AdvanceBy(machine, firstSoul.NextState, firstSoul.NextGcdWindowSeconds);
         var secondSoul = TimelineTestDriver.Execute(machine, state, "umbral_soul");

@@ -1,5 +1,6 @@
 using Combat.Sim.Common;
 using Combat.Sim.Models.Policy;
+using Combat.Sim.Models.Timeline;
 using Combat.Sim.Outputs;
 using Combat.Sim.Policy;
 
@@ -243,6 +244,31 @@ public sealed class PolicyContextBuilderTests
         Assert.Equal("ogcd_wait", skillHistory[0]["skill_key"]);
         Assert.Equal(0.0, simulator.Time);
         Assert.Empty(simulator.GetState().History);
+    }
+
+    [Fact]
+    public void 死亡期间真实技能不可用而Policy等待仍可记录()
+    {
+        var (simulator, _) = CreateRuntime();
+        simulator.ApplyExternalEvents(new[]
+        {
+            new ExternalCombatEvent(0, ExternalCombatEventKinds.PlayerDeath),
+        });
+        var policy = PolicySession.Create(RepoRootLocator.Find(), simulator);
+        var output = policy.BuildVectorContext(simulator, 1);
+        var keys = Assert.IsType<List<string>>(output[OutputContextSchema.ActionKeysKey]);
+        var legalMask = Assert.IsType<List<bool>>(output[OutputContextSchema.ActionLegalMaskKey]);
+        Assert.All(simulator.ActionKeys, key => Assert.False(legalMask[keys.IndexOf(key)]));
+        Assert.True(legalMask[keys.IndexOf("ogcd_wait")]);
+
+        policy.Record(simulator, 0, "ogcd_wait", 1);
+
+        Assert.Equal(0, simulator.Time);
+        Assert.Empty(simulator.GetState().History);
+        Assert.Equal("ogcd_wait", Assert.Single(policy.CreateSnapshot()).Action.Key);
+        var afterWait = policy.BuildVectorContext(simulator, 1);
+        var skills = Assert.IsType<List<Dictionary<string, object?>>>(afterWait[OutputContextSchema.SkillHistoryContextKey]);
+        Assert.Equal("ogcd_wait", Assert.Single(skills)["skill_key"]);
     }
 
     [Fact]

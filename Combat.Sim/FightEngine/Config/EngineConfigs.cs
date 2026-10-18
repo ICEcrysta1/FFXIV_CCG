@@ -23,7 +23,8 @@ public sealed record SystemPotencyConfig(
     double BurstPotionMultiplier,
     double RaidBuffWindowMultiplier);
 
-/// <summary>系统自然回蓝配置（对照 config.SystemMpRecoveryConfig）。</summary>
+/// <summary>系统自然回蓝与复活 MP 配置（对照 config.SystemMpRecoveryConfig）。</summary>
 public sealed record SystemMpRecoveryConfig(
     double TickIntervalSeconds,
-    int InCombatAmount);
+    int InCombatAmount,
+    double RevivalRatio);
