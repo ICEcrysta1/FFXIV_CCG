@@ -1,7 +1,9 @@
 """统一多队列引擎的 Python.NET 并发、生命周期和转换接入回归。"""
 
 from concurrent.futures import ThreadPoolExecutor
+import sys
 from threading import Barrier
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -132,6 +134,53 @@ def test_invalid_capacity_is_rejected_before_loading_runtime(capacity, monkeypat
     )
     with pytest.raises(ValueError, match="capacity"):
         InProcessEngine("black_mage", capacity=capacity)
+
+
+@pytest.mark.parametrize("old_contract", [True, False], ids=["reject_v18", "accept_current"])
+def test_loader_checks_assembly_contract_before_creating_engine(old_contract, monkeypatch, tmp_path):
+    """通过真实加载入口校验版本门禁，不依赖本机已有旧 DLL 或启动 CLR。"""
+    expected_version = backend_module.SIDECAR_CONTRACT_VERSION
+    assert expected_version > 18
+    assembly_version = 18 if old_contract else expected_version
+    engine_type = type("FakeSimulationEngine", (), {})
+    event_type = type("FakeExternalCombatEvent", (), {})
+    encoder_type = type("FakeContextPacketEncoder", (), {})
+    references = []
+    modules = {
+        "pythonnet": {
+            "get_runtime_info": lambda: SimpleNamespace(kind="CoreCLR"),
+            "load": lambda *args, **kwargs: pytest.fail("版本门禁测试不应启动真实 CLR"),
+        },
+        "clr": {"AddReference": references.append},
+        "Combat.Sim.Config": {
+            "SchemaConfigLoader": SimpleNamespace(AssemblySidecarContractVersion=assembly_version),
+        },
+        "Combat.Sim.Models.Timeline": {"ExternalCombatEvent": event_type},
+        "Combat.Sim.Sessions": {"SimulationEngine": engine_type},
+        "Combat.Sim.PythonBridge": {"ContextPacketEncoder": encoder_type},
+    }
+    for name, attributes in modules.items():
+        module = ModuleType(name)
+        module.__dict__.update(attributes)
+        monkeypatch.setitem(sys.modules, name, module)
+    for name in ("_RUNTIME_CONFIG", "_FIGHT_ENGINE_DLL", "_YAML_DOTNET_DLL", "_PYTHON_BRIDGE_DLL"):
+        path = tmp_path / name
+        path.touch()
+        monkeypatch.setattr(backend_module, name, path)
+    monkeypatch.setattr(backend_module, "_DOTNET_TYPES", None)
+
+    if old_contract:
+        with pytest.raises(RuntimeError, match=rf"expected={expected_version}, dll=18"):
+            InProcessEngine("black_mage", capacity=1)
+        assert backend_module._DOTNET_TYPES is None
+    else:
+        loaded = backend_module._load_dotnet_types()
+        assert loaded == (engine_type, event_type, encoder_type)
+        assert backend_module._load_dotnet_types() is loaded
+    assert references == [
+        str(backend_module._YAML_DOTNET_DLL), str(backend_module._FIGHT_ENGINE_DLL),
+        str(backend_module._PYTHON_BRIDGE_DLL),
+    ]
 
 
 def test_python_queue_capacity_matches_csharp_limit(require_engine):
