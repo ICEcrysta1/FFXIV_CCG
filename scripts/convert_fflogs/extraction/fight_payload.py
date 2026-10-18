@@ -13,7 +13,7 @@ from ..scene.scene_context import (
     compute_downtime_total,
     resolve_anchor,
 )
-from .downtime import _collect_party_damage_actions, detect_downtime_windows
+from .downtime import _collect_party_cast_actions, detect_downtime_windows
 from .extraction import _get_ability_id, extract_gcd_cast_windows
 from .movement import detect_forced_movement_windows
 
@@ -131,9 +131,8 @@ def build_fight_payload(
     fight_end = float(fight_actions[-1]["timestamp"])
     duration = fight_end - fight_start
 
-    party_actions = _collect_party_damage_actions(
-        raw_report, fight_actions, source_id=source_id, fight_start=fight_start,
-        fight_end=fight_end, match_tolerance_seconds=downtime_boundary_margin,
+    party_actions = _collect_party_cast_actions(
+        raw_report, fight_start=fight_start, fight_end=fight_end,
     ) if raw_report is not None else None
     downtime_windows = detect_downtime_windows(
         fight_actions if party_actions is None else party_actions,

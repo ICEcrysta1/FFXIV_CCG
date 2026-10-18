@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 from ..config.constants import DOWNTIME_BOUNDARY_MARGIN
-from .extraction import _collect_begincasts, _get_ability_id, _take_begincast
 
 
-def _collect_party_damage_actions(
-    report: dict[str, object], own_actions: list[dict[str, object]], *,
-    source_id: int, fight_start: float, fight_end: float, match_tolerance_seconds: float,
+def _collect_party_cast_actions(
+    report: dict[str, object], *, fight_start: float, fight_end: float,
 ) -> list[dict[str, object]] | None:
-    """从本场玩家对敌人的实际直伤恢复攻击时刻，不用目标职业技能表识别队友。"""
+    """收集本场玩家对敌方的 cast，停机两端均使用原始 cast 时刻。"""
     friendlies, enemies = report.get("friendlies"), report.get("enemies")
     fight_id = report.get("fight_id")
     if fight_id is None:
@@ -29,47 +27,16 @@ def _collect_party_damage_actions(
                and actor.get("petOwner") is None}
     targets = {actor["id"] for actor in enemies if in_fight(actor)
                and actor.get("type") != "Pet" and actor.get("petOwner") is None}
-    events_by_player = {actor_id: [] for actor_id in players}
+    result = []
     for event in report.get("events", []):
-        if (not isinstance(event, dict) or event.get("sourceID") not in players
+        if (not isinstance(event, dict) or event.get("type") != "cast"
+                or event.get("sourceID") not in players or event.get("targetID") not in targets
                 or event.get("fight", fight_id) != fight_id):
             continue
         timestamp = float(event["timestamp"]) / 1000.0
         if fight_start <= timestamp <= fight_end:
-            events_by_player[event["sourceID"]].append(event)
-
-    own_requests = {(int(action["skill_id"]), float(action["timestamp"])):
-                    _request_timestamp(action) for action in own_actions}
-    result = []
-    for actor_id, events in events_by_player.items():
-        begincasts = _collect_begincasts(events, actor_id)
-        cursors = {}
-        casts_by_packet = {}
-        for event in sorted(events, key=lambda item: item["timestamp"]):
-            if event.get("type") != "cast":
-                continue
-            skill_id = _get_ability_id(event)
-            timestamp = float(event["timestamp"]) / 1000.0
-            begin = _take_begincast(begincasts.get(skill_id), cursors, skill_id,
-                                   effect_timestamp=timestamp,
-                                   match_tolerance_seconds=match_tolerance_seconds)
-            request = begin[0] if begin is not None else timestamp
-            if actor_id == source_id:
-                request = own_requests.get((skill_id, timestamp), request)
-            cast = (timestamp, request)
-            if event.get("packetID") is not None:
-                casts_by_packet[event["packetID"], skill_id] = cast
-
-        for event in events:
-            # calculateddamage 是同次攻击的提前计算，不是额外命中；DoT tick 也不能证明可选中。
-            if (event.get("type") != "damage" or event.get("tick")
-                    or event.get("targetID") not in targets or float(event.get("amount", 0)) <= 0):
-                continue
-            timestamp = float(event["timestamp"]) / 1000.0
-            skill_id = _get_ability_id(event)
-            cast = casts_by_packet.get((event.get("packetID"), skill_id))
-            # 自动攻击的正伤同样证明目标可攻击；无配对 cast 时仅以真实命中作为请求上界。
-            result.append({"timestamp": timestamp, "request_timestamp": cast[1] if cast else timestamp,
+            # 不要求后续伤害落地，也不回溯 begincast，避免两端使用不同时间口径。
+            result.append({"timestamp": timestamp, "request_timestamp": timestamp,
                            "is_damaging": True})
     return sorted(result, key=lambda action: action["timestamp"])
 
@@ -82,16 +49,11 @@ def detect_downtime_windows(
     gap_seconds: float,
     boundary_margin: float = DOWNTIME_BOUNDARY_MARGIN,
 ) -> list[dict[str, float]]:
-    """通过伤害动作间隔检测 Boss 不可输出窗口，正式载荷使用全队实际命中。
+    """通过攻击事件间隔检测 Boss 停手窗口。
 
-    窗口端点就是"停手前的最后一击"和"恢复后的第一击"。两者都发生在 Boss 可选中时，
-    因此停手区间是**开区间**，且两端的参照时刻不同：
-
-    - 起点用最后一击的**生效时刻**——停手发生在那次命中结算之后。
-    - 终点用第一个恢复动作的**请求时刻**——状态机的合法性校验发生在请求时刻，
-      读条技能的请求时刻天然早于生效时刻，用生效时刻会把恢复动作圈进窗口。
-
-    边界额外内缩 `boundary_margin`，覆盖端点动作被状态机推迟执行的最坏情况。
+    正式载荷的全队攻击记录将两类时间统一为 cast：左界取停手前最后一个 cast，
+    右界取恢复后的最早 cast，再以 boundary_margin 内缩窗口。
+    缺少完整角色表的手工载荷沿用个人动作的请求时刻退回路径。
     """
     damaging_actions = sorted((action for action in actions if action["is_damaging"]),
                              key=lambda action: action["timestamp"])
@@ -112,7 +74,7 @@ def detect_downtime_windows(
     windows: list[dict[str, float]] = []
     for previous_phase, next_phase in zip(phases, phases[1:]):
         previous = float(previous_phase[-1]["timestamp"])
-        # 第一发伤害不一定来自最早起读的队友，右界取恢复输出段中最早的真实请求。
+        # 全队记录的请求时刻等于 cast；手工载荷保留原有请求时刻语义。
         end = min(_request_timestamp(action) for action in next_phase)
         if end > previous:
             windows.append({"start": previous, "end": end, "duration": end - previous})
