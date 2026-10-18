@@ -1280,6 +1280,47 @@ def test_export_uses_checkpoint_vocab_instead_of_stale_profile(tmp_path):
     assert contracts.capacity_report["vocab_entries"] == saved.create_skill_vocab().to_dict()["entries"]
 
 
+@pytest.mark.parametrize(("context_capacity", "history_reset_keep"), ((11, 4), (12, 5)))
+def test_export_rejects_scene_without_room_for_saved_history_reset(tmp_path, context_capacity, history_reset_keep):
+    from scripts.onnx_export.export.checkpoint import load_policy_contracts
+
+    checkpoint, profile = tmp_path / "checkpoint.pt", tmp_path / "profile.json"
+    _write_small_checkpoint(checkpoint)
+    _write_small_profile(profile)
+    payload = safe_torch_load(checkpoint)
+    payload["model_config"].update(context_capacity=context_capacity, history_reset_keep=history_reset_keep)
+    torch.save(payload, checkpoint)
+
+    # 场景和当前状态单独放得下，但不足以执行 checkpoint 要求的历史重置。
+    with pytest.raises(ValueError, match="history_reset_keep"):
+        load_policy_contracts(checkpoint_path=checkpoint, deployment_profile_path=profile, precision="float32")
+
+
+@pytest.mark.parametrize(("context_capacity", "history_reset_keep"), ((12, 4), (8, 2)))
+def test_export_accepts_exact_scene_and_saved_history_reset_budget(tmp_path, context_capacity, history_reset_keep):
+    from common.policy.data.history_window import history_window_length
+    from scripts.onnx_export.export.checkpoint import load_policy_contracts
+
+    checkpoint, profile = tmp_path / "checkpoint.pt", tmp_path / "profile.json"
+    _write_small_checkpoint(checkpoint)
+    _write_small_profile(profile)
+    payload = safe_torch_load(checkpoint)
+    payload["model_config"].update(context_capacity=context_capacity, history_reset_keep=history_reset_keep)
+    torch.save(payload, checkpoint)
+
+    contracts = load_policy_contracts(checkpoint_path=checkpoint, deployment_profile_path=profile, precision="float32")
+    saved_config = contracts.policy.model.config
+    assert saved_config.context_capacity == context_capacity
+    assert saved_config.history_reset_keep == history_reset_keep
+    # 让历史真正溢出一次，确认刚好够用的配置能保留要求的完整历史。
+    total_history = history_reset_keep + 1
+    assert history_window_length(
+        total_history, saved_config.context_capacity, saved_config.history_reset_keep,
+        request_times=range(total_history), scene_end_times=(1000.0,) * 3,
+        current_request_time=float(total_history),
+    ) == history_reset_keep
+
+
 @pytest.mark.parametrize("full_attention_residuals", [False, True])
 def test_deployment_contract_preserves_actual_residual_path(tmp_path, full_attention_residuals):
     from scripts.onnx_export.export.checkpoint import load_policy_contracts

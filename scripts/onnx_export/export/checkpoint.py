@@ -81,6 +81,7 @@ def load_policy_contracts(
     model_config = _required_mapping(checkpoint, "model_config")
     model_variant = _required_text(checkpoint, "model_variant")
     checkpoint_context_capacity = policy.model.config.context_capacity
+    checkpoint_reset_keep = policy.model.config.history_reset_keep
     resolved_profile_path = (
         DeploymentProfile.default_path(data_spec.job_tag)
         if deployment_profile_path is None
@@ -89,12 +90,15 @@ def load_policy_contracts(
     profile = DeploymentProfile.load(resolved_profile_path)
     if profile.job_tag != data_spec.job_tag:
         raise ValueError("deployment profile job differs from checkpoint DataSpec")
-    # 统一预算以 checkpoint 为权威；profile 只提供场景长度统计证据。
+    # 统一预算以 checkpoint 为权威，同时为历史重置保留完整状态／动作对。
     measured_scene_max = int(profile.evidence.get("scene_length_max", 0))
-    if measured_scene_max + 1 > checkpoint_context_capacity:
+    required_context_capacity = measured_scene_max + 2 * checkpoint_reset_keep + 1
+    if required_context_capacity > checkpoint_context_capacity:
         raise ValueError(
-            "model_config.context_capacity cannot contain the measured scene and current state: "
-            f"{checkpoint_context_capacity} < {measured_scene_max + 1}"
+            "model_config.context_capacity cannot contain the measured scene, "
+            "history_reset_keep actions and current state: "
+            f"{checkpoint_context_capacity} < {required_context_capacity} "
+            f"(scene_length_max={measured_scene_max}, history_reset_keep={checkpoint_reset_keep})"
         )
     capacity_report = profile.to_capacity_report(
         context_capacity=checkpoint_context_capacity,
