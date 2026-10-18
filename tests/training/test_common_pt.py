@@ -176,7 +176,7 @@ def test_compiled_history_and_current_state_use_compact_state_contract(tmp_path)
         assert sample[f"{prefix}_state_null_mask"].shape == sample[f"{prefix}_state_abs_values"].shape
 
 
-@pytest.mark.parametrize("old_contract", ["cache_format", "conversion_version", "unstable_history_order", "movement_windows", "cumulative_state_format", "cumulative_state_conversion", "same_timestamp_revival", "ordinary_revival_only", "skill_time"])
+@pytest.mark.parametrize("old_contract", ["cache_format", "conversion_version", "unstable_history_order", "movement_windows", "cumulative_state_format", "cumulative_state_conversion", "same_timestamp_revival", "ordinary_revival_only", "umbral_soul_downtime_only", "skill_time"])
 def test_previous_state_layout_cache_is_rejected(tmp_path, old_contract):
     """旧输入字段缓存不可复用，即使 raw 文件身份和其余编译参数一致。"""
     torch = pytest.importorskip("torch")
@@ -208,6 +208,9 @@ def test_previous_state_layout_cache_is_rejected(tmp_path, old_contract):
     elif old_contract == "ordinary_revival_only":
         # 旧复活事实不区分治疗 LB3，会错误地按普通比例恢复 MP。
         payload["cache_signature"]["conversion_version"] = "raw_json_to_compiled_v28_strict_player_lifecycle_party_downtime"
+    elif old_contract == "umbral_soul_downtime_only":
+        # 旧冻结技能表会把 Boss 可选中时的灵极魂标记为不可用。
+        payload["cache_signature"]["conversion_version"] = "raw_json_to_compiled_v28_lb3_player_lifecycle_party_downtime"
     else:
         # 即使格式和签名冒用新版，旧技能时间列仍必须明确拒绝。
         payload["skill_feature_names"] = (*payload["skill_feature_names"], "time_seconds")
