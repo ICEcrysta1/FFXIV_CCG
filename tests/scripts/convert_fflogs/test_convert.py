@@ -119,7 +119,7 @@ def test_report_pipeline_does_not_treat_player_death_gap_as_boss_downtime():
     assert all(token[3] == 1 for token in payload["scene_context"]["targetable_window_context"]["tokens"])
     assert payload["external_events"] == [
         {"timestamp": 3.0, "event_kind": "player_death"},
-        {"timestamp": 22.0, "event_kind": "player_revived", "mp": 2000},
+        {"timestamp": 22.0, "event_kind": "player_revived"},
     ]
 
 

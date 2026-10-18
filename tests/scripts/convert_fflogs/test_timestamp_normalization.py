@@ -273,9 +273,9 @@ def test_lifecycle_prefers_actual_protection_and_preserves_sorted_deduplicated_d
 
 
 @pytest.mark.parametrize(("resources", "expected_mp"), [
-    (None, 2000), ({"mp": 0, "maxMP": 10000}, 0),
-    ({"mp": 2600, "maxMP": 10000}, 2600), ({"mp": True}, 2000),
-    ({"mp": 12000, "maxMP": 10000}, 2000),
+    (None, None), ({"mp": 0, "maxMP": 10000}, 0),
+    ({"mp": 2600, "maxMP": 10000}, 2600), ({"mp": True}, None),
+    ({"mp": 12000, "maxMP": 10000}, None),
 ])
 def test_protection_uses_only_its_own_reliable_target_mp(resources, expected_mp):
     payload = _lifecycle_payload([
@@ -287,13 +287,14 @@ def test_protection_uses_only_its_own_reliable_target_mp(resources, expected_mp)
          "abilityGameID": 7561, "sourceResources": {"mp": 2800}},
     ])
 
-    assert payload["external_events"][1] == {
-        "timestamp": 15.0, "event_kind": "player_revived", "mp": expected_mp,
-    }
+    expected = {"timestamp": 15.0, "event_kind": "player_revived"}
+    if expected_mp is not None:
+        expected["mp"] = expected_mp
+    assert payload["external_events"][1] == expected
 
 
 @pytest.mark.parametrize(("cast_seconds", "request_seconds", "expected_mp"), [
-    (120.0, 120.0, 2400), (122.0, 120.0, 2000),
+    (120.0, 120.0, 2400), (122.0, 120.0, None),
 ])
 def test_revival_without_protection_uses_extracted_cast_request_before_submission(
     cast_seconds, request_seconds, expected_mp,
@@ -308,9 +309,12 @@ def test_revival_without_protection_uses_extracted_cast_request_before_submissio
     ], cast_action={"timestamp": cast_seconds, "request_timestamp": request_seconds,
                     "raw_event_index": 2, "action_key": "fire_iii", "skill_id": 152})
 
+    expected_revival = {"timestamp": 20.0, "event_kind": "player_revived"}
+    if expected_mp is not None:
+        expected_revival["mp"] = expected_mp
     assert payload["external_events"] == [
         {"timestamp": 10.0, "event_kind": "player_death"},
-        {"timestamp": 20.0, "event_kind": "player_revived", "mp": expected_mp},
+        expected_revival,
     ]
     assert payload["external_events"][1]["timestamp"] == payload["actions"][1]["request_time_offset"]
 
@@ -327,7 +331,7 @@ def test_revival_falls_back_to_first_own_begincast_but_not_party_actions_or_dama
 
     assert payload["external_events"] == [
         {"timestamp": 10.0, "event_kind": "player_death"},
-        {"timestamp": 18.0, "event_kind": "player_revived", "mp": 2000},
+        {"timestamp": 18.0, "event_kind": "player_revived"},
     ]
 
 
@@ -344,7 +348,7 @@ def test_same_timestamp_action_does_not_revive(event_type, has_later_activity):
     if has_later_activity:
         events.append({"type": "begincast", "sourceID": 10, "timestamp": 118000,
                        "abilityGameID": 152})
-        expected.append({"timestamp": 18.0, "event_kind": "player_revived", "mp": 2000})
+        expected.append({"timestamp": 18.0, "event_kind": "player_revived"})
 
     assert _lifecycle_payload(events)["external_events"] == expected
 
@@ -373,7 +377,7 @@ def test_same_timestamp_death_precedes_revival_and_each_later_death_can_revive_o
 
     assert payload["external_events"] == [
         {"timestamp": 10.0, "event_kind": "player_death"},
-        {"timestamp": 10.0, "event_kind": "player_revived", "mp": 2000},
+        {"timestamp": 10.0, "event_kind": "player_revived"},
         {"timestamp": 25.0, "event_kind": "player_death"},
-        {"timestamp": 30.0, "event_kind": "player_revived", "mp": 2000},
+        {"timestamp": 30.0, "event_kind": "player_revived"},
     ]

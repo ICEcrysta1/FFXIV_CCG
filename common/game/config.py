@@ -47,6 +47,7 @@ class SystemPotencyConfig:
 class SystemMpRecoveryConfig:
     tick_interval_seconds: float
     in_combat_amount: int
+    revival_ratio: float
 
 
 @dataclass(frozen=True)
@@ -136,12 +137,20 @@ def load_project_config(
     raid_buff_window_duration = float(raid_buff_window_data["duration_seconds"])
     if raid_buff_window_duration <= 0:
         raise ValueError("raid_buff_window.duration_seconds must be positive")
+    mp_recovery_data = system_payload["mp_recovery"]
+    try:
+        revival_ratio = float(mp_recovery_data["revival_ratio"])
+    except (KeyError, TypeError, ValueError, OverflowError) as error:
+        raise ValueError("mp_recovery.revival_ratio must be a finite number between 0 and 1") from error
+    if not math.isfinite(revival_ratio) or not 0 <= revival_ratio <= 1:
+        raise ValueError("mp_recovery.revival_ratio must be a finite number between 0 and 1")
     system = SystemConfig(
         base_gcd=float(system_timing["base_gcd"]),
         skill_table_base_gcd=float(system_timing["skill_table_base_gcd"]),
         mp_recovery=SystemMpRecoveryConfig(
-            tick_interval_seconds=float(system_payload["mp_recovery"]["tick_interval_seconds"]),
-            in_combat_amount=int(system_payload["mp_recovery"]["in_combat_amount"]),
+            tick_interval_seconds=float(mp_recovery_data["tick_interval_seconds"]),
+            in_combat_amount=int(mp_recovery_data["in_combat_amount"]),
+            revival_ratio=revival_ratio,
         ),
         potency=SystemPotencyConfig(
             burst_potion_multiplier=float(system_potency_data.get("burst_potion_multiplier", 1.05)),

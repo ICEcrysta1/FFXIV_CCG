@@ -109,6 +109,13 @@ public static class ProjectConfigLoader
         }
 
         var mpRecoveryData = RequireMapping(systemPayload, "mp_recovery", systemConfigPath);
+        var revivalRatioContext = $"{systemConfigPath}: mp_recovery.revival_ratio";
+        var revivalRatio = YamlValues.ToDouble(
+            YamlValues.RequireKey(mpRecoveryData, "revival_ratio", revivalRatioContext), revivalRatioContext);
+        if (!double.IsFinite(revivalRatio) || revivalRatio is < 0 or > 1)
+        {
+            throw new InvalidOperationException("mp_recovery.revival_ratio must be a finite number between 0 and 1");
+        }
         return new SystemConfig(
             BaseGcd: YamlValues.ToDouble(
                 YamlValues.RequireKey(systemTiming, "base_gcd", systemConfigPath), systemConfigPath),
@@ -118,7 +125,8 @@ public static class ProjectConfigLoader
                 TickIntervalSeconds: YamlValues.ToDouble(
                     YamlValues.RequireKey(mpRecoveryData, "tick_interval_seconds", systemConfigPath), systemConfigPath),
                 InCombatAmount: YamlValues.ToInt(
-                    YamlValues.RequireKey(mpRecoveryData, "in_combat_amount", systemConfigPath), systemConfigPath)),
+                    YamlValues.RequireKey(mpRecoveryData, "in_combat_amount", systemConfigPath), systemConfigPath),
+                RevivalRatio: revivalRatio),
             Potency: new SystemPotencyConfig(
                 BurstPotionMultiplier: YamlValues.ToDouble(
                     YamlValues.Get(systemPotencyData, "burst_potion_multiplier", 1.05), systemConfigPath),

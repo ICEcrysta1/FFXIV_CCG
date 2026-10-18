@@ -81,13 +81,13 @@ def _extract_lifecycle_events(fight_actions, raw_events, *, source_id, fight_sta
                 continue
             timestamp, observed_at, event = activity
             resources = event.get("sourceResources")
-        mp = 2000
+        revival = {"timestamp": timestamp, "event_kind": "player_revived"}
         # 请求可能早于日志 cast；只采纳复活同刻的资源，不能把未来 MP 倒填到起读时刻。
         if timestamp == observed_at and isinstance(resources, dict):
             observed_mp, maximum = resources.get("mp"), resources.get("maxMP", 10000)
             if type(observed_mp) is int and type(maximum) is int and 0 <= observed_mp <= maximum:
-                mp = observed_mp
-        result.append({"timestamp": timestamp, "event_kind": "player_revived", "mp": mp})
+                revival["mp"] = observed_mp
+        result.append(revival)
     return sorted(result, key=lambda event: event["timestamp"])
 
 

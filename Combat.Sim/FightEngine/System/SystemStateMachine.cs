@@ -21,6 +21,7 @@ public sealed class SystemStateMachine
 {
     private readonly EngineTimingConfig _engineTiming;
     private readonly SystemPotencyConfig _potencyConfig;
+    private readonly SystemMpRecoveryConfig _mpRecoveryConfig;
 
     public BuffStateRegistry BuffState { get; }
     public StatusTimelineRuntime StatusTimeline { get; }
@@ -39,6 +40,7 @@ public sealed class SystemStateMachine
     {
         _engineTiming = engineTiming;
         _potencyConfig = potencyConfig;
+        _mpRecoveryConfig = mpRecoveryConfig;
         BuffState = new BuffStateRegistry();
         StatusTimeline = new StatusTimelineRuntime();
         DotTimeline = new DotTimelineRuntime();
@@ -122,7 +124,8 @@ public sealed class SystemStateMachine
         {
             var external = (ExternalCombatEvent)item.Payload!;
             target.IsDead = false;
-            if (external.Mp is { } mp) target.Mp = Math.Min(target.MaxMp, mp);
+            target.Mp = Math.Min(target.MaxMp,
+                external.Mp ?? (int)(target.MaxMp * _mpRecoveryConfig.RevivalRatio));
         }));
     }
 

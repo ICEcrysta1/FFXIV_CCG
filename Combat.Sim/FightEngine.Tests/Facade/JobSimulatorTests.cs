@@ -1,4 +1,5 @@
 using Combat.Sim.Facade;
+using Combat.Sim.Config;
 using Combat.Sim.Models.Timeline;
 using Combat.Sim.System.Timeline;
 
@@ -497,6 +498,38 @@ public sealed class JobSimulatorTests
         Assert.Null(revived.Token);
         Assert.Equal(2000, simulator.AdvanceTo(35).Mp);
         Assert.Equal(2200, simulator.AdvanceTo(36).Mp);
+    }
+
+    [Theory]
+    [InlineData(0.0, 10000, null, 0)]
+    [InlineData(0.2, 10000, null, 2000)]
+    [InlineData(0.35, 15000, null, 5250)]
+    [InlineData(1.0, 10000, null, 10000)]
+    [InlineData(0.2, 9999, null, 1999)]
+    [InlineData(0.35, 10000, 0, 0)]
+    [InlineData(0.35, 10000, 2400, 2400)]
+    public void 复活按系统配置比例恢复MP且显式日志MP优先(double ratio, int maxMp, int? observedMp, int expectedMp)
+    {
+        var root = FindRepoRoot();
+        var project = ProjectConfigLoader.LoadProjectConfig(root, "black_mage");
+        project = project with
+        {
+            EngineResources = project.EngineResources with { MaxMp = maxMp },
+            System = project.System with
+            {
+                MpRecovery = project.System.MpRecovery with { RevivalRatio = ratio },
+            },
+        };
+        var simulator = new JobSimulator(new CombatStateMachine(project, "black_mage", projectRoot: root));
+        simulator.ApplyExternalEvents(new[] { new ExternalCombatEvent(1, ExternalCombatEventKinds.PlayerDeath) });
+        Assert.Equal(0, simulator.AdvanceTo(9).Mp);
+        var revived = simulator.ApplyExternalEvents(new[]
+        {
+            new ExternalCombatEvent(10, ExternalCombatEventKinds.PlayerRevived, Mp: observedMp),
+        });
+        Assert.Null(revived.Token);
+        Assert.Equal(expectedMp, simulator.GetState().Mp);
+        Assert.Equal(Math.Min(maxMp, expectedMp + 200), simulator.AdvanceTo(12).Mp);
     }
 
     [Fact]

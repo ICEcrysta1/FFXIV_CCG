@@ -173,7 +173,7 @@ def test_death_markers_and_reset_match_between_public_and_native_replay(
     fight = _payload(actions, duration=20.0)
     fight["external_events"] = [
         {"timestamp": death_time, "event_kind": "player_death"},
-        {"timestamp": 6.0 if death_time else 0.0, "event_kind": "player_revived", "mp": 2000},
+        {"timestamp": 6.0 if death_time else 0.0, "event_kind": "player_revived"},
     ]
     fight["scene_context"] = build_test_scene_context(targetable_tokens=[
         targetable_window_token(0.0, 5.0, targetable=True, segment_kind="combat"),
