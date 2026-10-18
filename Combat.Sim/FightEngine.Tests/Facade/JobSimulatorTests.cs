@@ -505,6 +505,68 @@ public sealed class JobSimulatorTests
     }
 
     [Theory]
+    [InlineData(ExternalCombatEventKinds.PlayerRevived, null)]
+    [InlineData(ExternalCombatEventKinds.PlayerRevived, 0)]
+    [InlineData(ExternalCombatEventKinds.PlayerRevived, 9000)]
+    [InlineData(ExternalCombatEventKinds.PlayerRevivedLb3, null)]
+    public void 存活时复活整批拒绝且不改变快照(string revivalKind, int? observedMp)
+    {
+        var simulator = new JobSimulator(CombatStateMachine.FromDefaultConfig(FindRepoRoot(), "black_mage"));
+        Assert.True(simulator.SubmitAction(0, "fire_iii", actualCastSeconds: 0).Accepted);
+        Assert.True(simulator.SubmitAction(3, "fire_iii", actualCastSeconds: 4).Accepted);
+        Assert.True(simulator.GetState().Mp < simulator.GetState().MaxMp);
+        var before = global::System.Text.Json.JsonSerializer.Serialize(simulator.CreateSnapshot());
+
+        foreach (var timestamp in new[] { simulator.Time, simulator.Time + 5 })
+        {
+            Assert.Throws<ArgumentException>(() => simulator.ApplyExternalEvents(new[]
+            {
+                new ExternalCombatEvent(timestamp, ExternalCombatEventKinds.MovementChanged, true),
+                new ExternalCombatEvent(timestamp, revivalKind, Mp: observedMp),
+            }));
+            Assert.Equal(before, global::System.Text.Json.JsonSerializer.Serialize(simulator.CreateSnapshot()));
+        }
+    }
+
+    [Theory]
+    [InlineData(ExternalCombatEventKinds.PlayerRevived)]
+    [InlineData(ExternalCombatEventKinds.PlayerRevivedLb3)]
+    public void 同刻复活仅在当前死亡或批次先行死亡时接受(string revivalKind)
+    {
+        var simulator = new JobSimulator(CombatStateMachine.FromDefaultConfig(FindRepoRoot(), "black_mage"));
+        var before = global::System.Text.Json.JsonSerializer.Serialize(simulator.CreateSnapshot());
+        Assert.Throws<ArgumentException>(() => simulator.ApplyExternalEvents(new[]
+        {
+            new ExternalCombatEvent(1, revivalKind),
+            new ExternalCombatEvent(1, ExternalCombatEventKinds.PlayerDeath),
+        }));
+        Assert.Equal(before, global::System.Text.Json.JsonSerializer.Serialize(simulator.CreateSnapshot()));
+
+        Assert.True(simulator.ApplyExternalEvents(new[]
+        {
+            new ExternalCombatEvent(1, ExternalCombatEventKinds.PlayerDeath),
+            new ExternalCombatEvent(1, revivalKind),
+        }).Accepted);
+        var state = simulator.GetState();
+        Assert.False(state.IsDead);
+        Assert.Equal(revivalKind == ExternalCombatEventKinds.PlayerRevivedLb3 ? 10000 : 2000, state.Mp);
+
+        Assert.True(simulator.SubmitAction(1, "fire_iii", actualCastSeconds: 0).Accepted);
+        before = global::System.Text.Json.JsonSerializer.Serialize(simulator.CreateSnapshot());
+        Assert.Throws<ArgumentException>(() => simulator.ApplyExternalEvents(new[] { new ExternalCombatEvent(2, revivalKind) }));
+        Assert.Equal(before, global::System.Text.Json.JsonSerializer.Serialize(simulator.CreateSnapshot()));
+
+        simulator.ApplyExternalEvents(new[] { new ExternalCombatEvent(3, ExternalCombatEventKinds.PlayerDeath) });
+        Assert.True(simulator.ApplyExternalEvents(new[]
+        {
+            new ExternalCombatEvent(4, revivalKind),
+            new ExternalCombatEvent(4, ExternalCombatEventKinds.PlayerDeath),
+        }).Accepted);
+        Assert.True(simulator.GetState().IsDead);
+        Assert.Equal(0, simulator.GetState().Mp);
+    }
+
+    [Theory]
     [InlineData(0.0, 10000, null, 0)]
     [InlineData(0.2, 10000, null, 2000)]
     [InlineData(0.35, 15000, null, 5250)]

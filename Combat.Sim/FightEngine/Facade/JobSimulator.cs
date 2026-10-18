@@ -176,6 +176,7 @@ public sealed class JobSimulator
         ArgumentNullException.ThrowIfNull(batch[0]);
         var timestamp = batch[0].Timestamp;
         var kinds = new HashSet<string>(StringComparer.Ordinal);
+        var isDead = _timeline.GetStateWithoutHistory().IsDead;
         foreach (var item in batch)
         {
             ArgumentNullException.ThrowIfNull(item);
@@ -187,6 +188,14 @@ public sealed class JobSimulator
             if (item.RemainingSeconds is { } remaining && !double.IsFinite(remaining))
                 throw new ArgumentException("external event duration must be finite", nameof(externalEvents));
             _machine.SystemMachine.ValidateExternalEvent(item);
+            // 只预演批次内的生死转换；整批通过后才允许入队和修改真实状态。
+            if (item.Kind == ExternalCombatEventKinds.PlayerDeath) isDead = true;
+            else if (item.Kind is ExternalCombatEventKinds.PlayerRevived or ExternalCombatEventKinds.PlayerRevivedLb3)
+            {
+                if (!isDead)
+                    throw new ArgumentException("revival requires a dead player", nameof(externalEvents));
+                isDead = false;
+            }
         }
         if (kinds.Contains(ExternalCombatEventKinds.PlayerRevived)
             && kinds.Contains(ExternalCombatEventKinds.PlayerRevivedLb3))
