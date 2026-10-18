@@ -44,7 +44,7 @@ def _party_report(events):
 
 @pytest.mark.parametrize("damage_amount", [None, 0, 100], ids=["missing_damage", "zero_damage", "positive_damage"])
 def test_party_downtime_uses_cast_boundaries_independently_of_damage(damage_amount):
-    """只按本场玩家对敌方的完成施法划分停机，不依赖伤害和起读事件。"""
+    """左端采用完成施法，右端优先采用配对起读，不依赖伤害事件。"""
     from scripts.convert_fflogs.extraction.downtime import _collect_party_cast_actions, detect_downtime_windows
 
     def cast(timestamp, **fields):
@@ -61,9 +61,10 @@ def test_party_downtime_uses_cast_boundaries_independently_of_damage(damage_amou
         cast(8000, type="damage", amount=100),
         cast(10000, type="damage", amount=100, tick=True),
         cast(12000, type="calculateddamage", amount=100),
-        # 取消的起读和恢复动作配对的起读都不能替代右端的完成施法时刻。
-        cast(14000, type="begincast", duration=10000, abilityGameID=123456),
+        # 同技能取消或时长不匹配的起读不能覆盖真正配对的恢复请求。
+        cast(14000, type="begincast", duration=10000, sourceID=12, abilityGameID=123456),
         cast(17000, type="begincast", duration=4000, sourceID=12, abilityGameID=123456),
+        cast(19000, type="begincast", duration=10000, sourceID=12, abilityGameID=123456),
     ]
     if damage_amount is not None:
         events.extend([
@@ -71,17 +72,18 @@ def test_party_downtime_uses_cast_boundaries_independently_of_damage(damage_amou
             cast(20700, type="damage", amount=damage_amount, sourceID=12, abilityGameID=123456, packetID=42),
         ])
     attacks = _collect_party_cast_actions(
-        _party_report(events), fight_start=0, fight_end=21,
+        _party_report(events), fight_start=0, fight_end=21, match_tolerance_seconds=0.5,
     )
     assert [action["timestamp"] for action in attacks] == [1.0, 3.0, 5.0, 20.0, 20.5]
-    assert all(action["request_timestamp"] == action["timestamp"] for action in attacks)
+    assert [action["request_timestamp"] for action in attacks] == [1.0, 3.0, 5.0, 20.0, 17.0]
     windows = detect_downtime_windows(attacks, fight_start=0, fight_end=21,
                                      gap_seconds=6, boundary_margin=0.5)
-    assert windows == [{"start": 5.5, "end": 19.5, "duration": 14.0}]
+    assert windows == [{"start": 5.5, "end": 16.5, "duration": 11.0}]
 
 
-def test_report_downtime_uses_cast_boundaries_without_rewriting_action_requests():
-    """停机右端采用全队最早完成施法，动作自身仍保留日志起读请求。"""
+@pytest.mark.parametrize("deduplicate_history", [False, True], ids=["public_replay", "native_replay"])
+def test_report_downtime_preserves_resumed_request_and_completes_training_conversion(cs_backend, deduplicate_history):
+    """恢复首个读条在日志请求时刻通过完整转换，不为迁就停机窗口移动动作。"""
     from scripts.convert_fflogs import build_skill_book
 
     events = [
@@ -97,16 +99,30 @@ def test_report_downtime_uses_cast_boundaries_without_rewriting_action_requests(
          "packetID": 42, "fight": 7},
     ]
     project = load_job_project_config("black_mage")
+    skill_book = build_skill_book(project)
     payload, _ = convert_report_payload(
         _party_report(events), job_tag="black_mage", project_config=project,
-        skill_book=build_skill_book(project), source_id=10, encounter_name="Demo",
+        skill_book=skill_book, source_id=10, encounter_name="Demo",
         report_code="party", player_name="Tester", generated_at="2026-10-18",
     )
     assert payload["actions"][-1]["request_time_offset"] == 17.0
     assert payload["actions"][-1]["time_offset"] == 20.5
     assert payload["actions"][-1]["actual_cast_seconds"] == 4.0
     downtime = [token for token in payload["scene_context"]["targetable_window_context"]["tokens"] if token[3] == 0]
-    assert downtime == [targetable_window_token(1.6, 19.4, targetable=False, segment_kind="downtime")]
+    assert downtime == [targetable_window_token(1.6, 16.4, targetable=False, segment_kind="downtime")]
+    training_payload, _ = convert_report_to_training_payload(
+        _party_report(events), backend=cs_backend, project_config=project,
+        skill_book=skill_book, source_id=10, encounter_name="Demo",
+        report_code="party", player_name="Tester", generated_at="2026-10-18",
+        deduplicate_history=deduplicate_history,
+    )
+    assert training_payload["resolved_sequence"] == ["swiftcast", "fire_iii"]
+    sample = training_payload["samples"][-1]
+    assert sample["time_offset"] == 17.0
+    assert sample["label"]["is_legal"] is True
+    assert sample["label"]["cast_time_seconds"] == 4.0
+    assert sample["label"]["accepted_offset"] == 0.0
+    assert sample["label"]["request_time_clamped"] == 0.0
 
 
 def test_report_pipeline_does_not_treat_player_death_gap_as_boss_downtime():

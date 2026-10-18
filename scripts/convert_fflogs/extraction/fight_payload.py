@@ -133,6 +133,7 @@ def build_fight_payload(
 
     party_actions = _collect_party_cast_actions(
         raw_report, fight_start=fight_start, fight_end=fight_end,
+        match_tolerance_seconds=downtime_boundary_margin,
     ) if raw_report is not None else None
     downtime_windows = detect_downtime_windows(
         fight_actions if party_actions is None else party_actions,

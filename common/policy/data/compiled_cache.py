@@ -66,8 +66,8 @@ CACHE_FORMAT = "raw_json_compiled_samples_v25_death_markers"
 # v28：提交死亡/普通与 LB3 复活事实并保存 <dead/> 历史标记；Boss 停手由全队对敌 cast 推导。
 #      活动兜底严格晚于死亡，旧规则可能包含同刻伪造的复活，必须重编译。
 #      灵极魂不再限于 Boss 不可选中时使用，旧缓存中的冻结技能可用性需要重建。
-#      停机双端统一为 cast，旧伤害落地窗口对应的场景和冻结状态需要重建。
-DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v28_lb3_player_lifecycle_party_downtime_umbral_soul_party_cast_endpoints"
+#      停机左界取 cast、右界优先配对 begincast，旧窗口对应的场景和冻结状态需要重建。
+DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v28_lb3_player_lifecycle_party_downtime_umbral_soul_party_cast_request_endpoints"
 # `weights_only=True` 的安全 unpickler 对 protocol 2 支持最稳定；compiled
 # cache 的样本数据只需要普通 mapping 和 tensor，不需要更高协议。
 CACHE_PICKLE_PROTOCOL = 2

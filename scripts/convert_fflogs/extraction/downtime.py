@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from ..config.constants import DOWNTIME_BOUNDARY_MARGIN
+from .extraction import _collect_begincasts, _get_ability_id, _take_begincast
 
 
 def _collect_party_cast_actions(
     report: dict[str, object], *, fight_start: float, fight_end: float,
+    match_tolerance_seconds: float,
 ) -> list[dict[str, object]] | None:
-    """收集本场玩家对敌方的 cast，停机两端均使用原始 cast 时刻。"""
+    """收集本场玩家对敌方的 cast，恢复请求优先使用配对的 begincast。"""
     friendlies, enemies = report.get("friendlies"), report.get("enemies")
     fight_id = report.get("fight_id")
     if fight_id is None:
@@ -27,16 +29,31 @@ def _collect_party_cast_actions(
                and actor.get("petOwner") is None}
     targets = {actor["id"] for actor in enemies if in_fight(actor)
                and actor.get("type") != "Pet" and actor.get("petOwner") is None}
-    result = []
+    events_by_player = {actor_id: [] for actor_id in players}
     for event in report.get("events", []):
-        if (not isinstance(event, dict) or event.get("type") != "cast"
-                or event.get("sourceID") not in players or event.get("targetID") not in targets
+        if (not isinstance(event, dict) or event.get("type") not in {"cast", "begincast"}
+                or event.get("sourceID") not in players
                 or event.get("fight", fight_id) != fight_id):
             continue
-        timestamp = float(event["timestamp"]) / 1000.0
-        if fight_start <= timestamp <= fight_end:
-            # 不要求后续伤害落地，也不回溯 begincast，避免两端使用不同时间口径。
-            result.append({"timestamp": timestamp, "request_timestamp": timestamp,
+        events_by_player[event["sourceID"]].append(event)
+
+    result = []
+    for actor_id, events in events_by_player.items():
+        begincasts = _collect_begincasts(events, actor_id)
+        cursors = {}
+        for event in sorted(events, key=lambda item: item["timestamp"]):
+            if event.get("type") != "cast" or event.get("targetID") not in targets:
+                continue
+            timestamp = float(event["timestamp"]) / 1000.0
+            if not fight_start <= timestamp <= fight_end:
+                continue
+            skill_id = _get_ability_id(event)
+            begin = _take_begincast(
+                begincasts.get(skill_id), cursors, skill_id,
+                effect_timestamp=timestamp, match_tolerance_seconds=match_tolerance_seconds,
+            )
+            # 左界仍取 cast；右界优先起读时刻，瞬发或缺少有效起读时退回 cast。
+            result.append({"timestamp": timestamp, "request_timestamp": begin[0] if begin else timestamp,
                            "is_damaging": True})
     return sorted(result, key=lambda action: action["timestamp"])
 
@@ -51,8 +68,8 @@ def detect_downtime_windows(
 ) -> list[dict[str, float]]:
     """通过攻击事件间隔检测 Boss 停手窗口。
 
-    正式载荷的全队攻击记录将两类时间统一为 cast：左界取停手前最后一个 cast，
-    右界取恢复后的最早 cast，再以 boundary_margin 内缩窗口。
+    正式载荷左界取停手前最后一个 cast；右界取恢复段中最早的配对起读时刻，
+    没有有效 begincast 的动作使用 cast，再以 boundary_margin 内缩窗口。
     缺少完整角色表的手工载荷沿用个人动作的请求时刻退回路径。
     """
     damaging_actions = sorted((action for action in actions if action["is_damaging"]),
@@ -74,7 +91,7 @@ def detect_downtime_windows(
     windows: list[dict[str, float]] = []
     for previous_phase, next_phase in zip(phases, phases[1:]):
         previous = float(previous_phase[-1]["timestamp"])
-        # 全队记录的请求时刻等于 cast；手工载荷保留原有请求时刻语义。
+        # 恢复段第一发完成的动作未必最早起读，右界取全队最早的有效请求。
         end = min(_request_timestamp(action) for action in next_phase)
         if end > previous:
             windows.append({"start": previous, "end": end, "duration": end - previous})
