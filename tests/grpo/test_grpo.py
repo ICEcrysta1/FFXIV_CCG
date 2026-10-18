@@ -91,7 +91,7 @@ def _rollout_contract():
     ))
 
 
-def _decision(*, history_length: int, scene_length: int, action_index: int) -> GrpoDecision:
+def _decision(*, history_length: int, scene_length: int, action_index: int, dead_positions=()) -> GrpoDecision:
     action_keys = ["fire_iii", "blizzard_iii", "ogcd_wait"]
     batch = {
         "scene_vectors": torch.zeros((1, scene_length, 3), dtype=torch.float32),
@@ -111,6 +111,8 @@ def _decision(*, history_length: int, scene_length: int, action_index: int) -> G
             dtype=torch.bool,
         ),
         "history_mask": torch.ones((1, history_length), dtype=torch.bool),
+        "history_dead_positions": torch.tensor([dead_positions], dtype=torch.int64),
+        "history_dead_mask": torch.ones((1, len(dead_positions)), dtype=torch.bool),
         "current_state_vectors": torch.zeros((1, 9), dtype=torch.float32),
         "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
         "history_state_reset_mask": torch.zeros((1, history_length, 3), dtype=torch.bool),
@@ -228,8 +230,8 @@ def test_grpo_rollback_restores_previous_disk_checkpoint(tmp_path):
 def test_collate_grpo_decisions_right_pads_scene_and_history():
     batch = collate_grpo_decisions(
         (
-            _decision(history_length=1, scene_length=2, action_index=0),
-            _decision(history_length=3, scene_length=0, action_index=1),
+            _decision(history_length=1, scene_length=2, action_index=0, dead_positions=(0, 1, 1)),
+            _decision(history_length=3, scene_length=0, action_index=1, dead_positions=(2,)),
         )
     )
 
@@ -237,6 +239,8 @@ def test_collate_grpo_decisions_right_pads_scene_and_history():
     assert batch["scene_mask"].tolist() == [[True, True], [False, False]]
     assert batch["history_skill_ids"].shape == (2, 3)
     assert batch["history_mask"].tolist() == [[True, False, False], [True, True, True]]
+    assert batch["history_dead_positions"].tolist() == [[0, 1, 1], [2, 0, 0]]
+    assert batch["history_dead_mask"].tolist() == [[True, True, True], [True, False, False]]
     assert batch["history_state_null_mask"].tolist() == [
         [[False, False, False], [True, True, True], [True, True, True]],
         [[False, False, False], [False, False, False], [False, False, False]],
@@ -1044,7 +1048,7 @@ def test_grpo_directory_follows_env_cache_root_and_job(monkeypatch, tmp_path):
 
 
 def test_grpo_rollout_store_persists_and_streams_cpu_decisions(tmp_path):
-    decision = _decision(history_length=1, scene_length=2, action_index=1)
+    decision = _decision(history_length=1, scene_length=2, action_index=1, dead_positions=(0, 1, 1))
     store = GrpoRolloutStore(tmp_path / "grpo", input_contract=_rollout_contract(), iteration=1, run_id="test-run")
 
     entry = store.write_trajectory(
@@ -1066,6 +1070,8 @@ def test_grpo_rollout_store_persists_and_streams_cpu_decisions(tmp_path):
     loaded_decisions, loaded_advantages = minibatches[0]
     assert loaded_decisions[0].action_index == decision.action_index
     assert loaded_decisions[0].batch["scene_vectors"].device.type == "cpu"
+    assert loaded_decisions[0].batch["history_dead_positions"].tolist() == [[0, 1, 1]]
+    assert loaded_decisions[0].batch["history_dead_mask"].tolist() == [[True, True, True]]
     assert loaded_advantages.tolist() == [1.25]
 
 
@@ -1306,6 +1312,27 @@ def test_grpo_store_rejects_incomplete_anchored_input_before_write(tmp_path, fie
     decision.batch.pop(field)
     store = GrpoRolloutStore(tmp_path / "grpo", input_contract=_rollout_contract(), iteration=1, run_id="missing")
     with pytest.raises(ValueError, match="state_reset_mask"):
+        store.write_trajectory(scene_json_path=tmp_path / "scene.json", decisions=(decision,),
+                               ppg=1.0, greedy_ppg=0.0, reward=1.0)
+    assert not store.entries
+
+
+@pytest.mark.parametrize("positions", [(-1,), (2,), (1, 0)])
+def test_grpo_store_rejects_invalid_dead_boundaries_before_write(tmp_path, positions):
+    decision = _decision(history_length=1, scene_length=0, action_index=0, dead_positions=positions)
+    store = GrpoRolloutStore(tmp_path / "grpo", input_contract=_rollout_contract(), iteration=1, run_id="dead")
+    with pytest.raises(ValueError, match="history_dead_positions"):
+        store.write_trajectory(scene_json_path=tmp_path / "scene.json", decisions=(decision,),
+                               ppg=1.0, greedy_ppg=0.0, reward=1.0)
+    assert not store.entries
+
+
+@pytest.mark.parametrize("field", ["history_dead_positions", "history_dead_mask"])
+def test_grpo_store_rejects_missing_dead_input_before_write(tmp_path, field):
+    decision = _decision(history_length=0, scene_length=0, action_index=0)
+    decision.batch.pop(field)
+    store = GrpoRolloutStore(tmp_path / "grpo", input_contract=_rollout_contract(), iteration=1, run_id="dead")
+    with pytest.raises(ValueError, match=field):
         store.write_trajectory(scene_json_path=tmp_path / "scene.json", decisions=(decision,),
                                ppg=1.0, greedy_ppg=0.0, reward=1.0)
     assert not store.entries

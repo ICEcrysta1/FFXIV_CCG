@@ -108,6 +108,8 @@ def _make_batch(history_length: int, *, current_state_offset: float = 0.0, chang
             (1, history_length, 3), dtype=torch.bool
         ),
         "history_state_reset_mask": history_resets,
+        "history_dead_positions": torch.empty((1, 0), dtype=torch.long),
+        "history_dead_mask": torch.zeros((1, 0), dtype=torch.bool),
         "history_mask": torch.ones((1, history_length), dtype=torch.bool),
         "current_state_vectors": torch.cat((current_state, torch.zeros((1, 6))), dim=-1),
         "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
@@ -185,6 +187,8 @@ def test_shared_context_reanchor_and_scene_clip_rebuild_kv(full_attention_residu
                 "history_state_delta_values": deltas[start:cursor][None],
                 "history_state_null_mask": nulls[start:cursor][None],
                 "history_state_delta_reset_mask": resets[start:cursor][None],
+                "history_dead_positions": torch.empty((1, 0), dtype=torch.long),
+                "history_dead_mask": torch.zeros((1, 0), dtype=torch.bool),
                 "history_mask": torch.ones((1, length), dtype=torch.bool),
                 "current_state_abs_values": states[cursor:cursor + 1],
                 "current_state_delta_values": deltas[cursor:cursor + 1],

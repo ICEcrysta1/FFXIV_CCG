@@ -22,23 +22,27 @@ from .tensor_runtime import run_ort_tensors
 class MatrixCaseResult:
     scene_valid: int
     history_valid: int
+    dead_valid: int
     max_logit_abs_diff: float
     max_dynamic_baseline_abs_diff: float
     argmax_match: bool
     padding_value_invariant: bool
 
 
-def padding_matrix(contract: CapacityContract) -> tuple[tuple[int, int], ...]:
+def padding_matrix(contract: CapacityContract) -> tuple[tuple[int, int, int], ...]:
     """覆盖空输入、单独满轴和混合满预算，不让两个运输轴同时占满。"""
     mixed_scene = min(3, contract.scene_capacity)
     mixed_history = (contract.context_capacity - mixed_scene - 1) // 2
     cases = (
-        (0, 0),
-        (0, min(1, contract.history_capacity)),
-        (0, contract.history_capacity),
-        (min(1, contract.scene_capacity), 0),
-        (mixed_scene, mixed_history),
-        (contract.scene_capacity, 0),
+        (0, 0, 0),
+        (0, min(1, contract.history_capacity), 0),
+        (0, contract.history_capacity, 0),
+        (min(1, contract.scene_capacity), 0, 0),
+        (mixed_scene, mixed_history, 0),
+        (contract.scene_capacity, 0, 0),
+        (0, 0, contract.dead_capacity),
+        (0, min(1, max(0, (contract.context_capacity - 2) // 2)), min(1, contract.dead_capacity)),
+        (0, max(0, (contract.context_capacity - 3) // 2), min(2, contract.dead_capacity)),
     )
     return tuple(dict.fromkeys(cases))
 
@@ -62,13 +66,14 @@ def validate_pytorch_matrix(
     policy.eval()
     results: list[dict[str, object]] = []
     rtol, atol = _tolerances(dtype)
-    for case_index, (scene_valid, history_valid) in enumerate(padding_matrix(contract)):
+    for case_index, (scene_valid, history_valid, dead_valid) in enumerate(padding_matrix(contract)):
         fixed_cpu = make_inputs(
             data_spec,
             contract,
             vocab_size=vocab_size,
             scene_valid=scene_valid,
             history_valid=history_valid,
+            dead_valid=dead_valid,
             dtype=dtype,
             seed=1701 + case_index,
         )
@@ -76,12 +81,14 @@ def validate_pytorch_matrix(
             fixed_cpu,
             scene_valid=scene_valid,
             history_valid=history_valid,
+            dead_valid=dead_valid,
             value=0.0,
         )
         dynamic_cpu = slice_dynamic_inputs(
             fixed_cpu,
             scene_valid=scene_valid,
             history_valid=history_valid,
+            dead_valid=dead_valid,
         )
         fixed = _to_device(fixed_cpu, device)
         zero_padding = _to_device(zero_padding_cpu, device)
@@ -102,6 +109,7 @@ def validate_pytorch_matrix(
             fixed_trace,
             scene_valid=scene_valid,
             history_valid=history_valid,
+            dead_valid=dead_valid,
             contract=contract,
         )
         _assert_raw_trace_finite(raw_dynamic_trace, raw_dynamic_logits)
@@ -161,6 +169,7 @@ def validate_pytorch_matrix(
                 MatrixCaseResult(
                     scene_valid=scene_valid,
                     history_valid=history_valid,
+                    dead_valid=dead_valid,
                     max_logit_abs_diff=float(
                         max(
                             (fixed_trace.logits - zero_padding_trace.logits)
@@ -199,13 +208,14 @@ def validate_ort_matrix(
     policy.eval()
     rtol, atol = _tolerances(dtype)
     results: list[dict[str, object]] = []
-    for case_index, (scene_valid, history_valid) in enumerate(padding_matrix(contract)):
+    for case_index, (scene_valid, history_valid, dead_valid) in enumerate(padding_matrix(contract)):
         fixed_cpu = make_inputs(
             data_spec,
             contract,
             vocab_size=vocab_size,
             scene_valid=scene_valid,
             history_valid=history_valid,
+            dead_valid=dead_valid,
             dtype=dtype,
             seed=1701 + case_index,
         )
@@ -213,6 +223,7 @@ def validate_ort_matrix(
             fixed_cpu,
             scene_valid=scene_valid,
             history_valid=history_valid,
+            dead_valid=dead_valid,
             value=0.0,
         )
         fixed = _to_device(fixed_cpu, reference_device)
@@ -255,6 +266,7 @@ def validate_ort_matrix(
                 MatrixCaseResult(
                     scene_valid=scene_valid,
                     history_valid=history_valid,
+                    dead_valid=dead_valid,
                     max_logit_abs_diff=float((actual - expected).abs().max().item()),
                     max_dynamic_baseline_abs_diff=0.0,
                     argmax_match=True,
@@ -277,9 +289,10 @@ def _assert_padding_keys_blocked(
     scene_valid: int,
     history_valid: int,
     contract: CapacityContract,
+    dead_valid: int = 0,
 ) -> None:
     # 有效前缀已经压紧；当前状态固定占末槽，空位都在二者之间。
-    padding_keys = list(range(scene_valid + 2 * history_valid, trace.hidden.shape[1] - 1))
+    padding_keys = list(range(scene_valid + 2 * history_valid + dead_valid, trace.hidden.shape[1] - 1))
     if not padding_keys:
         return
     indices = torch.tensor(

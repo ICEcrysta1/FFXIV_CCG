@@ -495,6 +495,41 @@ def test_live_current_state_is_independent_of_action_legality_and_preserves_phas
     assert not new_batch["action_legal_mask"].any()
 
 
+def test_live_dead_events_preserve_action_boundaries_and_frozen_visibility():
+    builder, canonical = _live_builder_fixture(max_history=8)
+    for index in range(1, 5):
+        _append_live_history(canonical, index)
+    markers = tuple({"token": "<dead/>", "timestamp": float(index), "after_history_length": position}
+                    for index, position in enumerate((0, 2, 2, 4)))
+    builder._backend.history_markers = markers
+    state = SimpleNamespace(time=4.0, gcd_remaining=0.0)
+    live, _ = builder.build(state, max_history=2)
+    assert live["history_skill_ids"].tolist() == [[3, 4]]
+    assert live["history_dead_positions"].tolist() == [[0, 0, 2]]
+    assert live["history_dead_mask"].tolist() == [[True, True, True]]
+    assert builder.context_metadata == {"history_cursor": 4}
+    frozen, _ = builder.build_from_canonical(canonical, gcd_phase=True, max_history=2, history_markers=markers[:-1])
+    assert frozen["history_dead_positions"].tolist() == [[0, 0]]
+    assert canonical["history_cursor"] == 4
+    assert "history_markers" not in canonical
+
+
+def test_live_dead_events_support_zero_actions_and_share_context_budget():
+    builder, canonical = _live_builder_fixture()
+    marker = {"token": "<dead/>", "timestamp": 0.0, "after_history_length": 0}
+    builder._backend.history_markers = (marker, marker)
+    empty, _ = builder.build(SimpleNamespace(time=0.0, gcd_remaining=0.0))
+    assert empty["history_skill_ids"].shape == (1, 0)
+    assert empty["history_dead_positions"].tolist() == [[0, 0]]
+    builder._model_config = ModelConfig(context_capacity=7, history_reset_keep=1)
+    for index in range(1, 4):
+        _append_live_history(canonical, index)
+    batch, _ = builder.build(SimpleNamespace(time=3.0, gcd_remaining=0.0))
+    assert int(batch["scene_mask"].sum() + 2 * batch["history_mask"].sum()
+               + batch["history_dead_mask"].sum() + 1) <= 7
+    assert builder.context_metadata == {"history_cursor": 3}
+
+
 def test_live_history_window_keeps_matching_skill_and_state_rows():
     builder, canonical = _live_builder_fixture(max_history=2)
     for index in (1, 2, 3):

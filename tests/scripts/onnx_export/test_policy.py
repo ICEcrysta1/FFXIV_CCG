@@ -31,6 +31,8 @@ TENSOR_INPUT_KEYS = (
     "current_state_null_mask",
     "history_state_reset_mask",
     "current_state_reset_mask",
+    "history_dead_positions",
+    "history_dead_mask",
 )
 
 
@@ -104,6 +106,8 @@ def _make_batch(
         "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
         "history_state_reset_mask": torch.zeros((1, history_length, 3), dtype=torch.bool),
         "current_state_reset_mask": torch.zeros((1, 3), dtype=torch.bool),
+        "history_dead_positions": torch.zeros((1, 0), dtype=torch.long),
+        "history_dead_mask": torch.zeros((1, 0), dtype=torch.bool),
         "action_legal_mask": torch.ones((1, 3), dtype=torch.bool),
     }
 
@@ -568,13 +572,16 @@ def test_padding_matrix_validates_hidden_attention_logits_and_argmax():
         device=torch.device("cpu"),
     )
 
-    assert {(row["scene_valid"], row["history_valid"]) for row in results} == {
-        (0, 0),
-        (0, 1),
-        (0, 5),
-        (1, 0),
-        (3, 4),
-        (11, 0),
+    assert {(row["scene_valid"], row["history_valid"], row["dead_valid"]) for row in results} == {
+        (0, 0, 0),
+        (0, 1, 0),
+        (0, 5, 0),
+        (1, 0, 0),
+        (3, 4, 0),
+        (11, 0, 0),
+        (0, 0, 11),
+        (0, 1, 1),
+        (0, 4, 2),
     }
 
 
@@ -631,7 +638,7 @@ def test_padding_matrix_does_not_compare_trace_with_forward_argmax():
         device=torch.device("cpu"),
     )
 
-    assert len(results) == 4
+    assert len(results) == 7
     assert all(row["argmax_match"] for row in results)
 
 

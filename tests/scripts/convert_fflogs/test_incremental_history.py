@@ -584,6 +584,77 @@ def test_death_markers_roundtrip_pt_without_entering_numeric_history(tmp_path):
         CompiledCacheReader(corrupted, cache_path=cache, shard_cache=CompiledShardCache())
 
 
+def test_training_reads_visible_death_tokens_and_relocates_random_history_crops(tmp_path):
+    import torch
+
+    from common.policy.data import ActionSpace, Normalizer
+    from tests.training._common_fixtures import write_test_compiled_cache
+    from training import TrainingCollator, TrainingDataset
+
+    payload = _batch_source()
+    for sample in payload["samples"]:
+        sample["label"]["quality_labels"] = []
+        for skill in sample["context"]["skill_history_context"]:
+            skill["max_charges"] = 1
+    payload["history_markers"] = [
+        {"token": "<dead/>", "timestamp": 0.0, "after_history_length": 0, "step": 1},
+        {"token": "<dead/>", "timestamp": 2.0, "after_history_length": 1, "step": 3},
+        {"token": "<dead/>", "timestamp": 2.1, "after_history_length": 1, "step": 3},
+        {"token": "<dead/>", "timestamp": 3.0, "after_history_length": 2, "step": 4},
+        {"token": "<dead/>", "timestamp": 4.0, "after_history_length": 3, "step": 5},
+    ]
+    source = tmp_path / "source.json"
+    source.write_text("{}", encoding="utf-8")
+    normalizer = Normalizer()
+    options = dict(normalizer=normalizer, int_dtype=torch.int32, float_dtype=torch.float32)
+    write_test_compiled_cache(source, payload, tmp_path / "cache", options)
+    options.update(cache_dir=tmp_path / "cache", expected_action_space=ActionSpace.from_job_tag("black_mage"))
+    dataset = TrainingDataset([source], context_capacity=32, history_reset_keep=1, **options)
+    collator = TrainingCollator(int_dtype=torch.int32, index_dtype=torch.int64, float_dtype=torch.float32)
+    samples = dataset.__getitems__([4, 2, 0, 1, 4])
+    batch = collator(samples)
+    assert batch["history_dead_positions"].dtype == torch.int64
+    assert batch["history_dead_mask"].dtype == torch.bool
+    assert [positions[mask].tolist() for positions, mask in zip(
+        batch["history_dead_positions"], batch["history_dead_mask"], strict=True,
+    )] == [[0, 1, 1, 2, 3], [0, 1, 1], [0], [0], [0, 1, 1, 2, 3]]
+    assert samples[1]["history_length"] == samples[3]["history_length"] == 1
+    assert samples[2]["history_length"] == 0
+
+    class KeepOne:
+        def random(self):
+            return 0.0
+
+        def randint(self, low, high):
+            assert (low, high) == (1, 2)
+            return 1
+
+    cropped = TrainingCollator(
+        history_truncation_enabled=True, history_truncation_probability=1.0, rng=KeepOne(),
+        int_dtype=torch.int32, index_dtype=torch.int64, float_dtype=torch.float32,
+    )([samples[0]])
+    assert cropped["history_lengths"].tolist() == [1]
+    assert cropped["history_dead_positions"].tolist() == [[0, 1]]
+    assert cropped["history_dead_mask"].tolist() == [[True, True]]
+    assert samples[0]["history_length"] == 3
+    assert cropped["history_bank_skill_ids"] is batch["history_bank_skill_ids"]
+
+    # 相同动作 cursor 的下一样本新收到死亡时可触发分块重置；乱序读取不改变结果。
+    tight = TrainingDataset([source], context_capacity=14, history_reset_keep=1, **options)
+    assert [sample["history_length"] for sample in tight.__getitems__([4, 3, 4, 3])] == [1, 3, 1, 3]
+    tight_batch = collator([tight[4]])
+    assert tight_batch["history_dead_positions"].tolist() == [[0, 1]]
+    assert tight_batch["history_dead_mask"].tolist() == [[True, True]]
+
+    bounded = TrainingDataset([source], context_capacity=32, history_reset_keep=1, max_history=1, **options)
+    assert collator([bounded[4]])["history_dead_positions"].tolist() == [[0, 1]]
+    current_only = TrainingDataset([source], context_capacity=32, history_reset_keep=1, max_history=0, **options)
+    no_actions = collator([current_only[4], current_only[0]])
+    assert no_actions["history_lengths"].tolist() == [0, 0]
+    assert no_actions["history_dead_positions"].tolist() == [[0], [0]]
+    assert no_actions["history_dead_mask"].tolist() == [[True], [True]]
+
+
 def _assert_compiled_equal(left, right):
     import torch
 

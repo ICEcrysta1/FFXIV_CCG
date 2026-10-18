@@ -24,7 +24,7 @@ def replay_worker_count() -> int:
 
 
 def collate_live_batches(samples):
-    """右侧补齐变长场景和历史；固定动作保持原始顺序。"""
+    """按独立轴右侧补齐变长场景、动作和死亡事件；固定动作保持原始顺序。"""
     if not samples:
         raise ValueError("cannot collate empty live batches")
     if any(sample.keys() != samples[0].keys() for sample in samples[1:]):

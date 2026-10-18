@@ -35,7 +35,7 @@ from common.policy.model import (
     repetition_config_from_checkpoint,
 )
 from .token_metadata import ANALYSIS_FEATURES, build_token_metadata, current_state_mask
-from common.policy.model.input_encoder import ROLE_SCENE, ROLE_STATE, ROLE_SKILL
+from common.policy.model.input_encoder import ROLE_SCENE, ROLE_STATE, ROLE_SKILL, ROLE_DEAD
 
 
 logger = logging.getLogger(__name__)
@@ -45,6 +45,7 @@ ROLE_NAMES = {
     ROLE_SCENE: "scene",
     ROLE_STATE: "state",
     ROLE_SKILL: "skill",
+    ROLE_DEAD: "dead",
 }
 
 # 模型分析统一使用 attention 图的黑色到白金色阶；有明确正负语义的图仍保留专用发散色阶。
@@ -53,6 +54,7 @@ ROLE_COLORS = {
     0: "#321067",
     1: "#8c2981",
     2: "#e34f66",
+    3: "#fca636",
 }
 
 

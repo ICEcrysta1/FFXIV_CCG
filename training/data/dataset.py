@@ -235,7 +235,7 @@ class TrainingDataset(Dataset):
     def __getitem__(self, index: int) -> dict[str, object]:
         reader_index, sample_idx = self._resolve_sample_ref(index)
         reader = self._readers[reader_index]
-        return self._prepare_sample(reader.sample(sample_idx), reader)
+        return self._prepare_sample(reader.sample(sample_idx), reader, sample_idx)
 
     def __getitems__(self, indices: list[int]) -> list[dict[str, object]]:
         """批量读取 DataLoader 请求，避免同一 shard 重复执行单样本查找。"""
@@ -250,8 +250,8 @@ class TrainingDataset(Dataset):
         for reader_index, grouped_indices in grouped.items():
             reader = self._readers[reader_index]
             samples = reader.samples([sample_idx for _, sample_idx in grouped_indices])
-            for (output_index, _), sample in zip(grouped_indices, samples):
-                results[output_index] = self._prepare_sample(sample, reader)
+            for (output_index, sample_idx), sample in zip(grouped_indices, samples):
+                results[output_index] = self._prepare_sample(sample, reader, sample_idx)
         if any(sample is None for sample in results):
             raise RuntimeError("compiled batch fetch returned an incomplete sample batch")
         return [sample for sample in results if sample is not None]
@@ -260,8 +260,10 @@ class TrainingDataset(Dataset):
         self,
         sample: dict[str, object],
         reader: CompiledCacheReader,
+        sample_idx: int,
     ) -> dict[str, object]:
         sample = self._attach_history_bank(sample, reader)
+        sample["_history_markers"] = reader.history_markers(sample_idx)
         sample = self._apply_history_limit(sample)
         if tuple(sample["action_keys"]) != self._action_keys:
             raise ValueError("compiled sample action output order mismatch")
@@ -284,6 +286,7 @@ class TrainingDataset(Dataset):
             "request_times": self._context_request_times[bank_id],
             "scene_end_times": ends,
             "current_request_time": float(sample["current_state_abs_values"][time_index]),
+            "history_markers": sample["_history_markers"],
         }
         sample = dict(sample, _history_budget=budget)
         limited_length = min(history_length, history_window_length(

@@ -23,12 +23,14 @@ class TensorField:
 
     @property
     def sequence_axis(self) -> int | None:
-        return next((index for index, axis in enumerate(self.axes) if axis in {"scene", "history", "bank"}), None)
+        return next((index for index, axis in enumerate(self.axes) if axis in {"scene", "history", "bank", "dead"}), None)
 
     @property
-    def sequence_group(self) -> Literal["scene", "history"] | None:
+    def sequence_group(self) -> Literal["scene", "history", "dead"] | None:
         if "scene" in self.axes:
             return "scene"
+        if "dead" in self.axes:
+            return "dead"
         return "history" if "history" in self.axes or "bank" in self.axes else None
 
     def torch_dtype(self, torch, *, float_dtype=None, index_dtype=None):
@@ -58,12 +60,13 @@ class TensorField:
             raise ValueError(f"{self.name} has invalid dtype {value.dtype}")
 
 
-def tensor_dimensions(data_spec, *, batch=None, scene=None, history=None, bank=None, skill_feature_dim=None) -> dict[str, int | str]:
+def tensor_dimensions(data_spec, *, batch=None, scene=None, history=None, dead=None, bank=None, skill_feature_dim=None) -> dict[str, int | str]:
     """模型规格由父级 layout 校验；容量由各调用方自己的生命周期提供。"""
     return {
         "batch": "batch" if batch is None else batch,
         "scene": "scene" if scene is None else scene,
         "history": "history" if history is None else history,
+        "dead": "dead" if dead is None else dead,
         "bank": "bank" if bank is None else bank,
         "base_state": data_spec.base_state_dim,
         "availability": data_spec.state_dim - data_spec.base_state_dim,
@@ -116,6 +119,8 @@ MODEL_INPUT_FIELDS = (
     replace(_RAW_FIELDS_BY_NAME["current_state_null_mask"], stages=("model", "onnx")),
     TensorField("history_state_reset_mask", ("model", "onnx"), "bool", ("batch", "history", "base_state"), False),
     TensorField("current_state_reset_mask", ("model", "onnx"), "bool", ("batch", "base_state"), False),
+    TensorField("history_dead_positions", ("raw", "model", "onnx"), "index", ("batch", "dead")),
+    TensorField("history_dead_mask", ("raw", "model", "onnx"), "bool", ("batch", "dead"), False, semantic="mask"),
 )
 MODEL_INPUT_FIELDS_BY_NAME = MappingProxyType({field.name: field for field in MODEL_INPUT_FIELDS})
 MODEL_INPUT_NAMES = tuple(field.name for field in MODEL_INPUT_FIELDS)

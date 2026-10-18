@@ -113,6 +113,12 @@ def _sample_token_count(sample: object) -> int:
                 raise TypeError(
                     "sample field 'history_length' must be an integer for representative selection"
                 ) from exc
+    # Dataset 的死亡标记仍在独立元数据中，代表样本选择也应计入实际可见 token。
+    markers = sample.get("_history_markers", ())
+    if markers:
+        end = int(sample["history_end"]) - 1
+        start = end - int(sample["history_length"])
+        total += sum(start <= marker["after_history_length"] <= end for marker in markers)
     return total
 
 

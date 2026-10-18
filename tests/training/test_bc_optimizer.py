@@ -305,6 +305,8 @@ def test_train_epoch_updates_both_parameter_groups_with_real_gradients(
         "history_state_vectors": torch.nn.functional.pad(torch.zeros((1, 1, 3)), (0, 4)),
         "history_state_null_mask": torch.zeros((1, 1, 3), dtype=torch.bool),
         "history_state_reset_mask": torch.ones((1, 1, 3), dtype=torch.bool),
+        "history_dead_positions": torch.empty((1, 0), dtype=torch.long),
+        "history_dead_mask": torch.zeros((1, 0), dtype=torch.bool),
         "history_mask": torch.ones((1, 1), dtype=torch.bool),
         "current_state_vectors": torch.nn.functional.pad(torch.randn((1, 3)), (0, 4)),
         "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),

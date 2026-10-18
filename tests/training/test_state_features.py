@@ -123,7 +123,11 @@ def test_model_fields_share_combined_values_and_base_mask_dimensions():
                           action_to_vocab_id=tuple(range(1, 26)), action_is_gcd=(True,) * 25)
     dimensions = tensor_dimensions(spec, batch=2, history=3, scene=4)
     fields = {field.name: field for field in MODEL_INPUT_FIELDS}
-    assert len(fields) == 12
+    assert len(fields) == 14
+    assert fields["history_dead_positions"].axes == ("batch", "dead")
+    assert fields["history_dead_positions"].dtype == "index"
+    assert fields["history_dead_mask"].axes == ("batch", "dead")
+    assert fields["history_dead_mask"].dtype == "bool"
     assert fields["history_state_vectors"].resolve_shape(dimensions) == (2, 3, 136)
     assert fields["history_state_null_mask"].resolve_shape(dimensions) == (2, 3, 86)
     assert fields["current_state_reset_mask"].resolve_shape(dimensions) == (2, 86)

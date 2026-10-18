@@ -59,6 +59,7 @@ class TrainingCollator:
         history_lengths = [int(sample["history_length"]) for sample in samples]
         scene_lengths = [sample["scene_abs_values"].shape[0] for sample in samples]
         history_action_batches = [_compact_history_action_keys(sample) for sample in samples]
+        dead_positions = [_history_dead_positions(sample) for sample in samples]
 
         quality_supervision = _collate_quality_supervision(
             samples, torch=torch, int_dtype=self._int_dtype, float_dtype=self._float_dtype,
@@ -91,6 +92,11 @@ class TrainingCollator:
         for key, value in bank.items():
             batch[f"history_bank_{key}"] = value
         batch["history_mask"] = _build_length_mask(history_lengths, torch=torch)
+        batch["history_dead_positions"] = torch.nn.utils.rnn.pad_sequence(
+            [torch.tensor(positions, dtype=self._index_dtype) for positions in dead_positions],
+            batch_first=True,
+        )
+        batch["history_dead_mask"] = _build_length_mask([len(positions) for positions in dead_positions], torch=torch)
         batch["scene_mask"] = _build_length_mask(scene_lengths, torch=torch)
 
         pad_sequence = torch.nn.utils.rnn.pad_sequence
@@ -224,3 +230,14 @@ def _compact_history_action_keys(sample: dict[str, object]) -> list[str]:
     end = int(sample["history_end"])
     length = int(sample["history_length"])
     return [str(key) for key in bank_keys[end - length : end]]
+
+
+def _history_dead_positions(sample: dict[str, object]) -> list[int]:
+    """窗口首尾边界均保留；随机裁短后依据最终动作窗口重新定位。"""
+    end = int(sample["history_end"]) - 1
+    start = end - int(sample["history_length"])
+    return [
+        int(marker["after_history_length"]) - start
+        for marker in sample.get("_history_markers", ())
+        if start <= int(marker["after_history_length"]) <= end
+    ]

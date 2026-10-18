@@ -36,10 +36,12 @@ class FakePolicy:
         return batch["current_state_vectors"]
 
 
-def sample(value, length=1):
+def sample(value, length=1, dead_positions=()):
     return {
         "history_skill_ids": torch.full((1, length), value, dtype=torch.int64),
         "history_mask": torch.ones((1, length), dtype=torch.bool),
+        "history_dead_positions": torch.tensor([dead_positions], dtype=torch.int64),
+        "history_dead_mask": torch.ones((1, len(dead_positions)), dtype=torch.bool),
         "history_state_null_mask": torch.zeros((1, length, 1), dtype=torch.bool),
         "current_state_vectors": torch.tensor([[float(value), 0.0]]),
         "history_action_keys": [["a"] * length],
@@ -80,11 +82,13 @@ def test_bounded_parallel_batches_preserve_order_and_cache_layout():
 
 
 def test_collation_preserves_masks_and_variable_lengths():
-    batch = parallel.collate_live_batches([sample(2, 0), sample(7, 3)])
+    batch = parallel.collate_live_batches([sample(2, 0, (0, 0)), sample(7, 3, (2,))])
     assert batch["history_mask"].tolist() == [[False] * 3, [True] * 3]
     assert batch["history_state_null_mask"][0].all()
     assert not batch["history_state_null_mask"][1].any()
     assert batch["history_action_keys"] == [[], ["a"] * 3]
+    assert batch["history_dead_positions"].tolist() == [[0, 0], [2, 0]]
+    assert batch["history_dead_mask"].tolist() == [[True, True], [True, False]]
 
 
 def test_collation_pads_registered_model_fields_and_keeps_supervision_rows():

@@ -95,17 +95,27 @@ def _validate_encoded_context(batch: Mapping[str, object], metadata: object, dat
             or action_mask.shape != (1, data_spec.num_actions)):
         raise ValueError("GRPO action_legal_mask must match saved action order")
     history_mask = batch.get("history_mask")
+    dead_mask = batch.get("history_dead_mask")
     scene_mask = batch.get("scene_mask")
     if not isinstance(history_mask, torch.Tensor) or history_mask.ndim != 2:
         raise ValueError("GRPO history_mask must have two dimensions")
     if not isinstance(scene_mask, torch.Tensor) or scene_mask.ndim != 2:
         raise ValueError("GRPO scene_mask must have two dimensions")
-    dimensions = tensor_dimensions(data_spec, batch=1, scene=scene_mask.shape[1], history=history_mask.shape[1])
+    if not isinstance(dead_mask, torch.Tensor) or dead_mask.ndim != 2:
+        raise ValueError("GRPO history_dead_mask must have two dimensions")
+    dimensions = tensor_dimensions(
+        data_spec, batch=1, scene=scene_mask.shape[1], history=history_mask.shape[1], dead=dead_mask.shape[1],
+    )
     for field in MODEL_INPUT_FIELDS:
         value = batch.get(field.name)
         field.validate_tensor(value, dimensions, torch=torch, float_dtype=torch.float32)
         if value.device.type != "cpu":
             raise ValueError("GRPO rollout storage requires CPU tensors")
+    dead_positions = batch["history_dead_positions"][dead_mask]
+    if bool(((dead_positions < 0) | (dead_positions > history_mask.sum())).any()):
+        raise ValueError("GRPO history_dead_positions must fall within encoded history boundaries")
+    if bool((dead_positions[1:] < dead_positions[:-1]).any()):
+        raise ValueError("GRPO history_dead_positions must retain event order")
     for prefix in ("history", "current"):
         values = batch[f"{prefix}_state_vectors"]
         reset = batch[f"{prefix}_state_reset_mask"]
