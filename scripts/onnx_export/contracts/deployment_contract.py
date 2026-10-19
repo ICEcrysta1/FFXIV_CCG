@@ -2,22 +2,20 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
-import json
 from pathlib import Path
 
 import torch
 
 from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, ModelInputContract, SkillVocab
-from common.policy.data.input_contract import residual_composition_contract
 from common.policy.data.context_fields import MODEL_INPUT_FIELDS, tensor_dimensions
+from common.policy.data.input_contract import residual_composition_contract
 from common.policy.model.repetition import parse_repetition_config
 
 from ..io.artifact_io import file_sha256
-from .contract import CapacityContract, OUTPUT_NAMES, TENSOR_INPUT_NAMES
-from .deployment_profile import stable_sha256
 from ..runtime.precision import (
     SUPPORTED_PRECISIONS,
     onnx_torch_dtype,
@@ -25,7 +23,8 @@ from ..runtime.precision import (
     validate_deployment_logit_softcap,
 )
 from ..runtime.tensor_runtime import golden_encoding
-
+from .contract import OUTPUT_NAMES, TENSOR_INPUT_NAMES, CapacityContract
+from .deployment_profile import stable_sha256
 
 # 输入与状态机执行语义变化后，旧导出包不得继续被部署侧接受。
 # 10：技能和状态输入收缩为新的秒制窗口契约，禁止复用旧部署包。
@@ -99,7 +98,7 @@ class DeploymentContract:
         vocab_entries: Sequence[tuple[int, int]],
         capacity_report: Mapping[str, object],
         embedding_vocab_size: int,
-    ) -> "DeploymentContract":
+    ) -> DeploymentContract:
         normalized_vocab = tuple(SkillVocab.from_entries(vocab_entries))
         capacity_report_sha256 = str(capacity_report.get("semantic_sha256", ""))
         capacity_evidence = {
@@ -123,7 +122,7 @@ class DeploymentContract:
         return contract
 
     @classmethod
-    def from_dict(cls, payload: Mapping[str, object]) -> "DeploymentContract":
+    def from_dict(cls, payload: Mapping[str, object]) -> DeploymentContract:
         _require_exact_keys(
             payload,
             {
@@ -441,11 +440,11 @@ class DeploymentManifest:
     contract: DeploymentContract
 
     @classmethod
-    def load(cls, path: Path, *, verify_files: bool = True) -> "DeploymentManifest":
+    def load(cls, path: Path, *, verify_files: bool = True) -> DeploymentManifest:
         path = Path(path)
         payload = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(payload, Mapping):
-            raise ValueError("deployment manifest must be an object")
+            raise TypeError("deployment manifest must be an object")
         try:
             version = int(payload.get("manifest_version", -1))
         except (TypeError, ValueError) as exc:
@@ -538,7 +537,7 @@ def _validate_right_padding(mask: torch.Tensor, name: str) -> None:
 
 def _mapping(value: object, path: str) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
-        raise ValueError(f"{path} must be an object")
+        raise TypeError(f"{path} must be an object")
     return value
 
 

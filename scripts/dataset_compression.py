@@ -38,7 +38,7 @@ def migrate_file(source: Path, *, remove_original: bool = False) -> tuple[Path, 
     stage = _stage(source)
     payload = json.loads(source.read_bytes())
     if not isinstance(payload, dict):
-        raise ValueError(f"战斗 JSON 顶层必须是对象: {source}")
+        raise TypeError(f"战斗 JSON 顶层必须是对象: {source}")
     if stage.name == "annotated":
         raw = _raw_peer(source, stage)
         analysis = payload.get("analysis")

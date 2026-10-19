@@ -36,6 +36,8 @@ from scripts.onnx_export.runtime.precision import (
 )
 from scripts.onnx_export.runtime.tensor_runtime import run_ort_tensors
 
+_CPU_DEVICE = torch.device("cpu")
+
 
 @dataclass(frozen=True)
 class BackendMetrics:
@@ -148,7 +150,7 @@ class PyTorchPolicyBackend(_MeasuredBackend):
         self.execution_provider = f"PyTorch:{self.input_device.type}"
         checkpoint = safe_torch_load(self.source_path)
         if not isinstance(checkpoint, Mapping):
-            raise ValueError("autoregressive checkpoint must be a mapping")
+            raise TypeError("autoregressive checkpoint must be a mapping")
         self.checkpoint = checkpoint
         self.data_spec = DataSpec.from_dict(dict(checkpoint["data_spec"]))
         self.input_contract = ModelInputContract.from_checkpoint(checkpoint)
@@ -534,7 +536,7 @@ def build_fixed_ort_inputs(
     batch: Mapping[str, object],
     contract,
     *,
-    device: torch.device = torch.device("cpu"),
+    device: torch.device = _CPU_DEVICE,
 ) -> tuple[torch.Tensor, ...]:
     """把同一个 LiveBatchBuilder 的动态 batch 右补位到 manifest 固定容量。
 
@@ -574,9 +576,8 @@ def build_fixed_ort_inputs(
     for spec in contract.tensor_inputs():
         source = _require_tensor(batch, spec.name).detach().to(device)
         field = MODEL_INPUT_FIELDS_BY_NAME[spec.name]
-        if field.sequence_group == "scene":
-            if source.shape[field.sequence_axis] != scene_mask.shape[1]:
-                raise ValueError(f"live {spec.name} scene axis differs from scene_mask")
+        if field.sequence_group == "scene" and source.shape[field.sequence_axis] != scene_mask.shape[1]:
+            raise ValueError(f"live {spec.name} scene axis differs from scene_mask")
         if field.dtype == "float32" and source.dtype != torch.float32:
             raise ValueError(f"host encoded {spec.name} must remain float32 until deployment casting")
         target = torch.full(spec.shape, field.padding_value, dtype=onnx_torch_dtype(spec.dtype), device=device)
@@ -730,7 +731,7 @@ def _validate_action_order(data_spec: DataSpec, values: Sequence[str]) -> None:
 def _require_tensor(batch: Mapping[str, object], name: str) -> torch.Tensor:
     value = batch.get(name)
     if not isinstance(value, torch.Tensor):
-        raise ValueError(f"live batch missing tensor {name}")
+        raise TypeError(f"live batch missing tensor {name}")
     return value
 
 

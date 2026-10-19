@@ -52,9 +52,11 @@ def resolve_anchor(time_offset: float, scene_context: dict[str, object]) -> str:
 
     if targetable_window_context["tokens"]:
         last_token = targetable_window_context["tokens"][-1]
-        if _token_contains(targetable_window_context, last_token, time_offset):
-            if _token_flag(targetable_window_context, last_token, "segment_kind.combat_final"):
-                return "combat_final"
+        if (
+            _token_contains(targetable_window_context, last_token, time_offset)
+            and _token_flag(targetable_window_context, last_token, "segment_kind.combat_final")
+        ):
+            return "combat_final"
     return "combat"
 
 

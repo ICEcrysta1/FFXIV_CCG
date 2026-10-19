@@ -5,25 +5,34 @@ from __future__ import annotations
 import math
 
 from common.context.contracts import SCENE_CONTEXT_ABSOLUTE_MODE
-from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION, STATE_SNAPSHOTS, STATE_VECTOR_GROUP_SCHEMAS, build_output_context_schema_metadata
-from common.policy.data.state_features import StateTokenTensors, read_state_tokens, validate_state_feature_keys
-from common.pytorch.dependencies import import_torch
+from common.context.output import (
+    CANONICAL_CONTEXT_SCHEMA_VERSION,
+    STATE_SNAPSHOTS,
+    STATE_VECTOR_GROUP_SCHEMAS,
+    build_output_context_schema_metadata,
+)
 from common.policy.data.action_space import ActionSpace
 from common.policy.data.compiled_cache import _read_history_marker_bank
-
-from .source_helpers import (
-    SKILL_ID_FIELD,
-    SKILL_HISTORY_FIELDS,
-    derive_skill_feature_names,
-    to_optional_int,
-)
 from common.policy.data.schema import (
     SCENE_WINDOW_ORDER,
-    SceneWindowSchema,
-    TRAINING_SOURCE_FORMAT,
     TRAINING_SAMPLE_SCHEMA_VERSION,
-    TrainingSchema,
+    TRAINING_SOURCE_FORMAT,
+    SceneWindowSchema,
     StateFeatureGroup,
+    TrainingSchema,
+)
+from common.policy.data.state_features import (
+    StateTokenTensors,
+    read_state_tokens,
+    validate_state_feature_keys,
+)
+from common.pytorch.dependencies import import_torch
+
+from .source_helpers import (
+    SKILL_HISTORY_FIELDS,
+    SKILL_ID_FIELD,
+    derive_skill_feature_names,
+    to_optional_int,
 )
 
 
@@ -55,7 +64,7 @@ class TrainingSourceReader:
                 raise ValueError("unsupported canonical context schema version; recompile raw source")
             for row in self._history_rows(sample_index):
                 if not isinstance(row, dict):
-                    raise ValueError("skill history rows must contain mappings")
+                    raise TypeError("skill history rows must contain mappings")
                 if "time_seconds" in row:
                     raise ValueError("removed skill time_seconds field; recompile raw source")
             if tuple(context.get("action_keys", ())) != self._action_keys:
@@ -78,7 +87,7 @@ class TrainingSourceReader:
             validate_state_feature_keys(current, self._state_layout)
             tokens = current.get("tokens")
             if not isinstance(tokens, (list, tuple)):
-                raise ValueError("state context tokens must be a list")
+                raise TypeError("state context tokens must be a list")
             current_tokens.append(tokens[0])
             # 完整历史行只在 bank 构建时解析一次，这里只校验每步的字段元数据。
             validate_state_feature_keys(context["state_history_context"], self._state_layout)
@@ -348,7 +357,7 @@ class TrainingSourceReader:
             raise IndexError(f"training sample index out of range: {sample_idx}")
         sample = self._samples[sample_idx]
         if not isinstance(sample, dict):
-            raise ValueError(f"training sample {sample_idx} must be a mapping")
+            raise TypeError(f"training sample {sample_idx} must be a mapping")
         return sample
 
     def _sample_range(self, start: int, end: int) -> range:
@@ -359,13 +368,13 @@ class TrainingSourceReader:
     def _sample_context(self, sample_idx: int) -> dict[str, object]:
         context = self._sample(sample_idx).get("context")
         if not isinstance(context, dict):
-            raise ValueError(f"training sample {sample_idx} context must be a mapping")
+            raise TypeError(f"training sample {sample_idx} context must be a mapping")
         return context
 
     def _history_rows(self, sample_idx: int) -> list[dict[str, object]]:
         rows = self._sample_context(sample_idx).get("skill_history_context", [])
         if not isinstance(rows, list):
-            raise ValueError("skill_history_context must be a list")
+            raise TypeError("skill_history_context must be a list")
         return rows
 
 
@@ -374,10 +383,10 @@ def _build_training_source_schema(payload: dict[str, object]) -> TrainingSchema:
     assert isinstance(samples, list) and samples
     first_sample = samples[0]
     if not isinstance(first_sample, dict):
-        raise ValueError("first training sample must be a mapping")
+        raise TypeError("first training sample must be a mapping")
     first_context = first_sample.get("context")
     if not isinstance(first_context, dict):
-        raise ValueError("first training sample context must be a mapping")
+        raise TypeError("first training sample context must be a mapping")
     if first_context.get("schema_version") != CANONICAL_CONTEXT_SCHEMA_VERSION:
         raise ValueError("unsupported canonical context schema version; recompile raw source")
 

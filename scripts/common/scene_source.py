@@ -4,7 +4,6 @@ import logging
 import pickle
 from pathlib import Path
 
-from common.pytorch.precision import load_precision_config
 from common.data.layout import PERCENTILE_BUCKETS, find_dataset_json_files
 from common.policy.data import ActionSpace, Normalizer, SkillVocab
 from common.policy.data.compiled_cache import (
@@ -12,7 +11,7 @@ from common.policy.data.compiled_cache import (
     build_cache_signature,
     load_compiled_cache_for_source,
 )
-
+from common.pytorch.precision import load_precision_config
 
 logger = logging.getLogger(__name__)
 

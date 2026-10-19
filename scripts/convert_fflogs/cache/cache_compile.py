@@ -407,9 +407,9 @@ def precompile_raw_training_caches(
     # Python 进程数受可用 CPU 限制；总在途任务仍由用户的并发上限约束。
     # 子进程只请求父进程的共享状态机，不复制 CLR 引擎或跨进程传完整历史前缀。
     owner = InProcessEngine(job_tag, capacity=worker_count) if engine is None else nullcontext(engine)
-    with owner as engine:
+    with owner as shared_engine:
         executor = (
-            ProcessCompilePool(engine=engine, job_tag=job_tag, max_processes=process_count)
+            ProcessCompilePool(engine=shared_engine, job_tag=job_tag, max_processes=process_count)
             if worker_count > 1
             else ThreadPoolExecutor(max_workers=1, thread_name_prefix="fflogs-convert")
         )
@@ -417,7 +417,7 @@ def precompile_raw_training_caches(
             def submit_task(task):
                 if worker_count > 1:
                     return executor.submit(task)
-                return executor.submit(_compile_raw_source_worker, task, engine=engine)
+                return executor.submit(_compile_raw_source_worker, task, engine=shared_engine)
 
             future_sources = {
                 submit_task(task): Path(task[0])

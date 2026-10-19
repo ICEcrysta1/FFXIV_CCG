@@ -9,8 +9,12 @@ from dataclasses import asdict, dataclass
 from functools import lru_cache
 
 from common.context.contracts import (
-    FORCED_MOVEMENT_CONTEXT_KEY, RAID_BUFF_WINDOW_CONTEXT_KEY, SCENE_EPSILON,
-    SLIDECAST_WINDOW_SECONDS, TARGETABLE_WINDOW_CONTEXT_KEY, TARGET_COUNT_WINDOW_CONTEXT_KEY,
+    FORCED_MOVEMENT_CONTEXT_KEY,
+    RAID_BUFF_WINDOW_CONTEXT_KEY,
+    SCENE_EPSILON,
+    SLIDECAST_WINDOW_SECONDS,
+    TARGET_COUNT_WINDOW_CONTEXT_KEY,
+    TARGETABLE_WINDOW_CONTEXT_KEY,
 )
 from common.context.output import STATE_SNAPSHOTS
 
@@ -162,7 +166,7 @@ def rewrite_scene_player_state(canonical: dict[str, object], *, scene_state_at) 
     for context_key in ("state_history_context", "current_state_context"):
         context = canonical.get(context_key)
         if not isinstance(context, dict):
-            raise ValueError(f"{context_key} must be a mapping")
+            raise TypeError(f"{context_key} must be a mapping")
         keys = context.get("player_state_feature_keys")
         if not isinstance(keys, (list, tuple)) or not all(isinstance(key, str) for key in keys):
             raise ValueError(f"{context_key} lacks player_state_feature_keys")
@@ -177,7 +181,7 @@ def rewrite_scene_player_state(canonical: dict[str, object], *, scene_state_at) 
                     raise ValueError(f"{context_key} lacks {prefix}.{field}")
         tokens = context.get("tokens")
         if not isinstance(tokens, list):
-            raise ValueError(f"{context_key}.tokens must be a list")
+            raise TypeError(f"{context_key}.tokens must be a list")
         changed_tokens = None
         for index, token in enumerate(tokens):
             vector = token.get("player_state") if isinstance(token, dict) else None
@@ -243,10 +247,10 @@ def _windows(scene_context, context_key: str, value_key: str | None = None) -> t
     if window is None:
         return ()
     if not isinstance(window, dict):
-        raise ValueError(f"{context_key} must be a mapping")
+        raise TypeError(f"{context_key} must be a mapping")
     keys, tokens = window.get("feature_keys"), window.get("tokens")
     if not isinstance(keys, (list, tuple)) or not isinstance(tokens, (list, tuple)):
-        raise ValueError(f"{context_key} requires feature_keys and tokens")
+        raise TypeError(f"{context_key} requires feature_keys and tokens")
     if len(set(keys)) != len(keys):
         raise ValueError(f"{context_key} has duplicate feature keys")
     positions = {key: index for index, key in enumerate(keys)}

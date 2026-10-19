@@ -6,7 +6,7 @@ import argparse
 import logging
 from pathlib import Path
 
-from common.pytorch.precision import load_precision_config
+from common.configuration.environment import resolve_positive_worker_count
 from common.data.layout import find_dataset_json_files
 from common.policy.config import (
     resolve_policy_cache_dir,
@@ -15,7 +15,7 @@ from common.policy.config import (
     resolve_policy_model_variant,
 )
 from common.policy.data import Normalizer
-from common.configuration.environment import resolve_positive_worker_count
+from common.pytorch.precision import load_precision_config
 from scripts.common.inprocess_backend import MAX_QUEUE_CAPACITY
 from scripts.common.json_io import is_json_file
 from training.config import load_run_config

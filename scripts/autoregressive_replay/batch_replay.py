@@ -7,7 +7,12 @@ import torch
 from common.policy.data import ActionSpace
 
 from .parallel import ParallelRollouts
-from .replay import AutoregressiveReplay, AutoregressiveReplaySession, ReplayCacheStore, _create_backend
+from .replay import (
+    AutoregressiveReplay,
+    AutoregressiveReplaySession,
+    ReplayCacheStore,
+    _create_backend,
+)
 
 
 def run_replays(configs, *, backend=None, workers=None, history_limits=None):

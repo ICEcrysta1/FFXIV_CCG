@@ -13,18 +13,25 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
 import math
+from dataclasses import asdict
 
 from common.context.contracts import SCENE_EPSILON
 from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION
-
 from scripts.common.inprocess_backend import _build_death_token
-from scripts.common.scene_state import SceneFactScheduler, _state_facts, rewrite_scene_player_state
+from scripts.common.scene_state import (
+    SceneFactScheduler,
+    _state_facts,
+    rewrite_scene_player_state,
+)
 from scripts.common.state_machine_types import ActionSubmissionResult
 
 from ..config.constants import _round_time
-from ..scene.scene_context import build_scene_context_view, normalize_scene_context, resolve_anchor
+from ..scene.scene_context import (
+    build_scene_context_view,
+    normalize_scene_context,
+    resolve_anchor,
+)
 from .history_bank import HistoryPrefixInterner
 
 OGCD_WAIT_ACTION_KEY = "ogcd_wait"
@@ -128,7 +135,7 @@ def build_training_samples(
 
     for source_step, raw_action in enumerate(actions, 1):
         if not isinstance(raw_action, dict):
-            raise ValueError(f"action at source step {source_step} must be an object")
+            raise TypeError(f"action at source step {source_step} must be an object")
         next_request_offset = (
             _request_time_offset(actions[source_step]) if source_step < len(actions) else None
         )
@@ -185,7 +192,7 @@ def _replay_facts(scheduler, external_events: object, start: float) -> list[dict
     facts = [asdict(fact) for fact in _state_facts(start, scheduler.state_at(start), None)]
     facts.extend(asdict(fact) for fact in scheduler.lookup.facts() if fact.timestamp > start)
     if not isinstance(external_events, list):
-        raise ValueError("external_events must be a list")
+        raise TypeError("external_events must be a list")
     for event in external_events:
         if (not isinstance(event, dict) or not {"timestamp", "event_kind"} <= set(event)
                 or set(event) - {"timestamp", "event_kind", "mp"}):
@@ -232,7 +239,7 @@ def _collect_native_samples(
     requests = []
     for source_step, action in enumerate(actions, 1):
         if not isinstance(action, dict):
-            raise ValueError(f"action at source step {source_step} must be an object")
+            raise TypeError(f"action at source step {source_step} must be an object")
         cast_seconds = action.get("actual_cast_seconds")
         requests.append({
             "timestamp": _request_time_offset(action),

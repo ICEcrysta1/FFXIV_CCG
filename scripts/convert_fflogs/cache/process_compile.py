@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 import builtins
-from concurrent.futures import ProcessPoolExecutor
-from dataclasses import asdict
 import json
 import multiprocessing
+import sys
+import threading
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import asdict
 from multiprocessing.connection import Connection
 from multiprocessing.util import Finalize
 from queue import Empty
-import sys
-import threading
 from types import SimpleNamespace
-
 
 _WORKER_ENGINE = None
 
@@ -197,7 +196,7 @@ def _serve_backend_requests(connection: Connection, child_endpoint: Connection, 
             request = connection.recv()
             try:
                 if not isinstance(request, dict):
-                    raise ValueError("simulation bridge request must be a mapping")
+                    raise TypeError("simulation bridge request must be a mapping")
                 operation = request.get("operation")
                 if operation == "hello":
                     child_endpoint.close()

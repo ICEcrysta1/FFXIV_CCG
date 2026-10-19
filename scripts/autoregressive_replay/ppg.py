@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import logging
 import math
+from dataclasses import dataclass
 
 import torch
 
+from common.policy.data import Normalizer
 from common.pytorch.runtime import autocast_context
 from scripts.common.inprocess_backend import InProcessBackend
 from scripts.common.scene_state import SceneStateLookup
-from common.policy.data import Normalizer
 
 from .context import LiveBatchBuilder, SceneTemplateProvider
-from .replay import observe_replay_state, read_replay_cumulative_potency
 from .parallel import ParallelRollouts, TrainingPolicyBackend
+from .replay import observe_replay_state, read_replay_cumulative_potency
 from .scheduler import DecisionScheduler, gcd_request_delay, is_gcd_decision
 
 PPG_TIME_EPSILON = 1e-6

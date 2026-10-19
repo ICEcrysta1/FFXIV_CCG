@@ -13,7 +13,7 @@ def _validate_alphanumeric(value: str, field_name: str) -> str:
 def _validate_integer(value: int | str, field_name: str, *, minimum: int | None = None) -> int:
     """把公开 API 的整数参数规范化为安全的 GraphQL Int 字面量。"""
     if isinstance(value, bool):
-        raise ValueError(f"invalid {field_name}: {value!r}")
+        raise TypeError(f"invalid {field_name}: {value!r}")
     if isinstance(value, int):
         normalized = value
     elif isinstance(value, str) and INTEGER_PATTERN.fullmatch(value):
@@ -33,7 +33,7 @@ def _validate_integer_list(
 ) -> list[int]:
     """逐项校验整数列表，避免将列表原样拼入 GraphQL 查询。"""
     if not isinstance(values, (list, tuple)):
-        raise ValueError(f"invalid {field_name}: {values!r}")
+        raise TypeError(f"invalid {field_name}: {values!r}")
     return [
         _validate_integer(value, f"{field_name}[{index}]", minimum=minimum)
         for index, value in enumerate(values)

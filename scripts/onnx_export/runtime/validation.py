@@ -13,7 +13,8 @@ from ..contracts.contract import (
     make_inputs,
     slice_dynamic_inputs,
 )
-from ..policy.policy import _build_batch, _raw_logits as _policy_raw_logits
+from ..policy.policy import _build_batch
+from ..policy.policy import _raw_logits as _policy_raw_logits
 from .precision import precision_tolerances
 from .tensor_runtime import run_ort_tensors
 

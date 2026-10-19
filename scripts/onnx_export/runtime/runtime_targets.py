@@ -7,7 +7,6 @@ from collections.abc import Mapping
 from .ort_runtime import ORT_PROVIDER_CUDA
 from .precision import PRECISION_BF16
 
-
 BF16_TARGET_ORT_VERSION = "1.27.0"
 BF16_TARGET_TORCH_VERSION = "2.12.0+cu132"
 BF16_TARGET_ONNX_VERSION = "1.22.0"

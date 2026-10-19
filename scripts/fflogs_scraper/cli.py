@@ -90,14 +90,14 @@ def main():
                 _validate_integer(getattr(args, field), field, minimum=minimum)
             if args.partition is not None:
                 _validate_integer(args.partition, "partition", minimum=1)
-        except ValueError as error:
+        except (TypeError, ValueError) as error:
             parser.error(str(error))
         if args.target is not None:
             if args.encounter is not None or args.output is not None or args.zone is not None:
                 parser.error("副本代号不能与 --encounter、--zone 或 --output 同时使用")
             try:
                 resolve_download_encounter(args.target)
-            except ValueError as error:
+            except (TypeError, ValueError) as error:
                 parser.error(str(error))
         elif args.encounter is not None and args.output is None:
             parser.error("batch 下载需要 --output raw/<副本>")

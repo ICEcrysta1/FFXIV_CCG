@@ -8,11 +8,17 @@ from dataclasses import dataclass
 
 import torch
 
-from scripts.common.numeric import flatten_numeric_mapping
 from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
 from common.policy.data.context_encoding import ContextEncoder, raw_state_delta
-from common.policy.data.history_window import history_window_length, scene_window_end_times
-from common.policy.data.state_features import read_state_tokens, validate_state_feature_keys
+from common.policy.data.history_window import (
+    history_window_length,
+    scene_window_end_times,
+)
+from common.policy.data.state_features import (
+    read_state_tokens,
+    validate_state_feature_keys,
+)
+from scripts.common.numeric import flatten_numeric_mapping
 from scripts.common.scene_state import SceneFactScheduler, rewrite_scene_player_state
 
 from .scheduler import gcd_request_delay, is_gcd_decision

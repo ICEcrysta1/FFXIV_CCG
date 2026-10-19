@@ -86,8 +86,8 @@ def _load_dotnet_types() -> tuple[Any, Any, Any]:
 
             from Combat.Sim.Config import SchemaConfigLoader
             from Combat.Sim.Models.Timeline import ExternalCombatEvent
-            from Combat.Sim.Sessions import SimulationEngine
             from Combat.Sim.PythonBridge import ContextPacketEncoder
+            from Combat.Sim.Sessions import SimulationEngine
         except Exception as exc:
             raise RuntimeError(
                 "无法在 Python 进程内加载 FightEngine/PythonBridge；请确认两个程序集来自当前工作树，"

@@ -9,7 +9,6 @@ from pathlib import Path
 from common.configuration.environment import load_root_dotenv, resolve_project_job_tag
 from common.configuration.yaml import load_yaml_mapping
 
-
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 CONVERT_CONFIG_ROOT = _PROJECT_ROOT / "config" / "convert_fflogs"
 CONVERT_DEFAULT_CONFIG_PATH = CONVERT_CONFIG_ROOT / "default.yaml"
@@ -30,7 +29,7 @@ def load_action_quality_skill_policy(job_tag: str) -> frozenset[str]:
     seen: set[str] = set()
     for group, entries in suggestions.items():
         if not isinstance(entries, dict):
-            raise ValueError(f"{path}: fight_suggestions.{group} must be a mapping")
+            raise TypeError(f"{path}: fight_suggestions.{group} must be a mapping")
         for key, value in entries.items():
             if not isinstance(key, str) or not isinstance(value, bool) or key in seen:
                 raise ValueError(f"{path}: duplicate or non-boolean suggestion switch {key!r}")
@@ -40,7 +39,7 @@ def load_action_quality_skill_policy(job_tag: str) -> frozenset[str]:
     for group in ("cycle_errors", "event_labels"):
         for key, value in _require_mapping(switches, group, source=str(path)).items():
             if not isinstance(key, str) or not isinstance(value, bool):
-                raise ValueError(f"{path}: {group}.{key} must be boolean")
+                raise TypeError(f"{path}: {group}.{key} must be boolean")
             if value:
                 raise ValueError(f"{path}: {group}.{key} has no skill attribution support")
     return frozenset(enabled)
@@ -170,7 +169,7 @@ def load_convert_fflogs_dotenv(*, override: bool = False) -> Path | None:
 def _require_mapping(payload: dict[str, object], key: str, *, source: str) -> dict[str, object]:
     value = payload.get(key, {})
     if not isinstance(value, dict):
-        raise ValueError(f"{source}: {key} must be a mapping")
+        raise TypeError(f"{source}: {key} must be a mapping")
     return value
 
 
@@ -183,7 +182,7 @@ def _build_gcd_detection_config(
         raise ValueError(f"{source}: gcd_detection.probe_skill_game_id is required")
     excluded_ids = payload.get("haste_excluded_buff_game_ids", ())
     if not isinstance(excluded_ids, (list, tuple)):
-        raise ValueError(
+        raise TypeError(
             f"{source}: gcd_detection.haste_excluded_buff_game_ids must be a list"
         )
     probe_cast_time = payload.get("probe_skill_cast_time_seconds")

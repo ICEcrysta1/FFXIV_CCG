@@ -27,13 +27,12 @@ from .common import (
 )
 from .outputs import (
     plot_hidden_statistics,
+    plot_history_embeddings,
     plot_layer_pca,
     plot_loss_landscape,
-    plot_standard_attention_outputs,
-    plot_history_embeddings,
     plot_skill_embedding,
+    plot_standard_attention_outputs,
 )
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -99,7 +98,7 @@ def main() -> None:
     model_variant = resolve_policy_model_variant(model_config_path)
     checkpoint_payload = safe_torch_load(checkpoint_path)
     if not isinstance(checkpoint_payload, dict):
-        raise ValueError(f"checkpoint must be a mapping: {checkpoint_path}")
+        raise TypeError(f"checkpoint must be a mapping: {checkpoint_path}")
     validate_policy_model_variant(
         checkpoint_payload,
         model_variant,
@@ -173,7 +172,7 @@ def main() -> None:
         "scene_dim": context.data_spec.scene_dim,
         "skill_feature_dim": context.data_spec.skill_feature_dim,
         "layer_count": len(context.layer_vectors),
-        "layer_token_counts": [int(len(values)) for values in context.layer_vectors],
+        "layer_token_counts": [len(values) for values in context.layer_vectors],
         "layer_current_state_counts": [int(mask.sum()) for mask in context.layer_current_state_masks],
     }
     if args.loss_landscape:

@@ -2,24 +2,18 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from collections import OrderedDict
 import logging
+from collections import OrderedDict
+from dataclasses import dataclass, replace
 from pathlib import Path
-from types import SimpleNamespace
 from threading import RLock
+from types import SimpleNamespace
+from typing import Self
 
 import torch
 
-from common.pytorch.precision import load_precision_config
 from common.game.config import load_project_config
 from common.game.skills import SkillBook
-from scripts.common.inprocess_backend import InProcessBackend, InProcessEngine
-from scripts.common.json_io import read_json
-from scripts.convert_fflogs.cache import (
-    load_raw_compiled_cache,
-    precompile_raw_training_caches,
-)
 from common.policy.data import ActionSpace, Normalizer, SkillVocab
 from common.policy.data.compiled_cache import (
     CompiledCacheReader,
@@ -27,6 +21,13 @@ from common.policy.data.compiled_cache import (
     cache_path_for_source,
 )
 from common.policy.model.repetition import apply_repetition_penalty
+from common.pytorch.precision import load_precision_config
+from scripts.common.inprocess_backend import InProcessBackend, InProcessEngine
+from scripts.common.json_io import read_json
+from scripts.convert_fflogs.cache import (
+    load_raw_compiled_cache,
+    precompile_raw_training_caches,
+)
 
 from .backends import (
     OrtPolicyBackend,
@@ -36,8 +37,12 @@ from .backends import (
 )
 from .config import AutoregressiveReplayConfig
 from .context import LiveBatchBuilder, SceneTemplateProvider
-from .scheduler import DecisionScheduler, decision_timing, gcd_request_delay, is_gcd_decision
-
+from .scheduler import (
+    DecisionScheduler,
+    decision_timing,
+    gcd_request_delay,
+    is_gcd_decision,
+)
 
 GCD_ACTION_KIND = "gcd"
 OGCD_WAIT_ACTION_KEY = "ogcd_wait"
@@ -453,7 +458,7 @@ class AutoregressiveReplaySession:
             self._state_machine.close()
             self._state_machine = None
 
-    def __enter__(self) -> "AutoregressiveReplaySession":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc_info: object) -> None:

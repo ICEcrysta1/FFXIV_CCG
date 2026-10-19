@@ -290,9 +290,12 @@ def _is_input_encoder_initializer(initializer, model: torch.nn.Module, *, float_
             return True
     # 固定死亡编号的广播可能折叠为匿名常量，每一行必须等于唯一的死亡权重。
     dead_weight = model.input_encoder.dead_embed.weight.detach().float().cpu()
-    if actual.ndim >= 3 and actual.shape[-1] == dead_weight.shape[-1]:
-        if torch.equal(actual.reshape(-1, actual.shape[-1]), dead_weight.expand(actual.numel() // actual.shape[-1], -1)):
-            return True
+    if (
+        actual.ndim >= 3
+        and actual.shape[-1] == dead_weight.shape[-1]
+        and torch.equal(actual.reshape(-1, actual.shape[-1]), dead_weight.expand(actual.numel() // actual.shape[-1], -1))
+    ):
+        return True
     # 固定角色编号使 Gather 可被折叠；每行仍须逐位匹配保存的角色权重。
     role_weight = model.input_encoder.role_embed.weight.detach().float().cpu()
     if actual.ndim >= 3 and actual.shape[-1] == role_weight.shape[-1]:

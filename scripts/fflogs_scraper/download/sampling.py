@@ -83,7 +83,7 @@ def _iter_historical_reports(
                 continue
             try:
                 lodestone_id = _validate_integer(entry.get("lodestoneID", 0), "lodestone_id", minimum=0)
-            except ValueError:
+            except (TypeError, ValueError):
                 continue
             server_id = (entry.get("server") or {}).get("id")
             identity = ("lodestone", lodestone_id) if lodestone_id else ("server", server_id, entry["name"])

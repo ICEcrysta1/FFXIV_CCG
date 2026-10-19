@@ -25,7 +25,6 @@ from ..common import (
 )
 from ..token_metadata import ANALYSIS_MP_MAX
 
-
 FEATURE_LABELS = {
     "fight_id": "fight_id",
     "step_index": "step index",

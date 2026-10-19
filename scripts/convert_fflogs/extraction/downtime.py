@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from itertools import pairwise
+
 from ..config.constants import DOWNTIME_BOUNDARY_MARGIN
 from .extraction import _collect_begincasts, _get_ability_id, _take_begincast
 
@@ -89,7 +91,7 @@ def detect_downtime_windows(
         phases[-1].append(action)
 
     windows: list[dict[str, float]] = []
-    for previous_phase, next_phase in zip(phases, phases[1:]):
+    for previous_phase, next_phase in pairwise(phases):
         previous = float(previous_phase[-1]["timestamp"])
         # 恢复段第一发完成的动作未必最早起读，右界取全队最早的有效请求。
         end = min(_request_timestamp(action) for action in next_phase)

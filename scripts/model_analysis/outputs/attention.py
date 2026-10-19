@@ -39,9 +39,8 @@ def plot_standard_attention_outputs(
     representative = max(samples, key=_sample_token_count)
     collator = TrainingCollator()
     batch = context.encode_batch(collator([representative]))
-    with torch.no_grad():
-        with context.autocast():
-            trace = context.model.trace(batch)
+    with torch.no_grad(), context.autocast():
+        trace = context.model.trace(batch)
 
     attention_arrays = tuple(_single_sample_attention(attention) for attention in trace.attentions)
     if not attention_arrays:

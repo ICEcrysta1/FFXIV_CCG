@@ -30,7 +30,7 @@ def require_numeric_skill_kind(row: dict[str, object], *, context: str) -> float
     """读取 token 中的数值 kind；1 表示 GCD，0 表示 oGCD。"""
     value = row.get("kind")
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"{context} skill kind must be numeric 0 or 1")
+        raise TypeError(f"{context} skill kind must be numeric 0 or 1")
     try:
         numeric_value = float(value)
     except (TypeError, ValueError, OverflowError) as exc:
@@ -55,7 +55,7 @@ def extract_execution_metric(
     return float(value)
 
 
-def derive_skill_feature_names(reader: "TrainingSourceReader") -> tuple[str, ...]:
+def derive_skill_feature_names(reader: TrainingSourceReader) -> tuple[str, ...]:
     """由稳定技能字段和职业资源定义推导，空历史也有同一宽度。"""
     from common.game.config import load_project_config
 

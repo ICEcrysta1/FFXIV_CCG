@@ -1,12 +1,11 @@
 """单场与批量下载文件名构造。"""
 
 from datetime import datetime
-from typing import Optional
 
 from ..config.validation import _validate_report_code
 
 
-def _build_output_filename(report_code: str, fight_id: int, source_id: Optional[int]) -> str:
+def _build_output_filename(report_code: str, fight_id: int, source_id: int | None) -> str:
     report_code = _validate_report_code(report_code)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     suffix = f"_source{source_id}" if source_id else ""

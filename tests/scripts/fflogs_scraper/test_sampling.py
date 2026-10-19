@@ -28,9 +28,9 @@ def test_remainders_preserve_total_and_differ_by_at_most_one(total):
     assert list(quotas.values()) == sorted(quotas.values(), reverse=True)
 
 
-@pytest.mark.parametrize("value", [0, -1, True, 1.5])
-def test_invalid_total_is_rejected(value):
-    with pytest.raises(ValueError):
+@pytest.mark.parametrize("value,error_type", [(0, ValueError), (-1, ValueError), (True, TypeError), (1.5, ValueError)])
+def test_invalid_total_is_rejected(value, error_type):
+    with pytest.raises(error_type):
         _allocate_percentile_quotas(value)
 
 

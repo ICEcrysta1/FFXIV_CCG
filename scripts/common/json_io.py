@@ -7,7 +7,6 @@ from pathlib import Path
 
 import brotli
 
-
 JSON_BROTLI_SUFFIX = ".json.br"
 
 

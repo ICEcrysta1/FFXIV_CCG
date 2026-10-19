@@ -6,9 +6,6 @@ import os
 from collections.abc import Mapping
 from pathlib import Path
 
-from scripts.common.json_io import is_json_file
-from scripts.common.scene_source import find_prepared_scene_source
-
 from common.configuration.environment import (
     PROJECT_JOB_TAG_ENV,
     load_root_dotenv,
@@ -25,10 +22,12 @@ from common.policy.config import (
     resolve_policy_model_variant,
     validate_policy_model_variant,
 )
-from common.policy.replay import AutoregressiveReplayConfig
 from common.policy.data import ActionSpace, DataSpec, ModelInputContract
 from common.policy.model import CausalPolicyModel
+from common.policy.replay import AutoregressiveReplayConfig
 from common.pytorch.serialization import safe_torch_load
+from scripts.common.json_io import is_json_file
+from scripts.common.scene_source import find_prepared_scene_source
 from scripts.onnx_export.config.config import (
     AUTOREGRESSIVE_REPLAY_CHECKPOINT_ENV,
     AUTOREGRESSIVE_REPLAY_ORT_PROVIDER_ENV,
@@ -37,6 +36,7 @@ from scripts.onnx_export.config.config import (
 )
 from scripts.onnx_export.runtime.ort_runtime import ORT_PROVIDER_CUDA
 from scripts.onnx_export.runtime.precision import SUPPORTED_PRECISIONS
+
 AUTOREGRESSIVE_REPLAY_BACKEND_ENV = "AUTOREGRESSIVE_REPLAY_BACKEND"
 AUTOREGRESSIVE_REPLAY_OUTPUT_ENV = "AUTOREGRESSIVE_REPLAY_OUTPUT"
 AUTOREGRESSIVE_REPLAY_SCENE_MODE_ENV = "AUTOREGRESSIVE_REPLAY_SCENE_MODE"
@@ -87,7 +87,7 @@ def load_replay_config(
     source_config = load_policy_config(model_config_path)
     training_raw = source_config.get("training", {}) or {}
     if not isinstance(training_raw, dict):
-        raise ValueError("training config section must be a mapping")
+        raise TypeError("training config section must be a mapping")
     raw_root = resolve_project_path(
         source_config.get("raw_data_dir", ""),
         project_root=PROJECT_ROOT,
@@ -468,7 +468,7 @@ def _boolean(explicit: bool | None, env_name: str, default: bool) -> bool:
 def _load_checkpoint_metadata(path: Path) -> dict[str, object]:
     payload = safe_torch_load(path)
     if not isinstance(payload, dict):
-        raise ValueError(f"checkpoint must be a mapping: {path}")
+        raise TypeError(f"checkpoint must be a mapping: {path}")
     if not isinstance(payload.get("data_spec"), dict):
-        raise ValueError(f"checkpoint missing data_spec: {path}")
+        raise TypeError(f"checkpoint missing data_spec: {path}")
     return payload

@@ -6,7 +6,6 @@ import numpy as np
 
 from .job_labels import decision_state_labels
 
-
 ANALYSIS_MP_MAX = 10000.0
 
 ANALYSIS_FEATURES = (

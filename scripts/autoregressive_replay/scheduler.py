@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
-import math
 from pathlib import Path
 from types import SimpleNamespace
 
 from common.configuration.yaml import load_yaml_mapping
-
 
 DECISION_TIME_EPSILON = 1e-6
 

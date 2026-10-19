@@ -20,4 +20,4 @@ def _cmd_encounters(client: FFLogsV2Client, args) -> None:
         print(f"{'ID':<6} {'名称'}")
         print("-" * 60)
         for z in zones:
-            print(f"{str(z.get('id', '')):<6} {z.get('name', '')}")
+            print(f"{z.get('id', '')!s:<6} {z.get('name', '')}")

@@ -8,10 +8,10 @@ from pathlib import Path
 
 from scripts.onnx_export.runtime.precision import SUPPORTED_PRECISIONS
 
+from .batch_replay import run_replays
 from .config import load_replay_config
 from .outputs import write_markdown
 from .parity import run_rollout_parities
-from .batch_replay import run_replays
 
 
 def main() -> None:
@@ -108,8 +108,11 @@ def main() -> None:
         for index, path in enumerate(args.scenes)
     ]
     if args.parity_onnx_package is not None:
-        kwargs = dict(onnx_package_path=args.parity_onnx_package, provider=config.ort_provider,
-                      tolerance=args.parity_tolerance)
+        kwargs = {
+            "onnx_package_path": args.parity_onnx_package,
+            "provider": config.ort_provider,
+            "tolerance": args.parity_tolerance,
+        }
         base = args.parity_output or config.output_path.with_suffix(".parity.json")
         if args.scenes:
             paths = [base.with_name(f"{base.stem}_{index:03d}_{path.stem}{base.suffix}")

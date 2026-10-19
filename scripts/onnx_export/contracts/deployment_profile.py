@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 import hashlib
 import json
-from pathlib import Path
 import re
-
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
 
 DEPLOYMENT_PROFILE_VERSION = 1
 
@@ -27,10 +26,10 @@ class DeploymentProfile:
     evidence: dict[str, object]
 
     @classmethod
-    def load(cls, path: Path) -> "DeploymentProfile":
+    def load(cls, path: Path) -> DeploymentProfile:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
         if not isinstance(payload, Mapping):
-            raise ValueError("deployment profile must be an object")
+            raise TypeError("deployment profile must be an object")
         expected = {
             "profile_version",
             "job_tag",
@@ -46,7 +45,7 @@ class DeploymentProfile:
             raise ValueError("deployment profile vocab_entries must be a non-empty list")
         evidence = payload["evidence"]
         if not isinstance(evidence, Mapping):
-            raise ValueError("deployment profile evidence must be an object")
+            raise TypeError("deployment profile evidence must be an object")
         profile = cls(
             job_tag=str(payload["job_tag"]),
             vocab_entries=tuple(

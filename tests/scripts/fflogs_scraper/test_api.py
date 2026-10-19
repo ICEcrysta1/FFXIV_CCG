@@ -148,11 +148,14 @@ def test_get_report_events_normalizes_fight_ids(monkeypatch):
     assert "fightIDs: [1,2]" in queries[0]
 
 
-@pytest.mark.parametrize("fight_ids", [["1) injected"], [0], [-1], "1,2"])
-def test_get_report_events_rejects_unsafe_fight_ids(fight_ids):
+@pytest.mark.parametrize(
+    "fight_ids,error_type",
+    [(["1) injected"], ValueError), ([0], ValueError), ([-1], ValueError), ("1,2", TypeError)],
+)
+def test_get_report_events_rejects_unsafe_fight_ids(fight_ids, error_type):
     client = FFLogsV2Client("client-id", "client-secret")
 
-    with pytest.raises(ValueError, match="invalid fight_ids"):
+    with pytest.raises(error_type, match="invalid fight_ids"):
         client.get_report_events("ABC123", fight_ids=fight_ids)
 
 
@@ -339,14 +342,15 @@ def test_character_history_uses_api_partition_and_historical_percentile(monkeypa
     assert 'specName: "BlackMage"' in queries[0]
 
 
-@pytest.mark.parametrize("field,value", [
-    ("partition", 0), ("partition", -1), ("partition", -2), ("lodestone_id", True),
-    ("spec_name", 'BlackMage"'), ("metric", "injected"),
+@pytest.mark.parametrize("field,value,error_type", [
+    ("partition", 0, ValueError), ("partition", -1, ValueError), ("partition", -2, ValueError),
+    ("lodestone_id", True, TypeError),
+    ("spec_name", 'BlackMage"', ValueError), ("metric", "injected", ValueError),
 ])
-def test_character_history_rejects_invalid_parameters(field, value):
+def test_character_history_rejects_invalid_parameters(field, value, error_type):
     client = FFLogsV2Client("id", "secret")
     kwargs = {"lodestone_id": 1, "encounter_id": 1079, "spec_name": "BlackMage", field: value}
-    with pytest.raises(ValueError):
+    with pytest.raises(error_type):
         client.get_character_history(**kwargs)
 
 

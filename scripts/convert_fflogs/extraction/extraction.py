@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import math
 import statistics
-
 from collections import Counter
 
 from common.context.contracts import SCENE_EPSILON, SLIDECAST_WINDOW_SECONDS
 from common.game.models import ActionKind
 
 from ..config import GcdDetectionConfig
-from ..config.constants import MOVE_DIST_THRESHOLD, POTION_BUFF_ID, POTION_SKILL_ID, _round_time
+from ..config.constants import (
+    MOVE_DIST_THRESHOLD,
+    POTION_BUFF_ID,
+    POTION_SKILL_ID,
+    _round_time,
+)
 
 # 开怪预读的 begincast 会被战斗窗口裁掉：实测首个 cast 落在开怪后 0~800ms。
 # 落在该窗口内且缺少 begincast 的硬读条按技能表读条时长回拨请求时刻；

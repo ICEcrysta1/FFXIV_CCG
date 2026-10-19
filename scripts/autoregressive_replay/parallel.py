@@ -226,7 +226,7 @@ class ParallelRollouts:
                 policies = [self.backend if policy_factory is None else policy_factory(item) for item in chunk]
                 coordinator = _InferenceCoordinator(len(chunk), isolate_errors=isolate_errors)
 
-                def run(slot, item):
+                def run(slot, item, coordinator=coordinator, policies=policies):
                     try:
                         with torch.inference_mode():
                             return worker(item, _PolicyClient(coordinator, slot, policies[slot]), self.engine)

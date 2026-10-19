@@ -28,9 +28,9 @@ def decision_state_labels(batch_index: int, *, batch, layout) -> tuple[str, floa
     ui = _state_scalar(resource_values, resource_null, resource_index.get("request_state.umbral_ice"))
     mp = _state_scalar(player_values, player_null, player_index.get("request_state.mp"))
     if af >= 0.5:
-        elemental_state = f"AF{int(round(af))}"
+        elemental_state = f"AF{round(af)}"
     elif ui >= 0.5:
-        elemental_state = f"UI{int(round(ui))}"
+        elemental_state = f"UI{round(ui)}"
     else:
         elemental_state = "neutral"
     if not np.isfinite(mp) or mp < 0.0:

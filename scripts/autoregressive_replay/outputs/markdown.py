@@ -6,7 +6,6 @@ from pathlib import Path
 
 from ..replay import ReplayResult
 
-
 SKILL_NAMES = {
     "ogcd_wait": "-",
     "potion": "爆发药",

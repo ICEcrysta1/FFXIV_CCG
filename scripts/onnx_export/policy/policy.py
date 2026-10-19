@@ -6,7 +6,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 from common.policy.data.context_fields import MODEL_INPUT_NAMES
 from common.policy.model.causal_encoder import run_causal_encoder
@@ -90,7 +90,7 @@ class OnnxPolicy(nn.Module):
         return logits.to(self.model.output_head.weight.dtype)
 
     @torch.no_grad()
-    def trace(self, *inputs: torch.Tensor) -> "OnnxPolicyTrace":
+    def trace(self, *inputs: torch.Tensor) -> OnnxPolicyTrace:
         """保留稳定 attention 路径的逐层 hidden/权重，供导出验收使用。"""
         batch = _build_batch(*inputs)
         encoded = self.model.input_encoder(batch)

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 ORT_PROVIDER_AUTO = "auto"
 ORT_PROVIDER_CUDA = "CUDAExecutionProvider"
 ORT_DISABLE_CPU_FALLBACK_KEY = "session.disable_cpu_ep_fallback"

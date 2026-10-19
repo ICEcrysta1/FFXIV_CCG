@@ -192,7 +192,7 @@ def test_delta_append_rejects_non_mapping_new_rows_atomically(channel, row):
 def test_delta_append_requires_state_context_mapping(state_context):
     context = _delta(0, 0)
     context["state_history_context"] = state_context
-    with pytest.raises(ValueError, match="state_history_context must be a mapping"):
+    with pytest.raises(TypeError, match="state_history_context must be a mapping"):
         HistoryPrefixInterner().append_delta(context)
 
 

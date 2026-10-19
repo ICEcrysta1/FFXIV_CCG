@@ -14,15 +14,15 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-from common.policy.config import (
-    PROJECT_ROOT,
-    resolve_policy_model_config_path,
-    resolve_policy_model_variant,
-)
 from common.configuration.environment import (
     load_root_dotenv,
     resolve_project_path,
     resolve_tensorboard_port,
+)
+from common.policy.config import (
+    PROJECT_ROOT,
+    resolve_policy_model_config_path,
+    resolve_policy_model_variant,
 )
 from common.training.tensorboard import resolve_tensorboard_root
 
