@@ -61,8 +61,9 @@ class EpochProgress:
         self.started = self.last_display = time.monotonic()
         header = self._columns(self.labels)
         self.display_width = self._terminal_width() if self.interactive else 0
-        self.column_width = max(0, self.display_width - 50) if self.interactive else len(header)
-        self.stream.write(header[:self.column_width] + "\n")
+        suffix = self._progress_suffix(0.0, len(header))
+        column_width = max(0, self.display_width - len(suffix)) if self.interactive else len(header)
+        self.stream.write(header[:column_width] + "\n")
         self.stream.flush()
         return self
 
@@ -74,6 +75,21 @@ class EpochProgress:
         if now - self.last_display >= 0.2:
             self._display()
 
+    def _progress_suffix(self, elapsed: float, column_width: int) -> str:
+        rate = self.n / elapsed if elapsed else 0.0
+        speed = f"{1 / rate:.1f}s/it" if 0 < rate < 1 else f"{rate:.1f}it/s"
+        fraction = min(1.0, self.n / self.total) if self.total else 0.0
+        remaining = (self.total - self.n) / rate if rate and self.n < self.total else 0.0
+        prefix = f": {int(fraction * 100):3d}% "
+        tail = f" {self.n}/{self.total} {speed} {elapsed:.1f}s<{remaining:.1f}s"
+        bar_width = (
+            min(12, max(1, self.display_width - column_width - len(prefix) - len(tail)))
+            if self.interactive else 12
+        )
+        filled = int(fraction * bar_width)
+        bar = "━" * filled + "─" * (bar_width - filled)
+        return prefix + bar + tail
+
     def _display(self, *, final: bool = False, interrupted: bool = False) -> None:
         # 异常退出不再次同步设备，以免覆盖原始异常。
         metrics = {} if interrupted else self.totals.mean()
@@ -84,19 +100,14 @@ class EpochProgress:
         columns = self._columns((
             self.epoch, memory,
             *(f"{metrics[name]:.4g}" if name in metrics else "-" for name in self.totals.names),
-        ))[:self.column_width]
+        ))
         now = time.monotonic()
-        elapsed = max(0.0, now - self.started)
-        rate = self.n / elapsed if elapsed else 0.0
-        speed = f"{1 / rate:.1f}s/it" if 0 < rate < 1 else f"{rate:.1f}it/s"
-        fraction = min(1.0, self.n / self.total) if self.total else 0.0
-        remaining = (self.total - self.n) / rate if rate and self.n < self.total else 0.0
-        bar_width = min(12, max(1, self.display_width - len(columns) - 40)) if self.interactive else 12
-        filled = int(fraction * bar_width)
-        bar = "━" * filled + "─" * (bar_width - filled)
-        line = f"{columns}: {int(fraction * 100):3d}% {bar} {self.n}/{self.total} {speed} {elapsed:.1f}s<{remaining:.1f}s"
+        suffix = self._progress_suffix(max(0.0, now - self.started), len(columns))
         if self.interactive:
-            line = "\r" + line[:self.display_width].ljust(self.display_width)
+            columns = columns[:max(0, self.display_width - len(suffix))]
+        line = columns + suffix
+        if self.interactive:
+            line = "\r" + line.ljust(self.display_width)
         self.stream.write(line + ("\n" if final else ""))
         self.stream.flush()
         self.last_display = now
