@@ -6,15 +6,15 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from common.configuration.environment import resolve_project_path
 from common.policy.config import (
     PROJECT_ROOT,
     ModelConfig,
     load_model_config,
     load_policy_config,
 )
-from common.configuration.environment import resolve_project_path
-from common.training.tensorboard import TensorBoardConfig
 from common.training.optimizer_config import OptimizerConfig, parse_optimizer_settings
+from common.training.tensorboard import TensorBoardConfig
 
 
 @dataclass(frozen=True)
@@ -54,7 +54,7 @@ class GrpoConfig:
         """从拆分后的 `grpo` mapping 构造并校验配置。"""
         values = {} if raw is None else raw
         if not isinstance(values, Mapping):
-            raise ValueError("grpo must be a mapping")
+            raise TypeError("grpo must be a mapping")
         return cls(
             group_size=int(values.get("group_size", cls.group_size)),
             prompt_batch_size=int(
@@ -145,12 +145,12 @@ def load_grpo_config(path: Path) -> GrpoConfig:
     raw = load_policy_config(Path(path).resolve(), description="GRPO config")
     training_raw = raw.get("training", {}) or {}
     if not isinstance(training_raw, Mapping):
-        raise ValueError("training config section must be a mapping")
+        raise TypeError("training config section must be a mapping")
     grpo_raw = raw.get("grpo")
     if grpo_raw is None:
         grpo_raw = training_raw.get("grpo", {})
     if not isinstance(grpo_raw, Mapping):
-        raise ValueError("grpo must be a mapping")
+        raise TypeError("grpo must be a mapping")
     return GrpoConfig.from_mapping(grpo_raw, policy_config=raw)
 
 
@@ -168,7 +168,7 @@ class GrpoRunConfig:
     precision: str = "float32"
     compiled_cache_shard_size: int = 512
     compiled_cache_max_shards: int = 8
-    model: ModelConfig = ModelConfig()
+    model: ModelConfig = field(default_factory=ModelConfig)
     config_path: Path | None = None
 
 
@@ -178,7 +178,7 @@ def load_grpo_run_config(path: Path) -> GrpoRunConfig:
     raw = load_policy_config(resolved_path, description="GRPO config")
     training_raw = raw.get("training", {}) or {}
     if not isinstance(training_raw, Mapping):
-        raise ValueError("training config section must be a mapping")
+        raise TypeError("training config section must be a mapping")
     if "compiled_cache_workers" in training_raw:
         raise ValueError("training.compiled_cache_workers is removed; set CONVERT_FFLOGS_WORKERS in .env")
     precision = str(

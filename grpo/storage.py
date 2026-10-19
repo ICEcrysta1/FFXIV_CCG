@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass
 import json
 import os
-from pathlib import Path
 import uuid
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
 
 import torch
 
-from common.pytorch.serialization import safe_torch_load
 from common.policy.data import DataSpec, ModelInputContract
-from common.policy.data.context_fields import MODEL_INPUT_FIELDS, RAW_ONLY_FIELD_NAMES, tensor_dimensions
-
+from common.policy.data.context_fields import (
+    MODEL_INPUT_FIELDS,
+    RAW_ONLY_FIELD_NAMES,
+    tensor_dimensions,
+)
+from common.pytorch.serialization import safe_torch_load
 
 # 轨迹的完整历史游标独立于模型 batch 保存，拒绝旧传输结构。
 GRPO_ROLLOUT_FORMAT = 7
@@ -60,12 +63,12 @@ def _decision_to_payload(decision: GrpoDecision, data_spec: DataSpec) -> dict[st
 def _decision_from_payload(payload: object, data_spec: DataSpec) -> GrpoDecision:
     """从磁盘载荷恢复一条决策，并拒绝不完整的旧/损坏记录。"""
     if not isinstance(payload, Mapping):
-        raise ValueError("GRPO decision payload must be a mapping")
+        raise TypeError("GRPO decision payload must be a mapping")
     batch = payload.get("batch")
     metadata = payload.get("context_metadata")
     action_keys = payload.get("action_keys")
     if not isinstance(batch, Mapping) or not isinstance(action_keys, (list, tuple)):
-        raise ValueError("GRPO decision payload is missing batch or action_keys")
+        raise TypeError("GRPO decision payload is missing batch or action_keys")
     _validate_encoded_context(batch, metadata, data_spec)
     _validate_action_order(action_keys, data_spec)
     return GrpoDecision(
@@ -272,7 +275,7 @@ class GrpoRolloutStore:
     def _load_decisions(self, path: Path) -> tuple[GrpoDecision, ...]:
         payload = safe_torch_load(path)
         if not isinstance(payload, Mapping):
-            raise ValueError(f"GRPO trajectory payload must be a mapping: {path}")
+            raise TypeError(f"GRPO trajectory payload must be a mapping: {path}")
         if int(payload.get("format", -1)) != GRPO_ROLLOUT_FORMAT:
             raise ValueError(f"unsupported GRPO trajectory format: {path}")
         saved_contract = ModelInputContract.from_dict(payload.get("model_input_contract"))

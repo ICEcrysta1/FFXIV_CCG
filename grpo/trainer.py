@@ -27,7 +27,10 @@ from common.training.tensorboard import (
 from common.training.tensorboard_monitor import TensorBoardMonitor
 from scripts.autoregressive_replay.backends import PyTorchPolicyBackend
 from scripts.autoregressive_replay.parallel import ParallelRollouts
-from scripts.autoregressive_replay.replay import AutoregressiveReplaySession, ReplayCacheStore
+from scripts.autoregressive_replay.replay import (
+    AutoregressiveReplaySession,
+    ReplayCacheStore,
+)
 
 from .checkpoint import (
     _restore_grpo_rollback_state,

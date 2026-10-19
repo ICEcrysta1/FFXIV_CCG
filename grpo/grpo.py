@@ -14,10 +14,8 @@ if __package__ in {None, ""}:
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
 
-import torch
 
-from common.pytorch.precision import load_precision_config
-from common.policy.data.prepared_sources import select_prepared_training_sources
+from common.configuration.environment import resolve_project_path
 from common.policy.config import (
     PROJECT_ROOT,
     resolve_policy_cache_dir,
@@ -27,9 +25,12 @@ from common.policy.config import (
     resolve_policy_model_job_tag,
     resolve_policy_model_variant,
 )
-from common.configuration.environment import resolve_project_path
+from common.policy.data.prepared_sources import select_prepared_training_sources
+from common.pytorch.precision import load_precision_config
 from grpo.config import load_grpo_config, load_grpo_run_config
 from grpo.trainer import run_grpo_training
+
+logger = logging.getLogger(__name__)
 
 
 def _load_grpo_scenes(config, max_files: int | None) -> list[Path]:
@@ -113,7 +114,7 @@ def main() -> None:
         raise ValueError("--max-files must be >= 1")
     # --max-files 优先于 YAML；省略时复用 training.max_files，与 BC 共用同一字段。
     max_files = args.max_files if args.max_files is not None else config.max_files
-    logging.info(
+    logger.info(
         "GRPO 真实场景数量上限: %s（来源: %s）",
         "全部有效文件" if max_files is None else max_files,
         "--max-files" if args.max_files is not None else "training.max_files",

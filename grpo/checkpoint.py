@@ -106,11 +106,11 @@ def _restore_grpo_rollback_state(
         )
     payload = safe_torch_load(checkpoint_path)
     if not isinstance(payload, Mapping):
-        raise ValueError(f"GRPO rollback checkpoint must be a mapping: {checkpoint_path}")
+        raise TypeError(f"GRPO rollback checkpoint must be a mapping: {checkpoint_path}")
     model_state = payload.get("model_state_dict")
     optimizer_state = payload.get("optimizer_state_dict")
     if not isinstance(model_state, Mapping) or not isinstance(optimizer_state, Mapping):
-        raise ValueError(
+        raise TypeError(
             "GRPO rollback checkpoint is missing model/optimizer state: "
             f"{checkpoint_path}"
         )
