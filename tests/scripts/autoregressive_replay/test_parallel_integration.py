@@ -179,7 +179,8 @@ def test_context_encoder_prunes_expired_scenes_before_onnx_padding(tmp_path):
     checkpoint, profile = tmp_path / "model.pt", tmp_path / "profile.json"
     spec, input_contract = _write_small_checkpoint(checkpoint)
     saved = torch.load(checkpoint, weights_only=True)
-    saved["model_config"].update(context_capacity=8, history_reset_keep=3)
+    # profile 最多 3 个场景，加上 2 条完整历史和当前状态正好占满 8 个 token。
+    saved["model_config"].update(context_capacity=8, history_reset_keep=2)
     torch.save(saved, checkpoint)
     _write_small_profile(profile)
     contracts = load_policy_contracts(
