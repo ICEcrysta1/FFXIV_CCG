@@ -282,13 +282,16 @@ def test_adamw_resume_ignores_unused_muon_settings(resume_context):
     assert _validate(resume_context, optimizer=optimizer) == 1
 
 
-@pytest.mark.parametrize("saved_optimizer", [None, [], {}, {"name": "unknown"}])
+@pytest.mark.parametrize(
+    ("saved_optimizer", "error_type"),
+    [(None, TypeError), ([], TypeError), ({}, ValueError), ({"name": "unknown"}, ValueError)],
+)
 def test_optimizer_metadata_must_explicitly_describe_supported_optimizer(
-    resume_context, saved_optimizer
+    resume_context, saved_optimizer, error_type
 ):
     resume_context.checkpoint["run_config"]["optimizer"] = saved_optimizer
 
-    with pytest.raises(ValueError, match="run_config.optimizer"):
+    with pytest.raises(error_type, match="run_config.optimizer"):
         _validate(resume_context, force=True)
 
 
@@ -328,7 +331,7 @@ def test_missing_gradient_precision_flag_preserves_legacy_mode(resume_context, c
 def test_resume_rejects_non_boolean_gradient_precision(resume_context, value):
     resume_context.checkpoint["run_config"]["fp32_gradients"] = value
 
-    with pytest.raises(ValueError, match="run_config.fp32_gradients must be a boolean"):
+    with pytest.raises(TypeError, match="run_config.fp32_gradients must be a boolean"):
         _validate(resume_context, force=True)
 
 
@@ -336,7 +339,7 @@ def test_resume_rejects_non_boolean_gradient_precision(resume_context, value):
 def test_resume_rejects_non_mapping_run_configuration(resume_context, value):
     resume_context.checkpoint["run_config"] = value
 
-    with pytest.raises(ValueError, match="run_config must be a mapping"):
+    with pytest.raises(TypeError, match="run_config must be a mapping"):
         _validate(resume_context, force=True)
 
 

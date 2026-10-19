@@ -81,21 +81,22 @@ class RunConfig:
     activation_checkpoint_ffn: bool = False
     activation_checkpoint_attention: bool = False
     activation_checkpoint_attention_block: bool = False
-    runtime_debug: RuntimeDebugConfig = RuntimeDebugConfig()
+    runtime_debug: RuntimeDebugConfig = field(default_factory=RuntimeDebugConfig)
     num_workers: int = 0
     prefetch_factor: int = 2
     persistent_workers: bool = True
     pin_memory: bool = True
     compiled_cache_shard_size: int = 512
     compiled_cache_max_shards: int = 8
-    repetition: _RepetitionConfig = _RepetitionConfig()
+    repetition: _RepetitionConfig = field(default_factory=_RepetitionConfig)
     action_quality_loss: ActionQualityLossConfig = field(default_factory=ActionQualityLossConfig)
     value_preference: ValuePreferenceConfig = ValuePreferenceConfig()
     ppg: PpgConfig = PpgConfig()
     tensorboard: TensorBoardConfig = field(default_factory=TensorBoardConfig)
     config_path: Path | None = None
 
-    model: _ModelConfig = _ModelConfig()
+    # 默认模型在实例构造时读取归一化 YAML；正式配置入口显式传入已解析模型。
+    model: _ModelConfig = field(default_factory=_ModelConfig)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
 
 
@@ -118,7 +119,7 @@ def _parse_value_preference_config(training: dict[str, object]) -> ValuePreferen
     """读取技能价值辅助排序项，保留既有转换与校验顺序。"""
     raw = training.get("value_preference", {}) or {}
     if not isinstance(raw, dict):
-        raise ValueError("training.value_preference must be a mapping")
+        raise TypeError("training.value_preference must be a mapping")
     config = ValuePreferenceConfig(
         enabled=bool(raw.get("enabled", ValuePreferenceConfig.enabled)),
         loss_weight=float(raw.get("loss_weight", ValuePreferenceConfig.loss_weight)),
@@ -135,7 +136,7 @@ def _parse_ppg_config(training: dict[str, object]) -> PpgConfig:
     """读取 PPG 评估参数及验证回放的机器本地 KV 开关。"""
     raw = training.get("ppg", {}) or {}
     if not isinstance(raw, dict):
-        raise ValueError("training.ppg must be a mapping")
+        raise TypeError("training.ppg must be a mapping")
     config = PpgConfig(
         enabled=bool(raw.get("enabled", PpgConfig.enabled)),
         gcd_count=int(raw.get("gcd_count", PpgConfig.gcd_count)),
@@ -153,7 +154,7 @@ def _parse_runtime_debug_config(training: dict[str, object]) -> RuntimeDebugConf
     """读取运行时调试参数，不改变未启用时的配置校验。"""
     raw = training.get("runtime_debug", {}) or {}
     if not isinstance(raw, dict):
-        raise ValueError("training.runtime_debug must be a mapping")
+        raise TypeError("training.runtime_debug must be a mapping")
     config = RuntimeDebugConfig(
         enabled=bool(raw.get("enabled", RuntimeDebugConfig.enabled)),
         max_steps=int(raw.get("max_steps", RuntimeDebugConfig.max_steps)),
@@ -178,12 +179,12 @@ def load_run_config(path: Path) -> RunConfig:
     model_raw = raw.get("model", {}) or {}
     training_raw = raw.get("training", {}) or {}
     if not isinstance(model_raw, dict) or not isinstance(training_raw, dict):
-        raise ValueError("model and training config sections must be mappings")
+        raise TypeError("model and training config sections must be mappings")
     if "compiled_cache_workers" in training_raw:
         raise ValueError("training.compiled_cache_workers is removed; set CONVERT_FFLOGS_WORKERS in .env")
     fp32_gradients = training_raw.get("fp32_gradients", RunConfig.fp32_gradients)
     if not isinstance(fp32_gradients, bool):
-        raise ValueError("training.fp32_gradients must be a boolean")
+        raise TypeError("training.fp32_gradients must be a boolean")
     model = _ModelConfig.from_mapping(model_raw)
 
     num_workers = int(training_raw.get("num_workers", 0))
@@ -225,7 +226,7 @@ def load_run_config(path: Path) -> RunConfig:
         )
     history_truncation_raw = training_raw.get("history_truncation", {}) or {}
     if not isinstance(history_truncation_raw, dict):
-        raise ValueError("training.history_truncation must be a mapping")
+        raise TypeError("training.history_truncation must be a mapping")
     history_truncation_enabled = bool(history_truncation_raw.get("enabled", False))
     history_truncation_probability = float(history_truncation_raw.get("probability", 0.0))
     history_min_recent = int(history_truncation_raw.get("min_recent", 1))

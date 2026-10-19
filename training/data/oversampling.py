@@ -150,7 +150,7 @@ def load_sequence_oversampler(config_path: Path | None) -> SequenceOversampler |
 
     ignored_actions_raw = oversampling.get("ignored_actions", ()) or ()
     if not isinstance(ignored_actions_raw, (list, tuple)):
-        raise ValueError(f"oversampling ignored_actions must be a list: {config_path}")
+        raise TypeError(f"oversampling ignored_actions must be a list: {config_path}")
     ignored_actions = _DEFAULT_IGNORED_ACTIONS.union(
         str(action).strip()
         for action in ignored_actions_raw
@@ -161,7 +161,7 @@ def load_sequence_oversampler(config_path: Path | None) -> SequenceOversampler |
     seen_sequences: set[tuple[ActionPattern, ...]] = set()
     for raw_rule in oversampling.get("rules", []):
         if not isinstance(raw_rule, dict):
-            raise ValueError(f"oversampling rules must be mappings: {config_path}")
+            raise TypeError(f"oversampling rules must be mappings: {config_path}")
         sequence = tuple(
             _parse_action_pattern(action, config_path=config_path)
             for action in raw_rule.get("sequence", ())

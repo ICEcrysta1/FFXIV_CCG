@@ -1,13 +1,16 @@
-"""BC 优化器配置的兼容默认、严格校验和 GRPO 隔离测试。"""
+"""BC 运行与优化器配置的默认值、严格校验和 GRPO 隔离测试。"""
 
 from __future__ import annotations
 
 from dataclasses import asdict
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 import yaml
 
+from common.policy.config import ModelConfig
+from common.policy.data.normalization import NormalizerConfig
 from common.training.optimizer_config import OptimizerConfig
 from grpo.config import GrpoConfig, load_grpo_config, load_grpo_run_config
 from training.config import RunConfig, load_run_config
@@ -34,6 +37,63 @@ def test_bc_optimizer_defaults_preserve_adamw(tmp_path):
     assert direct.fp32_gradients is loaded.fp32_gradients is False
 
 
+def test_bc_nested_defaults_are_independent_and_use_current_normalizer(tmp_path, monkeypatch):
+    load_normalizer = Mock(side_effect=[
+        NormalizerConfig(time_scale=90.0), NormalizerConfig(time_scale=180.0),
+    ])
+    monkeypatch.setattr(
+        "common.policy.data.normalization.load_normalizer_config", load_normalizer,
+    )
+
+    first = RunConfig(raw_data_dir=tmp_path, output_dir=tmp_path, job_tag="black_mage")
+    second = RunConfig(raw_data_dir=tmp_path, output_dir=tmp_path, job_tag="black_mage")
+
+    for name in ("runtime_debug", "repetition", "model"):
+        assert getattr(first, name) is not getattr(second, name)
+    assert first.runtime_debug == second.runtime_debug
+    assert first.repetition == second.repetition
+    assert first.model.time_delta_scale == 90.0
+    assert second.model.time_delta_scale == 180.0
+    assert load_normalizer.call_count == 2
+
+
+def test_bc_explicit_model_bypasses_default_normalizer(tmp_path, monkeypatch):
+    model = ModelConfig(time_delta_scale=123.0)
+    load_normalizer = Mock(side_effect=AssertionError("显式模型不应读取默认归一化配置"))
+    monkeypatch.setattr(
+        "common.policy.data.normalization.load_normalizer_config", load_normalizer,
+    )
+
+    config = RunConfig(
+        raw_data_dir=tmp_path, output_dir=tmp_path, job_tag="black_mage", model=model,
+    )
+
+    assert config.model is model
+    load_normalizer.assert_not_called()
+
+
+@pytest.mark.parametrize("model_raw,expected_scale,normalizer_reads", [
+    ({}, 135.0, 1),
+    ({"time_delta_scale": 123.0}, 123.0, 0),
+])
+def test_bc_loader_preserves_parsed_model_without_default_factory(
+    tmp_path, monkeypatch, model_raw, expected_scale, normalizer_reads,
+):
+    load_normalizer = Mock(return_value=NormalizerConfig(time_scale=135.0))
+    monkeypatch.setattr(
+        "common.policy.data.normalization.load_normalizer_config", load_normalizer,
+    )
+    monkeypatch.setattr("training.config.load_root_dotenv", lambda *_: None)
+    monkeypatch.setattr(
+        "training.config.load_policy_config", lambda *args, **kwargs: {"model": model_raw},
+    )
+
+    loaded = load_run_config(tmp_path / "config.yaml")
+
+    assert loaded.model.time_delta_scale == expected_scale
+    assert load_normalizer.call_count == normalizer_reads
+
+
 @pytest.mark.parametrize("enabled", [False, True])
 def test_bc_fp32_gradients_preserves_forward_precision(tmp_path, enabled):
     loaded = load_run_config(
@@ -47,7 +107,7 @@ def test_bc_fp32_gradients_preserves_forward_precision(tmp_path, enabled):
 @pytest.mark.parametrize("value", [None, 0, 1, 0.0, 1.0, "true", "false", [], {}])
 def test_bc_fp32_gradients_rejects_non_boolean_yaml(tmp_path, value):
     path = _write_config(tmp_path, {"training": {"fp32_gradients": value}})
-    with pytest.raises(ValueError, match="training.fp32_gradients must be a boolean"):
+    with pytest.raises(TypeError, match="training.fp32_gradients must be a boolean"):
         load_run_config(path)
 
 

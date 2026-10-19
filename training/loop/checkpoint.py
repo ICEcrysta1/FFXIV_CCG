@@ -58,7 +58,7 @@ def _load_resume_checkpoint(path: Path) -> dict[str, object]:
         raise FileNotFoundError(f"resume checkpoint not found: {path}")
     payload = safe_torch_load(path)
     if not isinstance(payload, Mapping):
-        raise ValueError("resume checkpoint must be a mapping")
+        raise TypeError("resume checkpoint must be a mapping")
     return dict(payload)
 
 
@@ -66,7 +66,7 @@ def _normalized_checkpoint_epoch(checkpoint: Mapping[str, object]) -> int:
     """校验并返回载荷中的 epoch；续训校验与列目录共用这一条规则。"""
     epoch = checkpoint.get("epoch")
     if isinstance(epoch, bool):
-        raise ValueError("resume checkpoint epoch must be an integer")
+        raise TypeError("resume checkpoint epoch must be an integer")
     try:
         normalized_epoch = int(epoch)
     except (TypeError, ValueError) as exc:
@@ -110,7 +110,7 @@ def _read_checkpoint_metadata(path: Path) -> Mapping[str, object]:
     # meta 设备只避免把 tensor 放到 CPU；mmap 才能避免为列目录读取完整 storage。
     payload = safe_torch_load(path, mmap=True, map_location="meta")
     if not isinstance(payload, Mapping):
-        raise ValueError(f"checkpoint must be a mapping: {path}")
+        raise TypeError(f"checkpoint must be a mapping: {path}")
     return payload
 
 
@@ -120,7 +120,7 @@ def _checkpoint_max_files(checkpoint: Mapping[str, object]) -> int | None | Unkn
         return UNKNOWN_MAX_FILES
     checkpoint_run_config = checkpoint["run_config"]
     if not isinstance(checkpoint_run_config, Mapping):
-        raise ValueError("resume checkpoint run_config must be a mapping")
+        raise TypeError("resume checkpoint run_config must be a mapping")
     if "max_files" not in checkpoint_run_config:
         return UNKNOWN_MAX_FILES
     max_files = checkpoint_run_config["max_files"]
@@ -156,10 +156,10 @@ def _validate_resume_optimizer(checkpoint: Mapping[str, object], config: RunConf
     """续训必须保持优化器契约，旧 checkpoint 只按历史 AdamW 解释。"""
     checkpoint_run_config = checkpoint.get("run_config", {})
     if not isinstance(checkpoint_run_config, Mapping):
-        raise ValueError("resume checkpoint run_config must be a mapping")
+        raise TypeError("resume checkpoint run_config must be a mapping")
     saved_optimizer = checkpoint_run_config.get("optimizer", {"name": "adamw"})
     if not isinstance(saved_optimizer, Mapping):
-        raise ValueError("resume checkpoint run_config.optimizer must be a mapping")
+        raise TypeError("resume checkpoint run_config.optimizer must be a mapping")
     saved_name = saved_optimizer.get("name")
     if saved_name not in ("adamw", "muon"):
         raise ValueError("resume checkpoint run_config.optimizer.name must be adamw or muon")
@@ -235,7 +235,7 @@ def _validate_resume_checkpoint(
     """确保续训 checkpoint 与当前数据、模型和归一化契约完全一致。"""
     checkpoint_data_spec = checkpoint.get("data_spec")
     if not isinstance(checkpoint_data_spec, Mapping):
-        raise ValueError("resume checkpoint missing data_spec")
+        raise TypeError("resume checkpoint missing data_spec")
     DataSpec.from_dict(dict(checkpoint_data_spec)).assert_compatible_with(data_spec)
 
     checkpoint_contract = ModelInputContract.from_checkpoint(checkpoint)
@@ -249,7 +249,7 @@ def _validate_resume_checkpoint(
 
     checkpoint_model_config = checkpoint.get("model_config")
     if not isinstance(checkpoint_model_config, Mapping):
-        raise ValueError("resume checkpoint missing model_config")
+        raise TypeError("resume checkpoint missing model_config")
     normalized_model_config = asdict(
         CausalPolicyModel.checkpoint_model_config(dict(checkpoint))
     )
@@ -271,10 +271,10 @@ def _validate_resume_checkpoint(
 
     checkpoint_run_config = checkpoint.get("run_config", {})
     if not isinstance(checkpoint_run_config, Mapping):
-        raise ValueError("resume checkpoint run_config must be a mapping")
+        raise TypeError("resume checkpoint run_config must be a mapping")
     saved_fp32_gradients = checkpoint_run_config.get("fp32_gradients", False)
     if not isinstance(saved_fp32_gradients, bool):
-        raise ValueError("resume checkpoint run_config.fp32_gradients must be a boolean")
+        raise TypeError("resume checkpoint run_config.fp32_gradients must be a boolean")
     if saved_fp32_gradients != config.fp32_gradients:
         raise ValueError(
             "resume checkpoint fp32_gradients mismatch: "
@@ -312,9 +312,9 @@ def _validate_resume_checkpoint(
     if checkpoint_precision is not None and str(checkpoint_precision) != config.precision:
         raise ValueError("resume checkpoint training precision mismatch")
     if not isinstance(checkpoint.get("model_state_dict"), Mapping):
-        raise ValueError("resume checkpoint missing model_state_dict")
+        raise TypeError("resume checkpoint missing model_state_dict")
     if not isinstance(checkpoint.get("optimizer_state_dict"), Mapping):
-        raise ValueError("resume checkpoint missing optimizer_state_dict")
+        raise TypeError("resume checkpoint missing optimizer_state_dict")
 
     return _normalized_checkpoint_epoch(checkpoint)
 

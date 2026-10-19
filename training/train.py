@@ -29,6 +29,8 @@ from common.pytorch.precision import load_precision_config
 from training.config import load_run_config
 from training.loop import run_training
 
+logger = logging.getLogger(__name__)
+
 
 def _load_training_sources(config, max_files: int | None) -> list[Path]:
     """只读选择已编译的训练文件；转换必须由独立入口先完成。"""
@@ -133,7 +135,7 @@ def main() -> None:
     config = replace(config, max_files=max_files)
     if args.force_resume_data_mismatch and args.resume is None:
         raise ValueError("--force-resume-data-mismatch requires --resume")
-    logging.info(
+    logger.info(
         "输入 JSON 数量上限: %s（来源: %s）",
         "全部有效文件" if max_files is None else max_files,
         "--max-files" if args.max_files is not None else "training.max_files",
@@ -156,7 +158,7 @@ def main() -> None:
         training_kwargs["validation_metrics_callback"] = _evaluate_training_metrics
     result = run_training(config, **training_kwargs)
     spec = result["data_spec"]
-    logging.info(
+    logger.info(
         "训练完成: job=%s model_variant=%s actions=%d state_dim=%d scene_dim=%d skill_dim=%d output=%s",
         spec.job_tag,
         config.model_variant,
