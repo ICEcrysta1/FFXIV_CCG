@@ -7,9 +7,12 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
+from common.policy.model.input_encoder import ROLE_STATE
+
 from ..common import (
     ATTENTION_CMAP_NAME,
     ROLE_COLORS,
+    ROLE_CURRENT_STATE,
     ROLE_NAMES,
     SUPTITLE_FONTSIZE,
     AnalysisContext,
@@ -60,12 +63,17 @@ def plot_hidden_statistics(context: AnalysisContext) -> tuple[Path, Path]:
     fig, ax = create_figure((12.0, 6.0))
     positions = np.arange(layer_count)
     width = 0.13
-    for role_id, role_name in ROLE_NAMES.items():
+    for group_index, (role_id, role_name) in enumerate(ROLE_NAMES.items()):
         medians = []
         lower = []
         upper = []
-        for vectors, roles in zip(context.layer_vectors, context.layer_roles):
-            norms = np.linalg.norm(vectors[roles == role_id], axis=1)
+        for vectors, roles, current_mask in zip(
+            context.layer_vectors, context.layer_roles, context.layer_current_state_masks,
+        ):
+            mask = roles == (ROLE_STATE if role_id == ROLE_CURRENT_STATE else role_id)
+            if role_id in (ROLE_STATE, ROLE_CURRENT_STATE):
+                mask &= current_mask if role_id == ROLE_CURRENT_STATE else ~current_mask
+            norms = np.linalg.norm(vectors[mask], axis=1)
             if len(norms) == 0:
                 medians.append(np.nan)
                 lower.append(np.nan)
@@ -74,7 +82,7 @@ def plot_hidden_statistics(context: AnalysisContext) -> tuple[Path, Path]:
                 medians.append(float(np.median(norms)))
                 lower.append(float(np.percentile(norms, 25)))
                 upper.append(float(np.percentile(norms, 75)))
-        offset = (role_id - 2.5) * width
+        offset = (group_index - (len(ROLE_NAMES) - 1) / 2) * width
         ax.errorbar(
             positions + offset,
             medians,

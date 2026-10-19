@@ -804,11 +804,42 @@ def test_model_analysis_outputs_generate_pngs(monkeypatch, tmp_path):
         1: "爆炎", 2: "炽炎", 3: "冰封", 4: "悖论"
     })
 
+    norm_values = {}
+    original_hidden_save = hidden_output.save_figure
+
+    def record_norms(fig, path, **kwargs):
+        if path.name == "04_layer_norm_by_role.png":
+            norm_values.update(
+                (artist.get_label(), artist.lines[0].get_ydata(orig=False))
+                for artist in fig.axes[0].containers
+            )
+        original_hidden_save(fig, path, **kwargs)
+
+    monkeypatch.setattr(hidden_output, "save_figure", record_norms)
+    original_roles = [roles.copy() for roles in context.layer_roles]
     paths = hidden_output.plot_hidden_statistics(context)
     assert all(path.is_file() for path in paths)
+    assert list(norm_values) == list(analysis_common.ROLE_NAMES.values())
+    np.testing.assert_allclose(norm_values["history state"], np.sqrt([2.0, 3.25]))
+    np.testing.assert_allclose(norm_values["current state"], [
+        (np.sqrt(2.0) + np.sqrt(3.0)) / 2,
+        (np.sqrt(3.25) + np.sqrt(4.75)) / 2,
+    ])
+    role_points = {}
+    original_save = pca_output.save_figure
+
+    def record_roles(fig, path, **kwargs):
+        if path.name in {"02_layers_pca_2d.png", "03_layers_pca_3d.png"}:
+            role_points[path.name] = [
+                (artist.get_label(), len(artist.get_offsets()))
+                for artist in fig.axes[0].collections
+            ]
+        original_save(fig, path, **kwargs)
+
+    monkeypatch.setattr(pca_output, "save_figure", record_roles)
     pca_paths = pca_output.plot_layer_pca(context)
     assert len(pca_paths) == 2 + len(analysis_common.ANALYSIS_FEATURES)
-    assert pca_paths[0].is_file()
+    assert all(path.is_file() for path in pca_paths)
     assert pca_output._strongest_pca_axis(
         np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]]),
         np.array([1.0, 1.0, 1.0]),
@@ -819,8 +850,13 @@ def test_model_analysis_outputs_generate_pngs(monkeypatch, tmp_path):
         np.array(["a", "a", "b", "b"]),
         numeric=False,
     )[0] == "PC2"
-    handles, labels = pca_output._legend_handles()
-    assert len(handles) == len(labels) == 4
+    # 共用 ROLE_STATE 的历史／最新状态必须在两张原图中互斥拆分，每个 token 只画一次。
+    for name in ("02_layers_pca_2d.png", "03_layers_pca_3d.png"):
+        assert role_points[name] == [
+            ("scene", 2), ("history state", 1), ("skill", 1), ("current state", 4),
+        ]
+    for roles, original in zip(context.layer_roles, original_roles):
+        np.testing.assert_array_equal(roles, original)
 
     skill_path = skill_output.plot_skill_embedding(context)
     assert skill_path.is_file()

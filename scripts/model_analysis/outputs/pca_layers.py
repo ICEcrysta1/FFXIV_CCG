@@ -8,10 +8,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import Normalize
 
+from common.policy.model.input_encoder import ROLE_STATE
+
 from ..common import (
     ANALYSIS_FEATURES,
     ATTENTION_CMAP_NAME,
     ROLE_COLORS,
+    ROLE_CURRENT_STATE,
     ROLE_NAMES,
     SUPTITLE_FONTSIZE,
     AnalysisContext,
@@ -54,17 +57,21 @@ def plot_layer_pca(context: AnalysisContext) -> list[Path]:
         layer_count,
         cell_size=PCA_3D_CELL_SIZE,
         projection="3d",
+        # 按角色顺序叠放，避免组级深度排序把最新状态整组遮住。
+        computed_zorder=False,
     )
 
     layer_projections, current_projections = _build_pca_cache(context)
-    for layer_index, roles in enumerate(context.layer_roles):
+    for layer_index, (roles, current_mask) in enumerate(
+        zip(context.layer_roles, context.layer_current_state_masks)
+    ):
         coordinates_3d, explained_3d = layer_projections[layer_index]
         coordinates_2d = coordinates_3d[:, :2]
         explained_2d = explained_3d[:2]
         ax_2d = axes_2d.flat[layer_index]
         ax_3d = axes_3d.flat[layer_index]
-        _scatter_by_role(ax_2d, coordinates_2d, roles)
-        _scatter_by_role(ax_3d, coordinates_3d, roles)
+        _scatter_by_role(ax_2d, coordinates_2d, roles, current_mask)
+        _scatter_by_role(ax_3d, coordinates_3d, roles, current_mask)
         ax_2d.set_title(
             f"Layer {layer_index + 1} | {len(roles):,} tokens\n"
             f"PC1={explained_2d[0]:.1%}, PC2={explained_2d[1]:.1%}"
@@ -285,9 +292,13 @@ def _strongest_pca_axis(
     return f"PC{strongest_index + 1}", float(scores[strongest_index])
 
 
-def _scatter_by_role(ax, coordinates: np.ndarray, roles: np.ndarray) -> None:
+def _scatter_by_role(
+    ax, coordinates: np.ndarray, roles: np.ndarray, current_mask: np.ndarray,
+) -> None:
     for role_id, role_name in ROLE_NAMES.items():
-        mask = roles == role_id
+        mask = roles == (ROLE_STATE if role_id == ROLE_CURRENT_STATE else role_id)
+        if role_id in (ROLE_STATE, ROLE_CURRENT_STATE):
+            mask &= current_mask if role_id == ROLE_CURRENT_STATE else ~current_mask
         if not np.any(mask):
             continue
         kwargs = {

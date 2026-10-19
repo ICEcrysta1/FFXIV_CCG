@@ -41,20 +41,24 @@ from common.policy.model.input_encoder import ROLE_SCENE, ROLE_STATE, ROLE_SKILL
 logger = logging.getLogger(__name__)
 MODEL_ANALYSIS_SCENE_JSON_ENV = "MODEL_ANALYSIS_SCENE_JSON"
 
+# 仅用于分析显示，不写回模型的 role_ids。
+ROLE_CURRENT_STATE = 4
 ROLE_NAMES = {
     ROLE_SCENE: "scene",
-    ROLE_STATE: "state",
+    ROLE_STATE: "history state",
     ROLE_SKILL: "skill",
     ROLE_DEAD: "dead",
+    ROLE_CURRENT_STATE: "current state",
 }
 
 # 模型分析统一使用 attention 图的黑色到白金色阶；有明确正负语义的图仍保留专用发散色阶。
 ATTENTION_CMAP_NAME = "magma"
 ROLE_COLORS = {
-    0: "#321067",
-    1: "#8c2981",
-    2: "#e34f66",
-    3: "#fca636",
+    role: matplotlib.colors.to_hex(color)
+    for role, color in zip(
+        ROLE_NAMES,
+        plt.get_cmap(ATTENTION_CMAP_NAME)(np.linspace(0.15, 0.85, len(ROLE_NAMES))),
+    )
 }
 
 
