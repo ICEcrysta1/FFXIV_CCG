@@ -23,9 +23,9 @@ def compile_raw_training_caches(
 ) -> None:
     """调用正式转换 API，多文件共享引擎；允许宿主提供现有引擎。"""
     # 延迟导入，避免公共配置加载时初始化转换器或 PyTorch。
-    from common.pytorch.precision import load_precision_config
-    from common.policy.data import Normalizer
     from common.configuration.environment import resolve_positive_worker_count
+    from common.policy.data import Normalizer
+    from common.pytorch.precision import load_precision_config
     from scripts.convert_fflogs.cache import precompile_raw_training_caches
 
     if normalizer is None:

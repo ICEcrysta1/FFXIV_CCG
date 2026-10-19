@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import logging
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib
@@ -12,31 +12,44 @@ import matplotlib
 # 后端必须在导入 pyplot 之前固定，保证无显示环境下也能出图。
 matplotlib.use("Agg")
 
-import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
+from common.configuration.environment import (
+    resolve_project_job_tag,
+    resolve_project_path,
+)
 from common.game.config import PROJECT_ROOT, load_project_config
-from common.pytorch.precision import load_precision_config
-from scripts.model_analysis.cache_compilation import compile_raw_training_caches
-from common.configuration.environment import resolve_project_job_tag, resolve_project_path
-from scripts.common.scene_source import find_prepared_scene_source
-from common.pytorch.runtime import autocast_context, model_dtype, move_batch
-from common.pytorch.serialization import safe_torch_load
-from common.policy.data import ModelInputContract, Normalizer, SkillVocab
+from common.policy.data import (
+    ActionSpace,
+    DataSpec,
+    ModelInputContract,
+    Normalizer,
+    SkillVocab,
+)
 from common.policy.data.context_encoding import ContextEncoder
-from training import TrainingCollator, TrainingDataset
 from common.policy.data.policy_actions import load_policy_actions
-from common.policy.data import ActionSpace, DataSpec
 from common.policy.model import (
     CausalPolicyModel,
     repetition_config_from_checkpoint,
 )
-from .token_metadata import ANALYSIS_FEATURES, build_token_metadata, current_state_mask
-from common.policy.model.input_encoder import ROLE_SCENE, ROLE_STATE, ROLE_SKILL, ROLE_DEAD
+from common.policy.model.input_encoder import (
+    ROLE_DEAD,
+    ROLE_SCENE,
+    ROLE_SKILL,
+    ROLE_STATE,
+)
+from common.pytorch.precision import load_precision_config
+from common.pytorch.runtime import autocast_context, model_dtype, move_batch
+from common.pytorch.serialization import safe_torch_load
+from scripts.common.scene_source import find_prepared_scene_source
+from scripts.model_analysis.cache_compilation import compile_raw_training_caches
+from training import TrainingCollator, TrainingDataset
 
+from .token_metadata import ANALYSIS_FEATURES, build_token_metadata, current_state_mask
 
 logger = logging.getLogger(__name__)
 MODEL_ANALYSIS_SCENE_JSON_ENV = "MODEL_ANALYSIS_SCENE_JSON"
@@ -62,7 +75,7 @@ ROLE_COLORS = {
 }
 
 
-def skill_name_by_vocab_id(context: "AnalysisContext") -> dict[int, str]:
+def skill_name_by_vocab_id(context: AnalysisContext) -> dict[int, str]:
     """按正式职业配置把词表 ID 映射为中文技能名。"""
     if len(context.dataset) == 0:
         raise ValueError("dataset is empty, cannot resolve skill labels")

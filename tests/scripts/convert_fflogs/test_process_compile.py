@@ -134,7 +134,7 @@ def test_process_proxy_transfers_packed_context_and_releases_only_its_queue():
 
 
 @pytest.mark.parametrize("rpc_request,exception,message", [
-    ([], ValueError, "must be a mapping"),
+    ([], TypeError, "must be a mapping"),
     ({"operation": "unknown"}, ValueError, "unsupported simulation bridge operation"),
     ({"operation": "create"}, KeyError, "kwargs"),
     ({"operation": "init", "kwargs": {}}, RuntimeError, "does not own a simulation queue"),

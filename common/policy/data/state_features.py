@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
-import math
 
 from common.pytorch.dependencies import import_torch
+
 from .schema import StateFeatureLayout
 
 
@@ -20,7 +21,7 @@ class StateTokenTensors:
 def validate_state_feature_keys(state_context: Mapping[str, object], layout: StateFeatureLayout) -> None:
     """布局检查可独立复用；只核验历史元数据时不分配空 tensor。"""
     if not isinstance(state_context, Mapping):
-        raise ValueError("state context must be a mapping")
+        raise TypeError("state context must be a mapping")
     for group in layout.groups:
         keys = state_context.get(group.feature_keys_field)
         if not isinstance(keys, (list, tuple)) or tuple(keys) != group.feature_keys:
@@ -33,11 +34,11 @@ def read_state_tokens(state_context: Mapping[str, object], layout: StateFeatureL
     validate_state_feature_keys(state_context, layout)
     tokens = state_context.get("tokens")
     if not isinstance(tokens, (list, tuple)):
-        raise ValueError("state context tokens must be a list")
+        raise TypeError("state context tokens must be a list")
     values, nulls, availability = [], [], []
     for token in tokens:
         if not isinstance(token, Mapping):
-            raise ValueError("state token must be a mapping")
+            raise TypeError("state token must be a mapping")
         row, missing, binary = [], [], []
         for group in layout.groups:
             items = token.get(group.group_key)

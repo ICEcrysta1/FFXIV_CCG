@@ -4,7 +4,7 @@ import argparse
 import logging
 import signal
 import subprocess
-from concurrent.futures import CancelledError, FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, CancelledError, ThreadPoolExecutor, wait
 from pathlib import Path
 from threading import Event
 
@@ -13,7 +13,12 @@ from scripts.common.json_io import is_json_file
 
 from .config import annotation_worker_count, default_raw_root, load_bridge_config
 from .node_pool import NodePool
-from .runner import analyzer_commit, annotation_is_current, annotate_file, output_path_for_source
+from .runner import (
+    analyzer_commit,
+    annotate_file,
+    annotation_is_current,
+    output_path_for_source,
+)
 from .scan import AnnotationInventory
 
 logger = logging.getLogger(__name__)

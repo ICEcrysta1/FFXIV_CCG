@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, field
 import math
 import os
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from common.configuration.environment import (
@@ -17,7 +17,6 @@ from common.configuration.environment import (
     resolve_project_path,
 )
 from common.configuration.yaml import load_yaml_mapping
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 POLICY_MODEL_ROOT = PROJECT_ROOT / "config" / "models"
@@ -188,11 +187,11 @@ class ModelConfig:
             )
 
     @classmethod
-    def from_mapping(cls, raw: Mapping[str, object] | None = None) -> "ModelConfig":
+    def from_mapping(cls, raw: Mapping[str, object] | None = None) -> ModelConfig:
         """从 YAML 的 ``model`` mapping 解析共享架构配置。"""
         values = {} if raw is None else raw
         if not isinstance(values, Mapping):
-            raise ValueError("model config section must be a mapping")
+            raise TypeError("model config section must be a mapping")
         if "position_encoding" in values:
             raise ValueError("model.position_encoding is removed; the model always uses RoPE")
         if "max_sequence_length" in values:

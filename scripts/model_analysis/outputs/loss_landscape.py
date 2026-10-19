@@ -2,21 +2,21 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
-from time import perf_counter
+from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 
 import matplotlib.pyplot as plt
-from matplotlib.colors import Normalize
 import numpy as np
 import torch
+from matplotlib.colors import Normalize
 from torch import nn
 from torch.nn import functional as F
 
 from common.policy.model import CausalPolicyModel
-from common.policy.model.repetition import build_repetition_penalty_mask
 from common.policy.model.causal_encoder import run_causal_layer
+from common.policy.model.repetition import build_repetition_penalty_mask
 from common.pytorch.runtime import model_dtype
 from training import TrainingCollator
 
@@ -27,7 +27,6 @@ from ..common import (
     hide_empty_tiles,
     save_figure,
 )
-
 
 LOSS_LANDSCAPE_CMAP = "viridis"
 LOSS_LANDSCAPE_DPI = 300

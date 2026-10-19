@@ -30,7 +30,7 @@ class SkillBook:
             self._by_game_id[skill.game_id] = skill
 
     @classmethod
-    def from_project_config(cls, project_config: ProjectConfig) -> "SkillBook":
+    def from_project_config(cls, project_config: ProjectConfig) -> SkillBook:
         return cls(project_config.system.skills + project_config.job.skills)
 
     def get(self, ref: str | int) -> SkillDefinition:

@@ -6,8 +6,8 @@ from .extraction import (
     detect_gcd_from_logs,
     extract_supported_actions,
 )
-from .movement import detect_forced_movement_windows
 from .fight_payload import build_fight_payload, build_output_fight_id
+from .movement import detect_forced_movement_windows
 
 __all__ = [
     "annotate_action_movement",

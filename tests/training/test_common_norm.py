@@ -266,7 +266,7 @@ def test_model_default_time_scale_comes_from_public_normalization_config(monkeyp
 @pytest.mark.parametrize("field", ["mp_max", "time_scale", "target_count_max", "current_potency_max"])
 @pytest.mark.parametrize("value", [True, 0, -1, float("nan"), float("inf")])
 def test_public_normalization_scales_are_finite_positive_numbers(field, value):
-    with pytest.raises(ValueError, match=f"normalizer.{field}"):
+    with pytest.raises(TypeError if value is True else ValueError, match=f"normalizer.{field}"):
         NormalizerConfig(**{field: value})
 
 

@@ -6,10 +6,10 @@ import argparse
 import json
 from pathlib import Path
 
+from scripts.autoregressive_replay.batch_replay import run_replays
 from scripts.autoregressive_replay.config import load_replay_config
 from scripts.autoregressive_replay.outputs import write_markdown
 from scripts.autoregressive_replay.parity import run_rollout_parities
-from scripts.autoregressive_replay.batch_replay import run_replays
 
 from .config.config import load_export_config, load_parity_config
 from .contracts.deployment_contract import DeploymentManifest
@@ -180,13 +180,13 @@ def _parity_request(scenario: str, *, checkpoint: Path | None = None):
         top_p=1.0,
         use_kv_cache=False,
     )
-    return replay_config, dict(
-        onnx_package_path=export_config.output_dir,
-        provider=export_config.ort_provider,
-        output_path=output_path,
-        tolerance=required_tolerance,
-        release_gate=True,
-    )
+    return replay_config, {
+        "onnx_package_path": export_config.output_dir,
+        "provider": export_config.ort_provider,
+        "output_path": output_path,
+        "tolerance": required_tolerance,
+        "release_gate": True,
+    }
 
 
 def print_release_status(*, checkpoint: Path | None = None) -> None:

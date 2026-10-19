@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import asdict, dataclass
-import math
 
 from .normalizer import Normalizer
 from .schema import TrainingSchema
 from .skill_vocab import SkillVocab
 from .spec import DataSpec
-
 
 # 输入或执行语义变化时必须升级，拒绝旧 checkpoint 静默复用。
 # 5：黑魔模型移除 retrace、manaward、surecast 候选并更新模型结构，候选布局与
@@ -243,18 +242,18 @@ class ModelInputContract:
         )
 
     @classmethod
-    def from_checkpoint(cls, checkpoint: Mapping[str, object]) -> "ModelInputContract":
+    def from_checkpoint(cls, checkpoint: Mapping[str, object]) -> ModelInputContract:
         if not isinstance(checkpoint, Mapping):
-            raise ValueError("checkpoint must be a mapping")
+            raise TypeError("checkpoint must be a mapping")
         payload = checkpoint.get("input_contract")
         if not isinstance(payload, Mapping):
-            raise ValueError("checkpoint missing input_contract")
+            raise TypeError("checkpoint missing input_contract")
         return cls.from_dict(payload)
 
     @classmethod
-    def from_dict(cls, payload: Mapping[str, object]) -> "ModelInputContract":
+    def from_dict(cls, payload: Mapping[str, object]) -> ModelInputContract:
         if not isinstance(payload, Mapping):
-            raise ValueError("input contract must be a mapping")
+            raise TypeError("input contract must be a mapping")
         version = payload.get("version")
         if int(version) != INPUT_CONTRACT_VERSION:
             raise ValueError(
@@ -264,17 +263,17 @@ class ModelInputContract:
         if payload.get("token_encoding") != TOKEN_ENCODING_CONTRACT:
             raise ValueError("input contract token_encoding does not match the fixed token and backbone encoding")
         if not isinstance(payload.get("skill_vocab"), Mapping):
-            raise ValueError("input contract missing complete skill_vocab; restore it from the original training metadata")
+            raise TypeError("input contract missing complete skill_vocab; restore it from the original training metadata")
         skill_vocab = SkillVocab.from_dict(payload["skill_vocab"])
         job_tag = str(payload.get("job_tag", "")).strip()
         if not job_tag:
             raise ValueError("input contract job_tag must not be empty")
         data_spec = payload.get("data_spec")
         if not isinstance(data_spec, Mapping):
-            raise ValueError("input contract data_spec must be a mapping")
+            raise TypeError("input contract data_spec must be a mapping")
         normalizer_contract = payload.get("normalizer")
         if not isinstance(normalizer_contract, Mapping):
-            raise ValueError("input contract normalizer must be a mapping")
+            raise TypeError("input contract normalizer must be a mapping")
         normalizer = Normalizer.from_contract(normalizer_contract)
         if normalizer.configured_job_tag != job_tag:
             raise ValueError(

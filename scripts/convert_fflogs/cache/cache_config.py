@@ -8,13 +8,16 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
+from common.configuration.yaml import load_yaml_mapping
+from common.context.schema import SCHEMA_CONFIG_PATH
 from common.game.config import PROJECT_ROOT, load_project_config
 from common.game.models import SkillDefinition
 from common.policy.data.policy_actions import load_policy_actions
-from common.context.schema import SCHEMA_CONFIG_PATH
-from common.configuration.yaml import load_yaml_mapping
 
-from ..config.config import load_action_quality_skill_policy, load_convert_fflogs_job_config
+from ..config.config import (
+    load_action_quality_skill_policy,
+    load_convert_fflogs_job_config,
+)
 
 
 def build_conversion_config_dependencies(

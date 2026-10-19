@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from .black_mage import decision_state_labels as _black_mage_decision_state_labels
 
-
 _DECISION_STATE_LABELERS = {
     "black_mage": _black_mage_decision_state_labels,
 }

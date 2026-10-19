@@ -1,7 +1,6 @@
 """FFLogs V2 OAuth、GraphQL 查询、事件分页与排行 API。"""
 
 import logging
-from typing import Optional
 
 from curl_cffi import requests as cf_requests
 
@@ -52,7 +51,7 @@ class FFLogsV2Client:
         self._client_secret = client_secret
         self._server_region = server_region
         self._gql_url = self.CN_GQL_URL if server_region == "CN" else self.GQL_URL
-        self._token: Optional[str] = None
+        self._token: str | None = None
         self._cancelled = False
         self._session: cf_requests.Session | None = None
 
@@ -95,7 +94,7 @@ class FFLogsV2Client:
         logger.info("V2 token 已获取，有效期 %ds", data.get("expires_in", 0))
         return self._token
 
-    def query(self, gql: str, variables: dict = None) -> dict:
+    def query(self, gql: str, variables: dict | None = None) -> dict:
         """向当前数据源地区的固定端点执行 GraphQL 查询。"""
         token = self._ensure_token()
         payload: dict = {"query": gql}
@@ -164,8 +163,8 @@ class FFLogsV2Client:
     def get_report_events(
         self,
         report_code: str,
-        fight_ids: list[int] = None,
-        source_id: Optional[int] = None,
+        fight_ids: list[int] | None = None,
+        source_id: int | None = None,
         start_time: int = 0,
         end_time: int = 999999999999,
         max_pages: int = 50,
@@ -178,7 +177,7 @@ class FFLogsV2Client:
         if source_id is not None:
             source_id = _validate_integer(source_id, "source_id", minimum=1)
         all_events: list[dict] = []
-        next_ts: Optional[int] = start_time
+        next_ts: int | None = start_time
 
         for _ in range(max_pages):
             if self._cancelled:
@@ -249,7 +248,7 @@ class FFLogsV2Client:
         return all_events
 
     def get_fight_events(
-        self, report_code: str, fight: FightInfo, source_id: Optional[int] = None,
+        self, report_code: str, fight: FightInfo, source_id: int | None = None,
         *, require_complete: bool = False,
     ) -> list[dict]:
         """拉取一场战斗的全部事件。"""
@@ -306,8 +305,8 @@ class FFLogsV2Client:
     def get_encounter_rankings(
         self,
         encounter_id: int,
-        spec_name: str = None,
-        class_name: str = None,
+        spec_name: str | None = None,
+        class_name: str | None = None,
         bracket: int = 0,
         page: int = 1,
         metric: str = "dps",

@@ -21,14 +21,14 @@ class OptimizerConfig:
         if not isinstance(self.name, str) or self.name not in {"adamw", "muon"}:
             raise ValueError("optimizer.name must be adamw or muon")
         if isinstance(self.momentum, bool) or not isinstance(self.momentum, (int, float)):
-            raise ValueError("optimizer.momentum must be numeric")
+            raise TypeError("optimizer.momentum must be numeric")
         # 先检查区间，避免对任意大小的整数做浮点转换时溢出。
         if not 0.0 <= self.momentum < 1.0 or not math.isfinite(self.momentum):
             raise ValueError("optimizer.momentum must be finite and within [0, 1)")
         if not isinstance(self.nesterov, bool):
-            raise ValueError("optimizer.nesterov must be boolean")
+            raise TypeError("optimizer.nesterov must be boolean")
         if isinstance(self.ns_steps, bool) or not isinstance(self.ns_steps, int):
-            raise ValueError("optimizer.ns_steps must be an integer within [1, 99]")
+            raise TypeError("optimizer.ns_steps must be an integer within [1, 99]")
         if not 1 <= self.ns_steps <= 99:
             raise ValueError("optimizer.ns_steps must be an integer within [1, 99]")
         if not isinstance(self.adjust_lr_fn, str) or self.adjust_lr_fn not in {
@@ -43,7 +43,7 @@ class OptimizerConfig:
     def from_mapping(cls, raw: object) -> OptimizerConfig:
         """严格读取算法配置，避免拼错字段后静默使用默认值。"""
         if not isinstance(raw, Mapping):
-            raise ValueError("optimizer must be a mapping")
+            raise TypeError("optimizer must be a mapping")
         allowed = {item.name for item in fields(cls)}
         unknown = set(raw) - allowed
         if unknown:
@@ -68,7 +68,7 @@ def parse_optimizer_settings(
         raise ValueError("optimizer stage must be bc or grpo")
     optimizers = policy_config.get("optimizers", {})
     if not isinstance(optimizers, Mapping):
-        raise ValueError("optimizers must be a mapping")
+        raise TypeError("optimizers must be a mapping")
     unknown_stages = set(optimizers) - {"bc", "grpo"}
     if unknown_stages:
         raise ValueError(
@@ -118,7 +118,7 @@ def parse_optimizer_settings(
 def _finite_number(value: object, label: str) -> float:
     """严格校验学习率与权重衰减，拒绝布尔值和非有限数值。"""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"{label} must be numeric and finite")
+        raise TypeError(f"{label} must be numeric and finite")
     try:
         number = float(value)
     except OverflowError as exc:

@@ -7,7 +7,6 @@ from collections.abc import Mapping, Sequence
 import numpy as np
 import torch
 
-
 GOLDEN_FORMAT = "deterministic-npz-v2"
 GOLDEN_NATIVE_ENCODING = "native-numpy"
 GOLDEN_BF16_ENCODING = "uint16-little-endian-bfloat16-bits"

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-
 REQUIRED_SCENE_WINDOW_FEATURE_KEYS = (
     "start_offset_seconds",
     "end_offset_seconds",

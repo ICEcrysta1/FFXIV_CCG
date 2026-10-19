@@ -84,7 +84,7 @@ def test_model_input_contract_round_trips_without_project_yaml(monkeypatch):
 
 
 def test_model_input_contract_rejects_checkpoint_without_contract():
-    with pytest.raises(ValueError, match="missing input_contract"):
+    with pytest.raises(TypeError, match="missing input_contract"):
         ModelInputContract.from_checkpoint({"data_spec": {}})
 
 
@@ -422,7 +422,7 @@ def test_data_spec_rejects_removed_column_hidden_by_feature_names():
 def test_model_input_contract_requires_complete_vocabulary():
     payload = _build_contract().to_dict()
     payload.pop("skill_vocab")
-    with pytest.raises(ValueError, match="missing complete skill_vocab"):
+    with pytest.raises(TypeError, match="missing complete skill_vocab"):
         ModelInputContract.from_dict(payload)
 
 

@@ -6,7 +6,7 @@ import math
 from contextlib import nullcontext
 
 import torch
-import torch.nn as nn
+from torch import nn
 from torch.utils.checkpoint import checkpoint
 
 from .activation import (

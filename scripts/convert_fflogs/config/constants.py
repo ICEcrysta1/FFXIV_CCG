@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 
 from common.context.contracts import SCENE_EPSILON
-
 from common.context.scene import (
     FORCED_MOVEMENT_CONTEXT_KEY,
     FORCED_MOVEMENT_FEATURE_KEYS,
@@ -19,6 +18,33 @@ from common.context.scene import (
     TARGETABLE_WINDOW_CONTEXT_KEY,
     TARGETABLE_WINDOW_FEATURE_KEYS,
 )
+
+__all__ = [
+    "DEFAULT_DOWNTIME_GAP_SECONDS",
+    "DOWNTIME_BOUNDARY_MARGIN",
+    "FORCED_MOVEMENT_CONTEXT_KEY",
+    "FORCED_MOVEMENT_FEATURE_KEYS",
+    "MOVE_DIST_THRESHOLD",
+    "MULTI_TARGET_MARKER_GRACE_SECONDS",
+    "MULTI_TARGET_OBSERVATION_TIMEOUT_SECONDS",
+    "POTION_BUFF_ID",
+    "POTION_SKILL_ID",
+    "RAID_BUFF_WINDOW_CONTEXT_KEY",
+    "RAID_BUFF_WINDOW_FEATURE_KEYS",
+    "RAID_BUFF_WINDOW_MARKER_KEYS",
+    "RAID_BUFF_WINDOW_SOURCE_KEYS",
+    "SCENE_CONTEXT_KEYS",
+    "SCENE_EPSILON",
+    "TARGETABLE_SEGMENT_KINDS",
+    "TARGETABLE_WINDOW_CONTEXT_KEY",
+    "TARGETABLE_WINDOW_FEATURE_KEYS",
+    "TARGET_COUNT_WINDOW_CONTEXT_KEY",
+    "TARGET_COUNT_WINDOW_FEATURE_KEYS",
+    # 保留既有星号导入附带的名称。
+    "annotations",
+    "logger",
+    "logging",
+]
 
 logger = logging.getLogger("convert_fflogs")
 

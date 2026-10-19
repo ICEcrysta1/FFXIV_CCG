@@ -6,6 +6,7 @@ import os
 import sys
 from pathlib import Path
 
+from common.configuration.environment import resolve_project_path
 from common.data.layout import percentile_directory
 from common.policy.config import (
     PROJECT_ROOT,
@@ -13,7 +14,6 @@ from common.policy.config import (
     resolve_policy_model_config_path,
     resolve_policy_model_job_tag,
 )
-from common.configuration.environment import resolve_project_path
 from scripts.common.file_inventory import FileInventory
 from scripts.common.json_io import atomic_write_json, read_json
 
@@ -187,7 +187,7 @@ def _existing_local_inventory(
     """只把身份、地区、分档及下载完整性可信的本地文件计入配额。"""
     counts = dict.fromkeys(quotas, 0)
     seen: set[tuple[str, int, str]] = set()
-    for bucket in quotas:
+    for bucket, quota in quotas.items():
         directory = percentile_directory(output_dir, bucket) if bucket_directories else output_dir
         for path in sorted(directory.glob("*.json.br")):
             identity = _indexed_download_identity(
@@ -200,7 +200,7 @@ def _existing_local_inventory(
                 logger.warning("本地已有跨档重复报告，忽略额外副本：%s", path)
                 continue
             seen.add(key)
-            counts[bucket] = min(quotas[bucket], counts[bucket] + 1)
+            counts[bucket] = min(quota, counts[bucket] + 1)
     return counts, seen
 
 

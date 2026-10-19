@@ -179,7 +179,7 @@ def test_replay_config_rejects_checkpoint_missing_model_config(prepare_replay_fi
     del payload["model_config"]
     torch.save(payload, checkpoint)
 
-    with pytest.raises(ValueError, match="checkpoint missing model_config"):
+    with pytest.raises(TypeError, match="checkpoint missing model_config"):
         load_replay_config()
 
 

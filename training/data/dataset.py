@@ -20,10 +20,17 @@ from common.policy.data.compiled_cache import (
     build_cache_signature,
     load_compiled_cache_for_source,
 )
+from common.policy.data.context_fields import (
+    HISTORY_BANK_FIELDS,
+    HISTORY_BANK_METADATA_NAMES,
+    RAW_SCENE_FIELDS,
+)
+from common.policy.data.history_window import (
+    history_window_length,
+    scene_window_end_times,
+)
 from common.policy.data.normalizer import Normalizer
-from common.policy.data.history_window import history_window_length, scene_window_end_times
 from common.policy.data.skill_vocab import SkillVocab
-from common.policy.data.context_fields import HISTORY_BANK_FIELDS, HISTORY_BANK_METADATA_NAMES, RAW_SCENE_FIELDS
 
 
 class TrainingDataset(Dataset):

@@ -197,7 +197,14 @@ def test_seed_everything_seeds_python_cpu_and_available_cuda(seed):
     ],
 )
 def test_load_run_config_rejects_invalid_values(tmp_path, payload, message):
-    with pytest.raises(ValueError, match=message):
+    error_type = TypeError if message in {
+        "training config must be a mapping",
+        "model and training config sections must be mappings",
+        "history_truncation must be a mapping",
+        "value_preference must be a mapping",
+        "training.ppg must be a mapping",
+    } else ValueError
+    with pytest.raises(error_type, match=message):
         config_module.load_run_config(_write_config(tmp_path, payload))
 
 
@@ -467,17 +474,17 @@ def test_data_spec_from_dict_and_mismatch_error():
 
 
 @pytest.mark.parametrize(
-    ("raw", "message"),
+    ("raw", "message", "error_type"),
     [
-        ("invalid", "must be a mapping"),
-        ({"mode": "other"}, "mode must be none"),
-        ({"skills": "fire_iv"}, "skills must be a list"),
-        ({"penalty": -1}, "penalty must be >= 0"),
-        ({"mode": "whitelist", "skills": []}, "skills must not be empty"),
+        ("invalid", "must be a mapping", TypeError),
+        ({"mode": "other"}, "mode must be none", ValueError),
+        ({"skills": "fire_iv"}, "skills must be a list", TypeError),
+        ({"penalty": -1}, "penalty must be >= 0", ValueError),
+        ({"mode": "whitelist", "skills": []}, "skills must not be empty", ValueError),
     ],
 )
-def test_repetition_config_rejects_invalid_values(raw, message):
-    with pytest.raises(ValueError, match=message):
+def test_repetition_config_rejects_invalid_values(raw, message, error_type):
+    with pytest.raises(error_type, match=message):
         parse_repetition_config(raw)
 
 
@@ -590,11 +597,11 @@ def test_model_and_trace_helpers_cover_error_and_norm_paths():
             ModelConfig(d_model=7, n_layers=1, n_heads=2, ff_dim=16),
             vocab_size=4,
         )
-    with pytest.raises(ValueError, match="missing input_contract"):
+    with pytest.raises(TypeError, match="missing input_contract"):
         CausalPolicyModel.checkpoint_model_config({})
     checkpoint = make_checkpoint()
     checkpoint["model_config"] = []
-    with pytest.raises(ValueError, match="missing model_config"):
+    with pytest.raises(TypeError, match="missing model_config"):
         CausalPolicyModel.checkpoint_model_config(checkpoint)
     for removed_key, raw_value in (
         ("scorer_use_raw_projection", True),
@@ -2162,7 +2169,7 @@ def test_load_resume_checkpoint_rejects_missing_and_non_mapping(tmp_path):
 
     invalid = tmp_path / "invalid.pt"
     torch.save([], invalid)
-    with pytest.raises(ValueError, match="resume checkpoint must be a mapping"):
+    with pytest.raises(TypeError, match="resume checkpoint must be a mapping"):
         checkpoint_module._load_resume_checkpoint(invalid)
 
 
@@ -2387,20 +2394,20 @@ def test_validate_resume_checkpoint_rejects_removed_candidate_shared_semantics(t
 
 
 @pytest.mark.parametrize(
-    ("epoch", "message"),
+    ("epoch", "message", "error_type"),
     [
-        (None, "resume checkpoint epoch must be an integer"),
-        ("not-an-int", "resume checkpoint epoch must be an integer"),
-        (True, "resume checkpoint epoch must be an integer"),
-        (0, "resume checkpoint epoch must be >= 1"),
+        (None, "resume checkpoint epoch must be an integer", ValueError),
+        ("not-an-int", "resume checkpoint epoch must be an integer", ValueError),
+        (True, "resume checkpoint epoch must be an integer", TypeError),
+        (0, "resume checkpoint epoch must be >= 1", ValueError),
     ],
 )
-def test_validate_resume_checkpoint_rejects_invalid_epoch(tmp_path, epoch, message):
+def test_validate_resume_checkpoint_rejects_invalid_epoch(tmp_path, epoch, message, error_type):
     context = _resume_validation_context(tmp_path)
     checkpoint = dict(context.checkpoint)
     checkpoint["epoch"] = epoch
 
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(error_type, match=message):
         checkpoint_module._validate_resume_checkpoint(
             checkpoint,
             data_spec=context.data_spec,

@@ -38,7 +38,7 @@ class HistoryPrefixInterner:
             raise ValueError("incremental history cursor does not match the collected prefix")
         state_context = context.get("state_history_context")
         if not isinstance(state_context, dict):
-            raise ValueError("state_history_context must be a mapping")
+            raise TypeError("state_history_context must be a mapping")
         deltas = (
             context.get("skill_history_context"),
             state_context.get("tokens"),
@@ -57,7 +57,7 @@ class HistoryPrefixInterner:
     def intern(self, context: dict[str, object], *, sample_index: int, fight_id: str) -> None:
         state_context = context.get("state_history_context")
         if not isinstance(state_context, dict):
-            raise ValueError("state_history_context must be a mapping")
+            raise TypeError("state_history_context must be a mapping")
         prefixes = (
             context.get("skill_history_context"),
             state_context.get("tokens"),

@@ -7,7 +7,6 @@ from pathlib import Path
 
 from common.configuration.yaml import load_yaml_mapping
 
-
 CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "fflogs_scraper" / "encounters.yaml"
 
 
@@ -32,7 +31,7 @@ def load_download_encounters(path: Path = CONFIG_PATH) -> dict[str, DownloadEnco
                 or not alias[0].isalpha()):
             raise ValueError(f"invalid FFLogs encounter alias: {alias!r}")
         if not isinstance(value, dict):
-            raise ValueError(f"invalid FFLogs encounter entry: {alias}")
+            raise TypeError(f"invalid FFLogs encounter entry: {alias}")
         zone_id = value.get("zone_id")
         encounter_id = value.get("encounter_id")
         group = value.get("group")

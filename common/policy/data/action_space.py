@@ -24,16 +24,16 @@ class ActionSpace:
     action_is_gcd: tuple[bool, ...]
 
     @classmethod
-    def from_data_spec(cls, data_spec: DataSpec) -> "ActionSpace":
+    def from_data_spec(cls, data_spec: DataSpec) -> ActionSpace:
         """恢复模型保存的动作契约，不读取当前职业 YAML。"""
         return cls(data_spec.action_keys, data_spec.action_to_vocab_id, data_spec.action_is_gcd)
 
     @classmethod
-    def from_job_tag(cls, job_tag: str) -> "ActionSpace":
+    def from_job_tag(cls, job_tag: str) -> ActionSpace:
         return cls.from_config(load_project_config(job_tag=job_tag))
 
     @classmethod
-    def from_config(cls, project_config, *, skill_vocab: SkillVocab | None = None) -> "ActionSpace":
+    def from_config(cls, project_config, *, skill_vocab: SkillVocab | None = None) -> ActionSpace:
         vocab = skill_vocab or SkillVocab.build_from_config(project_config)
         raw_ids: dict[str, int] = {}
         gcd_flags: dict[str, bool] = {}

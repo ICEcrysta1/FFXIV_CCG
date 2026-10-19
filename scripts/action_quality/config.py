@@ -7,16 +7,16 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from common.policy.config import (
-    load_policy_config,
-    resolve_policy_model_config_path,
-)
 from common.configuration.environment import (
     load_root_dotenv,
     resolve_positive_worker_count,
     resolve_project_path,
 )
 from common.configuration.yaml import load_yaml_mapping
+from common.policy.config import (
+    load_policy_config,
+    resolve_policy_model_config_path,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 

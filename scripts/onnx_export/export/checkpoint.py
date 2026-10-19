@@ -20,7 +20,11 @@ from ..contracts.deployment_contract import DeploymentContract
 from ..contracts.deployment_profile import DeploymentProfile
 from ..io.artifact_io import file_sha256
 from ..policy.policy import OnnxPolicy
-from ..runtime.precision import PRECISION_BF16, precision_torch_dtype, validate_deployment_logit_softcap
+from ..runtime.precision import (
+    PRECISION_BF16,
+    precision_torch_dtype,
+    validate_deployment_logit_softcap,
+)
 from .context import ExportContracts
 
 

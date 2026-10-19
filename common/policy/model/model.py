@@ -6,18 +6,18 @@ from collections.abc import Mapping
 from contextlib import nullcontext
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 from ..config import ModelConfig
+from ..data.input_contract import RESIDUAL_MIX_CONFIG_FIELDS, ModelInputContract
+from ..data.spec import DataSpec
 from .attention_residual import FullAttentionResidual
+from .causal_encoder import run_causal_encoder
 from .input_encoder import CausalInputEncoder
 from .kv_cache import TransformerKVCache, encode_with_kv_cache
 from .position_encoding import RotaryPositionEncoding
 from .repetition import RepetitionConfig, apply_repetition_penalty
 from .residual_mix import LearnedResidualMix
-from .causal_encoder import run_causal_encoder
-from ..data.input_contract import ModelInputContract
-from ..data.spec import DataSpec
 from .trace import ModelTrace, trace_encoder
 from .transformer import TraceableTransformerEncoderLayer
 
@@ -246,18 +246,11 @@ class CausalPolicyModel(nn.Module):
         ModelInputContract.from_checkpoint(checkpoint)
         payload = checkpoint.get("model_config")
         if not isinstance(payload, Mapping):
-            raise ValueError("checkpoint missing model_config")
-        if "context_capacity" not in payload:
-            raise ValueError("checkpoint missing model.context_capacity; retrain")
-        for key in ("history_reset_keep", "time_delta_scale"):
+            raise TypeError("checkpoint missing model_config")
+        for key in (
+            "context_capacity", "history_reset_keep", "time_delta_scale",
+            "qk_norm_scale", "logit_softcap", *RESIDUAL_MIX_CONFIG_FIELDS,
+        ):
             if key not in payload:
                 raise ValueError(f"checkpoint missing model.{key}; retrain")
-        if "qk_norm_scale" not in payload:
-            raise ValueError("checkpoint missing model.qk_norm_scale; retrain")
-        if "logit_softcap" not in payload:
-            raise ValueError("checkpoint missing model.logit_softcap; retrain")
-        for name in ("residual_mix_r_start", "residual_mix_r_end",
-                     "residual_mix_a_start", "residual_mix_a_end"):
-            if name not in payload:
-                raise ValueError(f"checkpoint missing model.{name}; retrain")
         return ModelConfig.from_mapping(payload)

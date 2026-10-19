@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import atexit
-from collections import deque
-from concurrent.futures import CancelledError, Future, TimeoutError as FutureTimeoutError
 import json
 import math
 import os
-from pathlib import Path
 import select
 import signal
 import subprocess
-from threading import BoundedSemaphore, Event, Lock, Thread, current_thread
 import time
+from collections import deque
+from concurrent.futures import CancelledError, Future
+from concurrent.futures import TimeoutError as FutureTimeoutError
+from pathlib import Path
+from threading import BoundedSemaphore, Event, Lock, Thread, current_thread
 
 from .config import BridgeConfig, annotation_worker_count
 
@@ -221,7 +222,7 @@ class NodePool:
             for line in process.stdout:
                 message = json.loads(line)
                 if not isinstance(message, dict):
-                    raise ValueError("analysis pool response must be an object")
+                    raise TypeError("analysis pool response must be an object")
                 request_id = message.get("id")
                 kind = message.get("type")
                 if isinstance(request_id, bool) or not isinstance(request_id, int) or request_id < 0:

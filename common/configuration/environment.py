@@ -7,7 +7,6 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-
 PROJECT_JOB_TAG_ENV = "FFXIV_JOB_TAG"
 PROJECT_MODEL_VARIANT_ENV = "FFXIV_MODEL_VARIANT"
 TENSORBOARD_PORT_ENV = "TENSORBOARD_PORT"
@@ -57,7 +56,7 @@ def resolve_tensorboard_port(
     if value is None or (isinstance(value, str) and not value.strip()):
         return DEFAULT_TENSORBOARD_PORT
     if isinstance(value, bool) or not isinstance(value, (int, str)):
-        raise ValueError(
+        raise TypeError(
             f"{TENSORBOARD_PORT_ENV} must be an integer from 1 to 65535, "
             f"got {value!r}"
         )

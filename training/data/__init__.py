@@ -8,9 +8,9 @@ from .oversampling import build_sample_weights, load_sequence_oversampler
 from .sampler import ShardBatchSampler, WeightedShardBatchSampler
 
 __all__ = [
+    "ShardBatchSampler",
     "TrainingCollator",
     "TrainingDataset",
-    "ShardBatchSampler",
     "WeightedShardBatchSampler",
     "build_sample_weights",
     "load_sequence_oversampler",

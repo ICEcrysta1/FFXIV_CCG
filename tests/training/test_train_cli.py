@@ -209,7 +209,13 @@ def test_train_main_forwards_cli_overrides(monkeypatch, caplog, tmp_path):
         "force_resume_data_mismatch": True,
     }
     assert any(
-        "训练完成: job=black_mage model_variant=artzip" in record.getMessage()
+        record.name == "training.train"
+        and record.getMessage() == "输入 JSON 数量上限: 7（来源: --max-files）"
+        for record in caplog.records
+    )
+    assert any(
+        record.name == "training.train"
+        and "训练完成: job=black_mage model_variant=artzip" in record.getMessage()
         for record in caplog.records
     )
 

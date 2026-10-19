@@ -47,9 +47,8 @@ def run_causal_layer(
             raise ValueError("residual mixing requires initial tokens aligned with the encoded block")
         # 混合后的 hidden 同时作为 attention 输入和该层 skip；FFN 不再次混合。
         hidden = residual_mix(hidden, initial_tokens, layer_index)
-    if attention_residual is not None:
-        if not layer.norm_first or sources is None:
-            raise ValueError("Full AttnRes requires Pre-LN layers and a source list")
+    if attention_residual is not None and (not layer.norm_first or sources is None):
+        raise ValueError("Full AttnRes requires Pre-LN layers and a source list")
 
     def attend(attention_hidden):
         attention_input = layer.norm1(attention_hidden) if layer.norm_first else attention_hidden

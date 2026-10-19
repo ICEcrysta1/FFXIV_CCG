@@ -6,9 +6,13 @@ from dataclasses import asdict, dataclass
 
 import torch
 
+from common.policy.data.context_fields import (
+    MODEL_INPUT_FIELDS,
+    MODEL_INPUT_FIELDS_BY_NAME,
+    MODEL_INPUT_NAMES,
+    tensor_dimensions,
+)
 from common.policy.data.input_contract import TOKEN_ENCODING_CONTRACT
-from common.policy.data.context_fields import MODEL_INPUT_FIELDS, MODEL_INPUT_FIELDS_BY_NAME, MODEL_INPUT_NAMES, tensor_dimensions
-
 
 TENSOR_INPUT_NAMES = MODEL_INPUT_NAMES
 OUTPUT_NAMES = ("raw_logits",)
@@ -56,9 +60,9 @@ class CapacityContract:
             raise ValueError("ONNX v1 contract only supports right padding")
 
     @classmethod
-    def from_dict(cls, payload) -> "CapacityContract":
+    def from_dict(cls, payload) -> CapacityContract:
         if not isinstance(payload, dict):
-            raise ValueError("capacity contract must be an object")
+            raise TypeError("capacity contract must be an object")
         expected = {
             "context_capacity",
             "batch_size",

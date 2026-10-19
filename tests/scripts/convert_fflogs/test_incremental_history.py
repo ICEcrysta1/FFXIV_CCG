@@ -192,7 +192,7 @@ def test_delta_append_rejects_non_mapping_new_rows_atomically(channel, row):
 def test_delta_append_requires_state_context_mapping(state_context):
     context = _delta(0, 0)
     context["state_history_context"] = state_context
-    with pytest.raises(ValueError, match="state_history_context must be a mapping"):
+    with pytest.raises(TypeError, match="state_history_context must be a mapping"):
         HistoryPrefixInterner().append_delta(context)
 
 
@@ -576,7 +576,7 @@ def test_death_markers_roundtrip_pt_without_entering_numeric_history(tmp_path):
 
     for invalid in (None, ({**payload["history_markers"][0], "after_history_length": 2},)):
         corrupted = dict(stored, history_markers=invalid)
-        with pytest.raises(ValueError, match="history marker"):
+        with pytest.raises(TypeError if invalid is None else ValueError, match="history marker"):
             CompiledCacheReader(corrupted, cache_path=cache, shard_cache=CompiledShardCache())
     corrupted = dict(stored)
     corrupted.pop("history_markers")

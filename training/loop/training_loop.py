@@ -10,20 +10,20 @@ from pathlib import Path
 
 import torch
 
-from common.pytorch.precision import load_precision_config
+from common.configuration.environment import resolve_registered_job_tags
 from common.policy.config import PROJECT_ROOT, resolve_policy_cache_dir
 from common.policy.data import DataSpec, ModelInputContract
-from common.policy.model import CausalPolicyModel
 from common.policy.data.context_encoding import ContextEncoder
-from common.configuration.environment import resolve_registered_job_tags
+from common.policy.model import CausalPolicyModel
+from common.pytorch.precision import load_precision_config
 from common.pytorch.runtime import model_dtype
 from common.training.optimizer import build_optimizer
-from common.training.tensorboard_monitor import TensorBoardMonitor
 from common.training.tensorboard import (
     close_tensorboard_writer,
     create_tensorboard_writer,
     write_scalar_metrics,
 )
+from common.training.tensorboard_monitor import TensorBoardMonitor
 
 from ..config import RunConfig
 from ..runtime import RuntimeDebugRecorder
@@ -381,23 +381,12 @@ def run_training(
                 best_key = current_key
                 best_val_metrics = dict(val_metrics)
 
-            epoch_checkpoint_name = _epoch_checkpoint_name(epoch, val_metrics)
-            _save_checkpoint(
-                config.output_dir / epoch_checkpoint_name,
-                model,
-                optimizer,
-                epoch,
-                config,
-                data_spec,
-                val_metrics,
-                input_contract=input_contract,
-                scheduler=scheduler,
-                best_key=best_key,
-                best_val_metrics=best_val_metrics,
-            )
+            checkpoint_names = [_epoch_checkpoint_name(epoch, val_metrics)]
             if is_best:
+                checkpoint_names.append("best.pt")
+            for checkpoint_name in checkpoint_names:
                 _save_checkpoint(
-                    config.output_dir / "best.pt",
+                    config.output_dir / checkpoint_name,
                     model,
                     optimizer,
                     epoch,

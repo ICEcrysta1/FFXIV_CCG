@@ -52,16 +52,19 @@ def checkpoint_target() -> dict:
         resolve_policy_model_variant,
     )
     from training.config import load_run_config
-    from training.loop.checkpoint import UNKNOWN_MAX_FILES, collect_checkpoint_candidates
+    from training.loop.checkpoint import (
+        UNKNOWN_MAX_FILES,
+        collect_checkpoint_candidates,
+    )
 
     config_path = resolve_policy_model_config_path()
     config = load_run_config(config_path)
 
     def serialize(items, source):
-        return [dict(path=str(item.path), name=item.path.name, epoch=item.epoch,
-                     source=source, output_dir=str(item.path.parent),
-                     max_files="unknown" if item.max_files is UNKNOWN_MAX_FILES else item.max_files,
-                     validation_files=item.validation_files) for item in items]
+        return [{"path": str(item.path), "name": item.path.name, "epoch": item.epoch,
+                 "source": source, "output_dir": str(item.path.parent),
+                 "max_files": "unknown" if item.max_files is UNKNOWN_MAX_FILES else item.max_files,
+                 "validation_files": item.validation_files} for item in items]
 
     resumable, rejected, skipped = collect_checkpoint_candidates(config.output_dir, max_epochs=config.max_epochs)
     grpo = []
@@ -71,12 +74,12 @@ def checkpoint_target() -> dict:
         allowed, completed, invalid = collect_checkpoint_candidates(directory, max_epochs=config.max_epochs)
         grpo.extend(serialize((*allowed, *completed), "grpo"))
         skipped.extend(invalid)
-    return dict(job_tag=resolve_policy_model_job_tag(config_path),
-                model_variant=resolve_policy_model_variant(config_path), config_path=str(config_path),
-                output_dir=str(config.output_dir), grpo_output_dir=[str(path) for path in directories],
-                max_files=config.max_files, validation_files=config.validation_files, max_epochs=config.max_epochs,
-                resumable=serialize(resumable, "bc"), rejected=serialize(rejected, "bc"), grpo=grpo,
-                skipped=[dict(name=item.path.name, error=item.error) for item in skipped])
+    return {"job_tag": resolve_policy_model_job_tag(config_path),
+            "model_variant": resolve_policy_model_variant(config_path), "config_path": str(config_path),
+            "output_dir": str(config.output_dir), "grpo_output_dir": [str(path) for path in directories],
+            "max_files": config.max_files, "validation_files": config.validation_files, "max_epochs": config.max_epochs,
+            "resumable": serialize(resumable, "bc"), "rejected": serialize(rejected, "bc"), "grpo": grpo,
+            "skipped": [{"name": item.path.name, "error": item.error} for item in skipped]}
 
 
 def show_checkpoint_target(target: dict) -> None:
@@ -122,7 +125,10 @@ def interactive_checkpoint(target: dict, *, resumable_only: bool) -> dict | None
 
 
 def configured_checkpoint(requested: Path | None) -> dict:
-    from common.policy.config import resolve_policy_checkpoint_path, resolve_policy_model_config_path
+    from common.policy.config import (
+        resolve_policy_checkpoint_path,
+        resolve_policy_model_config_path,
+    )
     from common.pytorch.serialization import safe_torch_load
 
     path = requested or resolve_policy_checkpoint_path(resolve_policy_model_config_path())
@@ -132,8 +138,8 @@ def configured_checkpoint(requested: Path | None) -> dict:
         raise ValueError(f"checkpoint 不存在：{path}")
     payload = safe_torch_load(path, mmap=True, map_location="meta")
     if not isinstance(payload, Mapping):
-        raise ValueError(f"checkpoint 必须为 mapping：{path}")
-    return dict(path=str(path), name=path.name, source="grpo" if payload.get("grpo_checkpoint") else "bc")
+        raise TypeError(f"checkpoint 必须为 mapping：{path}")
+    return {"path": str(path), "name": path.name, "source": "grpo" if payload.get("grpo_checkpoint") else "bc"}
 
 
 def confirm_resume(selected: dict, target: dict) -> bool:

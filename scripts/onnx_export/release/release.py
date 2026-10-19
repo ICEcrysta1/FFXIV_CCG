@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
+import json
+import sys
 from collections.abc import Mapping
 from copy import deepcopy
-from datetime import datetime, timezone
-import json
+from datetime import UTC, datetime
 from pathlib import Path
-import sys
 
-from ..io.artifact_io import file_sha256, json_payload_sha256, write_json_atomic
 from ..contracts.deployment_contract import DeploymentManifest
+from ..io.artifact_io import file_sha256, json_payload_sha256, write_json_atomic
 from ..runtime.ort_runtime import ORT_PROVIDER_CUDA
 from ..runtime.precision import parity_max_abs_tolerance
 from ..runtime.runtime_targets import runtime_targets, validate_runtime_targets
 from .policy import validate_release_scenario_request
-
 
 RELEASE_REPORT_FILENAME = "release_report.json"
 RELEASE_REPORT_VERSION = 3
@@ -162,7 +161,7 @@ def record_parity_result(
     release_report = {
         "release_report_version": RELEASE_REPORT_VERSION,
         "release_gate_version": RELEASE_GATE_VERSION,
-        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "generated_at_utc": datetime.now(UTC).isoformat(),
         "status": status,
         "package": parity_artifact_bindings_from_package(
             manifest=manifest,
@@ -518,11 +517,11 @@ def _validate_formal_release_report(
 def _load_json(path: Path, label: str) -> dict[str, object]:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
-        raise ValueError(f"{label} must be an object")
+        raise TypeError(f"{label} must be an object")
     return payload
 
 
 def _mapping(value: object, path: str) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
-        raise ValueError(f"{path} must be an object")
+        raise TypeError(f"{path} must be an object")
     return value

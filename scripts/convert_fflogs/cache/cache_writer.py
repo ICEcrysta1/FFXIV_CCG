@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 import os
+from collections.abc import Iterable
 from pathlib import Path
 
-from common.pytorch.dependencies import import_torch
 from common.policy.data.compiled_cache import (
     CACHE_FORMAT,
     CACHE_PICKLE_PROTOCOL,
     CompiledCacheReader,
     CompiledShardCache,
 )
+from common.pytorch.dependencies import import_torch
 
 
 def write_compiled_cache_stream(

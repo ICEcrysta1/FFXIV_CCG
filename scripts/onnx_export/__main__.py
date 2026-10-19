@@ -5,8 +5,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .export import export_from_config
 from .config.config import load_export_config
+from .export import export_from_config
 from .runtime.precision import SUPPORTED_PRECISIONS
 
 

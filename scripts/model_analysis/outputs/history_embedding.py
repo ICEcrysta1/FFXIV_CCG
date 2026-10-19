@@ -49,11 +49,11 @@ def plot_history_embeddings(
             for history_positions in positions.values():
                 valid = valid & encoded["valid"].gather(1, history_positions)
             if bool(valid.any()):
-                for kind in embedding_rows:
+                for kind, rows in embedding_rows.items():
                     history_tokens = tokens.gather(
                         1, positions[kind].unsqueeze(-1).expand(-1, -1, tokens.shape[-1]),
                     )
-                    embedding_rows[kind].append(history_tokens[valid].float().cpu().numpy())
+                    rows.append(history_tokens[valid].float().cpu().numpy())
                 skill_id_rows.append(batch["history_skill_ids"][valid].detach().cpu().numpy())
             del batch, encoded, tokens, positions
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from scripts.common.inprocess_backend import InProcessEngine
@@ -30,7 +30,7 @@ def convert_raw_file(
     input_path = Path(input_path)
     payload = read_json(input_path)
     if not isinstance(payload, dict):
-        raise ValueError(f"raw FFLogs payload must be a mapping: {input_path}")
+        raise TypeError(f"raw FFLogs payload must be a mapping: {input_path}")
 
     source_id = int(source or payload.get("source_id") or 10)
     fights_meta = payload.get("fights", [])
@@ -55,7 +55,7 @@ def convert_raw_file(
             encounter_name=encounter_name,
             report_code=report_code,
             player_name=player_name,
-            generated_at=datetime.now(timezone.utc).isoformat(),
+            generated_at=datetime.now(UTC).isoformat(),
             downtime_gap_seconds=float(downtime_gap),
             deduplicate_history=deduplicate_history,
         )

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import math
 from bisect import bisect_left, bisect_right
 from collections.abc import Mapping, Sequence
-import math
 
 
 def scene_window_end_times(values, types, schema) -> tuple[float, ...]:
@@ -54,7 +54,9 @@ def history_window_length(
         if marker_positions:
             marker_start = bisect_left(marker_positions, start)
 
-            def token_count(cursor: int) -> int:
+            def token_count(
+                cursor: int, scene_count=scene_count, start=start, marker_start=marker_start,
+            ) -> int:
                 return scene_count + 2 * (cursor - start) + 1 + bisect_right(marker_positions, cursor) - marker_start
 
             # 死亡不推进动作 cursor；按最早超限的动作边界重放，不能只扣除当前标记总数。

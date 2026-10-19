@@ -1,7 +1,6 @@
 """报告和战斗元数据容器。"""
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 
 @dataclass
@@ -11,9 +10,9 @@ class FightInfo:
     name: str
     start_time: int
     end_time: int
-    difficulty: Optional[int] = None
+    difficulty: int | None = None
     kill: bool = False
-    size: Optional[int] = None
+    size: int | None = None
     zone_name: str = ""
 
 

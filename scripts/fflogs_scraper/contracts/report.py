@@ -1,7 +1,6 @@
 """报告格式适配、战斗选择与下载包装字段。"""
 
 from datetime import datetime
-from typing import Optional
 
 from ..config.constants import DOWNLOAD_SCHEMA_VERSION
 from ..config.validation import _validate_integer
@@ -126,7 +125,7 @@ def _build_download_payload(meta: ReportMeta, fight: FightInfo | None, source_id
     }
 
 
-def _find_fight(meta: ReportMeta, fight_id: int) -> Optional[FightInfo]:
+def _find_fight(meta: ReportMeta, fight_id: int) -> FightInfo | None:
     """按 ID 查找战斗，-1 表示最后一场。"""
     if fight_id == -1:
         return meta.fights[-1] if meta.fights else None

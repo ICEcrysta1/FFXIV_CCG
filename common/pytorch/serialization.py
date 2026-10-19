@@ -8,7 +8,6 @@ from typing import Any
 
 from .dependencies import import_torch
 
-
 # WindowsPath 在 Linux 上不能实例化；显式映射成只解析路径的纯路径类，
 # 兼容旧 checkpoint，且不修改 pathlib 的进程级行为。
 _SAFE_PATH_GLOBALS = (

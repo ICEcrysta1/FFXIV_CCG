@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
+from dataclasses import dataclass
 from pathlib import Path
 
 from common.configuration.yaml import load_yaml_mapping
-
 
 DEFAULT_CONFIG_PATH = (
     Path(__file__).resolve().parents[3] / "config" / "policy" / "normalizer.yaml"
@@ -27,7 +26,7 @@ class NormalizerConfig:
         for name in self.__dataclass_fields__:
             raw = getattr(self, name)
             if isinstance(raw, bool):
-                raise ValueError(f"normalizer.{name} must be a finite positive number")
+                raise TypeError(f"normalizer.{name} must be a finite positive number")
             try:
                 value = float(raw)
             except (TypeError, ValueError, OverflowError) as exc:
@@ -43,7 +42,7 @@ def load_normalizer_config(path: Path | None = None) -> NormalizerConfig:
     raw = load_yaml_mapping(config_path, description="policy normalization config")
     values = raw.get("normalizer", {}) or {}
     if not isinstance(values, dict):
-        raise ValueError("normalizer config section must be a mapping")
+        raise TypeError("normalizer config section must be a mapping")
     unknown = values.keys() - NormalizerConfig.__dataclass_fields__.keys()
     if unknown:
         raise ValueError("unknown or removed normalizer options: " + ", ".join(sorted(unknown)))

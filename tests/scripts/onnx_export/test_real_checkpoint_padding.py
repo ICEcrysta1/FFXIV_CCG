@@ -14,7 +14,10 @@ from common.pytorch.serialization import safe_torch_load
 from scripts.onnx_export import CapacityContract, DeploymentManifest
 from scripts.onnx_export.contracts.deployment_profile import DeploymentProfile
 from scripts.onnx_export.export import export_package, load_policy
-from scripts.onnx_export.runtime.validation import validate_pytorch_matrix
+from scripts.onnx_export.runtime.validation import (
+    padding_matrix,
+    validate_pytorch_matrix,
+)
 
 CHECKPOINT_PATH = Path("artifacts/checkpoints/black_mage/artzip_bc/best.pt")
 
@@ -81,7 +84,11 @@ def test_real_bf16_checkpoint_padding_matrix_cuda():
         dtype=dtype,
         device=torch.device("cuda"),
     )
-    assert len(results) == 6
+    assert [
+        (row["scene_valid"], row["history_valid"], row["dead_valid"])
+        for row in results
+    ] == list(padding_matrix(contract))
+    assert any(row["dead_valid"] > 0 for row in results)
     assert all(row["argmax_match"] for row in results)
     assert max(row["max_logit_abs_diff"] for row in results) <= 2.5e-1
 

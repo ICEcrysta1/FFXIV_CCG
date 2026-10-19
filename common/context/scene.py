@@ -8,8 +8,8 @@ from __future__ import annotations
 from .contracts import (
     FORCED_MOVEMENT_CONTEXT_KEY,
     RAID_BUFF_WINDOW_CONTEXT_KEY,
-    TARGETABLE_WINDOW_CONTEXT_KEY,
     TARGET_COUNT_WINDOW_CONTEXT_KEY,
+    TARGETABLE_WINDOW_CONTEXT_KEY,
 )
 from .schema import load_schema_config
 

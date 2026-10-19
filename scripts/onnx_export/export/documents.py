@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import torch
@@ -64,7 +64,7 @@ def write_package_documents(
     if contracts.checkpoint_hash != checkpoint_hash_after:
         raise RuntimeError("checkpoint changed during export")
     report = {
-        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "generated_at_utc": datetime.now(UTC).isoformat(),
         "status": "graph_validated",
         "release_gate": "requires_rollout_parity",
         "checkpoint_sha256_before": contracts.checkpoint_hash,

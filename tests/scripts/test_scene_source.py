@@ -474,14 +474,14 @@ def test_model_cache_recompile_rejects_current_actions_before_writing(scene_cach
         assert not cache_dir.exists()
 
 
-@pytest.mark.parametrize("payload", [None, {"version": 1}])
-def test_default_replay_rejects_missing_or_old_contract(scene_cache, monkeypatch, payload):
+@pytest.mark.parametrize("payload,error_type", [(None, TypeError), ({"version": 1}, ValueError)])
+def test_default_replay_rejects_missing_or_old_contract(scene_cache, monkeypatch, payload, error_type):
     from scripts.autoregressive_replay.config import _resolve_scene_json
 
     root, cache_dir, create = scene_cache
     create("FRU/90-100/current.json.br")
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_SCENE_JSON", "")
-    with pytest.raises(ValueError, match="input contract"):
+    with pytest.raises(error_type, match="input contract"):
         _resolve_scene_json(
             None, raw_root=root, cache_dir=cache_dir, job_tag="black_mage",
             cache_shard_size=768, input_contract_payload=payload,

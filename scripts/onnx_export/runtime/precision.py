@@ -6,7 +6,6 @@ from dataclasses import dataclass
 
 import torch
 
-
 PRECISION_BF16 = "bf16"
 PRECISION_FLOAT16 = "float16"
 PRECISION_FLOAT32 = "float32"

@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import Iterator
 
 from common.game.config import load_project_config
 
@@ -50,7 +49,7 @@ class SkillVocab:
             raise ValueError("skill vocab padding_vocab_id must be 0")
         entries = payload["entries"]
         if not isinstance(entries, (list, tuple)):
-            raise ValueError("skill vocab entries must be a list")
+            raise TypeError("skill vocab entries must be a list")
         pairs = []
         for entry in entries:
             if not isinstance(entry, Mapping) or set(entry) != {"raw_skill_id", "vocab_id"}:
