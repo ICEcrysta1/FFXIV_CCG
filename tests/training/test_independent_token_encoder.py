@@ -7,7 +7,7 @@ import torch
 
 from common.policy.config import ModelConfig
 from common.policy.model import CausalPolicyModel
-from common.policy.model.input_encoder import ROLE_SCENE, ROLE_SKILL, ROLE_STATE
+from common.policy.model.input_encoder import ROLE_SCENE, ROLE_SKILL, ROLE_STATE, ROLE_DEAD
 from tests.training._causal_fixtures import make_batch, make_data_spec
 
 
@@ -20,7 +20,7 @@ def _model(*, full_attention_residuals=False, context_capacity=12):
     return CausalPolicyModel(spec, config, vocab_size=3).eval()
 
 
-@pytest.mark.parametrize("field", ["current_state_null_mask", "history_state_null_mask"])
+@pytest.mark.parametrize("field", ["current_state_null_mask", "history_state_null_mask", "history_dead_positions", "history_dead_mask"])
 @pytest.mark.parametrize("entrypoint", ["model", "input_encoder", "embed_history"])
 def test_model_requires_explicit_state_null_masks(field, entrypoint):
     model = _model()
@@ -268,3 +268,127 @@ def test_unexpected_architecture_weights_are_rejected_by_strict_loading(legacy_k
     weights = {**model.state_dict(), legacy_key: torch.zeros(1)}
     with pytest.raises(RuntimeError, match="Unexpected key"):
         model.load_state_dict(weights, strict=True)
+
+
+def test_death_tokens_preserve_action_pairs_and_stable_boundary_order():
+    model = _model()
+    batch = make_batch(model.data_spec)
+    batch["history_dead_positions"] = torch.tensor([[0, 1, 1, 2]])
+    batch["history_dead_mask"] = torch.ones((1, 4), dtype=torch.bool)
+    encoded = model.input_encoder(batch)
+    assert encoded["role_ids"].tolist() == [[
+        ROLE_SCENE, ROLE_DEAD, ROLE_STATE, ROLE_SKILL,
+        ROLE_DEAD, ROLE_DEAD, ROLE_STATE, ROLE_SKILL, ROLE_DEAD, ROLE_STATE,
+    ]]
+    assert encoded["history_state_positions"].tolist() == [[2, 6]]
+    assert encoded["history_skill_positions"].tolist() == [[3, 7]]
+    assert encoded["history_dead_positions"].tolist() == [[1, 4, 5, 8]]
+    assert encoded["position_ids"].tolist() == [list(range(10))]
+    assert model(batch)["logits"].shape == (1, model.data_spec.num_actions)
+
+
+def test_multiple_deaths_without_any_action_have_independent_tokens():
+    model = _model()
+    batch = make_batch(model.data_spec, scene_length=0, history_length=0)
+    batch["history_dead_positions"] = torch.tensor([[0, 0]])
+    batch["history_dead_mask"] = torch.ones((1, 2), dtype=torch.bool)
+    encoded = model.input_encoder(batch)
+    assert encoded["role_ids"].tolist() == [[ROLE_DEAD, ROLE_DEAD, ROLE_STATE]]
+    assert encoded["position_ids"].tolist() == [[0, 1, 2]]
+    assert encoded["valid"].all()
+    assert encoded["history_skill_positions"].shape == (1, 0)
+    model(batch)["logits"].square().sum().backward()
+    assert torch.count_nonzero(model.input_encoder.dead_embed.weight.grad) > 0
+
+
+@pytest.mark.parametrize("positions", [[-1], [3], [1, 0]])
+def test_invalid_death_boundaries_are_rejected(positions):
+    model = _model()
+    batch = make_batch(model.data_spec)
+    batch["history_dead_positions"] = torch.tensor([positions])
+    batch["history_dead_mask"] = torch.ones((1, len(positions)), dtype=torch.bool)
+    with pytest.raises(ValueError, match="history dead positions"):
+        model(batch)
+
+
+def test_death_tokens_count_towards_capacity_and_ignore_padded_boundaries():
+    model = _model(context_capacity=8)
+    batch = make_batch(model.data_spec)
+    batch["history_dead_positions"] = torch.tensor([[0, 2, -100]])
+    batch["history_dead_mask"] = torch.tensor([[True, True, False]])
+    encoded = model.input_encoder(batch)
+    assert encoded["valid"].sum() == 8
+    batch["history_dead_positions"][0, 2] = 2
+    batch["history_dead_mask"].fill_(True)
+    with pytest.raises(ValueError, match="context_capacity"):
+        model(batch)
+
+
+@pytest.mark.parametrize("full_attention_residuals", [False, True])
+def test_death_embedding_only_affects_its_token_and_later_context(full_attention_residuals):
+    model = _model(full_attention_residuals=full_attention_residuals)
+    batch = make_batch(model.data_spec)
+    batch["history_dead_positions"] = torch.tensor([[1]])
+    batch["history_dead_mask"] = torch.ones((1, 1), dtype=torch.bool)
+    original = model.trace(batch)
+    with torch.no_grad():
+        model.input_encoder.dead_embed.weight.add_(torch.arange(model.config.d_model))
+    changed = model.trace(batch)
+    position = original.encoded["history_dead_positions"][0, 0]
+    torch.testing.assert_close(original.hidden[:, :position], changed.hidden[:, :position], atol=0, rtol=0)
+    assert not torch.allclose(original.hidden[:, position:], changed.hidden[:, position:])
+    assert not torch.allclose(model.score_hidden(original.encoded, original.hidden, batch),
+                              model.score_hidden(changed.encoded, changed.hidden, batch))
+
+
+@pytest.mark.parametrize("full_attention_residuals", [False, True])
+def test_death_prefix_append_and_insertion_match_uncached_forward(full_attention_residuals):
+    model = _model(full_attention_residuals=full_attention_residuals)
+    batch = make_batch(model.data_spec)
+    model.enable_kv_cache(True)
+    for positions in ([], [2], [2, 2], [0, 1, 2]):
+        batch["history_dead_positions"] = torch.tensor([positions], dtype=torch.long)
+        batch["history_dead_mask"] = torch.ones((1, len(positions)), dtype=torch.bool)
+        trace = model.trace(batch)
+        expected = model.score_hidden(trace.encoded, trace.hidden, batch)
+        actual = model(batch)["logits"]
+        torch.testing.assert_close(actual, expected, atol=2e-6, rtol=2e-6)
+
+
+def test_death_padding_and_action_padding_match_standalone_samples():
+    model = _model(context_capacity=9)
+    batch = make_batch(model.data_spec, batch_size=2, history_length=3, scene_length=2)
+    batch["scene_mask"] = torch.tensor([[True, False], [True, True]])
+    batch["history_mask"] = torch.tensor([[False, True, False], [True, True, False]])
+    batch["history_dead_positions"] = torch.tensor([[1, -100], [0, 2]])
+    batch["history_dead_mask"] = torch.tensor([[True, False], [True, True]])
+    logits = model(batch)["logits"]
+    for row in range(2):
+        single = {key: value[row:row + 1] for key, value in batch.items() if isinstance(value, torch.Tensor)}
+        torch.testing.assert_close(logits[row:row + 1], model(single)["logits"], atol=2e-6, rtol=2e-6)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="需要 CUDA 验证死亡 token 的 BF16 主干路径")
+@pytest.mark.parametrize("full_attention_residuals", [False, True])
+def test_death_bf16_cuda_preserves_fp32_embedding_gradients_and_cached_logits(full_attention_residuals):
+    model = _model(full_attention_residuals=full_attention_residuals).cuda().train()
+    model.encoder.bfloat16()
+    model.output_head.bfloat16()
+    batch = make_batch(model.data_spec)
+    batch["history_dead_positions"] = torch.tensor([[0, 1, 1, 2]])
+    batch["history_dead_mask"] = torch.ones((1, 4), dtype=torch.bool)
+    batch = {key: value.cuda() if isinstance(value, torch.Tensor) else value for key, value in batch.items()}
+    with torch.autocast("cuda", dtype=torch.bfloat16):
+        encoded = model.input_encoder(batch)
+        logits = model(batch)["logits"]
+        loss = logits.float().square().sum()
+    loss.backward()
+    weight = model.input_encoder.dead_embed.weight
+    assert encoded["tokens"].dtype == weight.dtype == weight.grad.dtype == torch.float32
+    assert torch.isfinite(weight.grad).all() and torch.count_nonzero(weight.grad) > 0
+    model.eval()
+    with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
+        expected = model(batch)["logits"]
+        model.enable_kv_cache(True)
+        actual = model(batch)["logits"]
+    torch.testing.assert_close(actual, expected, atol=0.02, rtol=0.02)

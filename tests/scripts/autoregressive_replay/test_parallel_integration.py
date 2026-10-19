@@ -200,6 +200,8 @@ def test_context_encoder_prunes_expired_scenes_before_onnx_padding(tmp_path):
         "history_state_delta_reset_mask": torch.zeros((1, 0, spec.base_state_dim), dtype=torch.bool),
         "history_state_skill_availability": torch.zeros((1, 0, 2 * spec.num_actions), dtype=torch.bool),
         "history_mask": torch.zeros((1, 0), dtype=torch.bool),
+        "history_dead_positions": torch.zeros((1, 0), dtype=torch.long),
+        "history_dead_mask": torch.zeros((1, 0), dtype=torch.bool),
         "current_state_abs_values": current,
         "current_state_delta_values": current.clone(),
         "current_state_null_mask": torch.zeros_like(current, dtype=torch.bool),

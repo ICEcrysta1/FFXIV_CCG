@@ -398,6 +398,8 @@ def test_rope_logits_are_invariant_to_other_samples_right_padding():
         "history_skill_features": torch.tensor([[[0.25]]]),
         "history_state_vectors": torch.nn.functional.pad(torch.tensor([[[0.1, 0.2, 0.3]]]), (0, 4)),
         "history_state_null_mask": torch.zeros((1, 1, 3), dtype=torch.bool),
+        "history_dead_positions": torch.empty((1, 0), dtype=torch.long),
+        "history_dead_mask": torch.zeros((1, 0), dtype=torch.bool),
         "history_mask": torch.ones((1, 1), dtype=torch.bool),
         'current_state_vectors': torch.nn.functional.pad((torch.tensor(
             [[[0.2, 0.3, 0.4], [0.5, 0.6, 0.7]]]
@@ -495,6 +497,8 @@ def test_causal_model_appends_one_current_state_token():
         "history_skill_features": torch.zeros((1, 2, 1)),
         "history_state_vectors": torch.nn.functional.pad(torch.zeros((1, 2, 3)), (0, 4)),
         "history_state_null_mask": torch.zeros((1, 2, 3), dtype=torch.bool),
+        "history_dead_positions": torch.empty((1, 0), dtype=torch.long),
+        "history_dead_mask": torch.zeros((1, 0), dtype=torch.bool),
         "history_mask": torch.ones((1, 2), dtype=torch.bool),
         'current_state_vectors': torch.nn.functional.pad((torch.zeros((1, 2, 3)))[:, 0, :], (0, 4)),
         'current_state_null_mask': (torch.zeros((1, 2, 3), dtype=torch.bool))[:, 0, :],
@@ -550,6 +554,8 @@ def test_input_encoder_enforces_shared_context_capacity():
         "history_skill_features": torch.zeros((1, 2, 1)),
         "history_state_vectors": torch.nn.functional.pad(torch.zeros((1, 2, 3)), (0, 4)),
         "history_state_null_mask": torch.zeros((1, 2, 3), dtype=torch.bool),
+        "history_dead_positions": torch.empty((1, 0), dtype=torch.long),
+        "history_dead_mask": torch.zeros((1, 0), dtype=torch.bool),
         "history_mask": torch.ones((1, 2), dtype=torch.bool),
         'current_state_vectors': torch.nn.functional.pad((torch.zeros((1, 2, 3)))[:, 0, :], (0, 4)),
         'current_state_null_mask': (torch.zeros((1, 2, 3), dtype=torch.bool))[:, 0, :],
@@ -602,6 +608,8 @@ def test_model_encode_with_attention_returns_per_head_weights():
         "history_skill_features": torch.zeros((1, 1, 1)),
         "history_state_vectors": torch.nn.functional.pad(torch.zeros((1, 1, 3)), (0, 4)),
         "history_state_null_mask": torch.zeros((1, 1, 3), dtype=torch.bool),
+        "history_dead_positions": torch.empty((1, 0), dtype=torch.long),
+        "history_dead_mask": torch.zeros((1, 0), dtype=torch.bool),
         "history_mask": torch.ones((1, 1), dtype=torch.bool),
         'current_state_vectors': torch.nn.functional.pad((torch.zeros((1, 2, 3)))[:, 0, :], (0, 4)),
         'current_state_null_mask': (torch.zeros((1, 2, 3), dtype=torch.bool))[:, 0, :],
@@ -650,6 +658,8 @@ def test_history_uses_independent_tokens_and_current_state_has_no_skill():
         "history_skill_features": torch.zeros((1, 2, 1)),
         "history_state_vectors": torch.nn.functional.pad(torch.zeros((1, 2, 3)), (0, 4)),
         "history_state_null_mask": torch.zeros((1, 2, 3), dtype=torch.bool),
+        "history_dead_positions": torch.empty((1, 0), dtype=torch.long),
+        "history_dead_mask": torch.zeros((1, 0), dtype=torch.bool),
         "history_mask": torch.ones((1, 2), dtype=torch.bool),
         'current_state_vectors': torch.nn.functional.pad((torch.zeros((1, 2, 3)))[:, 0, :], (0, 4)),
         'current_state_null_mask': (torch.zeros((1, 2, 3), dtype=torch.bool))[:, 0, :],
@@ -698,6 +708,8 @@ def test_input_encoder_routes_all_sources_through_one_post_role_rms(monkeypatch)
         "history_skill_features": torch.zeros((1, 2, 1)),
         "history_state_vectors": torch.nn.functional.pad(torch.zeros((1, 2, 3)), (0, 4)),
         "history_state_null_mask": torch.zeros((1, 2, 3), dtype=torch.bool),
+        "history_dead_positions": torch.empty((1, 0), dtype=torch.long),
+        "history_dead_mask": torch.zeros((1, 0), dtype=torch.bool),
         "history_mask": torch.ones((1, 2), dtype=torch.bool),
         'current_state_vectors': torch.nn.functional.pad((torch.zeros((1, 2, 3)))[:, 0, :], (0, 4)),
         'current_state_null_mask': (torch.zeros((1, 2, 3), dtype=torch.bool))[:, 0, :],
@@ -730,7 +742,7 @@ def test_input_encoder_routes_all_sources_through_one_post_role_rms(monkeypatch)
     assert not any(isinstance(module, torch.nn.LayerNorm)
                    for module in model.input_encoder.modules())
     assert model.input_encoder.scene_proj[0].out_features == 8
-    assert model.input_encoder.role_embed.num_embeddings == 3
+    assert model.input_encoder.role_embed.num_embeddings == 4
     assert "input_encoder.cls_token" not in model.state_dict()
     assert not hasattr(model.input_encoder, "token_embedding")
     assert not hasattr(model.input_encoder, "segment_embed")

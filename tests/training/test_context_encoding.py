@@ -9,7 +9,7 @@ import torch
 
 from common.policy.config import ModelConfig
 from common.policy.data.context_encoding import ContextEncoder, raw_state_delta
-from common.policy.data.history_window import history_window_length
+from common.policy.data.history_window import fit_history_suffix_length, history_window_length
 from common.policy.data.normalization import NormalizerConfig
 from common.policy.data.normalizer import NORMALIZER_CONTRACT_VERSION, Normalizer
 from common.policy.data.schema import SceneWindowSchema, TrainingSchema
@@ -405,6 +405,94 @@ def test_additional_history_crop_rechecks_budget_when_request_times_go_backwards
     kwargs = dict(request_times=(0.1, 0.0), scene_end_times=(0.05,) * 7, current_request_time=0.2)
     assert history_window_length(2, 9, 2, **kwargs) == 2
     assert history_window_length(2, 9, 2, max_history=1, **kwargs) == 0
+
+
+def test_death_markers_reset_at_their_first_overflowing_boundary():
+    kwargs = dict(request_times=range(20), scene_end_times=(), current_request_time=5.0)
+    marker = {"after_history_length": 5}
+    assert history_window_length(5, 11, 2, **kwargs) == 5
+    assert history_window_length(5, 11, 2, history_markers=(marker,), **kwargs) == 2
+    assert history_window_length(8, 11, 2, history_markers=(marker,), **kwargs) == 2
+    # 起点恰落在标记边界时仍需计入，不能在重置后把边界事件丢掉。
+    assert history_window_length(12, 15, 2, history_markers=(marker,), **kwargs) == 2
+
+
+def test_death_marker_budget_handles_zero_actions_and_repeated_same_cursor():
+    kwargs = dict(request_times=(), scene_end_times=(), current_request_time=0.0)
+    markers = ({"after_history_length": 0},) * 2
+    assert history_window_length(0, 3, 1, history_markers=markers, **kwargs) == 0
+    assert fit_history_suffix_length(0, 3, total_history=0, history_markers=markers, **kwargs) == 0
+    with pytest.raises(ValueError, match="cannot hold"):
+        history_window_length(0, 3, 1, history_markers=markers * 2, **kwargs)
+    with pytest.raises(ValueError, match="cannot hold"):
+        fit_history_suffix_length(0, 3, total_history=0, history_markers=markers * 2, **kwargs)
+
+
+def test_death_markers_are_filtered_inclusively_when_fitting_a_suffix():
+    markers = tuple({"after_history_length": position} for position in (0, 2, 2, 3))
+    kwargs = dict(total_history=3, request_times=range(3), scene_end_times=(), current_request_time=3.0)
+    assert fit_history_suffix_length(1, 6, history_markers=markers, **kwargs) == 1
+    assert fit_history_suffix_length(1, 5, history_markers=markers, **kwargs) == 0
+
+
+@pytest.mark.parametrize("positions", [(True,), (-1,), (2,), (1, 0)])
+def test_history_window_rejects_invalid_death_boundaries(positions):
+    with pytest.raises(ValueError, match="history marker"):
+        history_window_length(
+            1, 5, 1, request_times=(0.0,), scene_end_times=(), current_request_time=1.0,
+            history_markers=tuple({"after_history_length": position} for position in positions),
+        )
+
+
+def test_death_window_planning_matches_sequential_action_and_marker_arrivals():
+    import random
+
+    rng = random.Random(731)
+    for _ in range(300):
+        total, capacity, keep = rng.randrange(13), rng.randrange(5, 20), rng.randrange(1, 3)
+        times = tuple(rng.randrange(12) for _ in range(total))
+        ends = tuple(sorted(rng.randrange(12) for _ in range(rng.randrange(5))))
+        positions = sorted(rng.randrange(total + 1) for _ in range(rng.randrange(7)))
+        markers = tuple({"after_history_length": position} for position in positions)
+
+        def replay_arrivals():
+            start = 0
+            arrived = []
+
+            def fit(cursor):
+                nonlocal start
+                while True:
+                    anchor = times[start] if start < total else 12.0
+                    scenes = sum(end > anchor for end in ends)
+                    tokens = scenes + 2 * (cursor - start) + 1 + sum(position >= start for position in arrived)
+                    if tokens <= capacity:
+                        return
+                    next_start = max(0, cursor - keep)
+                    if next_start <= start:
+                        raise ValueError("cannot hold required context")
+                    start = next_start
+
+            for cursor in range(total + 1):
+                fit(cursor)
+                for position in positions:
+                    if position == cursor:
+                        arrived.append(position)
+                        fit(cursor)
+            return total - start
+
+        try:
+            expected = replay_arrivals()
+        except ValueError:
+            with pytest.raises(ValueError, match="cannot hold"):
+                history_window_length(
+                    total, capacity, keep, request_times=times, scene_end_times=ends,
+                    current_request_time=12.0, history_markers=markers,
+                )
+        else:
+            assert history_window_length(
+                total, capacity, keep, request_times=times, scene_end_times=ends,
+                current_request_time=12.0, history_markers=markers,
+            ) == expected
 
 
 def test_random_history_crop_also_rechecks_budget_without_mutating_the_source():

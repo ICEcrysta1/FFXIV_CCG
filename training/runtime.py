@@ -246,11 +246,12 @@ def summarize_batch(batch: Mapping[str, object], *, context_capacity: int) -> di
     if history_length is None:
         history_length = _shape_value(batch, "history_mask", 1)
     scene_length = _shape_value(batch, "scene_vectors", 1)
+    dead_length = _shape_value(batch, "history_dead_mask", 1) or 0
     action_count = _shape_value(batch, "action_legal_mask", 1)
     history_token_length = None if history_length is None else 2 * history_length
     sequence_length = None
     if scene_length is not None and history_length is not None:
-        sequence_length = min(scene_length + history_token_length + 1, context_capacity)
+        sequence_length = min(scene_length + history_token_length + dead_length + 1, context_capacity)
     return {
         "batch_size": batch_size,
         "history_length": history_length,

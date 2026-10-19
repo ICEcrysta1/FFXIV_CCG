@@ -48,7 +48,8 @@ from ..runtime.tensor_runtime import golden_encoding
 #     黑魔绝望最低 MP 修正为 800，拒绝旧输入与旧状态机规则的部署产物。
 #     同版本统一数值入口与输入投影为 FP32，主干及输出沿用部署精度。
 # 27：将场景、历史和当前状态收敛为统一 token 预算，拒绝旧容量结构。
-DEPLOYMENT_CONTRACT_VERSION = 27
+# 28：增加独立死亡事件输入与 embedding，所有事件纳入共用 token 预算。
+DEPLOYMENT_CONTRACT_VERSION = 28
 DEPLOYMENT_MANIFEST_VERSION = 17
 MANIFEST_SCHEMA_FILENAME = "manifest.schema.json"
 
@@ -292,7 +293,8 @@ class DeploymentContract:
 
     def tensor_inputs(self) -> tuple[TensorSpec, ...]:
         dimensions = tensor_dimensions(self.data_spec, batch=self.capacity.batch_size,
-                                       scene=self.capacity.scene_capacity, history=self.capacity.history_capacity)
+                                       scene=self.capacity.scene_capacity, history=self.capacity.history_capacity,
+                                       dead=self.capacity.dead_capacity)
         semantics = {
             "scene_vectors": "host FP32 anchor-clipped then time-differenced scene vectors; FP32 projection",
             "scene_types": "scene type ids",
@@ -306,6 +308,8 @@ class DeploymentContract:
             "current_state_null_mask": "current base state null flags",
             "history_state_reset_mask": "base per-field ABS reset markers; first visible state is absolute",
             "current_state_reset_mask": "current base per-field ABS reset markers",
+            "history_dead_positions": "nondecreasing visible action boundaries in [0, history_valid]; equal boundaries retain event order",
+            "history_dead_mask": "true for valid death events; right-padded false",
         }
         # 数值入口保持宿主编码的 FP32，主干与输出沿用部署精度。
         dtypes = {"float32": "tensor(float)", "float": "tensor(float)", "index": "tensor(int64)", "bool": "tensor(bool)"}
@@ -344,7 +348,16 @@ class DeploymentContract:
             raise ValueError("history_skill_ids contains an id outside the deployment vocab")
         _validate_right_padding(named_inputs["scene_mask"], "scene_mask")
         _validate_right_padding(named_inputs["history_mask"], "history_mask")
-        valid_tokens = named_inputs["scene_mask"].sum(dim=1) + 2 * named_inputs["history_mask"].sum(dim=1) + 1
+        dead_mask = named_inputs["history_dead_mask"]
+        dead_positions = named_inputs["history_dead_positions"]
+        _validate_right_padding(dead_mask, "history_dead_mask")
+        history_valid = named_inputs["history_mask"].sum(dim=1)
+        invalid_dead_positions = (dead_positions < 0) | (dead_positions > history_valid.unsqueeze(1))
+        if bool((invalid_dead_positions & dead_mask).any()):
+            raise ValueError("history_dead_positions contains a boundary outside visible history")
+        if bool(((dead_positions[:, 1:] < dead_positions[:, :-1]) & dead_mask[:, 1:]).any()):
+            raise ValueError("history_dead_positions must be nondecreasing")
+        valid_tokens = named_inputs["scene_mask"].sum(dim=1) + 2 * history_valid + dead_mask.sum(dim=1) + 1
         if bool((valid_tokens > self.capacity.context_capacity).any()):
             raise ValueError("valid scene and history exceed shared context_capacity")
         for prefix in ("history", "current"):

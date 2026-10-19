@@ -25,6 +25,10 @@ def test_runtime_sequence_length_uses_shared_physical_budget():
     batch = {"scene_vectors": torch.zeros((2, 900, 4)),
              "history_mask": torch.ones((2, 500), dtype=torch.bool)}
     assert summarize_batch(batch, context_capacity=1024)["sequence_length"] == 1024
+    batch = {"scene_vectors": torch.zeros((2, 1, 4)),
+             "history_mask": torch.ones((2, 2), dtype=torch.bool),
+             "history_dead_mask": torch.ones((2, 3), dtype=torch.bool)}
+    assert summarize_batch(batch, context_capacity=16)["sequence_length"] == 9
 
 
 @pytest.mark.parametrize("compact_history", [False, True])

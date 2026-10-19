@@ -44,6 +44,8 @@ def make_batch(data_spec=None, *, batch_size=1, history_length=2, scene_length=1
         "history_state_null_mask": torch.zeros((batch_size, history_length, spec.base_state_dim), dtype=torch.bool),
         "history_state_reset_mask": (torch.arange(history_length).reshape(1, -1, 1) == 0).expand(batch_size, -1, spec.base_state_dim),
         "history_mask": torch.ones((batch_size, history_length), dtype=torch.bool),
+        "history_dead_positions": torch.empty((batch_size, 0), dtype=torch.long),
+        "history_dead_mask": torch.empty((batch_size, 0), dtype=torch.bool),
         "current_state_vectors": torch.zeros((batch_size, spec.state_dim), dtype=dtype),
         "current_state_null_mask": torch.zeros((batch_size, spec.base_state_dim), dtype=torch.bool),
         "current_state_reset_mask": torch.full((batch_size, spec.base_state_dim), history_length == 0, dtype=torch.bool),

@@ -137,6 +137,7 @@ class ReplaySnapshot:
     reference_row: ReplayRow
     # 调度阶段只用于调用方动作过滤，不作为模型数值输入。
     gcd_phase: bool
+    history_markers: tuple[dict[str, object], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -609,6 +610,7 @@ class AutoregressiveReplay:
                         gcd_phase=snapshot.gcd_phase,
                         gcd_step=snapshot.reference_row.gcd_step,
                         max_history=history_limit,
+                        history_markers=snapshot.history_markers,
                     )
                     rows.append(
                         replace(
@@ -732,6 +734,9 @@ class AutoregressiveReplay:
                 format="vector",
                 next_observation_timestamp=next_observation,
             ).context if capture_snapshots else None
+            decision_markers = tuple(
+                dict(marker) for marker in getattr(self._state_machine, "history_markers", ())
+            ) if capture_snapshots else ()
             gcd_phase = is_gcd_decision(state.gcd_remaining)
             try:
                 row = self._predict_row(
@@ -766,7 +771,7 @@ class AutoregressiveReplay:
                 )
                 if capture_snapshots:
                     snapshots.append(
-                        ReplaySnapshot(decision_canonical, row, gcd_phase)
+                        ReplaySnapshot(decision_canonical, row, gcd_phase, decision_markers)
                     )
                 rows.append(row)
                 continue
@@ -787,7 +792,7 @@ class AutoregressiveReplay:
             row = replace(row, gcd_step=gcd_step)
             if capture_snapshots:
                 snapshots.append(
-                    ReplaySnapshot(decision_canonical, row, gcd_phase)
+                    ReplaySnapshot(decision_canonical, row, gcd_phase, decision_markers)
                 )
             rows.append(row)
         if max_gcds is not None and gcd_step < max_gcds:
@@ -820,11 +825,13 @@ class AutoregressiveReplay:
         gcd_phase: bool,
         gcd_step: int,
         max_history: int,
+        history_markers=(),
     ) -> ReplayRow:
         batch, action_keys = self.batcher.build_from_canonical(
             canonical,
             gcd_phase=gcd_phase,
             max_history=max_history,
+            history_markers=history_markers,
         )
         return self._score_row(
             batch,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from copy import deepcopy
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -111,6 +112,7 @@ def test_capacity_contract_rejects_invalid_or_oversized_layout():
     assert contract.total_token_count == 20
     assert contract.scene_capacity == 19
     assert contract.history_capacity == 9
+    assert contract.dead_capacity == 19
     assert CapacityContract(1024).total_token_count == 1024
     assert CapacityContract.from_dict(contract.to_dict()) == contract
     old_layout = dict(contract.to_dict(), scene_capacity=3, history_capacity=8)
@@ -307,6 +309,15 @@ def test_low_precision_export_keeps_fp32_input_values_and_weights(tmp_path, prec
     assert artifacts.alignment["onnx_float_initializer_dtype_counts"]["float32"] > 1
     assert artifacts.alignment["onnx_requested_precision_initializer_count"] > 1
     assert artifacts.alignment["onnx_other_float_initializer_max_elements"] <= 1
+    expected_dead = contracts.policy.model.input_encoder.dead_embed.weight.detach().cpu()
+    assert any(
+        initializer.data_type == onnx.TensorProto.FLOAT
+        and len(initializer.dims) >= 3
+        and initializer.dims[-1] == expected_dead.shape[-1]
+        and torch.equal(torch.from_numpy(numpy_helper.to_array(initializer).copy()).reshape(-1, expected_dead.shape[-1]),
+                        expected_dead.expand(math.prod(initializer.dims[:-1]), -1))
+        for initializer in model_proto.graph.initializer
+    )
 
 
 def test_zero_padding_fill_clears_all_padding_dtypes():
@@ -352,19 +363,21 @@ def test_dynamic_slice_and_padding_follow_fields_when_input_order_changes(monkey
     """输入次序变化时，历史 reset 等序列字段仍按各自轴裁剪和补位。"""
     spec = SimpleNamespace(scene_dim=2, num_scene_types=4, skill_feature_dim=3, base_state_dim=5, state_dim=9, num_actions=2)
     inputs = make_inputs(spec, CapacityContract(12), vocab_size=8,
-                         scene_valid=1, history_valid=2, dtype=torch.float32, seed=17)
+                         scene_valid=1, history_valid=2, dead_valid=2, dtype=torch.float32, seed=17)
     fields = tuple(reversed(MODEL_INPUT_FIELDS))
     monkeypatch.setattr(tensor_contract_module, "MODEL_INPUT_FIELDS", fields)
     inputs = tuple(reversed(inputs))
     sliced = dict(zip((field.name for field in fields), slice_dynamic_inputs(
-        inputs, scene_valid=1, history_valid=2,
+        inputs, scene_valid=1, history_valid=2, dead_valid=2,
     ), strict=True))
     assert sliced["scene_vectors"].shape == (1, 1, 2)
     assert sliced["history_state_vectors"].shape == (1, 2, 9)
     assert sliced["history_state_reset_mask"].shape == (1, 2, 5)
     assert sliced["current_state_vectors"].shape == (1, 9)
+    assert sliced["history_dead_positions"].shape == (1, 2)
+    assert sliced["history_dead_mask"].tolist() == [[True, True]]
     padded = dict(zip((field.name for field in fields), tensor_contract_module.fill_padding_values(
-        inputs, scene_valid=1, history_valid=2, value=7.0,
+        inputs, scene_valid=1, history_valid=2, dead_valid=2, value=7.0,
     ), strict=True))
     assert (padded["scene_vectors"][:, 1:] == 7).all()
     assert (padded["history_state_vectors"][:, 2:] == 7).all()
@@ -372,6 +385,8 @@ def test_dynamic_slice_and_padding_follow_fields_when_input_order_changes(monkey
     assert not padded["history_state_reset_mask"][:, 2:].any()
     assert not padded["history_mask"][:, 2:].any()
     assert not padded["scene_mask"][:, 1:].any()
+    assert not padded["history_dead_mask"][:, 2:].any()
+    assert not padded["history_dead_positions"][:, 2:].any()
 
 
 def test_default_deployment_profile_rejects_unsafe_job_tag():
@@ -618,7 +633,9 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
     assert manifest["contract"]["capacity"]["capacity_unit"] == "tokens"
     assert manifest["contract"]["capacity"]["history_tokens_per_action"] == 2
     assert manifest["contract"]["capacity"]["total_token_count"] == 12
-    assert manifest["contract"]["capacity"]["token_order"] == "scene, (state_i, skill_i)*H, current_state"
+    assert manifest["contract"]["capacity"]["token_order"] == TOKEN_ENCODING_CONTRACT["token_order"]
+    assert manifest["contract"]["capacity"]["effective_sequence_length"] == "scene_valid + 2 * history_valid + dead_valid + 1"
+    assert "dead_valid=1" in manifest["golden"]["case"]
     provenance = manifest["contract"]["capacity_provenance"]
     assert provenance["context_capacity_source"] == "checkpoint.model_config.context_capacity"
     assert manifest["contract"]["model_config"]["d_model"] == 16
@@ -693,6 +710,7 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
         vocab_size=8,
         scene_valid=2,
         history_valid=3,
+        dead_valid=3,
         dtype=torch.float32,
         seed=73,
     )
@@ -700,6 +718,7 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
         fixed_inputs,
         scene_valid=2,
         history_valid=3,
+        dead_valid=3,
     )
     live_batch = dict(zip(TENSOR_INPUT_NAMES, dynamic_inputs, strict=True))
     live_batch.update(
@@ -725,6 +744,13 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
     assert parity["top1_match"] is True
     assert parity["top3_set_match"] is True
     assert parity["reference_top3"] == parity["compared_top3"]
+
+    # 同一个 ORT 图必须消费死亡 mask；去掉事件后仍与 PyTorch 一致，且输出确实变化。
+    without_dead = {**live_batch, "history_dead_mask": torch.zeros_like(live_batch["history_dead_mask"])}
+    dead_logits = ort_backend.raw_logits(live_batch, data_spec.action_keys)
+    no_dead_logits = ort_backend.raw_logits(without_dead, data_spec.action_keys)
+    assert (dead_logits - no_dead_logits).abs().max().item() > 1e-4
+    assert compare_backend_logits(pytorch_backend, ort_backend, without_dead, data_spec.action_keys)["max_abs_diff"] <= 1e-4
 
     # 已学习的 scalar 影响真实 logits；导出 parity 不能仅覆盖初始化 ramp。
     mix = pytorch_backend.model.encoder.residual_mix
@@ -1369,10 +1395,12 @@ def test_deployment_state_masks_use_base_width_and_outer_layout_cannot_override_
     contract = load_policy_contracts(checkpoint_path=checkpoint, deployment_profile_path=profile,
                                      precision="float32").deployment_contract
     fields = {field.name: field for field in contract.tensor_inputs()}
-    assert len(fields) == 12
+    assert len(fields) == 14
     assert fields["current_state_vectors"].shape[-1] == spec.state_dim == 9
     assert fields["current_state_null_mask"].shape[-1] == spec.base_state_dim == 3
     assert fields["history_state_reset_mask"].shape[-1] == spec.base_state_dim
+    assert fields["history_dead_positions"].shape == (1, contract.capacity.dead_capacity)
+    assert fields["history_dead_mask"].dtype == "tensor(bool)"
     inputs = make_inputs(spec, contract.capacity, vocab_size=8, scene_valid=1, history_valid=1,
                          dtype=torch.float32, seed=19)
     contract.validate_tensor_inputs(inputs)
@@ -1389,6 +1417,33 @@ def test_deployment_state_masks_use_base_width_and_outer_layout_cannot_override_
     payload["state_layout"][0]["feature_keys"].reverse()
     with pytest.raises(ValueError, match="authoritative layouts"):
         DeploymentContract.from_dict(payload)
+
+
+@pytest.mark.parametrize(("positions", "mask", "message"), (
+    ((-1, 1), (True, True), "outside visible history"),
+    ((0, 3), (True, True), "outside visible history"),
+    ((2, 0), (True, True), "nondecreasing"),
+    ((0, 1), (False, True), "right padding"),
+))
+def test_deployment_rejects_invalid_dead_event_boundaries(tmp_path, positions, mask, message):
+    from scripts.onnx_export.export.checkpoint import load_policy_contracts
+
+    checkpoint, profile = tmp_path / "checkpoint.pt", tmp_path / "profile.json"
+    spec, _ = _write_small_checkpoint(checkpoint)
+    _write_small_profile(profile)
+    contract = load_policy_contracts(checkpoint_path=checkpoint, deployment_profile_path=profile,
+                                     precision="float32").deployment_contract
+    inputs = make_inputs(spec, contract.capacity, vocab_size=8, scene_valid=1, history_valid=2,
+                         dead_valid=2, dtype=torch.float32, seed=19)
+    named = dict(zip(TENSOR_INPUT_NAMES, inputs, strict=True))
+    # 同边界连续多个事件合法，mask=false 的补位数值不参与边界校验。
+    named["history_dead_positions"][:, :2] = 2
+    named["history_dead_positions"][:, 2:] = -99
+    contract.validate_tensor_inputs(inputs)
+    named["history_dead_positions"][:, :2] = torch.tensor(positions)
+    named["history_dead_mask"][:, :2] = torch.tensor(mask)
+    with pytest.raises(ValueError, match=message):
+        contract.validate_tensor_inputs(inputs)
 
 
 @pytest.mark.parametrize("full_attention_residuals", [False, True])

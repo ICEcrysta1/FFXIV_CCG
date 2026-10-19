@@ -154,7 +154,7 @@ def build_manifest(
             "sha256": file_sha256(package_dir / "capacity_report.json"),
         },
         "golden": {
-            "case": "scene_valid=0,history_valid=0,random_padding",
+            "case": f"scene_valid=0,history_valid=0,dead_valid={min(1, contracts.contract.dead_capacity)},random_padding",
             "format": GOLDEN_FORMAT,
             "float_encoding": golden_encoding(precision),
             "inputs": {

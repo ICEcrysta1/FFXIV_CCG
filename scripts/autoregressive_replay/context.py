@@ -194,6 +194,7 @@ class LiveBatchBuilder:
             canonical,
             gcd_phase=is_gcd_decision(state.gcd_remaining),
             max_history=self._max_history if max_history is None else max_history,
+            history_markers=getattr(self._backend, "history_markers", ()),
         )
 
     def build_from_canonical(
@@ -202,12 +203,14 @@ class LiveBatchBuilder:
         *,
         gcd_phase: bool,
         max_history: int | None = None,
+        history_markers=(),
     ):
         """复用决策上下文和调用方阶段；调度计时不从模型特征反推。"""
         return self._build_batch_from_canonical(
             canonical,
             gcd_phase=gcd_phase,
             max_history=max_history,
+            history_markers=history_markers,
         )
 
     def _build_batch_from_canonical(
@@ -216,6 +219,7 @@ class LiveBatchBuilder:
         *,
         gcd_phase: bool,
         max_history: int | None,
+        history_markers,
     ):
         if canonical.get("schema_version") != self._schema.context_schema_version:
             raise ValueError("live canonical context schema version differs from saved input contract")
@@ -251,7 +255,13 @@ class LiveBatchBuilder:
             request_times=request_times, scene_end_times=self._scene_end_times,
             current_request_time=float(current_state.base_values[0, self._layout.request_time_index]),
             max_history=max_history,
+            history_markers=history_markers,
         )
+        window_start = cursor - visible_length
+        dead_positions = [
+            marker["after_history_length"] - window_start for marker in history_markers
+            if window_start <= marker["after_history_length"] <= cursor
+        ]
         skill_history = _tail_history(canonical["skill_history_context"], visible_length)
         state_history = canonical["state_history_context"]
         state_history_tokens = _tail_history(state_history["tokens"], visible_length)
@@ -307,6 +317,8 @@ class LiveBatchBuilder:
                 dtype=torch.bool,
                 device=self._device,
             ),
+            "history_dead_positions": torch.tensor([dead_positions], dtype=torch.long, device=self._device),
+            "history_dead_mask": torch.ones((1, len(dead_positions)), dtype=torch.bool, device=self._device),
             "current_state_abs_values": current_state_vectors,
             "current_state_delta_values": current_deltas,
             "current_state_null_mask": current_state_null_mask,

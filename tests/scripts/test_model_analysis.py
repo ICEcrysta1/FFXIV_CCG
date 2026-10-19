@@ -271,6 +271,9 @@ def test_sample_token_count_supports_compact_history_bank_samples():
     assert [attention_output._sample_token_count(sample) for sample in samples] == [2, 6, 12]
     assert max(samples, key=attention_output._sample_token_count)["history_length"] == 5
     assert attention_output._sample_token_count({"scene_abs_values": [[0.0]] * 3, "history_length": 2}) == 8
+    sample = {"scene_abs_values": [[0.0]], "history_length": 2, "history_end": 5,
+              "_history_markers": tuple({"after_history_length": position} for position in (0, 2, 2, 4))}
+    assert attention_output._sample_token_count(sample) == 9
 
 
 def _analysis_schema(action_keys=("a", "b"), *, include_mp=True):
@@ -817,7 +820,7 @@ def test_model_analysis_outputs_generate_pngs(monkeypatch, tmp_path):
         numeric=False,
     )[0] == "PC2"
     handles, labels = pca_output._legend_handles()
-    assert len(handles) == len(labels) == 3
+    assert len(handles) == len(labels) == 4
 
     skill_path = skill_output.plot_skill_embedding(context)
     assert skill_path.is_file()

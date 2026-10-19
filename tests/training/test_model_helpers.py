@@ -531,6 +531,8 @@ def _encoder_batch() -> dict[str, torch.Tensor]:
         "history_skill_features": torch.zeros((1, 1, 1)),
         "history_state_vectors": torch.nn.functional.pad(torch.zeros((1, 1, 3)), (0, 4)),
         "history_state_null_mask": torch.zeros((1, 1, 3), dtype=torch.bool),
+        "history_dead_positions": torch.empty((1, 0), dtype=torch.long),
+        "history_dead_mask": torch.zeros((1, 0), dtype=torch.bool),
         "history_mask": torch.ones((1, 1), dtype=torch.bool),
         "current_state_vectors": torch.nn.functional.pad(torch.zeros((1, 3)), (0, 4)),
         "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),

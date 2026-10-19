@@ -242,6 +242,8 @@ def test_parity_fixed_capacity_batch_stays_on_reference_device(tmp_path):
             TensorSpec("current_state_null_mask", "tensor(bool)", (b, bd), ""),
             TensorSpec("history_state_reset_mask", "tensor(bool)", (b, h, bd), ""),
             TensorSpec("current_state_reset_mask", "tensor(bool)", (b, bd), ""),
+            TensorSpec("history_dead_positions", "tensor(int64)", (b, contract.dead_capacity), ""),
+            TensorSpec("history_dead_mask", "tensor(bool)", (b, contract.dead_capacity), ""),
         )
 
     fake_contract = SimpleNamespace(

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 
+from common.policy.data.context_fields import MODEL_INPUT_NAMES
 from common.policy.model.causal_encoder import run_causal_encoder
 from common.policy.model.trace import trace_encoder
 
@@ -56,6 +57,8 @@ class OnnxPolicy(nn.Module):
         current_state_null_mask: torch.Tensor,
         history_state_reset_mask: torch.Tensor,
         current_state_reset_mask: torch.Tensor,
+        history_dead_positions: torch.Tensor,
+        history_dead_mask: torch.Tensor,
     ) -> torch.Tensor:
         """执行无字符串、无策略后处理、无内部 KV cache 的动作打分。"""
         batch = _build_batch(
@@ -71,6 +74,8 @@ class OnnxPolicy(nn.Module):
             current_state_null_mask,
             history_state_reset_mask,
             current_state_reset_mask,
+            history_dead_positions,
+            history_dead_mask,
         )
         compute_model = self.compute_model or self.model
         encoded = compute_model.input_encoder(batch)
@@ -115,34 +120,7 @@ class OnnxPolicyTrace:
 
 
 def _build_batch(*inputs: torch.Tensor) -> dict[str, torch.Tensor]:
-    (
-        scene_vectors,
-        scene_types,
-        scene_mask,
-        history_skill_ids,
-        history_skill_features,
-        history_state_vectors,
-        history_state_null_mask,
-        history_mask,
-        current_state_vectors,
-        current_state_null_mask,
-        history_state_reset_mask,
-        current_state_reset_mask,
-    ) = inputs
-    return {
-        "scene_vectors": scene_vectors,
-        "scene_types": scene_types,
-        "scene_mask": scene_mask,
-        "history_skill_ids": history_skill_ids,
-        "history_skill_features": history_skill_features,
-        "history_state_vectors": history_state_vectors,
-        "history_state_null_mask": history_state_null_mask,
-        "history_mask": history_mask,
-        "current_state_vectors": current_state_vectors,
-        "current_state_null_mask": current_state_null_mask,
-        "history_state_reset_mask": history_state_reset_mask,
-        "current_state_reset_mask": current_state_reset_mask,
-    }
+    return dict(zip(MODEL_INPUT_NAMES, inputs, strict=True))
 
 
 def _raw_logits(model, encoded, hidden):

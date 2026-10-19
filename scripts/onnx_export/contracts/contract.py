@@ -38,6 +38,11 @@ class CapacityContract:
         return (self.context_capacity - 1) // 2
 
     @property
+    def dead_capacity(self) -> int:
+        """死亡事件各占一个 token，与场景和动作共用总预算。"""
+        return self.context_capacity - 1
+
+    @property
     def total_token_count(self) -> int:
         """场景、历史与当前状态共用的物理 token 上限。"""
         return self.context_capacity
@@ -60,6 +65,7 @@ class CapacityContract:
             "padding_direction",
             "scene_padding_mask_value",
             "history_padding_mask_value",
+            "dead_padding_mask_value",
             "position_ids",
             "over_capacity",
             "capacity_unit",
@@ -74,6 +80,8 @@ class CapacityContract:
             raise ValueError("scene padding mask value must be false")
         if payload["history_padding_mask_value"] is not False:
             raise ValueError("history padding mask value must be false")
+        if payload["dead_padding_mask_value"] is not False:
+            raise ValueError("dead padding mask value must be false")
         if payload["over_capacity"] != "reject":
             raise ValueError("deployment contract v1 only supports reject over-capacity")
         if payload["position_ids"] != POSITION_ID_SEMANTICS:
@@ -84,7 +92,7 @@ class CapacityContract:
             raise ValueError("deployment history capacity must represent two tokens per action")
         if payload["token_order"] != TOKEN_ORDER:
             raise ValueError("unsupported deployment token order")
-        if payload["effective_sequence_length"] != "scene_valid + 2 * history_valid + 1":
+        if payload["effective_sequence_length"] != "scene_valid + 2 * history_valid + dead_valid + 1":
             raise ValueError("unsupported deployment effective sequence length")
         contract = cls(
             context_capacity=payload["context_capacity"],
@@ -101,13 +109,14 @@ class CapacityContract:
             **asdict(self),
             "scene_padding_mask_value": False,
             "history_padding_mask_value": False,
+            "dead_padding_mask_value": False,
             "position_ids": POSITION_ID_SEMANTICS,
             "over_capacity": "reject",
             "capacity_unit": "tokens",
             "history_tokens_per_action": TOKEN_ENCODING_CONTRACT["history_tokens_per_action"],
             "token_order": TOKEN_ORDER,
             "total_token_count": self.total_token_count,
-            "effective_sequence_length": "scene_valid + 2 * history_valid + 1",
+            "effective_sequence_length": "scene_valid + 2 * history_valid + dead_valid + 1",
         }
 
 
@@ -120,6 +129,7 @@ def make_inputs(
     history_valid: int,
     dtype: torch.dtype,
     seed: int,
+    dead_valid: int = 0,
     padding_fill: str = "random",
 ) -> tuple[torch.Tensor, ...]:
     """生成右侧 padding 的固定容量输入；超容量一律拒绝，不静默截断。"""
@@ -127,13 +137,16 @@ def make_inputs(
         raise ValueError("scene_valid is outside capacity")
     if not 0 <= history_valid <= contract.history_capacity:
         raise ValueError("history_valid is outside capacity")
-    if scene_valid + 2 * history_valid + 1 > contract.context_capacity:
+    if not 0 <= dead_valid <= contract.dead_capacity:
+        raise ValueError("dead_valid is outside capacity")
+    if scene_valid + 2 * history_valid + dead_valid + 1 > contract.context_capacity:
         raise ValueError("valid scene and history exceed shared context_capacity")
     if padding_fill not in {"zero", "random"}:
         raise ValueError("padding_fill must be zero or random")
     generator = torch.Generator(device="cpu").manual_seed(seed)
     batch_size = contract.batch_size
-    dimensions = tensor_dimensions(data_spec, batch=batch_size, scene=contract.scene_capacity, history=contract.history_capacity)
+    dimensions = tensor_dimensions(data_spec, batch=batch_size, scene=contract.scene_capacity,
+                                   history=contract.history_capacity, dead=contract.dead_capacity)
 
     def shape(name: str) -> tuple[int, ...]:
         return MODEL_INPUT_FIELDS_BY_NAME[name].resolve_shape(dimensions)
@@ -201,6 +214,11 @@ def make_inputs(
         "current_state_null_mask": current_state_null_mask,
         "history_state_reset_mask": history_state_reset_mask,
         "current_state_reset_mask": current_state_reset_mask,
+        "history_dead_positions": torch.div(
+            torch.arange(contract.dead_capacity) * (history_valid + 1),
+            max(dead_valid, 1), rounding_mode="floor",
+        ).clamp(max=history_valid).unsqueeze(0),
+        "history_dead_mask": _length_mask(dead_valid, contract.dead_capacity),
     }
     result = tuple(named_inputs[name] for name in TENSOR_INPUT_NAMES)
     if padding_fill == "zero":
@@ -208,6 +226,7 @@ def make_inputs(
             result,
             scene_valid=scene_valid,
             history_valid=history_valid,
+            dead_valid=dead_valid,
             value=0.0,
         )
     return result
@@ -218,9 +237,10 @@ def slice_dynamic_inputs(
     *,
     scene_valid: int,
     history_valid: int,
+    dead_valid: int = 0,
 ) -> tuple[torch.Tensor, ...]:
     """从右侧补位输入恢复动态长度 PyTorch 基线。"""
-    lengths = {"scene": scene_valid, "history": history_valid}
+    lengths = {"scene": scene_valid, "history": history_valid, "dead": dead_valid}
     values = []
     for field, tensor in zip(MODEL_INPUT_FIELDS, inputs, strict=True):
         if field.sequence_axis is not None:
@@ -237,13 +257,14 @@ def fill_padding_values(
     scene_valid: int,
     history_valid: int,
     value: float,
+    dead_valid: int = 0,
 ) -> tuple[torch.Tensor, ...]:
     """只改无效 token 的载荷值，用于验证 mask 是唯一 padding 权威。"""
-    lengths = {"scene": scene_valid, "history": history_valid}
+    lengths = {"scene": scene_valid, "history": history_valid, "dead": dead_valid}
     values = []
     for field, source in zip(MODEL_INPUT_FIELDS, inputs, strict=True):
         tensor = source.clone()
-        if field.sequence_axis is not None and field.name != field.sequence_group + "_mask":
+        if field.sequence_axis is not None and field.semantic != "mask":
             indices = [slice(None)] * tensor.ndim
             indices[field.sequence_axis] = slice(lengths[field.sequence_group], None)
             tensor[tuple(indices)] = value if field.dtype in {"float", "float32"} else field.padding_value

@@ -144,6 +144,8 @@ def test_input_rms_backpropagates_to_all_sources_and_preserves_padding_embedding
     device = torch.device('cuda' if precision == 'bf16' else 'cpu')
     encoder = _encoder().to(device=device)
     batch = _dense_batch(dtype=torch.float32)
+    batch['history_dead_positions'] = torch.zeros((2, 1), dtype=torch.long)
+    batch['history_dead_mask'] = torch.ones((2, 1), dtype=torch.bool)
     batch = move_batch(batch, device)
     with autocast_context(device, 'bf16' if precision == 'bf16' else 'float32'):
         encoded = encoder(batch)
@@ -161,6 +163,8 @@ def test_input_rms_backpropagates_to_all_sources_and_preserves_padding_embedding
 def test_all_input_projections_and_tokens_stay_fp32_under_bf16_autocast():
     encoder = _encoder()
     batch = _dense_batch()
+    batch['history_dead_positions'] = torch.zeros((2, 1), dtype=torch.long)
+    batch['history_dead_mask'] = torch.ones((2, 1), dtype=torch.bool)
     outputs = {}
     projections = {
         'state': encoder.state_proj,

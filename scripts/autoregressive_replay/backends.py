@@ -548,7 +548,10 @@ def build_fixed_ort_inputs(
     scene_mask_cpu = scene_mask.detach().cpu()
     scene_length = int(scene_mask.shape[1])
     history_length = int(_require_tensor(batch, "history_skill_ids").shape[1])
-    valid_tokens = scene_mask_cpu.sum(dim=1) + 2 * _require_tensor(batch, "history_mask").detach().cpu().sum(dim=1) + 1
+    dead_mask = _require_tensor(batch, "history_dead_mask")
+    dead_length = int(dead_mask.shape[1])
+    valid_tokens = (scene_mask_cpu.sum(dim=1) + 2 * _require_tensor(batch, "history_mask").detach().cpu().sum(dim=1)
+                    + dead_mask.detach().cpu().sum(dim=1) + 1)
     if bool((valid_tokens > contract.capacity.context_capacity).any()):
         raise ValueError("live valid context exceeds ONNX context_capacity")
     if scene_length > contract.capacity.scene_capacity:
@@ -560,6 +563,11 @@ def build_fixed_ort_inputs(
         raise ValueError(
             "live history exceeds ONNX capacity: "
             f"{history_length} > {contract.capacity.history_capacity}"
+        )
+    if dead_length > contract.capacity.dead_capacity:
+        raise ValueError(
+            "live death events exceed ONNX capacity: "
+            f"{dead_length} > {contract.capacity.dead_capacity}"
         )
 
     values: list[torch.Tensor] = []
@@ -574,7 +582,7 @@ def build_fixed_ort_inputs(
         target = torch.full(spec.shape, field.padding_value, dtype=onnx_torch_dtype(spec.dtype), device=device)
         source = source.to(dtype=target.dtype)
         if field.sequence_axis is not None:
-            lengths = {"scene": scene_length, "history": history_length}
+            lengths = {"scene": scene_length, "history": history_length, "dead": dead_length}
             indices = [slice(None)] * target.ndim
             indices[field.sequence_axis] = slice(None, lengths[field.sequence_group])
             target[tuple(indices)] = source

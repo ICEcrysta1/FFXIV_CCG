@@ -192,6 +192,7 @@ class InProcessBackend:
         self._initial_timestamp = float(initial_timestamp or 0.0)
         self._session: Any | None = None
         self._lifecycle_lock = threading.RLock()
+        self._history_markers: list[dict[str, object]] = []
         self._engine = engine
         self._closed = False
         try:
@@ -219,6 +220,13 @@ class InProcessBackend:
     def queue_id(self) -> int:
         return int(self._require_session().Id)
 
+    @property
+    def history_markers(self) -> tuple[dict[str, object], ...]:
+        """当前轨迹已接受的死亡事件；游标始终按完整动作历史计数。"""
+        with self._lifecycle_lock:
+            self._require_session()
+            return tuple(dict(marker) for marker in self._history_markers)
+
     def init(
         self,
         *,
@@ -241,6 +249,7 @@ class InProcessBackend:
                 self._require_session().Reset(history, actual_base_gcd, initial, fight_remaining)
             self._max_history = history
             self._initial_timestamp = initial
+            self._history_markers.clear()
             return initial
 
     @staticmethod
@@ -317,17 +326,25 @@ class InProcessBackend:
                 event.get("target_count"), event.get("remaining_seconds"),
                 event.get("mp"),
             ))
-        response = self._require_session().ApplyExternalEvents(batch)
-        result = response.Value
-        return ExternalEventResult(
-            accepted=bool(result.Accepted),
-            reason=str(result.Reason),
-            event_kind=kinds[0] if len(kinds) == 1 else "scene_batch",
-            timestamp=float(result.Timestamp),
-            next_scheduled_event_time=self._optional(response.NextScheduledEventTime),
-            token=None if result.Token is None else str(result.Token),
-            history_cursor=None if result.HistoryCursor is None else int(result.HistoryCursor),
-        )
+        with self._lifecycle_lock:
+            response = self._require_session().ApplyExternalEvents(batch)
+            result = response.Value
+            receipt = ExternalEventResult(
+                accepted=bool(result.Accepted),
+                reason=str(result.Reason),
+                event_kind=kinds[0] if len(kinds) == 1 else "scene_batch",
+                timestamp=float(result.Timestamp),
+                next_scheduled_event_time=self._optional(response.NextScheduledEventTime),
+                token=None if result.Token is None else str(result.Token),
+                history_cursor=None if result.HistoryCursor is None else int(result.HistoryCursor),
+            )
+            if receipt.accepted and receipt.token == "<dead/>":
+                self._history_markers.append({
+                    "token": receipt.token,
+                    "timestamp": receipt.timestamp,
+                    "after_history_length": receipt.history_cursor,
+                })
+            return receipt
 
     def observe_at(
         self,

@@ -44,7 +44,8 @@ from .spec import DataSpec
 # 23：模型状态移除累计威力，资源/充能/时间/单次威力采用统一的显式缩放契约。
 #     黑魔绝望最低 MP 修正为 800；旧 checkpoint 的输入与执行语义均不可复用。
 #     同版本统一输入数值投影、token 合成和输入归一化为 FP32。
-INPUT_CONTRACT_VERSION = 23
+# 24：独立死亡事件 embedding 按已落实历史边界插入，死亡 token 纳入共享上下文预算。
+INPUT_CONTRACT_VERSION = 24
 
 RESIDUAL_MIX_CONFIG_FIELDS = (
     "residual_mix_r_start", "residual_mix_r_end",
@@ -114,6 +115,7 @@ TOKEN_ENCODING_CONTRACT = {
     "skill": "E[id] + Linear(skill_features)",
     "state": "Linear(state_values) + Linear(null_mask, bias=False) + Linear(state_reset_mask, bias=False)",
     "scene": "Linear_by_scene_type(scene_values)",
+    "dead": "independent_input_encoder.dead_embed[0]",
     "input_precision": {
         "values": "float32",
         "projections": "float32",
@@ -148,7 +150,7 @@ TOKEN_ENCODING_CONTRACT = {
         "applies_to": ["query", "key"],
         "key_cache": "normalize_new_keys_once_before_append",
     },
-    "role_ids": {"scene": 0, "state": 1, "skill": 2},
+    "role_ids": {"scene": 0, "state": 1, "skill": 2, "dead": 3},
     "current_state_encoder": "shared_with_history_state",
     "state_snapshots": ["previous_action_after", "request_state"],
     "history_state_frozen_at": "request",
@@ -182,9 +184,16 @@ TOKEN_ENCODING_CONTRACT = {
         "compute_dtype": "float32",
         "position": "after_output_projection_before_repetition_penalty_and_legal_mask",
     },
-    "token_order": "scene, (state_i, skill_i)*H, current_state",
+    "token_order": "scene, (state_i, skill_i)*H interspersed with dead at saved history boundaries, current_state",
+    "death_markers": {
+        "visibility": "saved_first_visible_sample_step",
+        "position": "complete_actions_before_marker_in_selected_window",
+        "window_boundary": "include_markers_at_both_action_boundaries",
+        "order": "stable_saved_marker_order",
+        "effect": "input_event_only_preserve_prior_history",
+    },
     "context_capacity_unit": "tokens",
-    "context_budget": "scene_tokens + history_state_tokens + history_skill_tokens + current_state_token <= model.context_capacity",
+    "context_budget": "scene_tokens + history_state_tokens + history_skill_tokens + dead_tokens + current_state_token <= model.context_capacity",
     "history_reset_keep_unit": "complete_actions",
     "history_tokens_per_action": 2,
 }

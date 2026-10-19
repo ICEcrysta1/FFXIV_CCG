@@ -35,6 +35,7 @@ def export_and_stamp(
         vocab_size=contracts.vocab_size,
         scene_valid=0,
         history_valid=0,
+        dead_valid=min(1, contracts.contract.dead_capacity),
         dtype=contracts.dtype,
         seed=20260812,
     )
@@ -273,7 +274,7 @@ def model_alignment(
 
 
 def _is_input_encoder_initializer(initializer, model: torch.nn.Module, *, float_data_type: int) -> bool:
-    """识别输入权重及 exporter 折叠后的转置、角色 embedding 常量。"""
+    """识别输入权重及 exporter 折叠后的转置、角色和死亡 embedding 常量。"""
     if initializer.data_type != float_data_type:
         return False
     if ".input_encoder." in initializer.name:
@@ -286,6 +287,11 @@ def _is_input_encoder_initializer(initializer, model: torch.nn.Module, *, float_
         if actual.shape == expected.shape and torch.equal(actual, expected):
             return True
         if expected.ndim == 2 and actual.shape == expected.T.shape and torch.equal(actual, expected.T):
+            return True
+    # 固定死亡编号的广播可能折叠为匿名常量，每一行必须等于唯一的死亡权重。
+    dead_weight = model.input_encoder.dead_embed.weight.detach().float().cpu()
+    if actual.ndim >= 3 and actual.shape[-1] == dead_weight.shape[-1]:
+        if torch.equal(actual.reshape(-1, actual.shape[-1]), dead_weight.expand(actual.numel() // actual.shape[-1], -1)):
             return True
     # 固定角色编号使 Gather 可被折叠；每行仍须逐位匹配保存的角色权重。
     role_weight = model.input_encoder.role_embed.weight.detach().float().cpu()

@@ -274,6 +274,7 @@ def test_death_returns_special_token_without_changing_model_inputs(require_engin
         ])
         assert ordinary.token is None
         assert ordinary.history_cursor is None
+        assert backend.history_markers == ()
         assert backend.submit_action(0.0, "fire_iii").accepted
         assert backend.submit_action(4.0, "high_thunder").accepted
 
@@ -284,6 +285,10 @@ def test_death_returns_special_token_without_changing_model_inputs(require_engin
         assert death.accepted
         assert death.token == "<dead/>"
         assert death.history_cursor == 2
+        assert backend.history_markers == ({"token": "<dead/>", "timestamp": 6.0, "after_history_length": 2},)
+        frozen_markers = backend.history_markers
+        backend.history_markers[0]["after_history_length"] = -1
+        assert backend.history_markers == frozen_markers
         context = backend.observe_at(6.0, format="vector", next_observation_timestamp=6.0).context
         current = context["current_state_context"]
         token = current["tokens"][0]
@@ -298,3 +303,6 @@ def test_death_returns_special_token_without_changing_model_inputs(require_engin
         for group in ("buff_state", "resource_state"):
             assert all(value == 0 for key, value in fields[group].items() if key.startswith("request_state."))
         assert fields["target_buff_state"]["request_state.target.high_thunder.active"] == 1
+        backend.init()
+        assert backend.history_markers == ()
+        assert frozen_markers == ({"token": "<dead/>", "timestamp": 6.0, "after_history_length": 2},)

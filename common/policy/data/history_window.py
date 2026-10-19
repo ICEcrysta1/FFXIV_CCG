@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from bisect import bisect_right
-from collections.abc import Sequence
+from bisect import bisect_left, bisect_right
+from collections.abc import Mapping, Sequence
 import math
 
 
@@ -23,6 +23,7 @@ def history_window_length(
     total_history: int, context_capacity: int, reset_keep: int, *,
     request_times: Sequence[float], scene_end_times: Sequence[float], current_request_time: float,
     max_history: int | None = None,
+    history_markers: Sequence[Mapping[str, object]] = (),
 ) -> int:
     """按完整历史重建分块重置；场景、状态和动作共用一个 token 预算。
 
@@ -39,6 +40,7 @@ def history_window_length(
         raise ValueError("complete history request times are required for context planning")
     if max_history is not None and (type(max_history) is not int or max_history < 0):
         raise ValueError("max_history must be a non-negative integer")
+    marker_positions = _history_marker_positions(history_markers, total_history)
     start = 0
     while True:
         anchor = request_times[start] if start < total_history else current_request_time
@@ -49,6 +51,24 @@ def history_window_length(
         if capacity < 0:
             raise ValueError("model.context_capacity cannot hold the scene and current state")
         overflow = start + capacity + 1
+        if marker_positions:
+            marker_start = bisect_left(marker_positions, start)
+
+            def token_count(cursor: int) -> int:
+                return scene_count + 2 * (cursor - start) + 1 + bisect_right(marker_positions, cursor) - marker_start
+
+            # 死亡不推进动作 cursor；按最早超限的动作边界重放，不能只扣除当前标记总数。
+            if token_count(total_history) > context_capacity:
+                low, high = start, total_history
+                while low < high:
+                    middle = (low + high) // 2
+                    if token_count(middle) > context_capacity:
+                        high = middle
+                    else:
+                        low = middle + 1
+                overflow = low
+            else:
+                overflow = total_history + 1
         if total_history < overflow:
             length = total_history - start
             if max_history is None:
@@ -57,23 +77,45 @@ def history_window_length(
                 min(length, max_history), context_capacity,
                 total_history=total_history, request_times=request_times,
                 scene_end_times=scene_end_times, current_request_time=current_request_time,
+                history_markers=history_markers,
             )
         if capacity < reset_keep:
             raise ValueError("model.context_capacity cannot hold the scene and history_reset_keep actions")
-        start = overflow - reset_keep
+        next_start = max(0, overflow - reset_keep)
+        if next_start <= start:
+            raise ValueError("model.context_capacity cannot hold the scene, history_reset_keep actions and death markers")
+        start = next_start
 
 
 def fit_history_suffix_length(
     length: int, context_capacity: int, *, total_history: int,
     request_times: Sequence[float], scene_end_times: Sequence[float], current_request_time: float,
+    history_markers: Sequence[Mapping[str, object]] = (),
 ) -> int:
     """只检查已选历史后缀的预算，不重新规划正式分块窗口。"""
+    marker_positions = _history_marker_positions(history_markers, total_history)
     # 冻结请求时间可能倒序；额外裁短后锚点回退，场景数量反而可能增加。
     while True:
         anchor = request_times[total_history - length] if length else current_request_time
         scene_count = len(scene_end_times) - bisect_right(scene_end_times, anchor)
-        if scene_count + 2 * length + 1 <= context_capacity:
+        marker_count = len(marker_positions) - bisect_left(marker_positions, total_history - length)
+        if scene_count + 2 * length + marker_count + 1 <= context_capacity:
             return length
         if length == 0:
             raise ValueError("model.context_capacity cannot hold the scene and current state")
         length -= 1
+
+
+def _history_marker_positions(
+    markers: Sequence[Mapping[str, object]], total_history: int,
+) -> tuple[int, ...]:
+    """可见性由调用方按事件步裁定；这里仅校验动作边界顺序。"""
+    positions = []
+    previous = 0
+    for marker in markers:
+        position = marker.get("after_history_length")
+        if type(position) is not int or not previous <= position <= total_history:
+            raise ValueError("history marker positions must be ordered within the visible action history")
+        positions.append(position)
+        previous = position
+    return tuple(positions)
