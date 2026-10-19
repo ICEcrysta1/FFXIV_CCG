@@ -42,6 +42,7 @@ from .checkpoint import (
 )
 from .dataloaders import build_dataloaders
 from .epochs import train_epoch, validate
+from .progress import format_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -274,6 +275,7 @@ def run_training(
                 "value_preference": config.value_preference,
                 "runtime_debug": debug_recorder,
                 "epoch": epoch,
+                "max_epochs": config.max_epochs,
                 "context_encoder": context_encoder,
             }
             if tensorboard_writer is not None:
@@ -296,6 +298,8 @@ def run_training(
             last_train_metrics = train_metrics
             validation_kwargs = {
                 "value_preference": config.value_preference,
+                "epoch": epoch,
+                "max_epochs": config.max_epochs,
                 "context_encoder": context_encoder,
             }
             if tensorboard_monitor is not None:
@@ -357,23 +361,13 @@ def run_training(
                     tensorboard_writer, {"index": epoch}, prefix="epoch", global_step=epoch_step,
                 )
                 tensorboard_monitor.log_epoch(global_step=epoch_step)
-            logger.info(
-                "Epoch %3d | train loss=%.4f ce=%.4f value_aux=%.4f top1=%.4f top3=%.4f | "
-                "val loss=%.4f ce=%.4f value_aux=%.4f top1=%.4f top3=%.4f val_ppg=%.2f none_ppg=%.2f",
-                epoch,
-                train_metrics["loss"],
-                train_metrics["cross_entropy_loss"],
-                train_metrics.get("value_preference_loss", 0.0),
-                train_metrics["top1_accuracy"],
-                train_metrics["top3_accuracy"],
-                val_metrics["loss"],
-                val_metrics["cross_entropy_loss"],
-                val_metrics.get("value_preference_loss", 0.0),
-                val_metrics["top1_accuracy"],
-                val_metrics["top3_accuracy"],
-                val_metrics.get("val_ppg", float("nan")),
-                val_metrics.get("none_ppg", float("nan")),
-            )
+            if config.ppg.enabled:
+                logger.info(
+                    "Epoch %d/%d | val %s",
+                    epoch,
+                    config.max_epochs,
+                    format_metrics(val_metrics),
+                )
 
             current_key = _best_metric_key(val_metrics, ppg_enabled=config.ppg.enabled)
             is_best = best_key is None or current_key > best_key
