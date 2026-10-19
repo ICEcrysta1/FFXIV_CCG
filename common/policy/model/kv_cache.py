@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import torch
 
 from .attention_masks import build_segment_mask
+from .attention_utils import kv_head_count
 from .causal_encoder import run_causal_layer
 
 
@@ -115,7 +116,7 @@ def _build_prefix_cache(
 
     for layer_index, layer in enumerate(encoder.layers):
         if hidden.shape[1] == 0:
-            head_count = int(getattr(layer.self_attn, "num_kv_heads", layer.self_attn.num_heads))
+            head_count = kv_head_count(layer.self_attn)
             head_dim = layer.self_attn.head_dim
             empty_shape = (hidden.shape[0], head_count, 0, head_dim)
             key_cache.append(hidden.new_empty(empty_shape))

@@ -99,36 +99,23 @@ def build_dataloaders(
         seed=config.seed,
         shuffle=False,
     )
-    if train_batch_sampler is None:
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=config.batch_size,
-            shuffle=True,
-            collate_fn=train_collator,
-            **loader_options,
+    loaders = []
+    for dataset, collator, batch_sampler, shuffle in (
+        (train_dataset, train_collator, train_batch_sampler, True),
+        (val_dataset, val_collator, val_batch_sampler, False),
+    ):
+        batch_options = (
+            {"batch_size": config.batch_size, "shuffle": shuffle}
+            if batch_sampler is None
+            else {"batch_sampler": batch_sampler}
         )
-    else:
-        train_loader = DataLoader(
-            train_dataset,
-            batch_sampler=train_batch_sampler,
-            collate_fn=train_collator,
+        loaders.append(DataLoader(
+            dataset,
+            collate_fn=collator,
+            **batch_options,
             **loader_options,
-        )
-    if val_batch_sampler is None:
-        val_loader = DataLoader(
-            val_dataset,
-            batch_size=config.batch_size,
-            shuffle=False,
-            collate_fn=val_collator,
-            **loader_options,
-        )
-    else:
-        val_loader = DataLoader(
-            val_dataset,
-            batch_sampler=val_batch_sampler,
-            collate_fn=val_collator,
-            **loader_options,
-        )
+        ))
+    train_loader, val_loader = loaders
     logger.info("训练文件: %d，验证文件: %d", len(train_paths), len(val_paths))
     logger.info("训练样本: %d，验证样本: %d", len(train_dataset), len(val_dataset))
     return train_loader, val_loader, train_dataset, val_dataset

@@ -381,23 +381,12 @@ def run_training(
                 best_key = current_key
                 best_val_metrics = dict(val_metrics)
 
-            epoch_checkpoint_name = _epoch_checkpoint_name(epoch, val_metrics)
-            _save_checkpoint(
-                config.output_dir / epoch_checkpoint_name,
-                model,
-                optimizer,
-                epoch,
-                config,
-                data_spec,
-                val_metrics,
-                input_contract=input_contract,
-                scheduler=scheduler,
-                best_key=best_key,
-                best_val_metrics=best_val_metrics,
-            )
+            checkpoint_names = [_epoch_checkpoint_name(epoch, val_metrics)]
             if is_best:
+                checkpoint_names.append("best.pt")
+            for checkpoint_name in checkpoint_names:
                 _save_checkpoint(
-                    config.output_dir / "best.pt",
+                    config.output_dir / checkpoint_name,
                     model,
                     optimizer,
                     epoch,
