@@ -84,9 +84,8 @@ def train_epoch(
             if tensorboard_monitor is not None:
                 with autocast_context(device, precision):
                     tensorboard_monitor.log_graph(batch)
-            with _debug_stage(runtime_debug, "forward"):
-                with autocast_context(device, precision):
-                    output = model(batch)
+            with _debug_stage(runtime_debug, "forward"), autocast_context(device, precision):
+                output = model(batch)
             with _debug_stage(runtime_debug, "training_loss"):
                 losses = compose_training_loss(
                     output,

@@ -7,12 +7,11 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Iterable, Sequence
 
 from common.policy.config import load_policy_config
-
 
 _CAST_TIME_EPSILON = 1e-6
 _ACTION_SUFFIX_PATTERN = re.compile(r"^(?P<action>.+?)\s*\((?P<mode>[01])\)$")

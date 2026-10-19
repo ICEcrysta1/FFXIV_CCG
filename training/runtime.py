@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from dataclasses import dataclass
 import json
 import logging
-from pathlib import Path
 import time
-from typing import Iterator, Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
 
 import torch
-
 
 logger = logging.getLogger(__name__)
 

@@ -6,18 +6,18 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from common.configuration.environment import (
+    load_root_dotenv,
+    resolve_project_path,
+)
 from common.policy.config import ModelConfig as _ModelConfig
 from common.policy.config import load_policy_config
 from common.policy.model.repetition import RepetitionConfig as _RepetitionConfig
 from common.policy.model.repetition import (
     parse_repetition_config as _parse_repetition_config,
 )
-from common.configuration.environment import (
-    load_root_dotenv,
-    resolve_project_path,
-)
-from common.training.tensorboard import TensorBoardConfig
 from common.training.optimizer_config import OptimizerConfig, parse_optimizer_settings
+from common.training.tensorboard import TensorBoardConfig
 
 from ..runtime import RuntimeDebugConfig
 from .action_quality import ActionQualityLossConfig, parse_action_quality_loss_config
@@ -307,6 +307,6 @@ def _normalize_training_precision(value: object) -> str:
     precision = str(value).strip().lower()
     normalized = _TRAINING_PRECISION_ALIASES.get(precision)
     if normalized is None:
-        allowed = ", ".join(("float32", "float16", "bf16"))
+        allowed = "float32, float16, bf16"
         raise ValueError(f"training.precision must be one of {allowed}, got {value!r}")
     return normalized

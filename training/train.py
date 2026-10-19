@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
 from dataclasses import replace
 from pathlib import Path
-import sys
-
 
 if __package__ in {None, ""}:
     # 允许从项目根目录直接执行 `python training/train.py`。
@@ -22,11 +21,11 @@ from common.policy.config import (
     resolve_policy_model_job_tag,
     resolve_policy_model_variant,
 )
-from common.pytorch.precision import load_precision_config
 from common.policy.data.prepared_sources import (
     select_prepared_training_sources,
     select_prepared_validation_sources,
 )
+from common.pytorch.precision import load_precision_config
 from training.config import load_run_config
 from training.loop import run_training
 
