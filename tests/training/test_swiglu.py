@@ -260,7 +260,7 @@ def test_activation_config_and_checkpoint_roundtrip(tmp_path, activation):
 
 
 def test_checkpoint_without_new_input_contract_is_rejected():
-    with pytest.raises(ValueError, match="missing input_contract"):
+    with pytest.raises(TypeError, match="missing input_contract"):
         CausalPolicyModel.checkpoint_model_config({"model_config": asdict(ModelConfig())})
 
 

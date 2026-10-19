@@ -576,7 +576,7 @@ def test_death_markers_roundtrip_pt_without_entering_numeric_history(tmp_path):
 
     for invalid in (None, ({**payload["history_markers"][0], "after_history_length": 2},)):
         corrupted = dict(stored, history_markers=invalid)
-        with pytest.raises(ValueError, match="history marker"):
+        with pytest.raises(TypeError if invalid is None else ValueError, match="history marker"):
             CompiledCacheReader(corrupted, cache_path=cache, shard_cache=CompiledShardCache())
     corrupted = dict(stored)
     corrupted.pop("history_markers")

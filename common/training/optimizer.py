@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from collections.abc import Mapping
 from copy import deepcopy
-import logging
 
 import torch
 from torch import nn
 
-from .master_weights import FP32MasterOptimizer, LOW_PRECISION_DTYPES
+from .master_weights import LOW_PRECISION_DTYPES, FP32MasterOptimizer
 from .optimizer_config import OptimizerConfig
-
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +127,7 @@ class _MuonAdamW(torch.optim.Optimizer):
             if not isinstance(native_state, Mapping) or not isinstance(
                 native_state.get("state"), Mapping,
             ):
-                raise ValueError(f"Muon optimizer missing {name} state")
+                raise TypeError(f"Muon optimizer missing {name} state")
             saved_groups = native_state.get("param_groups")
             if not isinstance(saved_groups, list) or len(saved_groups) != 1:
                 raise ValueError(f"Muon optimizer {name} grouping mismatch")

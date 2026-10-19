@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, fields
-import math
 from pathlib import Path
 
 from .normalization import NormalizerConfig, load_normalizer_config
-
 
 # 3：统一公共尺度、按冻结上限编码充能，并移除累计威力输入。
 NORMALIZER_CONTRACT_VERSION = 3
@@ -115,10 +114,10 @@ class Normalizer:
         }
 
     @classmethod
-    def from_contract(cls, contract: Mapping[str, object]) -> "Normalizer":
+    def from_contract(cls, contract: Mapping[str, object]) -> Normalizer:
         """从 checkpoint 中的归一化契约恢复，不访问项目 YAML。"""
         if not isinstance(contract, Mapping):
-            raise ValueError("normalizer contract must be a mapping")
+            raise TypeError("normalizer contract must be a mapping")
         version = contract.get("version")
         if int(version) != NORMALIZER_CONTRACT_VERSION:
             raise ValueError(
@@ -128,7 +127,7 @@ class Normalizer:
 
         config_payload = contract.get("config")
         if not isinstance(config_payload, Mapping):
-            raise ValueError("normalizer contract config must be a mapping")
+            raise TypeError("normalizer contract config must be a mapping")
         required_config_keys = tuple(field.name for field in fields(NormalizerConfig))
         missing_config_keys = [
             key for key in required_config_keys if key not in config_payload
@@ -398,7 +397,7 @@ class _FieldRule:
 def _contract_limits(contract: Mapping[str, object], key: str) -> dict[str, float]:
     payload = contract.get(key)
     if not isinstance(payload, Mapping):
-        raise ValueError(f"normalizer contract {key} must be a mapping")
+        raise TypeError(f"normalizer contract {key} must be a mapping")
     limits: dict[str, float] = {}
     for raw_name, raw_value in payload.items():
         name = str(raw_name)

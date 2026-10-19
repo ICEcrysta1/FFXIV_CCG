@@ -9,16 +9,27 @@ from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
+from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
 from common.data.layout import map_dataset_output_path
 from common.pytorch.dependencies import import_torch
 from common.pytorch.serialization import safe_torch_load
-from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
 
-from .schema import SceneWindowSchema, StateFeatureGroup, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
-from .spec import DataSpec
 from .action_space import ActionSpace
+from .context_fields import (
+    CURRENT_STATE_RAW_FIELDS,
+    HISTORY_BANK_FIELDS,
+    HISTORY_BANK_METADATA_NAMES,
+    STATE_BANK_FIELDS,
+    tensor_dimensions,
+)
+from .schema import (
+    TRAINING_SAMPLE_SCHEMA_VERSION,
+    SceneWindowSchema,
+    StateFeatureGroup,
+    TrainingSchema,
+)
 from .skill_vocab import SkillVocab
-from .context_fields import CURRENT_STATE_RAW_FIELDS, HISTORY_BANK_FIELDS, HISTORY_BANK_METADATA_NAMES, STATE_BANK_FIELDS, tensor_dimensions
+from .spec import DataSpec
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +89,7 @@ DEFAULT_CACHE_MAX_SHARDS = 8
 def _read_history_marker_bank(markers, *, num_samples: int) -> tuple[dict[str, object], ...]:
     """只校验离散历史标记；样本和数值历史的关联由各 reader 验证。"""
     if not isinstance(markers, (list, tuple)):
-        raise ValueError("history markers must be a list or tuple")
+        raise TypeError("history markers must be a list or tuple")
     result = []
     previous_timestamp, previous_step, previous_length = -math.inf, 0, 0
     for marker in markers:
@@ -163,7 +174,7 @@ class CompiledCacheReader:
         self._shard_cache = shard_cache
         self._schema = payload["schema"]
         if not isinstance(self._schema, TrainingSchema):
-            raise ValueError("compiled cache schema must be a TrainingSchema")
+            raise TypeError("compiled cache schema must be a TrainingSchema")
         if (self._schema.sample_schema_version != TRAINING_SAMPLE_SCHEMA_VERSION
                 or self._schema.context_schema_version != CANONICAL_CONTEXT_SCHEMA_VERSION):
             raise ValueError("unsupported compiled cache schema version; recompile raw source")
@@ -199,13 +210,13 @@ class CompiledCacheReader:
         )
         history_bank = payload["history_bank"]
         if not isinstance(history_bank, dict):
-            raise ValueError("compiled cache history_bank must be a mapping")
+            raise TypeError("compiled cache history_bank must be a mapping")
         required_bank_keys = tuple(field.name for field in HISTORY_BANK_FIELDS) + HISTORY_BANK_METADATA_NAMES
         if any(key not in history_bank for key in required_bank_keys):
             raise ValueError("compiled cache history_bank is missing required fields")
         action_keys = history_bank["action_keys"]
         if not isinstance(action_keys, (list, tuple)):
-            raise ValueError("compiled cache history_bank action_keys must be a list or tuple")
+            raise TypeError("compiled cache history_bank action_keys must be a list or tuple")
         if not all(isinstance(action_key, str) for action_key in action_keys):
             raise ValueError("compiled cache history_bank action_keys must contain strings")
         bank_size = len(action_keys)
@@ -391,7 +402,7 @@ class CompiledCacheReader:
             raise ValueError(f"invalid compiled cache shard: {shard_path}")
         samples = payload.get("samples")
         if not isinstance(samples, list):
-            raise ValueError(f"compiled cache shard samples must be a list: {shard_path}")
+            raise TypeError(f"compiled cache shard samples must be a list: {shard_path}")
         torch = import_torch()
         for sample in samples:
             if not isinstance(sample, dict) or tuple(sample.get("action_keys", ())) != self.action_keys:

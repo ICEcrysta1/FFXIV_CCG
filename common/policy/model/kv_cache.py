@@ -91,9 +91,7 @@ def _cache_matches(
         return False
     if not torch.equal(prefix_valid[:, :cached_length], cache.prefix_valid):
         return False
-    if not torch.equal(prefix_position_ids[:, :cached_length], cache.prefix_position_ids):
-        return False
-    return True
+    return torch.equal(prefix_position_ids[:, :cached_length], cache.prefix_position_ids)
 
 
 def _build_prefix_cache(

@@ -21,7 +21,7 @@ def test_load_yaml_mapping_rejects_non_mapping_falsey_values(
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="YAML config must be a mapping"):
+    with pytest.raises(TypeError, match="YAML config must be a mapping"):
         load_yaml_mapping(config_path)
 
 

@@ -107,7 +107,7 @@ def test_optimizer_reference_rejects_non_mapping_file(tmp_path):
     manifest.write_text("optimizer_config: optimizer.yaml\n", encoding="utf-8", newline="\n")
     (tmp_path / "optimizer.yaml").write_text("- invalid\n", encoding="utf-8", newline="\n")
 
-    with pytest.raises(ValueError, match="optimizer_config must be a mapping"):
+    with pytest.raises(TypeError, match="optimizer_config must be a mapping"):
         load_policy_config(manifest)
 
 

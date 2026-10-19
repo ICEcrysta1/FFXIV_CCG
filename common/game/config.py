@@ -10,9 +10,13 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
-from .models import ActionKind, SkillDefinition, StatusDefinition
-from common.configuration.environment import resolve_project_job_tag, resolve_project_path
+from common.configuration.environment import (
+    resolve_project_job_tag,
+    resolve_project_path,
+)
 from common.configuration.yaml import load_yaml_mapping
+
+from .models import ActionKind, SkillDefinition, StatusDefinition
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "default.yaml"
@@ -192,7 +196,7 @@ def _resolve_job_config_path(runtime_data: dict, *, requested_job_tag: str) -> P
     """按职业标签解析已注册的职业 YAML。"""
     configured_paths = runtime_data.get("job_configs", {})
     if not isinstance(configured_paths, dict):
-        raise ValueError("runtime.job_configs must be a mapping")
+        raise TypeError("runtime.job_configs must be a mapping")
 
     configured_path = configured_paths.get(requested_job_tag)
     if configured_path is None:
@@ -220,12 +224,12 @@ def _build_resource_limits(raw_resources: object) -> dict[str, float]:
     if raw_resources is None:
         return {}
     if not isinstance(raw_resources, dict):
-        raise ValueError("job resources must be a mapping")
+        raise TypeError("job resources must be a mapping")
 
     limits: dict[str, float] = {}
     for key, payload in raw_resources.items():
         if not isinstance(payload, dict):
-            raise ValueError(f"job resource {key!r} must be a mapping")
+            raise TypeError(f"job resource {key!r} must be a mapping")
         if "max_value" not in payload:
             raise ValueError(f"job resource {key!r} is missing max_value")
         max_value = float(payload["max_value"])

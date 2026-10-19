@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 _PREFIX_LABELS = {
     "train/step": "训练/记录区间",
     "train/epoch": "训练/每轮",

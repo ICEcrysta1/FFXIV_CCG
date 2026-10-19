@@ -8,9 +8,15 @@ import torch
 from torch import nn
 
 from ..config import ModelConfig
+from .context_fields import (
+    CURRENT_STATE_RAW_FIELDS,
+    ENCODING_BANK_FIELDS,
+    HISTORY_RAW_FIELDS,
+    RAW_ONLY_FIELD_NAMES,
+    tensor_dimensions,
+)
 from .normalizer import Normalizer
 from .schema import StateFeatureLayout, TrainingSchema
-from .context_fields import CURRENT_STATE_RAW_FIELDS, ENCODING_BANK_FIELDS, HISTORY_RAW_FIELDS, RAW_ONLY_FIELD_NAMES, tensor_dimensions
 from .state_features import assemble_state_inputs
 
 

@@ -32,7 +32,7 @@ def load_policy_actions(path: Path | None = None) -> tuple[PolicyActionDefinitio
     payload = load_yaml_mapping(config_path, description="policy action config")
     raw_actions = payload.get("policy_actions")
     if not isinstance(raw_actions, Mapping):
-        raise ValueError("policy action config must define a policy_actions mapping")
+        raise TypeError("policy action config must define a policy_actions mapping")
 
     actions: list[PolicyActionDefinition] = []
     raw_ids: set[int] = set()
@@ -41,7 +41,7 @@ def load_policy_actions(path: Path | None = None) -> tuple[PolicyActionDefinitio
         if not key:
             raise ValueError("policy action key must not be empty")
         if not isinstance(raw_definition, Mapping):
-            raise ValueError(f"policy action {key} must be a mapping")
+            raise TypeError(f"policy action {key} must be a mapping")
 
         raw_id = _require_int(raw_definition, "raw_id", action_key=key)
         if raw_id in raw_ids:
@@ -60,7 +60,7 @@ def load_policy_actions(path: Path | None = None) -> tuple[PolicyActionDefinitio
 
         raw_tags = raw_definition.get("tags", ())
         if not isinstance(raw_tags, Sequence) or isinstance(raw_tags, (str, bytes)):
-            raise ValueError(f"policy action {key}.tags must be a sequence")
+            raise TypeError(f"policy action {key}.tags must be a sequence")
 
         actions.append(
             PolicyActionDefinition(
@@ -97,5 +97,5 @@ def _require_int(
 ) -> int:
     value = definition.get(field)
     if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"policy action {action_key}.{field} must be an integer")
+        raise TypeError(f"policy action {action_key}.{field} must be an integer")
     return value

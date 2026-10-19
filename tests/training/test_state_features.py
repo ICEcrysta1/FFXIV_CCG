@@ -113,7 +113,7 @@ def test_saved_schema_survives_json_key_sorting_and_rejects_spec_drift():
         ModelInputContract.from_dict(bad)
     schema_payload = asdict(contract.schema)
     schema_payload["state_groups"] = dict(enumerate(schema_payload["state_groups"]))
-    with pytest.raises(ValueError, match="ordered list"):
+    with pytest.raises(TypeError, match="ordered list"):
         TrainingSchema.from_dict(schema_payload)
 
 

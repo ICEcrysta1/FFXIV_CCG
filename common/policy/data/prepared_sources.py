@@ -22,8 +22,8 @@ from .compiled_cache import (
     load_compiled_cache_for_source,
 )
 from .normalizer import Normalizer
-from .skill_vocab import SkillVocab
 from .schema import SceneWindowSchema, StateFeatureGroup, TrainingSchema
+from .skill_vocab import SkillVocab
 from .source_selection import (
     RawTrainingPathGroup,
     select_training_raw_path_groups,

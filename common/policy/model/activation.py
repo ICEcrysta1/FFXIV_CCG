@@ -9,7 +9,6 @@ import torch.nn.functional as F
 
 from ..config import TRANSFORMER_ACTIVATIONS
 
-
 # SwiGLU 是唯一带门控的取值，其余取值都是点到点激活。
 GATED_ACTIVATION = "swiglu"
 _POINTWISE_ACTIVATIONS: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {

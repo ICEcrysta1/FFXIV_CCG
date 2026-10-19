@@ -39,7 +39,7 @@ class SceneWindowSchema:
         context_key: str,
         feature_keys: tuple[str, ...],
         scene_type_id: int,
-    ) -> "SceneWindowSchema":
+    ) -> SceneWindowSchema:
         """从 scene 字段名一次性解析并校验窗口索引。"""
         start_offset_index, end_offset_index, duration_index = resolve_scene_window_indices(
             feature_keys,
@@ -59,13 +59,13 @@ class SceneWindowSchema:
         return len(self.feature_keys)
 
     @classmethod
-    def from_dict(cls, payload: Mapping[str, object]) -> "SceneWindowSchema":
+    def from_dict(cls, payload: Mapping[str, object]) -> SceneWindowSchema:
         """从 checkpoint 输入契约恢复 scene window schema。"""
         if not isinstance(payload, Mapping):
-            raise ValueError("scene window schema must be a mapping")
+            raise TypeError("scene window schema must be a mapping")
         feature_keys = payload.get("feature_keys")
         if not isinstance(feature_keys, (list, tuple)):
-            raise ValueError("scene window feature_keys must be a list")
+            raise TypeError("scene window feature_keys must be a list")
         return cls.from_feature_keys(
             context_key=str(payload["context_key"]),
             feature_keys=tuple(str(key) for key in feature_keys),
@@ -84,7 +84,7 @@ class StateFeatureGroup:
 
     def __post_init__(self) -> None:
         if not isinstance(self.feature_keys, tuple):
-            raise ValueError("state feature keys must be an immutable tuple")
+            raise TypeError("state feature keys must be an immutable tuple")
         if any(not isinstance(value, str) or not value for value in (self.group_key, self.feature_keys_field)):
             raise ValueError("state group names must be nonempty strings")
         if self.encoding not in {"anchored_delta", "absolute_binary"}:
@@ -95,9 +95,9 @@ class StateFeatureGroup:
             raise ValueError("state feature keys must be unique within each group")
 
     @classmethod
-    def from_dict(cls, payload: Mapping[str, object]) -> "StateFeatureGroup":
+    def from_dict(cls, payload: Mapping[str, object]) -> StateFeatureGroup:
         if not isinstance(payload, Mapping):
-            raise ValueError("state group must be a mapping")
+            raise TypeError("state group must be a mapping")
         return cls(str(payload["group_key"]), str(payload["feature_keys_field"]),
                    _string_tuple_field(payload, "feature_keys"), str(payload["encoding"]))
 
@@ -206,16 +206,16 @@ class TrainingSchema:
         return max(window.feature_dim for window in self.scene_windows)
 
     @classmethod
-    def from_dict(cls, payload: Mapping[str, object]) -> "TrainingSchema":
+    def from_dict(cls, payload: Mapping[str, object]) -> TrainingSchema:
         """从 checkpoint 输入契约恢复训练 schema。"""
         if not isinstance(payload, Mapping):
-            raise ValueError("training schema must be a mapping")
+            raise TypeError("training schema must be a mapping")
         scene_windows = payload.get("scene_windows")
         state_groups = payload.get("state_groups")
         if not isinstance(scene_windows, (list, tuple)):
-            raise ValueError("training schema scene_windows must be a list")
+            raise TypeError("training schema scene_windows must be a list")
         if not isinstance(state_groups, (list, tuple)):
-            raise ValueError("training schema state_groups must be an ordered list")
+            raise TypeError("training schema state_groups must be an ordered list")
         return cls(
             serialization_format=str(payload["serialization_format"]),
             sample_schema_version=int(payload["sample_schema_version"]),
@@ -274,7 +274,7 @@ class TrainingSchema:
 def _string_tuple_field(payload: Mapping[str, object], key: str) -> tuple[str, ...]:
     value = payload.get(key)
     if not isinstance(value, (list, tuple)):
-        raise ValueError(f"training schema {key} must be a list")
+        raise TypeError(f"training schema {key} must be a list")
     if any(not isinstance(item, str) or not item for item in value):
         raise ValueError(f"training schema {key} must contain nonempty strings")
     return tuple(value)

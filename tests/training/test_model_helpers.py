@@ -198,6 +198,7 @@ def test_seed_everything_seeds_python_cpu_and_available_cuda(seed):
 )
 def test_load_run_config_rejects_invalid_values(tmp_path, payload, message):
     error_type = TypeError if message in {
+        "training config must be a mapping",
         "model and training config sections must be mappings",
         "history_truncation must be a mapping",
         "value_preference must be a mapping",
@@ -473,17 +474,17 @@ def test_data_spec_from_dict_and_mismatch_error():
 
 
 @pytest.mark.parametrize(
-    ("raw", "message"),
+    ("raw", "message", "error_type"),
     [
-        ("invalid", "must be a mapping"),
-        ({"mode": "other"}, "mode must be none"),
-        ({"skills": "fire_iv"}, "skills must be a list"),
-        ({"penalty": -1}, "penalty must be >= 0"),
-        ({"mode": "whitelist", "skills": []}, "skills must not be empty"),
+        ("invalid", "must be a mapping", TypeError),
+        ({"mode": "other"}, "mode must be none", ValueError),
+        ({"skills": "fire_iv"}, "skills must be a list", TypeError),
+        ({"penalty": -1}, "penalty must be >= 0", ValueError),
+        ({"mode": "whitelist", "skills": []}, "skills must not be empty", ValueError),
     ],
 )
-def test_repetition_config_rejects_invalid_values(raw, message):
-    with pytest.raises(ValueError, match=message):
+def test_repetition_config_rejects_invalid_values(raw, message, error_type):
+    with pytest.raises(error_type, match=message):
         parse_repetition_config(raw)
 
 
@@ -596,11 +597,11 @@ def test_model_and_trace_helpers_cover_error_and_norm_paths():
             ModelConfig(d_model=7, n_layers=1, n_heads=2, ff_dim=16),
             vocab_size=4,
         )
-    with pytest.raises(ValueError, match="missing input_contract"):
+    with pytest.raises(TypeError, match="missing input_contract"):
         CausalPolicyModel.checkpoint_model_config({})
     checkpoint = make_checkpoint()
     checkpoint["model_config"] = []
-    with pytest.raises(ValueError, match="missing model_config"):
+    with pytest.raises(TypeError, match="missing model_config"):
         CausalPolicyModel.checkpoint_model_config(checkpoint)
     for removed_key, raw_value in (
         ("scorer_use_raw_projection", True),

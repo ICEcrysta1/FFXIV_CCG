@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 from ..config import ModelConfig
+from ..data.context_fields import MODEL_INPUT_FIELDS, tensor_dimensions
 from ..data.input_contract import TOKEN_ENCODING_CONTRACT
 from ..data.spec import DataSpec
-from ..data.context_fields import MODEL_INPUT_FIELDS, tensor_dimensions
-
 
 ROLE_SCENE = TOKEN_ENCODING_CONTRACT["role_ids"]["scene"]
 ROLE_STATE = TOKEN_ENCODING_CONTRACT["role_ids"]["state"]

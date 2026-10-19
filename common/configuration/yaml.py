@@ -17,5 +17,5 @@ def load_yaml_mapping(path: Path, *, description: str = "YAML config") -> dict[s
     if payload is None:
         payload = {}
     if not isinstance(payload, dict):
-        raise ValueError(f"{description} must be a mapping: {path}")
+        raise TypeError(f"{description} must be a mapping: {path}")
     return payload

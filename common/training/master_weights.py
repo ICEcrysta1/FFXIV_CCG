@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping
 from copy import deepcopy
-import logging
 
 import torch
-
 
 logger = logging.getLogger(__name__)
 LOW_PRECISION_DTYPES = (torch.bfloat16, torch.float16)

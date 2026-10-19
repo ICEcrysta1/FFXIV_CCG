@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from common.configuration.yaml import load_yaml_mapping
+
 from .dependencies import import_torch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]

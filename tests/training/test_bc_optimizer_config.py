@@ -144,7 +144,7 @@ def test_bc_optimizer_partial_mapping_uses_explicit_algorithm_defaults(tmp_path,
 @pytest.mark.parametrize("raw", [None, False, 0, "muon", [], ["muon"]])
 def test_bc_optimizer_rejects_non_mapping_sections(tmp_path, raw):
     path = _write_config(tmp_path, {"training": {"optimizer": raw}})
-    with pytest.raises(ValueError, match="optimizer must be a mapping"):
+    with pytest.raises(TypeError, match="optimizer must be a mapping"):
         load_run_config(path)
 
 
@@ -158,47 +158,47 @@ def test_bc_optimizer_rejects_unknown_fields(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("field_name", "value"),
+    ("field_name", "value", "error_type"),
     [
-        ("name", "sgd"),
-        ("name", "Muon"),
-        ("name", None),
-        ("name", True),
-        ("name", []),
-        ("momentum", -0.1),
-        ("momentum", 1.0),
-        ("momentum", float("nan")),
-        ("momentum", float("inf")),
-        ("momentum", float("-inf")),
-        ("momentum", "0.95"),
-        ("momentum", True),
-        ("momentum", None),
-        ("nesterov", "false"),
-        ("nesterov", 0),
-        ("nesterov", 1),
-        ("nesterov", None),
-        ("ns_steps", 0),
-        ("ns_steps", 100),
-        ("ns_steps", 5.0),
-        ("ns_steps", "5"),
-        ("ns_steps", True),
-        ("ns_steps", float("nan")),
-        ("ns_steps", float("inf")),
-        ("adjust_lr_fn", "auto"),
-        ("adjust_lr_fn", None),
-        ("adjust_lr_fn", True),
-        ("adjust_lr_fn", []),
+        ("name", "sgd", ValueError),
+        ("name", "Muon", ValueError),
+        ("name", None, ValueError),
+        ("name", True, ValueError),
+        ("name", [], ValueError),
+        ("momentum", -0.1, ValueError),
+        ("momentum", 1.0, ValueError),
+        ("momentum", float("nan"), ValueError),
+        ("momentum", float("inf"), ValueError),
+        ("momentum", float("-inf"), ValueError),
+        ("momentum", "0.95", TypeError),
+        ("momentum", True, TypeError),
+        ("momentum", None, TypeError),
+        ("nesterov", "false", TypeError),
+        ("nesterov", 0, TypeError),
+        ("nesterov", 1, TypeError),
+        ("nesterov", None, TypeError),
+        ("ns_steps", 0, ValueError),
+        ("ns_steps", 100, ValueError),
+        ("ns_steps", 5.0, TypeError),
+        ("ns_steps", "5", TypeError),
+        ("ns_steps", True, TypeError),
+        ("ns_steps", float("nan"), TypeError),
+        ("ns_steps", float("inf"), TypeError),
+        ("adjust_lr_fn", "auto", ValueError),
+        ("adjust_lr_fn", None, ValueError),
+        ("adjust_lr_fn", True, ValueError),
+        ("adjust_lr_fn", [], ValueError),
     ],
 )
 def test_bc_optimizer_rejects_invalid_parameters_in_yaml_and_direct_construction(
-    tmp_path, field_name, value
+    tmp_path, field_name, value, error_type
 ):
     values = {"name": "muon", field_name: value}
     path = _write_config(tmp_path, {"training": {"optimizer": values}})
 
-    with pytest.raises(ValueError, match=f"optimizer.{field_name}"):
+    with pytest.raises(error_type, match=f"optimizer.{field_name}"):
         load_run_config(path)
-    with pytest.raises(ValueError, match=f"optimizer.{field_name}"):
+    with pytest.raises(error_type, match=f"optimizer.{field_name}"):
         OptimizerConfig(**values)
 
 
@@ -318,35 +318,39 @@ def test_central_optimizer_rejects_duplicate_legacy_authority(tmp_path, stage, l
 
 @pytest.mark.parametrize("stage", ["bc", "grpo"])
 @pytest.mark.parametrize(
-    "values,field",
+    "values,field,error_type",
     [
-        ({"name": "sgd"}, "name"),
-        ({"momentum": float("nan")}, "momentum"),
-        ({"ns_steps": True}, "ns_steps"),
-        ({"learning_rate": float("nan")}, "learning_rate"),
-        ({"learning_rate": float("inf")}, "learning_rate"),
-        ({"learning_rate": 0.0}, "learning_rate"),
-        ({"learning_rate": True}, "learning_rate"),
-        ({"weight_decay": float("inf")}, "weight_decay"),
-        ({"weight_decay": -0.01}, "weight_decay"),
-        ({"weight_decay": "0.01"}, "weight_decay"),
-        ({"warmup_steps": -1}, "warmup_steps"),
-        ({"warmup_steps": 1.5}, "warmup_steps"),
-        ({"warmup_steps": True}, "warmup_steps"),
-        ({"momentun": 0.9}, "unknown fields"),
+        ({"name": "sgd"}, "name", ValueError),
+        ({"momentum": float("nan")}, "momentum", ValueError),
+        ({"ns_steps": True}, "ns_steps", TypeError),
+        ({"learning_rate": float("nan")}, "learning_rate", ValueError),
+        ({"learning_rate": float("inf")}, "learning_rate", ValueError),
+        ({"learning_rate": 0.0}, "learning_rate", ValueError),
+        ({"learning_rate": True}, "learning_rate", TypeError),
+        ({"weight_decay": float("inf")}, "weight_decay", ValueError),
+        ({"weight_decay": -0.01}, "weight_decay", ValueError),
+        ({"weight_decay": "0.01"}, "weight_decay", TypeError),
+        ({"warmup_steps": -1}, "warmup_steps", ValueError),
+        ({"warmup_steps": 1.5}, "warmup_steps", ValueError),
+        ({"warmup_steps": True}, "warmup_steps", ValueError),
+        ({"momentun": 0.9}, "unknown fields", ValueError),
     ],
 )
-def test_central_optimizer_rejects_invalid_values(tmp_path, stage, values, field):
+def test_central_optimizer_rejects_invalid_values(tmp_path, stage, values, field, error_type):
     path = _write_config(tmp_path, {"optimizers": {stage: values}})
     loader = load_run_config if stage == "bc" else load_grpo_config
-    with pytest.raises(ValueError, match=field):
+    with pytest.raises(error_type, match=field):
         loader(path)
 
 
-@pytest.mark.parametrize("optimizers", [None, [], "muon", {"bcs": {}}, {"bc": None}])
-def test_central_optimizer_rejects_invalid_structure(tmp_path, optimizers):
+@pytest.mark.parametrize(
+    "optimizers,error_type",
+    [(None, TypeError), ([], TypeError), ("muon", TypeError),
+     ({"bcs": {}}, ValueError), ({"bc": None}, ValueError)],
+)
+def test_central_optimizer_rejects_invalid_structure(tmp_path, optimizers, error_type):
     path = _write_config(tmp_path, {"optimizers": optimizers})
-    with pytest.raises(ValueError, match="optimizers"):
+    with pytest.raises(error_type, match="optimizers"):
         load_run_config(path)
 
 

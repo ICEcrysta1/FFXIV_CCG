@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from collections.abc import Mapping
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
 
@@ -26,13 +26,13 @@ def parse_repetition_config(raw: object) -> RepetitionConfig:
     if raw is None:
         raw = {}
     if not isinstance(raw, Mapping):
-        raise ValueError("training.repetition must be a mapping")
+        raise TypeError("training.repetition must be a mapping")
     mode = str(raw.get("mode", "none")).strip().lower()
     if mode not in {"none", "whitelist", "blacklist"}:
         raise ValueError("training.repetition.mode must be none, whitelist, or blacklist")
     skills_raw = raw.get("skills", ()) or ()
     if not isinstance(skills_raw, (list, tuple)):
-        raise ValueError("training.repetition.skills must be a list")
+        raise TypeError("training.repetition.skills must be a list")
     skills = tuple(str(skill).strip() for skill in skills_raw if str(skill).strip())
     penalty = float(raw.get("penalty", 0.0))
     if penalty < 0.0:
