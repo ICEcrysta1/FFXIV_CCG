@@ -303,5 +303,5 @@ def test_artzip_optimizer_settings_are_centralized():
     grpo = load_grpo_config(model_dir / "config.yaml")
     assert bc.optimizer == OptimizerConfig(name="muon")
     assert grpo.optimizer == OptimizerConfig(name="adamw")
-    assert (bc.learning_rate, bc.weight_decay, bc.warmup_steps) == (1e-4, 0.01, 500)
+    assert (bc.learning_rate, bc.weight_decay, bc.warmup_steps) == (1e-4, 0.5, 500)
     assert (grpo.learning_rate, grpo.weight_decay, grpo.warmup_steps) == (1e-6, 0.0, 20)

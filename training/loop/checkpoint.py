@@ -171,7 +171,7 @@ def _validate_resume_optimizer(checkpoint: Mapping[str, object], config: RunConf
             f"checkpoint={saved_name!r} != current={current_optimizer['name']!r}; "
             f"{new_training_message}"
         )
-    # AdamW 不使用 Muon 参数；学习率与权重衰减继续沿用原续训恢复策略。
+    # AdamW 不使用 Muon 参数；BC 恢复历史学习率与状态，权重衰减取当前配置。
     if saved_name == "adamw":
         return
     for field, current_value in current_optimizer.items():

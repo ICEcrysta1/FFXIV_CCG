@@ -1677,6 +1677,15 @@ def test_run_training_orchestrates_checkpoint_saving(
             expected_dtype if name.startswith(('encoder.', 'output_head.')) else torch.float32
         ) for name, parameter in args[0].named_parameters())
         assert ("master_weights" in args[2].state_dict()) == (expected_dtype != torch.float32)
+        assert all(group["weight_decay"] == config.weight_decay for group in args[2].param_groups)
+        if "resume_optimizer" in calls:
+            assert all(group["lr"] == 0.02 for group in args[2].param_groups)
+            for saved_state, current_state in zip(
+                calls["resume_optimizer"].state.values(), args[2].state.values(), strict=True,
+            ):
+                assert current_state.keys() == saved_state.keys()
+                for name, value in saved_state.items():
+                    torch.testing.assert_close(current_state[name], value, rtol=0, atol=0)
         calls["train_step_offsets"].append(kwargs["global_step_offset"])
         return {
             "loss": 1.0,
@@ -1809,8 +1818,11 @@ def test_run_training_orchestrates_checkpoint_saving(
     resume_model.encoder.to(dtype=resume_dtype)
     resume_model.output_head.to(dtype=resume_dtype)
     resume_optimizer = training_loop_impl.build_optimizer(
-        resume_model, config.optimizer, learning_rate=0.01, weight_decay=config.weight_decay,
+        resume_model, config.optimizer, learning_rate=0.02, weight_decay=config.weight_decay,
     )
+    for parameter in resume_model.parameters():
+        parameter.grad = torch.full_like(parameter, 0.1)
+    resume_optimizer.step()
     resume_scheduler = torch.optim.lr_scheduler.LambdaLR(resume_optimizer, lambda _: 1.0)
     resume_scheduler_state = resume_scheduler.state_dict()
     # 保存的历史 batch 数与当前 loader 长度不同，用于验证续训不会倒退日志步号。
@@ -1856,6 +1868,8 @@ def test_run_training_orchestrates_checkpoint_saving(
     )
     calls["checkpoints"] = []
     calls["train_step_offsets"] = []
+    calls["resume_optimizer"] = resume_optimizer
+    config = replace(config, weight_decay=0.5)
     resumed = training_module.run_training(
         config,
         raw_paths=[Path("sample.json")],

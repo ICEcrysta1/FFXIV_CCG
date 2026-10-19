@@ -222,6 +222,8 @@ def run_training(
         if resume_checkpoint is not None:
             model.load_state_dict(resume_checkpoint["model_state_dict"])
             optimizer.load_state_dict(resume_checkpoint["optimizer_state_dict"])
+            for group in optimizer.param_groups:
+                group["weight_decay"] = config.weight_decay
             _restore_scheduler_state(
                 scheduler,
                 resume_checkpoint,
