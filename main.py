@@ -1,7 +1,7 @@
 """命令行入口。
 
-这个文件只提供最小的手动检查命令；战斗状态机由 Python.NET 在当前进程中
-直接调用 C# `FightEngine`，Python 入口只负责配置、技能索引和命令编排。
+这个文件只提供最小的手动检查命令；战斗状态机通过原生扩展在当前进程中
+调用 Rust `fight-engine`，Python 入口只负责配置、技能索引和命令编排。
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ def cmd_list_skills(job_tag: str | None) -> None:
 def _check_actions(backend):
     context = backend.observe_at(0.0, format="vector", next_observation_timestamp=0.0).context
     if not isinstance(context, dict):
-        raise RuntimeError("C# vector observation must return a mapping context")
+        raise RuntimeError("Rust vector observation must return a mapping context")
     return [
         str(action_key)
         for action_key, is_legal in zip(
@@ -74,7 +74,7 @@ def _check_smoke(backend):
         backend.advance_to(timestamp)
         state = backend.observe_at(timestamp, format="seconds").context
         if not isinstance(state, dict):
-            raise RuntimeError("C# seconds observation must return a mapping context")
+            raise RuntimeError("Rust seconds observation must return a mapping context")
         wait_seconds = max(float(state.get("cast_remaining_seconds", 0) or 0),
                            float(state.get("gcd_remaining_seconds", 0) or 0))
         if wait_seconds > 0:
@@ -82,7 +82,7 @@ def _check_smoke(backend):
             backend.advance_to(timestamp)
     state = backend.observe_at(timestamp, format="seconds").context
     if not isinstance(state, dict):
-        raise RuntimeError("C# seconds observation must return a mapping context")
+        raise RuntimeError("Rust seconds observation must return a mapping context")
     return {"time": round(float(state.get("time_seconds", timestamp)), 2),
             **{key: int(state.get(key, 0)) for key in
                ("mp", "astral_fire", "umbral_ice", "umbral_hearts", "astral_soul", "polyglot")}}

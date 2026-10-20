@@ -7,7 +7,7 @@
 ### Added
 
 - 状态机支持外部 `player_death` 死亡重置标记：系统清零 MP 和公共 Buff，黑魔清空职业 Buff、量谱与计时截止时刻；取消尚未结算的旧读条及排队动作，保留 DoT、GCD、技能冷却和历史。同刻旧效果及周期结算先完成，再执行重置；机工暂未实现职业死亡清理。
-- 死亡事件成功提交后，C# `ExternalEventResult.Token`／Python `result.token` 返回独立的 `<dead/>`，普通外部事实返回空值。标记不占用技能 ID，现有黑魔 132 维状态和 25 个可选动作保持不变。
+- 死亡事件成功提交后，Rust `ExternalEventResult.token`／Python `result.token` 返回独立的 `<dead/>`，普通外部事实返回空值。标记不占用技能 ID，现有黑魔 132 维状态和 25 个可选动作保持不变。
 - FFLogs 转换器读取当前玩家的 `death` 日志，按统一时间线向状态机提交死亡重置事实，支持初始时刻死亡及与场景事实同刻结算。转换后的 PT 独立保存 `history_markers`，记录 `<dead/>` 的时间、已生效历史插入位置和首次可见样本步号；读取器只返回当前样本可见的标记前缀，不扩展技能词表和数值状态。
 - `<dead/>` 通过独立可训练的 FP32 embedding 和死亡角色进入模型历史，按已落实动作边界插入状态／技能对之间，支持零动作历史及同边界多次死亡；训练按首次可见样本步号读取标记，在线回放与 GRPO 消费当前轨迹的实际死亡回执，历史消融快照保留当时可见的事件。ONNX 输入、验收矩阵及模型分析同步识别死亡 token，技能输出集合保持不变。
 
@@ -15,17 +15,12 @@
 
 - 死亡历史新增 `history_dead_positions`／`history_dead_mask` 两项模型输入，checkpoint 输入契约由 `23` 升至 `24`，ONNX 部署契约由 `27` 升至 `28`，图输入由 `12` 项增至 `14` 项；旧 checkpoint 需重新训练，部署包需重新导出，旧 GRPO 轨迹需重新生成。已符合当前缓存契约且包含死亡标记的 compiled PT 可直接复用，无须仅为模型读取接入而重新转换。
 - 模型容量配置由 `model.scene_capacity`／`model.history_capacity` 改为统一的 `model.context_capacity`，旧字段不再接受。checkpoint 输入描述和 ONNX 部署容量契约同步调整，旧 checkpoint 与部署包明确拒绝复用，需重新训练、导出；本次读取侧窗口调整不要求重新转换已符合当前缓存契约的完整 PT。
-- **FightEngine 状态职责拆分不保留旧版公开接口兼容层。** 依赖旧版 `FightEngine.dll` 的宿主、自定义职业和桥接程序集需同步迁移并重新编译，Python.NET 脚本需更新旧成员访问。项目 Python 调用方升级后执行 `dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj`，同步更新核心与桥接 DLL，并重启已加载旧 DLL 的进程。
-- `CombatState.JobResources`、`JobTimelineDeadlines` 分别迁移为 `state.Job.Resources`、`state.Job.TimelineDeadlines`；`GetJobResource`／`SetJobResource` 改为 `state.Job.GetResource`／`state.Job.SetResource`。职业 Buff 改存 `state.Job.Statuses`，查询改用 `state.Job.HasStatus`／`StatusStacks`；根 `Statuses` 只保存公共状态。直接序列化原始状态或 `SimulationSnapshot` 的调用方需同步迁移结构。
-- `IJobStateMachine` 新增必需的 `JobStateRuntime State { get; }`；`RegisterTimeline` 参数改用 `Combat.Sim.Jobs.Timeline.JobTimelineRegistry`。职业量谱、Buff 和计时规则由 `State` 持有；手工构造职业状态到期事件时须显式指定 `Scope: TimelineEventScope.Job`。
-- 类型命名空间调整：`ResourceStateRegistry` 移至 `Combat.Sim.Jobs`，`JobTimelineRegistry`／`JobTimerProjection` 移至 `Combat.Sim.Jobs.Timeline`，`BuffStateRegistry`／`StatusTimelineRuntime` 移至 `Combat.Sim.State`；`SystemHistoryRuntime` 更名为 `Combat.Sim.Facade.ActionHistoryRuntime`，构造时改传 `JobStateRuntime`。
-- `SystemStateMachine` 构造不再接受 `maxHistory`，`InitialState` 收为 internal，删除 `CreateTimeline` 及职业资源、职业计时和历史转发接口。完整初始化、技能提交和时间推进统一通过 `JobSimulator`／`SimulationEngine`；职业量谱快照与差分改用 `job.State.BuildResourceSnapshot`／`BuildResourceTransition`，包含职业计时器投影。
-- `BuffStateRegistry` 的系统／职业注册入口统一为各实例的 `RegisterStatuses`，定义查询统一为 `Definitions`；删除 registry 和系统层的技能级 `ValidateSharedBehavior`／`ApplySharedBehavior`，改走 `JobSimulator.ValidateActionAt`／`SubmitAction`。单状态操作通过 `system.BuffState` 或 `job.State.Buffs` 调用，职业到期钩子通过 `job.State.StatusTimeline` 注册。
-
-以上状态机拆分保持正式秒制、GCD 制及 canonical／tensor 输出契约不变，原始 CLR 状态与快照对象结构不再兼容旧版。
+- 状态机不再提供旧 `FightEngine.dll` 接口。安装需 Rust stable、Cargo 和 C 编译器；修改 Rust 或共享 schema 后，需执行 `.venv/bin/python3 -m pip install ./fight-engine/python` 并重启已加载扩展的进程。
+- 时间、计算及 canonical 数值使用 `f64`，取消四位小数舍入；模型 tensor 仍为 FP32／INT32，模型维度与既有数据契约保持不变。
 
 ### Changed
 
+- 状态机由 C# 迁移至 Rust／PyO3 原生扩展，保留 Python 接口、YAML 配置及输出、多队列、回放与快照能力；黑魔、机工分别由独立 crate 实现，原生执行释放 GIL，并以 C# 冻结 JSON 基线验证。移除旧 `Combat.Sim/` 工程及 .NET／Python.NET 运行依赖。
 - BC 训练与验证改用类似 YOLO 的表格式批次进度条，显示轮次、显存、现有指标的样本加权均值、批次进度、速度及耗时／剩余时间；指标列从累计指标名称自动生成，后续新增指标无需分别维护表头和数值格式。交互终端每 0.2 秒限频刷新，按实际进度后缀长度压缩条宽并截短指标列，优先保留完整耗时／剩余时间；重定向输出保留完整表头和最终行，PPG 回调追加的验证指标按实际键值动态汇报。
 - GRPO 配置、回滚 checkpoint 和轨迹载荷的 9 处独立类型校验改为抛出 `TypeError`，原错误消息、值范围和格式校验保持不变；CLI 运行日志改用模块 logger。直接构造 `GrpoRunConfig` 时分别创建默认模型实例，归一化时间尺度在实例构造时读取 YAML；正式配置加载仍显式传入模型配置。
 - 下载、转换、回放和 ONNX 脚本的 42 处独立类型校验改为抛出 `TypeError`，保留原错误消息；下载 CLI 继续将类型错误转换为参数提示，历史排名采样继续跳过无效角色记录。FFLogs 服务端返回不完整事件数据时仍使用 `RuntimeError`，取消清理和批量任务的错误隔离保持不变。
@@ -43,14 +38,14 @@
 - 技能、状态和场景数值输入、输入投影、token 合成与统一 RMSNorm 固定使用 FP32，输入编码器权重也保留 FP32，避免 BF16／FP16 提前舍入合并细微数值差异；BC 训练、回放和模型分析同步采用这一精度边界，主干与独立动作头沿用原参数和计算精度配置。
 - ONNX 的数值输入统一为 FP32，输入编码器权重在导出时保留 FP32，主干权重与输出继续采用部署目标精度；BF16 部署仍使用 FP32 计算影子模型。同步更新输入契约描述、manifest schema 和参数精度审计，覆盖匿名转置权重与折叠后的角色 embedding 常量，不再次提升本分支已升级的契约版本。
 - 黑魔 23 个技能统一为相同顺序的 20 个 YAML 字段，补全耗蓝、冷却、充能、DoT、目标与状态定义的既有默认值，不增加 `enabled` 字段；悖论仅备注其耗蓝由职业状态机按元素态计算，保留原有执行规则。
-- 同步升级 canonical 输出到 `16`、PythonBridge 契约到 `19`、checkpoint 输入契约到 `24`、归一化契约到 `3`、compiled cache 到 `v25`／转换版本到 `v28`、ONNX deployment contract 到 `28`／manifest 到 `17`。部署版本与 Schema 同步区分共享容量结构和死亡事件输入，拒绝旧版部署包。缺少死亡重置及独立历史标记的旧 PT 仍需从 raw 重新转换，已符合当前缓存契约的 PT 可复用；旧 checkpoint 与部署包明确拒绝复用，需重新训练和导出。
+- 同步升级 canonical 输出到 `16`、状态机运行时契约到 `19`、checkpoint 输入契约到 `24`、归一化契约到 `3`、compiled cache 到 `v25`／转换版本到 `v28`、ONNX deployment contract 到 `28`／manifest 到 `17`。部署版本与 Schema 同步区分共享容量结构和死亡事件输入，拒绝旧版部署包。缺少死亡重置及独立历史标记的旧 PT 仍需从 raw 重新转换，已符合当前缓存契约的 PT 可复用；旧 checkpoint 与部署包明确拒绝复用，需重新训练和导出。
 - 黑魔 Artzip 训练文件上限由 `1280` 调整为 `1430`，验证文件数由 `30` 调整为 `44`；同步更新项目结构说明与契约升级协作约定。
 
 ### Fixed
 
 - 修复 BC 续训恢复优化器状态后，旧参数组的权重衰减覆盖当前 `optimizer.yaml` 配置的问题；恢复后重新应用当前 `weight_decay`，保留检查点的学习率、动量与 scheduler 步号。
 - GRPO 的 KL 项改用 `expm1(x) - x`，避免 FP32 下近零对数比的非零 KL 被舍入为零；KL 指标、损失及梯度的浮点结果可能变化，后续 GRPO 训练权重不保证与旧实现逐位复现。
-- 修正绝望的最低施放 MP 为 YAML 配置的 `800`，与核爆相同；补充 Python／C# 真实状态机在 AF1／AF3 下的 `799` 拒绝、`800` 接受、技能可用性及拒绝无副作用回归。
+- 修正绝望的最低施放 MP 为 YAML 配置的 `800`，与核爆相同；补充 Python／Rust 真实状态机在 AF1／AF3 下的 `799` 拒绝、`800` 接受、技能可用性及拒绝无副作用回归。
 - 回放 PPG 改从秒制观测的独立真实执行 metadata 读取累计威力，避免模型累计字段移除后指标失效，并覆盖最后一次请求之后的 DoT 结算。补充缓存、在线上下文、checkpoint 和 ONNX 契约回归，保留旧非状态 token 基线，仅允许本次明确调整的归一化尺度变化。
 - 修复低精度缓存配置下历史技能 bank 仍生成 BF16／FP16 特征、导致正式 ContextEncoder 拒绝训练输入的问题：技能原料、归一化及 padding 行统一为 FP32，真实执行统计保留配置精度；缓存读取器拒绝旧低精度技能 bank，转换预检重新校验旧结论并进入重编译路径。补充 FP32／BF16／FP16 数值差异、合批及上下文编码回归，同步修正 BF16 模型测试的输入权重初始化。
 

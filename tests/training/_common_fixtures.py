@@ -22,10 +22,10 @@ _TEST_TRAINING_PAYLOADS: dict[Path, dict[str, object]] = {}
 
 
 def _build_training_samples(fight_payload: dict[str, object]) -> dict[str, object]:
-    """经进程内 C# 状态机后端构建训练样本。
+    """经进程内 Rust 状态机后端构建训练样本。
 
-    状态机运行文件未构建时跳过依赖它的测试（与 tests/scripts/conftest.py
-    的 cs_backend fixture 同一守卫，避免训练测试组无 dotnet 环境全红）。
+    原生扩展未构建时跳过依赖它的测试（与 tests/scripts/conftest.py
+    的 cs_backend fixture 使用同一守卫）。
     """
     from tests.scripts.conftest import _require_inprocess_backend
 

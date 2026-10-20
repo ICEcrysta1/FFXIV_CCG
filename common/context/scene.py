@@ -1,6 +1,6 @@
 """scene_context 统一 schema 定义。
 
-字段模板与常量由 `config/schema.yaml` 提供（C# 与 Python 单一事实来源）。
+字段模板与常量由 `config/schema.yaml` 提供（Rust 与 Python 单一事实来源）。
 """
 
 from __future__ import annotations

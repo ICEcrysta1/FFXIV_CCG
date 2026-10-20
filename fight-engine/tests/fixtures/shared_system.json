@@ -1,0 +1,773 @@
+{
+  "source_commit": "837d841ca49d504bbf7de996f90af195fc3cdb7d",
+  "validation": [
+    {
+      "name": "ok",
+      "result": {
+        "ok": true,
+        "reason": ""
+      }
+    },
+    {
+      "name": "dead",
+      "result": {
+        "ok": false,
+        "reason": "player_dead"
+      }
+    },
+    {
+      "name": "boss",
+      "result": {
+        "ok": false,
+        "reason": "boss_untargetable"
+      }
+    },
+    {
+      "name": "cast",
+      "result": {
+        "ok": false,
+        "reason": "cast_locked"
+      }
+    },
+    {
+      "name": "gcd",
+      "result": {
+        "ok": false,
+        "reason": "gcd_locked"
+      }
+    },
+    {
+      "name": "ogcd_limit",
+      "result": {
+        "ok": false,
+        "reason": "ogcd_limit"
+      }
+    },
+    {
+      "name": "movement",
+      "result": {
+        "ok": false,
+        "reason": "movement_locked"
+      }
+    },
+    {
+      "name": "cooldown",
+      "result": {
+        "ok": false,
+        "reason": "cooldown_locked"
+      }
+    },
+    {
+      "name": "non_temporal",
+      "result": {
+        "ok": true,
+        "reason": ""
+      }
+    },
+    {
+      "name": "non_temporal_ogcd",
+      "result": {
+        "ok": false,
+        "reason": "ogcd_limit"
+      }
+    },
+    {
+      "name": "instant_moving",
+      "result": {
+        "ok": true,
+        "reason": ""
+      }
+    },
+    {
+      "name": "threshold",
+      "result": {
+        "ok": true,
+        "reason": ""
+      }
+    },
+    {
+      "name": "targetless",
+      "result": {
+        "ok": true,
+        "reason": ""
+      }
+    }
+  ],
+  "timing": [
+    {
+      "name": "initial",
+      "state": {
+        "time": 100,
+        "gcd_index": 0,
+        "cast_remaining": 0,
+        "cast_ends_at": 100,
+        "gcd_remaining": 0,
+        "gcd_ready_at": 100,
+        "weave_window_remaining": 0,
+        "weave_ends_at": 100,
+        "ogcds_weaved": 0,
+        "fight_remaining": 600,
+        "fight_ends_at": 700,
+        "natural_mp_last_tick_at": 100,
+        "downtime_ends_at": 100,
+        "mp": 15000,
+        "max_mp": 15000
+      }
+    },
+    {
+      "name": "cast",
+      "state": {
+        "time": 100,
+        "gcd_index": 1,
+        "cast_remaining": 3,
+        "cast_ends_at": 103,
+        "gcd_remaining": 2.299999999999997,
+        "gcd_ready_at": 102.3,
+        "weave_window_remaining": 0,
+        "weave_ends_at": 100,
+        "ogcds_weaved": 0,
+        "fight_remaining": 600,
+        "fight_ends_at": 700,
+        "natural_mp_last_tick_at": 100,
+        "downtime_ends_at": 100,
+        "mp": 15000,
+        "max_mp": 15000
+      }
+    },
+    {
+      "name": "ogcd",
+      "state": {
+        "time": 100,
+        "gcd_index": 1,
+        "cast_remaining": 3,
+        "cast_ends_at": 103,
+        "gcd_remaining": 2.299999999999997,
+        "gcd_ready_at": 102.3,
+        "weave_window_remaining": 0,
+        "weave_ends_at": 100,
+        "ogcds_weaved": 1,
+        "fight_remaining": 600,
+        "fight_ends_at": 700,
+        "natural_mp_last_tick_at": 100,
+        "downtime_ends_at": 100,
+        "mp": 15000,
+        "max_mp": 15000
+      }
+    },
+    {
+      "name": "instant",
+      "state": {
+        "time": 103,
+        "gcd_index": 2,
+        "cast_remaining": 0,
+        "cast_ends_at": 103,
+        "gcd_remaining": 2.5,
+        "gcd_ready_at": 105.5,
+        "weave_window_remaining": 2.5,
+        "weave_ends_at": 105.5,
+        "ogcds_weaved": 0,
+        "fight_remaining": 597,
+        "fight_ends_at": 700,
+        "natural_mp_last_tick_at": 100,
+        "downtime_ends_at": 100,
+        "mp": 15000,
+        "max_mp": 15000
+      }
+    },
+    {
+      "name": "gcd_ready",
+      "state": {
+        "time": 105.5,
+        "gcd_index": 2,
+        "cast_remaining": 0,
+        "cast_ends_at": 103,
+        "gcd_remaining": 0,
+        "gcd_ready_at": 105.5,
+        "weave_window_remaining": 0,
+        "weave_ends_at": 105.5,
+        "ogcds_weaved": 0,
+        "fight_remaining": 594.5,
+        "fight_ends_at": 700,
+        "natural_mp_last_tick_at": 100,
+        "downtime_ends_at": 100,
+        "mp": 15000,
+        "max_mp": 15000
+      }
+    }
+  ],
+  "cooldown": [
+    {
+      "name": "ready",
+      "snapshot": {
+        "next_cooldown_seconds": 0,
+        "available_charges": 2,
+        "max_charges": 2
+      },
+      "next_ready_at": null,
+      "ready_at": [],
+      "has_charge": true,
+      "bucket_present": false
+    },
+    {
+      "name": "first",
+      "snapshot": {
+        "next_cooldown_seconds": 10,
+        "available_charges": 1,
+        "max_charges": 2
+      },
+      "next_ready_at": 110,
+      "ready_at": [
+        110
+      ],
+      "has_charge": true,
+      "bucket_present": true
+    },
+    {
+      "name": "second",
+      "snapshot": {
+        "next_cooldown_seconds": 7,
+        "available_charges": 0,
+        "max_charges": 2
+      },
+      "next_ready_at": 110,
+      "ready_at": [
+        110,
+        113
+      ],
+      "has_charge": false,
+      "bucket_present": true
+    },
+    {
+      "name": "negative_reduction",
+      "snapshot": {
+        "next_cooldown_seconds": 7,
+        "available_charges": 0,
+        "max_charges": 2
+      },
+      "next_ready_at": 110,
+      "ready_at": [
+        110,
+        113
+      ],
+      "has_charge": false,
+      "bucket_present": true
+    },
+    {
+      "name": "reduced",
+      "snapshot": {
+        "next_cooldown_seconds": 3,
+        "available_charges": 0,
+        "max_charges": 2
+      },
+      "next_ready_at": 106,
+      "ready_at": [
+        106,
+        109
+      ],
+      "has_charge": false,
+      "bucket_present": true
+    },
+    {
+      "name": "one_ready",
+      "snapshot": {
+        "next_cooldown_seconds": 3,
+        "available_charges": 1,
+        "max_charges": 2
+      },
+      "next_ready_at": 109,
+      "ready_at": [
+        109
+      ],
+      "has_charge": true,
+      "bucket_present": true
+    },
+    {
+      "name": "consumed_again",
+      "snapshot": {
+        "next_cooldown_seconds": 3,
+        "available_charges": 0,
+        "max_charges": 2
+      },
+      "next_ready_at": 109,
+      "ready_at": [
+        109,
+        116
+      ],
+      "has_charge": false,
+      "bucket_present": true
+    },
+    {
+      "name": "all_ready",
+      "snapshot": {
+        "next_cooldown_seconds": 0,
+        "available_charges": 2,
+        "max_charges": 2
+      },
+      "next_ready_at": null,
+      "ready_at": [],
+      "has_charge": true,
+      "bucket_present": false
+    },
+    {
+      "name": "no_cooldown",
+      "snapshot": {
+        "next_cooldown_seconds": 0,
+        "available_charges": 1,
+        "max_charges": 1
+      },
+      "next_ready_at": null,
+      "ready_at": [],
+      "has_charge": true,
+      "bucket_present": false
+    }
+  ],
+  "buffs": [
+    {
+      "name": "empty",
+      "statuses": {},
+      "validation": {
+        "ok": true,
+        "reason": ""
+      }
+    },
+    {
+      "name": "full",
+      "statuses": {
+        "probe": {
+          "remaining": 10,
+          "expires_at": 110,
+          "stacks": 3
+        }
+      },
+      "validation": {
+        "ok": false,
+        "reason": "status_already_active"
+      }
+    },
+    {
+      "name": "consumed",
+      "statuses": {
+        "probe": {
+          "remaining": 10,
+          "expires_at": 110,
+          "stacks": 2
+        }
+      },
+      "validation": {
+        "ok": true,
+        "reason": ""
+      }
+    },
+    {
+      "name": "refreshed",
+      "statuses": {
+        "probe": {
+          "remaining": 20,
+          "expires_at": 120,
+          "stacks": 3
+        }
+      },
+      "validation": {
+        "ok": false,
+        "reason": "status_already_active"
+      }
+    },
+    {
+      "name": "negative",
+      "statuses": {},
+      "validation": {
+        "ok": true,
+        "reason": ""
+      }
+    },
+    {
+      "name": "zero",
+      "statuses": {},
+      "validation": {
+        "ok": true,
+        "reason": ""
+      }
+    },
+    {
+      "name": "one",
+      "statuses": {
+        "probe": {
+          "remaining": 10,
+          "expires_at": 110,
+          "stacks": 1
+        }
+      },
+      "validation": {
+        "ok": true,
+        "reason": ""
+      }
+    },
+    {
+      "name": "clear",
+      "statuses": {},
+      "validation": {
+        "ok": true,
+        "reason": ""
+      }
+    },
+    {
+      "name": "missing_consume",
+      "statuses": {},
+      "validation": {
+        "ok": true,
+        "reason": ""
+      }
+    }
+  ],
+  "potency": {
+    "plain": 200,
+    "potion": 216,
+    "both": 237.60000000000002,
+    "offsets": [
+      118.80000000000001,
+      108,
+      100,
+      118.80000000000001
+    ],
+    "zero_targets": 118.80000000000001,
+    "clamped_secondary": 118.80000000000001,
+    "negative": 0,
+    "recorded": {
+      "current_potency": 237.60000000000002,
+      "cumulative_potency": 337.6,
+      "current_gcd_dot_potency": 0
+    },
+    "delayed": {
+      "resolved": [
+        0,
+        50
+      ],
+      "cumulative_potency": 387.6
+    }
+  },
+  "lifecycle": [
+    {
+      "name": "initial",
+      "time": 100,
+      "mp": 9500,
+      "is_dead": false,
+      "natural_mp_last_tick_at": 100,
+      "boss_targetable": true,
+      "is_moving": false,
+      "target_count": 1,
+      "statuses": {
+        "probe": {
+          "remaining": 10,
+          "expires_at": 110,
+          "stacks": 3
+        },
+        "burst_potion": {
+          "remaining": 30,
+          "expires_at": 130,
+          "stacks": 1
+        }
+      },
+      "dots": {
+        "shared_dot": {
+          "expires_at": 109,
+          "next_tick_at": 103,
+          "potency_per_tick": 40
+        }
+      },
+      "cooldowns": {
+        "probe": {
+          "available_charges": 1,
+          "recharge_ready_at": [
+            110
+          ]
+        }
+      },
+      "cumulative_dot_potency": 0,
+      "current_gcd_dot_potency": 0
+    },
+    {
+      "name": "tick",
+      "time": 103,
+      "mp": 9700,
+      "is_dead": false,
+      "natural_mp_last_tick_at": 103,
+      "boss_targetable": true,
+      "is_moving": false,
+      "target_count": 1,
+      "statuses": {
+        "probe": {
+          "remaining": 7,
+          "expires_at": 110,
+          "stacks": 3
+        },
+        "burst_potion": {
+          "remaining": 27,
+          "expires_at": 130,
+          "stacks": 1
+        }
+      },
+      "dots": {
+        "shared_dot": {
+          "expires_at": 109,
+          "next_tick_at": 106,
+          "potency_per_tick": 40
+        }
+      },
+      "cooldowns": {
+        "probe": {
+          "available_charges": 1,
+          "recharge_ready_at": [
+            110
+          ]
+        }
+      },
+      "cumulative_dot_potency": 40,
+      "current_gcd_dot_potency": 40
+    },
+    {
+      "name": "untargetable",
+      "time": 103,
+      "mp": 9700,
+      "is_dead": false,
+      "natural_mp_last_tick_at": 103,
+      "boss_targetable": false,
+      "is_moving": false,
+      "target_count": 1,
+      "statuses": {
+        "probe": {
+          "remaining": 7,
+          "expires_at": 110,
+          "stacks": 3
+        },
+        "burst_potion": {
+          "remaining": 27,
+          "expires_at": 130,
+          "stacks": 1
+        }
+      },
+      "dots": {
+        "shared_dot": {
+          "expires_at": 109,
+          "next_tick_at": 106,
+          "potency_per_tick": 40
+        }
+      },
+      "cooldowns": {
+        "probe": {
+          "available_charges": 1,
+          "recharge_ready_at": [
+            110
+          ]
+        }
+      },
+      "cumulative_dot_potency": 40,
+      "current_gcd_dot_potency": 40
+    },
+    {
+      "name": "hidden_tick",
+      "time": 106,
+      "mp": 9900,
+      "is_dead": false,
+      "natural_mp_last_tick_at": 106,
+      "boss_targetable": false,
+      "is_moving": false,
+      "target_count": 1,
+      "statuses": {
+        "probe": {
+          "remaining": 4,
+          "expires_at": 110,
+          "stacks": 3
+        },
+        "burst_potion": {
+          "remaining": 24,
+          "expires_at": 130,
+          "stacks": 1
+        }
+      },
+      "dots": {
+        "shared_dot": {
+          "expires_at": 109,
+          "next_tick_at": 109,
+          "potency_per_tick": 40
+        }
+      },
+      "cooldowns": {
+        "probe": {
+          "available_charges": 1,
+          "recharge_ready_at": [
+            110
+          ]
+        }
+      },
+      "cumulative_dot_potency": 40,
+      "current_gcd_dot_potency": 40
+    },
+    {
+      "name": "death",
+      "time": 106,
+      "mp": 0,
+      "is_dead": true,
+      "natural_mp_last_tick_at": 106,
+      "boss_targetable": false,
+      "is_moving": false,
+      "target_count": 1,
+      "statuses": {},
+      "dots": {
+        "shared_dot": {
+          "expires_at": 109,
+          "next_tick_at": 109,
+          "potency_per_tick": 40
+        }
+      },
+      "cooldowns": {
+        "probe": {
+          "available_charges": 1,
+          "recharge_ready_at": [
+            110
+          ]
+        }
+      },
+      "cumulative_dot_potency": 40,
+      "current_gcd_dot_potency": 40
+    },
+    {
+      "name": "dead_tick",
+      "time": 109,
+      "mp": 0,
+      "is_dead": true,
+      "natural_mp_last_tick_at": 109,
+      "boss_targetable": false,
+      "is_moving": false,
+      "target_count": 1,
+      "statuses": {},
+      "dots": {},
+      "cooldowns": {
+        "probe": {
+          "available_charges": 1,
+          "recharge_ready_at": [
+            110
+          ]
+        }
+      },
+      "cumulative_dot_potency": 40,
+      "current_gcd_dot_potency": 40
+    },
+    {
+      "name": "revived",
+      "time": 109,
+      "mp": 2000,
+      "is_dead": false,
+      "natural_mp_last_tick_at": 109,
+      "boss_targetable": true,
+      "is_moving": false,
+      "target_count": 1,
+      "statuses": {},
+      "dots": {},
+      "cooldowns": {
+        "probe": {
+          "available_charges": 1,
+          "recharge_ready_at": [
+            110
+          ]
+        }
+      },
+      "cumulative_dot_potency": 40,
+      "current_gcd_dot_potency": 40
+    },
+    {
+      "name": "resumed",
+      "time": 112,
+      "mp": 2200,
+      "is_dead": false,
+      "natural_mp_last_tick_at": 112,
+      "boss_targetable": true,
+      "is_moving": false,
+      "target_count": 1,
+      "statuses": {},
+      "dots": {},
+      "cooldowns": {},
+      "cumulative_dot_potency": 40,
+      "current_gcd_dot_potency": 40
+    },
+    {
+      "name": "lb3",
+      "time": 112,
+      "mp": 10000,
+      "is_dead": false,
+      "natural_mp_last_tick_at": 112,
+      "boss_targetable": true,
+      "is_moving": false,
+      "target_count": 1,
+      "statuses": {},
+      "dots": {},
+      "cooldowns": {},
+      "cumulative_dot_potency": 40,
+      "current_gcd_dot_potency": 40
+    },
+    {
+      "name": "scene",
+      "time": 112,
+      "mp": 10000,
+      "is_dead": false,
+      "natural_mp_last_tick_at": 112,
+      "boss_targetable": true,
+      "is_moving": true,
+      "target_count": 4,
+      "statuses": {
+        "raid_buff_window": {
+          "remaining": 7,
+          "expires_at": 119,
+          "stacks": 1
+        }
+      },
+      "dots": {},
+      "cooldowns": {},
+      "cumulative_dot_potency": 40,
+      "current_gcd_dot_potency": 40
+    },
+    {
+      "name": "raid_end",
+      "time": 112,
+      "mp": 10000,
+      "is_dead": false,
+      "natural_mp_last_tick_at": 112,
+      "boss_targetable": true,
+      "is_moving": true,
+      "target_count": 4,
+      "statuses": {},
+      "dots": {},
+      "cooldowns": {},
+      "cumulative_dot_potency": 40,
+      "current_gcd_dot_potency": 40
+    }
+  ],
+  "downtime": [
+    {
+      "time": 101,
+      "boss_targetable": true,
+      "next_downtime_eta": 1,
+      "downtime_remaining": 3,
+      "downtime_ends_at": 103
+    },
+    {
+      "time": 102,
+      "boss_targetable": false,
+      "next_downtime_eta": 0,
+      "downtime_remaining": 3,
+      "downtime_ends_at": 105
+    },
+    {
+      "time": 105,
+      "boss_targetable": true,
+      "next_downtime_eta": null,
+      "downtime_remaining": 0,
+      "downtime_ends_at": 105
+    }
+  ],
+  "mp_helpers": {
+    "spent": 0,
+    "recovered": 10000,
+    "after_spend": 9500,
+    "restored": 10000
+  }
+}

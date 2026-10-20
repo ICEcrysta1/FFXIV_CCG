@@ -2,63 +2,18 @@
 
 路径相对仓库根目录。返回[项目目录](./项目目录.md)。
 
-本文件集中记录 `Combat.Sim/FightEngine.Tests/` 的 xUnit 测试、`tests/` 下的 Python 与 Node 测试，以及 pytest 配置和测试产物。目录按原有位置展示。
+本文件集中记录 `fight-engine/` 的纯 Rust 测试、`tests/` 下的 Python 与 Node 测试，以及 pytest 配置和测试产物。目录按原有位置展示。Rust 测试消费真实 C# 生成的 JSON 基线，不包含或调用 C#；临时差分探针仅放在忽略目录 `.tmp/rust-migration/`。
 
 ## 目录与覆盖职责
 
 ```text
 FFXIV_CCG/
-├── Combat.Sim/FightEngine.Tests/                     xUnit 测试工程，按 Common/Config/Facade/Jobs/Outputs/Policy/Sessions/Skills/System 分组
-│   ├── Common/                                       公共层测试目录
-│   │   ├── ProjectConfigLoaderTests.cs               配置加载测试：真实仓库解析 + 校验错误路径
-│   │   ├── SceneWindowTests.cs                       scene 契约常量/索引映射缓存/窗口索引解析/缺失字段抛错（常量来自 config/schema.yaml）
-│   │   └── YamlConfigTests.cs                        YAML 标量解析边界测试：前导零拒绝/hex/bin/下划线/inf/引号
-│   ├── Config/                                       共享 schema 测试目录
-│   │   └── SchemaConfigLoaderTests.cs                未 Load 行为锁定（反射重置单例）、严格字段组访问、团辅窗口模板展开
-│   ├── Facade/                                       门面测试目录
-│   │   ├── CombatStateMachineTests.cs                门面：职业路由/构造校验/决策循环/冷却/可用技能/回放缓存/历史
-│   │   ├── FacadeKit.cs                              最小内嵌配置与测试职业注册辅助
-│   │   ├── JobSimulatorTests.cs                      绝对时间门面：提交/队列/推进/观测/外部事实/snapshot/fork 及失败不推进，覆盖请求时刻锚定 GCD 与队列期间立即 oGCD
-│   │   ├── RandomSequenceReplayTests.cs              固定 seed 绝对时间随机回放及共享引擎 16 队列串行/并行一致性测试
-│   │   ├── SequenceRunnerTests.cs                    序列回放辅助：绝对时间请求、最终 canonical 输出、完整历史、16 队列并发隔离与异常释放
-│   │   ├── SkillAvailabilityBuilderTests.cs          冻结接受表、132 维布局、同刻批次原子性、父子队列及 policy 布局隔离回归
-│   │   └── TestJobStateMachine.cs                    测试最小职业，供门面组合逻辑复用
-│   ├── Jobs/                                         职业注册中心与职业状态机测试目录
-│   │   ├── Black.Mage/                               黑魔职业状态机测试目录
-│   │   │   └── BlackMageJobStateMachineTests.cs      黑魔规则：AF/UI/火苗/悖论/通晓/雷云/灵极魂/回蓝/人工循环回放
-│   │   ├── Machinist/                                机工职业状态机测试目录
-│   │   │   └── MachinistJobStateMachineTests.cs      机工规则：资源/连击/过热/替代技能/野火/起爆/downtime
-│   │   ├── JobMachineRegistryTests.cs                同类型幂等/冲突抛错/工厂占用/查询与排序/自动发现后手动注册同类型幂等
-│   │   ├── JobResourceAccessorsTests.cs              公共量谱访问基类：资源读写、最大值、类型转换与未绑定 fail-fast
-│   │   └── RegistryTestJobs.cs                       注册测试专用职业 A/B（同 tag 不同类型）
-│   ├── Outputs/                                      输出层测试目录
-│   │   ├── ModelStateSemanticsTests.cs               跨步状态、回退、请求冻结、统一 wait、排队/同戳、窗口外前序及 fork/restore 回归
-│   │   ├── OutputsHistoryTests.cs                    历史上下文：MP/量谱前后与消耗、系统/职业 Buff、DoT、威力缩放、秒/GCD 快照
-│   │   ├── OutputsPrecisionTests.cs                  tensor 精度：bfloat16/float16 量化 torch 边界参考、dtype 别名/缺省键/错误消息
-│   │   ├── OutputsSchemaTests.cs                     canonical/tensor 结构、空 scene、schema 元数据、2.17 GCD 缩放、precision 解析
-│   │   ├── OutputsTestKit.cs                         输出层测试共享：仓库根定位/状态机构造/向量取值辅助
-│   │   └── OutputsTokensTests.cs                     历史/当前状态 token、稳定数值字段、动作顺序/合法性/价值及禁止未来预演测试
-│   ├── Policy/                                       模型控制动作边界测试目录
-│   │   ├── PolicyContextBuilderTests.cs              wait 不进入状态机、固定输出动作空间、policy 决策无游戏副作用及冲突校验
-│   │   └── PolicySequenceReplayTests.cs              批量与逐步回放逐值等价、同刻事实、等待窗口、排队与失败停止
-│   ├── Sessions/                                     多队列宿主测试目录
-│   │   ├── SimulationDeltaObservationTests.cs        增量与完整观测逐值等价、完整保留约束、游标校验与错误零变更
-│   │   └── SimulationEngineTests.cs                  多队列并发与独立模拟器等价、生命周期、错误隔离、基础 GCD 隔离和长程记录边界
-│   ├── Skills/                                       技能索引测试目录
-│   │   └── SkillBookTests.cs                         按 key/id 查询/重复抛错/启用过滤/项目合并顺序及技能可选集合默认值
-│   ├── System/                                       系统状态机测试目录
-│   │   ├── CombatTimelineRuntimeTests.cs             时间线内核：绝对时间、稳定顺序、mutation、快照/fork
-│   │   ├── PlayerStateRuntimeTests.cs                玩家态：时序应用/时间推进/停手切换/六项校验
-│   │   ├── PublicTimelineResourceTests.cs            公共资源：分段等价、截止时间、刷新取消、MP/DoT 边界与绝对时间原点
-│   │   ├── RegistryTests.cs                          Buff 与量谱注册中心测试
-│   │   ├── SystemStateMachineTests.cs                门面：五段编排/回蓝/威力解析/历史
-│   │   ├── SystemTestKit.cs                          测试共享配置与技能构造辅助
-│   │   ├── TimelineAuthorityTests.cs                 时间线 API 权威性守卫：唯一推进内核、稳定优先级、轻量动作协议及阶段 4 旧接口/兼容类型零残留
-│   │   └── TimelineTests.cs                          状态/DoT/冷却时间轴测试
-│   ├── GlobalUsings.cs                               测试程序集共享命名空间导入
-│   ├── SystemTimelineTestDriver.cs                   系统规则测试专用的绝对时间线驱动器
-│   ├── TestSchemaInit.cs                             测试程序集加载时统一初始化共享 schema（ModuleInitializer，config/schema.yaml）；程序集级禁用并行（单例状态重置测试隔离）
-│   └── TimelineTestDriver.cs                         职业/输出规则测试专用的绝对时间驱动器
+├── fight-engine/
+│   ├── tests/                                       核心配置、状态、系统规则、职业契约、动作、输出、策略与多队列对比；不依赖具体职业 crate
+│   │   ├── common.rs / common/jobs.rs               通用比较及职业回放驱动，直接放实现，不使用 mod.rs
+│   │   └── fixtures/                                JSON 基线记录来源提交、输入和预期结果
+│   ├── jobs/{black-mage,machinist}/tests/            各职业注册后独立验证；核心可在无职业代码时运行系统测试
+│   └── python/src/packet.rs                         私有编码单测：整数位宽、IEEE 浮点及可变容器不复用
 ├── tests/                                            测试目录，按源代码模块拆分，并包含根目录公共工具回归测试
 │   ├── fixtures/                                     固定提交采集的回归基线
 │   │   └── state_refactor_non_state_baseline.json.br  重构前 canonical/raw/model 非状态字段及来源提交、源码哈希
@@ -72,7 +27,7 @@ FFXIV_CCG/
 │   │   │   ├── test_config.py                        回放配置加载测试，覆盖 dotenv 装配、env 覆盖、ONNX manifest 路由和非法模式/上限拒绝
 │   │   │   ├── test_context.py                       scene 上下文测试，覆盖 scene 模板归一化/目标数解析、targetable/移动/团辅同步和 live batch 构造
 │   │   │   ├── test_parallel.py                      并行调度容量、顺序、合批 mask、失败唤醒、固定 batch 后端、共享缓存和有界性能统计测试
-│   │   │   ├── test_parallel_integration.py          真实 C#、Transformer FP32/CUDA BF16、KV cache、PPG 与 GRPO 随机流的串行／并行等价测试
+│   │   │   ├── test_parallel_integration.py          真实 Rust、Transformer FP32/CUDA BF16、KV cache、PPG 与 GRPO 随机流的串行／并行等价测试
 │   │   │   ├── test_parity.py                        PT/ORT parity 测试，覆盖 backend 对比失败报告、固定容量 batch device、完整失败轨迹审计、有限容差和 parity CLI
 │   │   │   ├── test_ppg.py                           自回归 PPG 的 GCD 计数、直接/DoT 威力累计、当前状态 GCD 恢复与固定动作顺序校验测试
 │   │   │   ├── test_replay.py                        回放核心逻辑测试，覆盖预测模式、解码、KV-cache 开关、历史消融、事件时间线、无合法动作推进、共享 session/cache 生命周期和 Markdown/CLI 输出
@@ -86,7 +41,7 @@ FFXIV_CCG/
 │   │   │   ├── test_cache_config.py                  缓存公共配置比较与转换 YAML 依赖回归，覆盖依赖增删、重要字段及顺序变化、注释不变性和无关配置排除
 │   │   │   ├── test_config.py                        FFLogs 转换配置测试，覆盖统一 `FFXIV_JOB_TAG`、职业级探针技能和显式参数优先级
 │   │   │   ├── test_convert.py                       FFLogs 转换脚本测试，覆盖动作提取、begincast.duration 基础 GCD 校准、整场战斗保留、多目标辅助标记、场景上下文装配和训练样本构建链路
-│   │   │   ├── test_cs_backend.py                    InProcessBackend 动作校验、读条覆盖、无子进程调用和 Python 原生观测类型测试
+│   │   │   ├── test_inprocess_backend.py                    InProcessBackend 动作校验、读条覆盖、无子进程调用和 Python 原生观测类型测试
 │   │   │   ├── test_history_deduplication.py         冻结历史前缀复用、完整 bank、公开观测和样本修改隔离及存储规模回归
 │   │   │   ├── test_incremental_history.py           增量游标与三通道一致性、批量回放和逐步回放逐值等价及分片批量编码回归
 │   │   │   ├── test_movement.py                      连续速度移动窗口回归，覆盖长观测间隔、二维速度、贝塞尔交点、GCD 合并、实际读条与瞬发保留、最短长度和正式转换场景平移
@@ -115,10 +70,10 @@ FFXIV_CCG/
 │   │   │   └── test_tensor_runtime.py                ORT Tensor I/O 职责级测试，覆盖 CPU I/O Binding、bool NumPy 回退、非 bool DLPack 路径和 CUDA BF16 golden NPZ 字节确定性
 │   │   ├── __init__.py                               子包入口
 │   │   ├── action_quality_runtime.test.cjs           Node 职业路由、实例事件匹配、消息序列化与机工量谱循环引用边界测试
-│   │   ├── conftest.py                               scripts 测试公共 fixture：cs_backend（托管状态机运行文件未构建时跳过）与 cs_skill_book，转换与自回归回放测试共用
+│   │   ├── conftest.py                               scripts 测试公共 fixture：cs_backend（Rust 原生扩展未安装时跳过）与 cs_skill_book，转换与自回归回放测试共用
 │   │   ├── test_action_quality.py                    离线标注 raw 保留、目录映射、失败保护、.env 和职业权重隔离测试
 │   │   ├── test_action_quality_pool.py               常驻 Node 客户端与线程池的并发、复用、异常、取消和资源回收测试
-│   │   ├── test_context_packet.py                    批量桥接的基础类型、数值边界、可变容器隔离、并发编码、GC 生命周期及异常输入回归
+│   │   ├── test_context_packet.py                    原生批量回放包、可变容器隔离、并发编码及重置回归
 │   │   ├── test_dataset_compression.py               旧战斗数据压缩迁移、标注来源一致性和验证后删除测试
 │   │   ├── test_dataset_layout.py                    数据阶段路径映射、区间目录校验、旧目录兼容与转换按副本/区间分组测试
 │   │   ├── test_file_inventory.py                    持久校验复用、依赖变化、索引损坏回退和 2000 份已有文件中只校验 200 份变化与 200 份新增的测试
@@ -130,7 +85,7 @@ FFXIV_CCG/
 │   ├── training/                                     训练模块测试子目录
 │   │   ├── __init__.py                               子包入口
 │   │   ├── _causal_fixtures.py                       固定动作 DataSpec、新输入契约和因果 batch 的测试夹具
-│   │   ├── _common_fixtures.py                       训练公共层测试共享的 PT、compiled cache 和演示战斗构造辅助；训练样本经 C# 状态机后端构建
+│   │   ├── _common_fixtures.py                       训练公共层测试共享的 PT、compiled cache 和演示战斗构造辅助；训练样本经 Rust 状态机后端构建
 │   │   ├── test_action_space.py                      固定动作空间的启用排序、共享 embedding 行和保存 GCD 类型契约测试
 │   │   ├── test_attention_residual.py                Full AttnRes 的均匀初始化与 pseudo-query 反向传播测试
 │   │   ├── test_bc_monitoring.py                     BC 区间样本加权、实际更新学习率、真实编码输入/输出复用和全验证集诊断接入测试

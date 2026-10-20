@@ -405,7 +405,7 @@ def precompile_raw_training_caches(
     results: list[tuple[str, int, int]] = []
     failed_count = 0
     # Python 进程数受可用 CPU 限制；总在途任务仍由用户的并发上限约束。
-    # 子进程只请求父进程的共享状态机，不复制 CLR 引擎或跨进程传完整历史前缀。
+    # 子进程只请求父进程的共享状态机，不复制 Rust 引擎或跨进程传完整历史前缀。
     owner = InProcessEngine(job_tag, capacity=worker_count) if engine is None else nullcontext(engine)
     with owner as shared_engine:
         executor = (

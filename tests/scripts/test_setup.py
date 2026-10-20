@@ -31,8 +31,6 @@ with (root / "calls.jsonl").open("a", encoding="utf-8") as stream:
 
 if command.name == "uname":
     print("Linux" if arguments == ["-s"] else (root / "host_arch").read_text())
-elif command.name == "dotnet":
-    print("10.0.100")
 elif command.name == "curl":
     if (root / "download_failed").exists():
         sys.exit(42)
@@ -105,7 +103,7 @@ class SetupTests(unittest.TestCase):
             executable = shutil.which(name)
             self.assertIsNotNone(executable)
             (self.commands / name).symlink_to(executable)
-        for name in ("python3", "python3.12", "dotnet", "apt-get", "git", "curl", "tar", "xz", "sha256sum", "uname", "node"):
+        for name in ("python3", "python3.12", "rustc", "cargo", "cc", "apt-get", "git", "curl", "tar", "xz", "sha256sum", "uname", "node"):
             path = self.commands / name
             path.write_text(f"#!{sys.executable}\n" + FAKE_COMMAND, encoding="utf-8")
             path.chmod(0o755)

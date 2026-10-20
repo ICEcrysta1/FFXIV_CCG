@@ -1,0 +1,1819 @@
+{
+  "source_commit": "815e71b439cc1820fbaa9aca07a110b4a155d0e9",
+  "source": "Combat.Sim/FightEngine",
+  "schema": {
+    "slidecast_window_seconds": 0.5,
+    "scene_epsilon": 0.000001,
+    "sidecar_contract_version": 19,
+    "scene_context_absolute_mode": "absolute_from_fight_scene_context",
+    "scene_context_keys": {
+      "targetable": "targetable_window_context",
+      "forced_movement": "forced_movement_context",
+      "raid_buff": "raid_buff_window_context",
+      "target_count": "target_count_window_context"
+    },
+    "window_time_fields": [
+      "start_offset_seconds",
+      "end_offset_seconds",
+      "duration_seconds"
+    ],
+    "targetable_segment_kinds": [
+      "combat",
+      "downtime",
+      "combat_final"
+    ],
+    "raid_buff_window_source_keys": [
+      "amplifier"
+    ],
+    "window_extra_fields": {
+      "targetable": [
+        "targetable"
+      ],
+      "forced_movement": [],
+      "raid_buff": [
+        "source.{key}"
+      ],
+      "target_count": [
+        "target_count"
+      ]
+    },
+    "canonical_schema_version": 16,
+    "token_key": "tokens",
+    "canonical_top_level_keys": [
+      "job_tag",
+      "schema_version",
+      "scene_context",
+      "skill_history_context",
+      "state_history_context",
+      "current_state_context",
+      "action_keys",
+      "action_legal_mask",
+      "action_values",
+      "history_cursor"
+    ],
+    "state_vector_groups": [
+      {
+        "group_key": "player_state",
+        "feature_keys_field": "player_state_feature_keys",
+        "context_key": "player",
+        "encoding": "anchored_delta"
+      },
+      {
+        "group_key": "buff_state",
+        "feature_keys_field": "buff_state_feature_keys",
+        "context_key": null,
+        "encoding": "anchored_delta"
+      },
+      {
+        "group_key": "target_buff_state",
+        "feature_keys_field": "target_buff_state_feature_keys",
+        "context_key": null,
+        "encoding": "anchored_delta"
+      },
+      {
+        "group_key": "resource_state",
+        "feature_keys_field": "resource_state_feature_keys",
+        "context_key": "resources",
+        "encoding": "anchored_delta"
+      },
+      {
+        "group_key": "skill_availability",
+        "feature_keys_field": "skill_availability_feature_keys",
+        "context_key": null,
+        "encoding": "absolute_binary"
+      }
+    ],
+    "state_snapshots": [
+      "previous_action_after",
+      "request_state"
+    ],
+    "state_vector_fields": {
+      "player_state": [
+        "mp",
+        "max_mp",
+        "mp_ratio",
+        "time_seconds",
+        "current_gcd_seconds",
+        "boss_targetable",
+        "next_untargetable_in_seconds",
+        "downtime_remaining_seconds",
+        "is_moving"
+      ],
+      "buff_state": [
+        "active",
+        "remaining_seconds",
+        "stacks"
+      ],
+      "target_buff_dot_state": [
+        "active",
+        "remaining_seconds",
+        "stacks"
+      ],
+      "target_buff_fixed": [
+        "target.current_potency",
+        "target.current_gcd_dot_potency"
+      ]
+    }
+  },
+  "precision": {
+    "int_dtype": "int32",
+    "float_dtype": "float32"
+  },
+  "jobs": {
+    "black_mage": {
+      "project": {
+        "name": "Context Combat Generator",
+        "version": "1.0.0",
+        "runtime": {
+          "job_tag": "black_mage",
+          "system_config_path": "config/system.yaml",
+          "job_config_path": "config/skills/black_mage.yaml"
+        },
+        "engine_timing": {
+          "action_queue_window_seconds": 0.6
+        },
+        "engine_resources": {
+          "max_mp": 10000
+        },
+        "system": {
+          "base_gcd": 2.5,
+          "skill_table_base_gcd": 2.5,
+          "mp_recovery": {
+            "tick_interval_seconds": 3,
+            "in_combat_amount": 200,
+            "revival_ratio": 0.2
+          },
+          "potency": {
+            "burst_potion_multiplier": 1.08,
+            "raid_buff_window_multiplier": 1.1
+          },
+          "raid_buff_window_marker_skills": [
+            "amplifier"
+          ],
+          "raid_buff_window_duration": 20,
+          "statuses": {
+            "burst_potion": {
+              "key": "burst_potion",
+              "game_id": 1000049,
+              "duration": 30,
+              "max_stacks": 1
+            },
+            "raid_buff_window": {
+              "key": "raid_buff_window",
+              "game_id": 1000050,
+              "duration": 20,
+              "max_stacks": 1
+            }
+          },
+          "skills": [
+            {
+              "key": "potion",
+              "game_id": 99999,
+              "name": "爆发药",
+              "kind": "ogcd",
+              "behavior": "grant_status",
+              "potency": 0,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 270,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 1,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": false,
+              "applies_statuses": [
+                "burst_potion"
+              ],
+              "tags": [
+                "burst",
+                "utility",
+                "virtual",
+                "system"
+              ]
+            }
+          ]
+        },
+        "job": {
+          "key": "black_mage",
+          "name": "黑魔法师",
+          "timing": {
+            "ley_lines_haste_multiplier": 0.85,
+            "polyglot_interval": 30,
+            "default_fight_remaining": 600
+          },
+          "resource_limits": {
+            "astral_fire": 3,
+            "umbral_ice": 3,
+            "umbral_hearts": 3,
+            "astral_soul": 6,
+            "polyglot": 3,
+            "polyglot_timer": 30,
+            "paradox_ready": 1,
+            "thundercloud_ready": 1,
+            "firestarter_ready": 1
+          },
+          "statuses": {
+            "ley_lines": {
+              "key": "ley_lines",
+              "game_id": 737,
+              "duration": 20,
+              "max_stacks": 1
+            },
+            "triplecast": {
+              "key": "triplecast",
+              "game_id": 1211,
+              "duration": 15,
+              "max_stacks": 3
+            },
+            "swiftcast": {
+              "key": "swiftcast",
+              "game_id": 167,
+              "duration": 10,
+              "max_stacks": 1
+            },
+            "lucid_dreaming": {
+              "key": "lucid_dreaming",
+              "game_id": 1204,
+              "duration": 21,
+              "max_stacks": 1
+            }
+          },
+          "skills": [
+            {
+              "key": "fire_iii",
+              "game_id": 152,
+              "name": "爆炎",
+              "kind": "gcd",
+              "behavior": "fire_iii",
+              "potency": 290,
+              "value": 1.1,
+              "cast_time": 3.5,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 2000,
+              "mp_cost_floor": 2000,
+              "cooldown": 0,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 1,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": true,
+              "applies_statuses": [],
+              "tags": [
+                "fire",
+                "stance"
+              ]
+            },
+            {
+              "key": "high_fire_ii",
+              "game_id": 25794,
+              "name": "高烈炎",
+              "kind": "gcd",
+              "behavior": "high_fire_ii",
+              "potency": 100,
+              "value": 1,
+              "cast_time": 3,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 1500,
+              "mp_cost_floor": 1500,
+              "cooldown": 0,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 99,
+              "aoe_secondary_reduction": 0,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": true,
+              "applies_statuses": [],
+              "tags": [
+                "fire",
+                "stance",
+                "aoe"
+              ]
+            },
+            {
+              "key": "fire_iv",
+              "game_id": 3577,
+              "name": "炽炎",
+              "kind": "gcd",
+              "behavior": "fire_iv",
+              "potency": 300,
+              "value": 1,
+              "cast_time": 2,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 800,
+              "mp_cost_floor": 800,
+              "cooldown": 0,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 1,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": true,
+              "applies_statuses": [],
+              "tags": [
+                "fire",
+                "spender"
+              ]
+            },
+            {
+              "key": "despair",
+              "game_id": 16505,
+              "name": "绝望",
+              "kind": "gcd",
+              "behavior": "despair",
+              "potency": 350,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": true,
+              "mp_cost": 0,
+              "mp_cost_floor": 800,
+              "cooldown": 0,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 1,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": true,
+              "applies_statuses": [],
+              "tags": [
+                "fire",
+                "finisher"
+              ]
+            },
+            {
+              "key": "flare",
+              "game_id": 162,
+              "name": "核爆",
+              "kind": "gcd",
+              "behavior": "flare",
+              "potency": 240,
+              "value": 1,
+              "cast_time": 2,
+              "recast_time": 2.5,
+              "mp_cost_is_full": true,
+              "mp_cost": 0,
+              "mp_cost_floor": 800,
+              "cooldown": 0,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 99,
+              "aoe_secondary_reduction": 0.3,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": true,
+              "applies_statuses": [],
+              "tags": [
+                "fire",
+                "spender",
+                "aoe"
+              ]
+            },
+            {
+              "key": "flare_star",
+              "game_id": 36989,
+              "name": "耀星",
+              "kind": "gcd",
+              "behavior": "flare_star",
+              "potency": 500,
+              "value": 1,
+              "cast_time": 2,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 0,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 99,
+              "aoe_secondary_reduction": 0.65,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": true,
+              "applies_statuses": [],
+              "tags": [
+                "fire",
+                "spender",
+                "aoe"
+              ]
+            },
+            {
+              "key": "blizzard_iii",
+              "game_id": 154,
+              "name": "冰封",
+              "kind": "gcd",
+              "behavior": "blizzard_iii",
+              "potency": 290,
+              "value": 1,
+              "cast_time": 3.5,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 800,
+              "mp_cost_floor": 800,
+              "cooldown": 0,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 1,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": true,
+              "applies_statuses": [],
+              "tags": [
+                "ice",
+                "stance"
+              ]
+            },
+            {
+              "key": "blizzard_iv",
+              "game_id": 3576,
+              "name": "冰澈",
+              "kind": "gcd",
+              "behavior": "blizzard_iv",
+              "potency": 300,
+              "value": 1,
+              "cast_time": 2,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 800,
+              "mp_cost_floor": 800,
+              "cooldown": 0,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 1,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": true,
+              "applies_statuses": [],
+              "tags": [
+                "ice",
+                "generator"
+              ]
+            },
+            {
+              "key": "freeze",
+              "game_id": 159,
+              "name": "玄冰",
+              "kind": "gcd",
+              "behavior": "freeze",
+              "potency": 120,
+              "value": 1,
+              "cast_time": 2,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 1000,
+              "mp_cost_floor": 1000,
+              "cooldown": 0,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 99,
+              "aoe_secondary_reduction": 0,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": true,
+              "applies_statuses": [],
+              "tags": [
+                "ice",
+                "generator",
+                "aoe"
+              ]
+            },
+            {
+              "key": "high_blizzard_ii",
+              "game_id": 25795,
+              "name": "高冰冻",
+              "kind": "gcd",
+              "behavior": "high_blizzard_ii",
+              "potency": 100,
+              "value": 1,
+              "cast_time": 3,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 800,
+              "mp_cost_floor": 800,
+              "cooldown": 0,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 99,
+              "aoe_secondary_reduction": 0,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": true,
+              "applies_statuses": [],
+              "tags": [
+                "ice",
+                "stance",
+                "aoe"
+              ]
+            },
+            {
+              "key": "paradox",
+              "game_id": 25797,
+              "name": "悖论",
+              "kind": "gcd",
+              "behavior": "paradox",
+              "potency": 540,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 0,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 1,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": true,
+              "applies_statuses": [],
+              "tags": [
+                "proc",
+                "fire",
+                "ice"
+              ]
+            },
+            {
+              "key": "xenoglossy",
+              "game_id": 16507,
+              "name": "异言",
+              "kind": "gcd",
+              "behavior": "polyglot_spender",
+              "potency": 890,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 0,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 1,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": true,
+              "applies_statuses": [],
+              "tags": [
+                "polyglot"
+              ]
+            },
+            {
+              "key": "foul",
+              "game_id": 7422,
+              "name": "秽浊",
+              "kind": "gcd",
+              "behavior": "polyglot_spender",
+              "potency": 600,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 0,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 99,
+              "aoe_secondary_reduction": 0.25,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": true,
+              "applies_statuses": [],
+              "tags": [
+                "polyglot",
+                "aoe"
+              ]
+            },
+            {
+              "key": "high_thunder",
+              "game_id": 36986,
+              "name": "高闪雷",
+              "kind": "gcd",
+              "behavior": "thundercloud_dot",
+              "potency": 150,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 0,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 1,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 60,
+              "dot_duration": 30,
+              "dot_key": "high_thunder",
+              "requires_target": true,
+              "applies_statuses": [],
+              "tags": [
+                "thunder",
+                "proc"
+              ]
+            },
+            {
+              "key": "high_thunder_ii",
+              "game_id": 36987,
+              "name": "高震雷",
+              "kind": "gcd",
+              "behavior": "thundercloud_dot",
+              "potency": 100,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 0,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 99,
+              "aoe_secondary_reduction": 0,
+              "dot_potency": 40,
+              "dot_duration": 24,
+              "dot_key": "high_thunder",
+              "requires_target": true,
+              "applies_statuses": [],
+              "tags": [
+                "thunder",
+                "proc",
+                "aoe"
+              ]
+            },
+            {
+              "key": "transpose",
+              "game_id": 149,
+              "name": "星灵移位",
+              "kind": "ogcd",
+              "behavior": "transpose",
+              "potency": 0,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 5,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 1,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": false,
+              "applies_statuses": [],
+              "tags": [
+                "stance"
+              ]
+            },
+            {
+              "key": "umbral_soul",
+              "game_id": 16506,
+              "name": "灵极魂",
+              "kind": "gcd",
+              "behavior": "umbral_soul",
+              "potency": 0,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 0,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 1,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": false,
+              "applies_statuses": [],
+              "tags": [
+                "ice",
+                "downtime"
+              ]
+            },
+            {
+              "key": "ley_lines",
+              "game_id": 3573,
+              "name": "黑魔纹",
+              "kind": "ogcd",
+              "behavior": "grant_status",
+              "potency": 0,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 120,
+              "charges": 2,
+              "enabled": true,
+              "max_targets": 1,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": false,
+              "applies_statuses": [
+                "ley_lines"
+              ],
+              "tags": [
+                "buff"
+              ]
+            },
+            {
+              "key": "manafont",
+              "game_id": 158,
+              "name": "魔泉",
+              "kind": "ogcd",
+              "behavior": "manafont",
+              "potency": 0,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 100,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 1,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": false,
+              "applies_statuses": [],
+              "tags": [
+                "resource"
+              ]
+            },
+            {
+              "key": "triplecast",
+              "game_id": 7421,
+              "name": "三连咏唱",
+              "kind": "ogcd",
+              "behavior": "grant_status",
+              "potency": 0,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 60,
+              "charges": 2,
+              "enabled": true,
+              "max_targets": 1,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": false,
+              "applies_statuses": [
+                "triplecast"
+              ],
+              "tags": [
+                "buff"
+              ]
+            },
+            {
+              "key": "amplifier",
+              "game_id": 25796,
+              "name": "详述",
+              "kind": "ogcd",
+              "behavior": "amplifier",
+              "potency": 0,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 120,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 1,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": false,
+              "applies_statuses": [],
+              "tags": [
+                "polyglot"
+              ]
+            },
+            {
+              "key": "swiftcast",
+              "game_id": 7561,
+              "name": "即刻咏唱",
+              "kind": "ogcd",
+              "behavior": "grant_status",
+              "potency": 0,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 40,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 1,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": false,
+              "applies_statuses": [
+                "swiftcast"
+              ],
+              "tags": [
+                "buff"
+              ]
+            },
+            {
+              "key": "lucid_dreaming",
+              "game_id": 7562,
+              "name": "醒梦",
+              "kind": "ogcd",
+              "behavior": "grant_status",
+              "potency": 0,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 60,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 1,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": false,
+              "applies_statuses": [
+                "lucid_dreaming"
+              ],
+              "tags": [
+                "buff"
+              ]
+            }
+          ],
+          "default_fight_remaining": 600
+        }
+      },
+      "keys": [
+        "potion",
+        "fire_iii",
+        "high_fire_ii",
+        "fire_iv",
+        "despair",
+        "flare",
+        "flare_star",
+        "blizzard_iii",
+        "blizzard_iv",
+        "freeze",
+        "high_blizzard_ii",
+        "paradox",
+        "xenoglossy",
+        "foul",
+        "high_thunder",
+        "high_thunder_ii",
+        "transpose",
+        "umbral_soul",
+        "ley_lines",
+        "manafont",
+        "triplecast",
+        "amplifier",
+        "swiftcast",
+        "lucid_dreaming"
+      ],
+      "enabled": [
+        "potion",
+        "fire_iii",
+        "high_fire_ii",
+        "fire_iv",
+        "despair",
+        "flare",
+        "flare_star",
+        "blizzard_iii",
+        "blizzard_iv",
+        "freeze",
+        "high_blizzard_ii",
+        "paradox",
+        "xenoglossy",
+        "foul",
+        "high_thunder",
+        "high_thunder_ii",
+        "transpose",
+        "umbral_soul",
+        "ley_lines",
+        "manafont",
+        "triplecast",
+        "amplifier",
+        "swiftcast",
+        "lucid_dreaming"
+      ],
+      "gcd": [
+        "fire_iii",
+        "high_fire_ii",
+        "fire_iv",
+        "despair",
+        "flare",
+        "flare_star",
+        "blizzard_iii",
+        "blizzard_iv",
+        "freeze",
+        "high_blizzard_ii",
+        "paradox",
+        "xenoglossy",
+        "foul",
+        "high_thunder",
+        "high_thunder_ii",
+        "umbral_soul"
+      ],
+      "ogcd": [
+        "potion",
+        "transpose",
+        "ley_lines",
+        "manafont",
+        "triplecast",
+        "amplifier",
+        "swiftcast",
+        "lucid_dreaming"
+      ],
+      "by_game_id": [
+        "potion",
+        "fire_iii",
+        "high_fire_ii",
+        "fire_iv",
+        "despair",
+        "flare",
+        "flare_star",
+        "blizzard_iii",
+        "blizzard_iv",
+        "freeze",
+        "high_blizzard_ii",
+        "paradox",
+        "xenoglossy",
+        "foul",
+        "high_thunder",
+        "high_thunder_ii",
+        "transpose",
+        "umbral_soul",
+        "ley_lines",
+        "manafont",
+        "triplecast",
+        "amplifier",
+        "swiftcast",
+        "lucid_dreaming"
+      ],
+      "contains": [
+        false,
+        false
+      ],
+      "policy": [
+        {
+          "key": "ogcd_wait",
+          "raw_id": 0,
+          "name": "空输出",
+          "kind": "ogcd",
+          "behavior": "end_weave_window",
+          "value": 1,
+          "tags": [
+            "sentinel",
+            "policy"
+          ]
+        }
+      ]
+    },
+    "machinist": {
+      "project": {
+        "name": "Context Combat Generator",
+        "version": "1.0.0",
+        "runtime": {
+          "job_tag": "machinist",
+          "system_config_path": "config/system.yaml",
+          "job_config_path": "config/skills/machinist.yaml"
+        },
+        "engine_timing": {
+          "action_queue_window_seconds": 0.6
+        },
+        "engine_resources": {
+          "max_mp": 10000
+        },
+        "system": {
+          "base_gcd": 2.5,
+          "skill_table_base_gcd": 2.5,
+          "mp_recovery": {
+            "tick_interval_seconds": 3,
+            "in_combat_amount": 200,
+            "revival_ratio": 0.2
+          },
+          "potency": {
+            "burst_potion_multiplier": 1.08,
+            "raid_buff_window_multiplier": 1.1
+          },
+          "raid_buff_window_marker_skills": [
+            "amplifier"
+          ],
+          "raid_buff_window_duration": 20,
+          "statuses": {
+            "burst_potion": {
+              "key": "burst_potion",
+              "game_id": 1000049,
+              "duration": 30,
+              "max_stacks": 1
+            },
+            "raid_buff_window": {
+              "key": "raid_buff_window",
+              "game_id": 1000050,
+              "duration": 20,
+              "max_stacks": 1
+            }
+          },
+          "skills": [
+            {
+              "key": "potion",
+              "game_id": 99999,
+              "name": "爆发药",
+              "kind": "ogcd",
+              "behavior": "grant_status",
+              "potency": 0,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 270,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 1,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": false,
+              "applies_statuses": [
+                "burst_potion"
+              ],
+              "tags": [
+                "burst",
+                "utility",
+                "virtual",
+                "system"
+              ]
+            }
+          ]
+        },
+        "job": {
+          "key": "machinist",
+          "name": "机工士",
+          "timing": {
+            "combo_duration": 30,
+            "wildfire_duration": 10,
+            "wildfire_potency_per_hit": 240,
+            "default_fight_remaining": 600
+          },
+          "resource_limits": {
+            "heat": 100,
+            "battery": 100,
+            "combo_stage": 2,
+            "combo_remaining": 30,
+            "wildfire_active": 1,
+            "wildfire_remaining": 10,
+            "wildfire_hits": 6
+          },
+          "statuses": {
+            "overheated": {
+              "key": "overheated",
+              "game_id": 2000001,
+              "duration": 10,
+              "max_stacks": 5
+            },
+            "free_hypercharge": {
+              "key": "free_hypercharge",
+              "game_id": 2000002,
+              "duration": 30,
+              "max_stacks": 1
+            },
+            "full_metal_machinist": {
+              "key": "full_metal_machinist",
+              "game_id": 2000003,
+              "duration": 30,
+              "max_stacks": 1
+            },
+            "reassemble": {
+              "key": "reassemble",
+              "game_id": 851,
+              "duration": 5,
+              "max_stacks": 1
+            },
+            "excavator_ready": {
+              "key": "excavator_ready",
+              "game_id": 2000004,
+              "duration": 30,
+              "max_stacks": 1
+            }
+          },
+          "skills": [
+            {
+              "key": "heated_split_shot",
+              "game_id": 7411,
+              "name": "热分裂弹",
+              "kind": "gcd",
+              "behavior": "mch_combo_one",
+              "potency": 220,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 0,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 1,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": true,
+              "applies_statuses": [],
+              "tags": [
+                "weaponskill",
+                "single_target_weaponskill",
+                "combo",
+                "filler"
+              ]
+            },
+            {
+              "key": "heated_slug_shot",
+              "game_id": 7412,
+              "name": "热独头弹",
+              "kind": "gcd",
+              "behavior": "mch_combo_two",
+              "potency": 140,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 0,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 1,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": true,
+              "applies_statuses": [],
+              "tags": [
+                "weaponskill",
+                "single_target_weaponskill",
+                "combo",
+                "filler"
+              ]
+            },
+            {
+              "key": "heated_clean_shot",
+              "game_id": 7413,
+              "name": "热狙击弹",
+              "kind": "gcd",
+              "behavior": "mch_combo_three",
+              "potency": 160,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 0,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 1,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": true,
+              "applies_statuses": [],
+              "tags": [
+                "weaponskill",
+                "single_target_weaponskill",
+                "combo",
+                "filler"
+              ]
+            },
+            {
+              "key": "drill",
+              "game_id": 16498,
+              "name": "钻头",
+              "kind": "gcd",
+              "behavior": "mch_tool",
+              "potency": 660,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 20,
+              "charges": 2,
+              "enabled": true,
+              "max_targets": 1,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": true,
+              "applies_statuses": [],
+              "tags": [
+                "weaponskill",
+                "single_target_weaponskill",
+                "tool",
+                "burst"
+              ]
+            },
+            {
+              "key": "air_anchor",
+              "game_id": 16500,
+              "name": "空气锚",
+              "kind": "gcd",
+              "behavior": "mch_air_anchor",
+              "potency": 660,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 40,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 1,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": true,
+              "applies_statuses": [],
+              "tags": [
+                "weaponskill",
+                "single_target_weaponskill",
+                "tool",
+                "battery",
+                "burst"
+              ]
+            },
+            {
+              "key": "chain_saw",
+              "game_id": 25788,
+              "name": "回转飞锯",
+              "kind": "gcd",
+              "behavior": "mch_chain_saw",
+              "potency": 660,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 60,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 99,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": true,
+              "applies_statuses": [],
+              "tags": [
+                "weaponskill",
+                "tool",
+                "battery",
+                "burst",
+                "aoe"
+              ]
+            },
+            {
+              "key": "excavator",
+              "game_id": 36981,
+              "name": "掘地飞轮",
+              "kind": "gcd",
+              "behavior": "mch_excavator",
+              "potency": 660,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 0,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 99,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": true,
+              "applies_statuses": [],
+              "tags": [
+                "weaponskill",
+                "tool",
+                "battery",
+                "burst",
+                "aoe",
+                "replacement_action"
+              ]
+            },
+            {
+              "key": "blazing_shot",
+              "game_id": 36978,
+              "name": "烈焰弹",
+              "kind": "gcd",
+              "behavior": "mch_blazing_shot",
+              "potency": 240,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 1.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 0,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 1,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": true,
+              "applies_statuses": [],
+              "tags": [
+                "weaponskill",
+                "single_target_weaponskill",
+                "overheated",
+                "burst"
+              ]
+            },
+            {
+              "key": "full_metal_field",
+              "game_id": 36982,
+              "name": "全金属爆发",
+              "kind": "gcd",
+              "behavior": "mch_full_metal_field",
+              "potency": 900,
+              "value": 2,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 0,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 99,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": true,
+              "applies_statuses": [],
+              "tags": [
+                "weaponskill",
+                "tool",
+                "burst",
+                "aoe",
+                "replacement_action",
+                "reassemble_immune"
+              ]
+            },
+            {
+              "key": "hypercharge",
+              "game_id": 17209,
+              "name": "超荷",
+              "kind": "ogcd",
+              "behavior": "mch_hypercharge",
+              "potency": 0,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 10,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 1,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": false,
+              "applies_statuses": [],
+              "tags": [
+                "heat_spender",
+                "burst"
+              ]
+            },
+            {
+              "key": "wildfire",
+              "game_id": 2878,
+              "name": "野火",
+              "kind": "ogcd",
+              "behavior": "mch_wildfire",
+              "potency": 0,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 120,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 1,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": true,
+              "applies_statuses": [],
+              "tags": [
+                "target_debuff",
+                "delayed_potency",
+                "burst"
+              ]
+            },
+            {
+              "key": "detonator",
+              "game_id": 16766,
+              "name": "起爆",
+              "kind": "ogcd",
+              "behavior": "mch_detonator",
+              "potency": 0,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 1,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 1,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": true,
+              "applies_statuses": [],
+              "tags": [
+                "target_debuff",
+                "delayed_potency",
+                "replacement_action",
+                "burst"
+              ]
+            },
+            {
+              "key": "barrel_stabilizer",
+              "game_id": 7414,
+              "name": "枪管加热",
+              "kind": "ogcd",
+              "behavior": "mch_barrel_stabilizer",
+              "potency": 0,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 120,
+              "charges": 1,
+              "enabled": true,
+              "max_targets": 1,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": false,
+              "applies_statuses": [],
+              "tags": [
+                "resource",
+                "burst"
+              ]
+            },
+            {
+              "key": "reassemble",
+              "game_id": 2876,
+              "name": "整备",
+              "kind": "ogcd",
+              "behavior": "mch_reassemble",
+              "potency": 0,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 55,
+              "charges": 2,
+              "enabled": true,
+              "max_targets": 1,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": false,
+              "applies_statuses": [],
+              "tags": [
+                "buff",
+                "burst"
+              ]
+            },
+            {
+              "key": "double_check",
+              "game_id": 36979,
+              "name": "双将",
+              "kind": "ogcd",
+              "behavior": "mch_direct_ability",
+              "potency": 180,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 30,
+              "charges": 3,
+              "enabled": true,
+              "max_targets": 99,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": true,
+              "applies_statuses": [],
+              "tags": [
+                "ability",
+                "weave",
+                "minor_cooldown",
+                "aoe"
+              ]
+            },
+            {
+              "key": "checkmate",
+              "game_id": 36980,
+              "name": "将死",
+              "kind": "ogcd",
+              "behavior": "mch_direct_ability",
+              "potency": 180,
+              "value": 1,
+              "cast_time": 0,
+              "recast_time": 2.5,
+              "mp_cost_is_full": false,
+              "mp_cost": 0,
+              "mp_cost_floor": 0,
+              "cooldown": 30,
+              "charges": 3,
+              "enabled": true,
+              "max_targets": 99,
+              "aoe_secondary_reduction": 1,
+              "dot_potency": 0,
+              "dot_duration": 0,
+              "dot_key": null,
+              "requires_target": true,
+              "applies_statuses": [],
+              "tags": [
+                "ability",
+                "weave",
+                "minor_cooldown",
+                "aoe"
+              ]
+            }
+          ],
+          "default_fight_remaining": 600
+        }
+      },
+      "keys": [
+        "potion",
+        "heated_split_shot",
+        "heated_slug_shot",
+        "heated_clean_shot",
+        "drill",
+        "air_anchor",
+        "chain_saw",
+        "excavator",
+        "blazing_shot",
+        "full_metal_field",
+        "hypercharge",
+        "wildfire",
+        "detonator",
+        "barrel_stabilizer",
+        "reassemble",
+        "double_check",
+        "checkmate"
+      ],
+      "enabled": [
+        "potion",
+        "heated_split_shot",
+        "heated_slug_shot",
+        "heated_clean_shot",
+        "drill",
+        "air_anchor",
+        "chain_saw",
+        "excavator",
+        "blazing_shot",
+        "full_metal_field",
+        "hypercharge",
+        "wildfire",
+        "detonator",
+        "barrel_stabilizer",
+        "reassemble",
+        "double_check",
+        "checkmate"
+      ],
+      "gcd": [
+        "heated_split_shot",
+        "heated_slug_shot",
+        "heated_clean_shot",
+        "drill",
+        "air_anchor",
+        "chain_saw",
+        "excavator",
+        "blazing_shot",
+        "full_metal_field"
+      ],
+      "ogcd": [
+        "potion",
+        "hypercharge",
+        "wildfire",
+        "detonator",
+        "barrel_stabilizer",
+        "reassemble",
+        "double_check",
+        "checkmate"
+      ],
+      "by_game_id": [
+        "potion",
+        "heated_split_shot",
+        "heated_slug_shot",
+        "heated_clean_shot",
+        "drill",
+        "air_anchor",
+        "chain_saw",
+        "excavator",
+        "blazing_shot",
+        "full_metal_field",
+        "hypercharge",
+        "wildfire",
+        "detonator",
+        "barrel_stabilizer",
+        "reassemble",
+        "double_check",
+        "checkmate"
+      ],
+      "contains": [
+        false,
+        false
+      ],
+      "policy": [
+        {
+          "key": "ogcd_wait",
+          "raw_id": 0,
+          "name": "空输出",
+          "kind": "ogcd",
+          "behavior": "end_weave_window",
+          "value": 1,
+          "tags": [
+            "sentinel",
+            "policy"
+          ]
+        }
+      ]
+    }
+  },
+  "resources": [
+    {
+      "time": 100,
+      "status_remaining": 12.5,
+      "status_expires_at": 112.5,
+      "status_stacks": 2,
+      "has_status": true,
+      "job_remaining": 5,
+      "job_stacks": 1,
+      "has_job_status": true,
+      "dot_remaining": 15,
+      "dot_expires_at": 115,
+      "dot_next_tick_at": 103,
+      "dot_next_tick_in_seconds": 3,
+      "potency_per_tick": 40,
+      "tick_interval": 3,
+      "available_charges": 1,
+      "recharge_ready_at": [
+        105,
+        110
+      ],
+      "recharge_timers": [
+        5,
+        10
+      ]
+    },
+    {
+      "time": 103,
+      "status_remaining": 9.5,
+      "status_expires_at": 112.5,
+      "status_stacks": 2,
+      "has_status": true,
+      "job_remaining": 2,
+      "job_stacks": 1,
+      "has_job_status": true,
+      "dot_remaining": 12,
+      "dot_expires_at": 115,
+      "dot_next_tick_at": 103,
+      "dot_next_tick_in_seconds": 0,
+      "potency_per_tick": 40,
+      "tick_interval": 3,
+      "available_charges": 1,
+      "recharge_ready_at": [
+        105,
+        110
+      ],
+      "recharge_timers": [
+        2,
+        7
+      ]
+    },
+    {
+      "time": 120,
+      "status_remaining": 0,
+      "status_expires_at": 112.5,
+      "status_stacks": 0,
+      "has_status": false,
+      "job_remaining": 0,
+      "job_stacks": 0,
+      "has_job_status": false,
+      "dot_remaining": 0,
+      "dot_expires_at": 115,
+      "dot_next_tick_at": 103,
+      "dot_next_tick_in_seconds": 0,
+      "potency_per_tick": 40,
+      "tick_interval": 3,
+      "available_charges": 1,
+      "recharge_ready_at": [
+        105,
+        110
+      ],
+      "recharge_timers": [
+        0,
+        0
+      ]
+    }
+  ],
+  "clone_isolated": true
+}

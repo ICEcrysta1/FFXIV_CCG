@@ -1,6 +1,6 @@
 """跨状态机、输出和训练层共享的稳定契约常量。
 
-定义由 `config/schema.yaml` 提供（C# 与 Python 单一事实来源），
+定义由 `config/schema.yaml` 提供（Rust 与 Python 单一事实来源），
 本模块只做装配。
 """
 

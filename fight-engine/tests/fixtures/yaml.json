@@ -1,0 +1,381 @@
+{
+  "source_commit": "815e71b439cc1820fbaa9aca07a110b4a155d0e9",
+  "cases": [
+    {
+      "name": "max_mp:true",
+      "path": "config/default.yaml",
+      "search": "max_mp: 10000",
+      "replacement": "max_mp: true",
+      "prefix": "",
+      "suffix": "",
+      "result": {
+        "accepted": true,
+        "max_mp": 1,
+        "base_gcd": 2.5,
+        "potion_enabled": true
+      }
+    },
+    {
+      "name": "max_mp:yes",
+      "path": "config/default.yaml",
+      "search": "max_mp: 10000",
+      "replacement": "max_mp: yes",
+      "prefix": "",
+      "suffix": "",
+      "result": {
+        "accepted": true,
+        "max_mp": 1,
+        "base_gcd": 2.5,
+        "potion_enabled": true
+      }
+    },
+    {
+      "name": "max_mp:on",
+      "path": "config/default.yaml",
+      "search": "max_mp: 10000",
+      "replacement": "max_mp: on",
+      "prefix": "",
+      "suffix": "",
+      "result": {
+        "accepted": true,
+        "max_mp": 1,
+        "base_gcd": 2.5,
+        "potion_enabled": true
+      }
+    },
+    {
+      "name": "max_mp:no",
+      "path": "config/default.yaml",
+      "search": "max_mp: 10000",
+      "replacement": "max_mp: no",
+      "prefix": "",
+      "suffix": "",
+      "result": {
+        "accepted": true,
+        "max_mp": 0,
+        "base_gcd": 2.5,
+        "potion_enabled": true
+      }
+    },
+    {
+      "name": "max_mp:'yes'",
+      "path": "config/default.yaml",
+      "search": "max_mp: 10000",
+      "replacement": "max_mp: 'yes'",
+      "prefix": "",
+      "suffix": "",
+      "result": {
+        "accepted": false
+      }
+    },
+    {
+      "name": "max_mp:010",
+      "path": "config/default.yaml",
+      "search": "max_mp: 10000",
+      "replacement": "max_mp: 010",
+      "prefix": "",
+      "suffix": "",
+      "result": {
+        "accepted": false
+      }
+    },
+    {
+      "name": "max_mp:'010'",
+      "path": "config/default.yaml",
+      "search": "max_mp: 10000",
+      "replacement": "max_mp: '010'",
+      "prefix": "",
+      "suffix": "",
+      "result": {
+        "accepted": true,
+        "max_mp": 10,
+        "base_gcd": 2.5,
+        "potion_enabled": true
+      }
+    },
+    {
+      "name": "max_mp:0x10",
+      "path": "config/default.yaml",
+      "search": "max_mp: 10000",
+      "replacement": "max_mp: 0x10",
+      "prefix": "",
+      "suffix": "",
+      "result": {
+        "accepted": false
+      }
+    },
+    {
+      "name": "max_mp:1.9",
+      "path": "config/default.yaml",
+      "search": "max_mp: 10000",
+      "replacement": "max_mp: 1.9",
+      "prefix": "",
+      "suffix": "",
+      "result": {
+        "accepted": true,
+        "max_mp": 1,
+        "base_gcd": 2.5,
+        "potion_enabled": true
+      }
+    },
+    {
+      "name": "max_mp:'1.9'",
+      "path": "config/default.yaml",
+      "search": "max_mp: 10000",
+      "replacement": "max_mp: '1.9'",
+      "prefix": "",
+      "suffix": "",
+      "result": {
+        "accepted": false
+      }
+    },
+    {
+      "name": "max_mp:null",
+      "path": "config/default.yaml",
+      "search": "max_mp: 10000",
+      "replacement": "max_mp: null",
+      "prefix": "",
+      "suffix": "",
+      "result": {
+        "accepted": false
+      }
+    },
+    {
+      "name": "base_gcd:'.inf'",
+      "path": "config/system.yaml",
+      "search": "base_gcd: 2.5",
+      "replacement": "base_gcd: '.inf'",
+      "prefix": "",
+      "suffix": "",
+      "result": {
+        "accepted": false
+      }
+    },
+    {
+      "name": "base_gcd:.inf",
+      "path": "config/system.yaml",
+      "search": "base_gcd: 2.5",
+      "replacement": "base_gcd: .inf",
+      "prefix": "",
+      "suffix": "",
+      "result": {
+        "accepted": false
+      }
+    },
+    {
+      "name": "base_gcd:.nan",
+      "path": "config/system.yaml",
+      "search": "base_gcd: 2.5",
+      "replacement": "base_gcd: .nan",
+      "prefix": "",
+      "suffix": "",
+      "result": {
+        "accepted": false
+      }
+    },
+    {
+      "name": "base_gcd:3e-1",
+      "path": "config/system.yaml",
+      "search": "base_gcd: 2.5",
+      "replacement": "base_gcd: 3e-1",
+      "prefix": "",
+      "suffix": "",
+      "result": {
+        "accepted": true,
+        "max_mp": 10000,
+        "base_gcd": 0.3,
+        "potion_enabled": true
+      }
+    },
+    {
+      "name": "base_gcd:'3e-1'",
+      "path": "config/system.yaml",
+      "search": "base_gcd: 2.5",
+      "replacement": "base_gcd: '3e-1'",
+      "prefix": "",
+      "suffix": "",
+      "result": {
+        "accepted": true,
+        "max_mp": 10000,
+        "base_gcd": 0.3,
+        "potion_enabled": true
+      }
+    },
+    {
+      "name": "base_gcd:yes",
+      "path": "config/system.yaml",
+      "search": "base_gcd: 2.5",
+      "replacement": "base_gcd: yes",
+      "prefix": "",
+      "suffix": "",
+      "result": {
+        "accepted": true,
+        "max_mp": 10000,
+        "base_gcd": 1,
+        "potion_enabled": true
+      }
+    },
+    {
+      "name": "enabled:no",
+      "path": "config/system.yaml",
+      "search": "    behavior: grant_status",
+      "replacement": "    behavior: grant_status\n    enabled: no",
+      "prefix": "",
+      "suffix": "",
+      "result": {
+        "accepted": true,
+        "max_mp": 10000,
+        "base_gcd": 2.5,
+        "potion_enabled": false
+      }
+    },
+    {
+      "name": "enabled:off",
+      "path": "config/system.yaml",
+      "search": "    behavior: grant_status",
+      "replacement": "    behavior: grant_status\n    enabled: off",
+      "prefix": "",
+      "suffix": "",
+      "result": {
+        "accepted": true,
+        "max_mp": 10000,
+        "base_gcd": 2.5,
+        "potion_enabled": false
+      }
+    },
+    {
+      "name": "enabled:'false'",
+      "path": "config/system.yaml",
+      "search": "    behavior: grant_status",
+      "replacement": "    behavior: grant_status\n    enabled: 'false'",
+      "prefix": "",
+      "suffix": "",
+      "result": {
+        "accepted": true,
+        "max_mp": 10000,
+        "base_gcd": 2.5,
+        "potion_enabled": true
+      }
+    },
+    {
+      "name": "enabled:''",
+      "path": "config/system.yaml",
+      "search": "    behavior: grant_status",
+      "replacement": "    behavior: grant_status\n    enabled: ''",
+      "prefix": "",
+      "suffix": "",
+      "result": {
+        "accepted": true,
+        "max_mp": 10000,
+        "base_gcd": 2.5,
+        "potion_enabled": false
+      }
+    },
+    {
+      "name": "enabled:null",
+      "path": "config/system.yaml",
+      "search": "    behavior: grant_status",
+      "replacement": "    behavior: grant_status\n    enabled: null",
+      "prefix": "",
+      "suffix": "",
+      "result": {
+        "accepted": true,
+        "max_mp": 10000,
+        "base_gcd": 2.5,
+        "potion_enabled": false
+      }
+    },
+    {
+      "name": "enabled:false",
+      "path": "config/system.yaml",
+      "search": "    behavior: grant_status",
+      "replacement": "    behavior: grant_status\n    enabled: false",
+      "prefix": "",
+      "suffix": "",
+      "result": {
+        "accepted": true,
+        "max_mp": 10000,
+        "base_gcd": 2.5,
+        "potion_enabled": false
+      }
+    },
+    {
+      "name": "enabled:[1]",
+      "path": "config/system.yaml",
+      "search": "    behavior: grant_status",
+      "replacement": "    behavior: grant_status\n    enabled: [1]",
+      "prefix": "",
+      "suffix": "",
+      "result": {
+        "accepted": true,
+        "max_mp": 10000,
+        "base_gcd": 2.5,
+        "potion_enabled": true
+      }
+    },
+    {
+      "name": "enabled:{}",
+      "path": "config/system.yaml",
+      "search": "    behavior: grant_status",
+      "replacement": "    behavior: grant_status\n    enabled: {}",
+      "prefix": "",
+      "suffix": "",
+      "result": {
+        "accepted": true,
+        "max_mp": 10000,
+        "base_gcd": 2.5,
+        "potion_enabled": true
+      }
+    },
+    {
+      "name": "alias",
+      "path": "config/default.yaml",
+      "search": "max_mp: 10000",
+      "replacement": "max_mp: *probe_amount",
+      "prefix": "probe_amount: &probe_amount 42\n",
+      "suffix": "",
+      "result": {
+        "accepted": true,
+        "max_mp": 42,
+        "base_gcd": 2.5,
+        "potion_enabled": true
+      }
+    },
+    {
+      "name": "second_document",
+      "path": "config/default.yaml",
+      "search": "max_mp: 10000",
+      "replacement": "max_mp: 10000",
+      "prefix": "",
+      "suffix": "\n---\nignored: yes\n",
+      "result": {
+        "accepted": true,
+        "max_mp": 10000,
+        "base_gcd": 2.5,
+        "potion_enabled": true
+      }
+    },
+    {
+      "name": "invalid_second_document",
+      "path": "config/default.yaml",
+      "search": "max_mp: 10000",
+      "replacement": "max_mp: 10000",
+      "prefix": "",
+      "suffix": "\n---\n[unterminated\n",
+      "result": {
+        "accepted": false
+      }
+    },
+    {
+      "name": "duplicate_key",
+      "path": "config/default.yaml",
+      "search": "max_mp: 10000",
+      "replacement": "max_mp: 10000\n  max_mp: 2",
+      "prefix": "",
+      "suffix": "",
+      "result": {
+        "accepted": false
+      }
+    }
+  ]
+}

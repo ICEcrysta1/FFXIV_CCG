@@ -1,0 +1,481 @@
+{
+  "source_commit": "837d841ca49d504bbf7de996f90af195fc3cdb7d",
+  "registration": {
+    "job_tag": "probe",
+    "resources": {
+      "a_timer": {
+        "key": "a_timer",
+        "resource_type": "float",
+        "default_value": 1.234567,
+        "vector_group": "float",
+        "display_unit": "count",
+        "max_value": 5
+      },
+      "flag": {
+        "key": "flag",
+        "resource_type": "bool",
+        "default_value": true,
+        "vector_group": "bool",
+        "display_unit": "count",
+        "max_value": null
+      },
+      "hidden": {
+        "key": "hidden",
+        "resource_type": "int",
+        "default_value": -2,
+        "vector_group": "internal",
+        "display_unit": "count",
+        "max_value": null
+      },
+      "unbounded": {
+        "key": "unbounded",
+        "resource_type": "int",
+        "default_value": -7,
+        "vector_group": "resource",
+        "display_unit": "count",
+        "max_value": null
+      },
+      "z_count": {
+        "key": "z_count",
+        "resource_type": "int",
+        "default_value": 3,
+        "vector_group": "resource",
+        "display_unit": "count",
+        "max_value": 10
+      }
+    },
+    "statuses": {}
+  },
+  "limits": {
+    "z_count": 8,
+    "a_timer": 4.5
+  },
+  "definitions": {
+    "a_timer": {
+      "key": "a_timer",
+      "resource_type": "float",
+      "default_value": 1.234567,
+      "vector_group": "float",
+      "display_unit": "count",
+      "max_value": 4.5
+    },
+    "flag": {
+      "key": "flag",
+      "resource_type": "bool",
+      "default_value": true,
+      "vector_group": "bool",
+      "display_unit": "count",
+      "max_value": null
+    },
+    "hidden": {
+      "key": "hidden",
+      "resource_type": "int",
+      "default_value": -2,
+      "vector_group": "internal",
+      "display_unit": "count",
+      "max_value": null
+    },
+    "unbounded": {
+      "key": "unbounded",
+      "resource_type": "int",
+      "default_value": -7,
+      "vector_group": "resource",
+      "display_unit": "count",
+      "max_value": null
+    },
+    "z_count": {
+      "key": "z_count",
+      "resource_type": "int",
+      "default_value": 3,
+      "vector_group": "resource",
+      "display_unit": "count",
+      "max_value": 8
+    }
+  },
+  "job_tag": "probe",
+  "snapshot_keys": [
+    "a_timer",
+    "flag",
+    "unbounded",
+    "z_count"
+  ],
+  "vector_keys": {
+    "resource": [
+      "unbounded",
+      "z_count"
+    ],
+    "float": [
+      "a_timer"
+    ],
+    "bool": [
+      "flag"
+    ],
+    "internal": [],
+    "missing": []
+  },
+  "max": {
+    "a_timer": 4.5,
+    "flag": null,
+    "hidden": null,
+    "unbounded": null,
+    "z_count": 8
+  },
+  "initial": {
+    "a_timer": 1.234567,
+    "flag": true,
+    "hidden": -2,
+    "unbounded": -7,
+    "z_count": 3
+  },
+  "scenarios": [
+    {
+      "name": "int_from_float",
+      "sets": [
+        {
+          "key": "z_count",
+          "value": 1.9
+        }
+      ],
+      "gets": {
+        "a_timer": 1.234567,
+        "flag": true,
+        "hidden": -2,
+        "unbounded": -7,
+        "z_count": 1
+      },
+      "snapshot": {
+        "a_timer": 1.2346,
+        "flag": true,
+        "unbounded": -7,
+        "z_count": 1
+      },
+      "normalized": {
+        "z_count": 1
+      }
+    },
+    {
+      "name": "int_from_bool",
+      "sets": [
+        {
+          "key": "z_count",
+          "value": true
+        }
+      ],
+      "gets": {
+        "a_timer": 1.234567,
+        "flag": true,
+        "hidden": -2,
+        "unbounded": -7,
+        "z_count": 1
+      },
+      "snapshot": {
+        "a_timer": 1.2346,
+        "flag": true,
+        "unbounded": -7,
+        "z_count": 1
+      },
+      "normalized": {
+        "z_count": 1
+      }
+    },
+    {
+      "name": "negative_clamped",
+      "sets": [
+        {
+          "key": "z_count",
+          "value": -2
+        },
+        {
+          "key": "a_timer",
+          "value": -1.5
+        }
+      ],
+      "gets": {
+        "a_timer": 0,
+        "flag": true,
+        "hidden": -2,
+        "unbounded": -7,
+        "z_count": 0
+      },
+      "snapshot": {
+        "a_timer": 0,
+        "flag": true,
+        "unbounded": -7,
+        "z_count": 0
+      },
+      "normalized": {
+        "z_count": 0,
+        "a_timer": 0
+      }
+    },
+    {
+      "name": "upper_clamped",
+      "sets": [
+        {
+          "key": "z_count",
+          "value": 200
+        },
+        {
+          "key": "a_timer",
+          "value": 9
+        }
+      ],
+      "gets": {
+        "a_timer": 4.5,
+        "flag": true,
+        "hidden": -2,
+        "unbounded": -7,
+        "z_count": 8
+      },
+      "snapshot": {
+        "a_timer": 4.5,
+        "flag": true,
+        "unbounded": -7,
+        "z_count": 8
+      },
+      "normalized": {
+        "z_count": 8,
+        "a_timer": 4.5
+      }
+    },
+    {
+      "name": "unbounded_negative",
+      "sets": [
+        {
+          "key": "unbounded",
+          "value": -2.9
+        },
+        {
+          "key": "hidden",
+          "value": 99
+        }
+      ],
+      "gets": {
+        "a_timer": 1.234567,
+        "flag": true,
+        "hidden": 99,
+        "unbounded": -2,
+        "z_count": 3
+      },
+      "snapshot": {
+        "a_timer": 1.2346,
+        "flag": true,
+        "unbounded": -2,
+        "z_count": 3
+      },
+      "normalized": {
+        "unbounded": -2,
+        "hidden": 99
+      }
+    },
+    {
+      "name": "float_from_bool",
+      "sets": [
+        {
+          "key": "a_timer",
+          "value": true
+        }
+      ],
+      "gets": {
+        "a_timer": 1,
+        "flag": true,
+        "hidden": -2,
+        "unbounded": -7,
+        "z_count": 3
+      },
+      "snapshot": {
+        "a_timer": 1,
+        "flag": true,
+        "unbounded": -7,
+        "z_count": 3
+      },
+      "normalized": {
+        "a_timer": 1
+      }
+    },
+    {
+      "name": "bool_from_zero_int",
+      "sets": [
+        {
+          "key": "flag",
+          "value": 0
+        }
+      ],
+      "gets": {
+        "a_timer": 1.234567,
+        "flag": false,
+        "hidden": -2,
+        "unbounded": -7,
+        "z_count": 3
+      },
+      "snapshot": {
+        "a_timer": 1.2346,
+        "flag": false,
+        "unbounded": -7,
+        "z_count": 3
+      },
+      "normalized": {
+        "flag": false
+      }
+    },
+    {
+      "name": "bool_from_nonzero_int",
+      "sets": [
+        {
+          "key": "flag",
+          "value": -2
+        }
+      ],
+      "gets": {
+        "a_timer": 1.234567,
+        "flag": true,
+        "hidden": -2,
+        "unbounded": -7,
+        "z_count": 3
+      },
+      "snapshot": {
+        "a_timer": 1.2346,
+        "flag": true,
+        "unbounded": -7,
+        "z_count": 3
+      },
+      "normalized": {
+        "flag": true
+      }
+    },
+    {
+      "name": "bool_from_zero_float",
+      "sets": [
+        {
+          "key": "flag",
+          "value": 0
+        }
+      ],
+      "gets": {
+        "a_timer": 1.234567,
+        "flag": false,
+        "hidden": -2,
+        "unbounded": -7,
+        "z_count": 3
+      },
+      "snapshot": {
+        "a_timer": 1.2346,
+        "flag": false,
+        "unbounded": -7,
+        "z_count": 3
+      },
+      "normalized": {
+        "flag": false
+      }
+    },
+    {
+      "name": "bool_from_nonzero_float",
+      "sets": [
+        {
+          "key": "flag",
+          "value": 0.25
+        }
+      ],
+      "gets": {
+        "a_timer": 1.234567,
+        "flag": true,
+        "hidden": -2,
+        "unbounded": -7,
+        "z_count": 3
+      },
+      "snapshot": {
+        "a_timer": 1.2346,
+        "flag": true,
+        "unbounded": -7,
+        "z_count": 3
+      },
+      "normalized": {
+        "flag": true
+      }
+    },
+    {
+      "name": "float_precision",
+      "sets": [
+        {
+          "key": "a_timer",
+          "value": 3.141592653589793
+        }
+      ],
+      "gets": {
+        "a_timer": 3.141592653589793,
+        "flag": true,
+        "hidden": -2,
+        "unbounded": -7,
+        "z_count": 3
+      },
+      "snapshot": {
+        "a_timer": 3.1416,
+        "flag": true,
+        "unbounded": -7,
+        "z_count": 3
+      },
+      "normalized": {
+        "a_timer": 3.1416
+      }
+    }
+  ],
+  "transition_inputs": {
+    "before": [
+      {
+        "key": "z_count",
+        "value": 8
+      },
+      {
+        "key": "a_timer",
+        "value": 3.14159
+      },
+      {
+        "key": "unbounded",
+        "value": -5
+      }
+    ],
+    "after": [
+      {
+        "key": "z_count",
+        "value": 2
+      },
+      {
+        "key": "a_timer",
+        "value": 1.234567
+      },
+      {
+        "key": "flag",
+        "value": false
+      },
+      {
+        "key": "unbounded",
+        "value": -2
+      }
+    ]
+  },
+  "transition": {
+    "before": {
+      "a_timer": 3.1416,
+      "flag": true,
+      "unbounded": -5,
+      "z_count": 8
+    },
+    "after": {
+      "a_timer": 1.2346,
+      "flag": false,
+      "unbounded": -2,
+      "z_count": 2
+    },
+    "consumed": {
+      "a_timer": 1.907,
+      "flag": true,
+      "unbounded": 0,
+      "z_count": 6
+    }
+  },
+  "errors": {
+    "unknown_limit": true,
+    "unknown_resource": true,
+    "unsupported_type": true
+  }
+}

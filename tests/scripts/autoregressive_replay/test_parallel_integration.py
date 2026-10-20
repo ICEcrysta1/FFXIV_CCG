@@ -1,4 +1,4 @@
-"""真实 C# 队列和真实 Transformer 的串行／合批等价验收。"""
+"""真实 Rust 队列和真实 Transformer 的串行／合批等价验收。"""
 
 from types import SimpleNamespace
 

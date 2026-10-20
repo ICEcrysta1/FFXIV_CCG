@@ -130,7 +130,7 @@ class ProcessCompilePool:
 
 
 def _initialize_worker(connection_queue, job_tag: str) -> None:
-    """子进程只初始化 Python 张量运行时，不装载 CLR 或创建第二个 C# 引擎。"""
+    """子进程只初始化 Python 张量运行时，不加载原生扩展或创建第二个引擎。"""
     global _WORKER_ENGINE
     connection = connection_queue.get(timeout=10)
     Finalize(connection, connection.close, exitpriority=10)

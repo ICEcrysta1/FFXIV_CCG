@@ -1,15 +1,15 @@
 # 状态机、输出与训练层共享的稳定 schema 定义。
-# C#（FightEngine）与 Python（common/）都从本文件加载，定义修改只改这一处；
+# Rust（fight-engine/）与 Python（common/）都从本文件加载，定义修改只改这一处；
 # 动态部分（职业量谱/Buff/DoT 列表）仍由各自运行时从职业配置推导。
-# 注意：state_vector_fields 新增字段时，必须同步实现 C# 侧 switch 臂与 Python 侧取值器
-#（player/buff/target_buff 三组各一份），否则运行期会显式抛 InvalidOperationException/KeyError
+# 注意：state_vector_fields 新增字段时，必须同步实现 Rust 侧 match 分支与 Python 侧取值器
+#（player/buff/target_buff 三组各一份），否则 Rust 会返回错误，Python 会抛 KeyError
 #（fail-loud 守护，不会静默错位）。
 schema_version: 1
 
 contracts:
   slidecast_window_seconds: 0.5
   scene_epsilon: 0.000001
-  # Python InProcessBackend 与 C# FightEngine 程序集共用的运行时契约版本。
+  # Python InProcessBackend 与 Rust FightEngine 原生扩展共用的运行时契约版本。
   # 6：绝对时间动作、policy 决策和外部事实分别提交；动作响应与完整观测分离。
   # 7：新增 validate_at 只读探测；observe_at 响应补 next_scheduled_event_time。
   #    状态机接受技能提交与场景外部事实（可选中/移动/目标数/团辅）；

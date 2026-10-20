@@ -1,4 +1,4 @@
-"""训练期间的模型自回归 PPG 评估（C# 状态机后端版）。"""
+"""训练期间的模型自回归 PPG 评估（Rust 状态机后端版）。"""
 
 from __future__ import annotations
 

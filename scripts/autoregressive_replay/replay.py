@@ -1,4 +1,4 @@
-"""通过进程内 C# 状态机后端执行模型自回归回放。"""
+"""通过进程内 Rust 状态机后端执行模型自回归回放。"""
 
 from __future__ import annotations
 
@@ -111,7 +111,7 @@ def read_replay_cumulative_potency(backend: InProcessBackend, timestamp: float) 
     try:
         return float(metrics["cumulative_potency"]), float(metrics["cumulative_dot_potency"])
     except (KeyError, ValueError, TypeError):
-        raise RuntimeError("C# seconds observation lacks cumulative potency execution metrics") from None
+        raise RuntimeError("Rust seconds observation lacks cumulative potency execution metrics") from None
 
 
 class NoLegalActionError(RuntimeError):
@@ -466,7 +466,7 @@ class AutoregressiveReplaySession:
 
 
 class AutoregressiveReplay:
-    """借用已有会话，在 C# 队列上逐步执行模型 Top-1 合法动作。"""
+    """借用已有会话，在 Rust 队列上逐步执行模型 Top-1 合法动作。"""
 
     def __init__(
         self,

@@ -1,0 +1,234 @@
+{
+  "source_commit": "815e71b439cc1820fbaa9aca07a110b4a155d0e9",
+  "ordering": {
+    "dispatch": [
+      {
+        "time": 1,
+        "kind": "DecisionBoundary",
+        "owner": "early",
+        "sequence": 9
+      },
+      {
+        "time": 2,
+        "kind": "SceneChanged",
+        "owner": "scene",
+        "sequence": 8
+      },
+      {
+        "time": 2,
+        "kind": "ActionEffect",
+        "owner": "effect",
+        "sequence": 7
+      },
+      {
+        "time": 2,
+        "kind": "ActionEffect",
+        "owner": "follow",
+        "sequence": 10
+      },
+      {
+        "time": 2,
+        "kind": "MpTick",
+        "owner": "tick",
+        "sequence": 6
+      },
+      {
+        "time": 2,
+        "kind": "StatusExpired",
+        "owner": "expiry",
+        "sequence": 5
+      },
+      {
+        "time": 2,
+        "kind": "PlayerDeath",
+        "owner": "reset",
+        "sequence": 4
+      },
+      {
+        "time": 2,
+        "kind": "ActionAccepted",
+        "owner": "accept",
+        "sequence": 2
+      },
+      {
+        "time": 2,
+        "kind": "CastCompleted",
+        "owner": "boundary",
+        "sequence": 3
+      }
+    ],
+    "cancel_results": [
+      true,
+      false
+    ],
+    "mp": 9,
+    "time": 2,
+    "next_sequence": 11,
+    "pending_events": 0
+  },
+  "refresh": {
+    "at_3": {
+      "dispatch": [
+        {
+          "time": 3,
+          "kind": "ActionEffect",
+          "owner": "refresh",
+          "sequence": 2
+        },
+        {
+          "time": 3,
+          "kind": "StatusExpired",
+          "owner": "probe",
+          "sequence": 1
+        }
+      ],
+      "expires_at": 8,
+      "next_sequence": 4,
+      "pending_events": [
+        {
+          "time": 8,
+          "kind": "StatusExpired",
+          "owner": "probe",
+          "sequence": 3
+        }
+      ]
+    },
+    "at_8": {
+      "dispatch": [
+        {
+          "time": 3,
+          "kind": "ActionEffect",
+          "owner": "refresh",
+          "sequence": 2
+        },
+        {
+          "time": 3,
+          "kind": "StatusExpired",
+          "owner": "probe",
+          "sequence": 1
+        },
+        {
+          "time": 8,
+          "kind": "StatusExpired",
+          "owner": "probe",
+          "sequence": 3
+        }
+      ],
+      "has_status": false,
+      "next_sequence": 4,
+      "pending_events": []
+    }
+  },
+  "snapshot": {
+    "at_5": {
+      "time": 5,
+      "pending_events": 0,
+      "pending_settlements": [
+        {
+          "time": 5.00000005,
+          "kind": "StatusExpired",
+          "owner": "probe",
+          "sequence": 1,
+          "scope": "System"
+        },
+        {
+          "time": 5.00000005,
+          "kind": "StatusExpired",
+          "owner": "probe",
+          "sequence": 2,
+          "scope": "Job"
+        }
+      ],
+      "next_sequence": 5
+    },
+    "branches": [
+      {
+        "time": 6,
+        "mp": 2,
+        "system_status_count": 0,
+        "job_status_count": 0,
+        "dispatch": [
+          {
+            "time": 5.00000005,
+            "kind": "StatusExpired",
+            "owner": "probe",
+            "sequence": 1,
+            "scope": "System"
+          },
+          {
+            "time": 5.00000005,
+            "kind": "StatusExpired",
+            "owner": "probe",
+            "sequence": 2,
+            "scope": "Job"
+          }
+        ],
+        "pending_events": 0,
+        "pending_settlements": 0,
+        "next_sequence": 9
+      },
+      {
+        "time": 6,
+        "mp": 2,
+        "system_status_count": 0,
+        "job_status_count": 0,
+        "dispatch": [
+          {
+            "time": 5.00000005,
+            "kind": "StatusExpired",
+            "owner": "probe",
+            "sequence": 1,
+            "scope": "System"
+          },
+          {
+            "time": 5.00000005,
+            "kind": "StatusExpired",
+            "owner": "probe",
+            "sequence": 2,
+            "scope": "Job"
+          }
+        ],
+        "pending_events": 0,
+        "pending_settlements": 0,
+        "next_sequence": 9
+      },
+      {
+        "time": 6,
+        "mp": 2,
+        "system_status_count": 0,
+        "job_status_count": 0,
+        "dispatch": [
+          {
+            "time": 5.00000005,
+            "kind": "StatusExpired",
+            "owner": "probe",
+            "sequence": 1,
+            "scope": "System"
+          },
+          {
+            "time": 5.00000005,
+            "kind": "StatusExpired",
+            "owner": "probe",
+            "sequence": 2,
+            "scope": "Job"
+          }
+        ],
+        "pending_events": 0,
+        "pending_settlements": 0,
+        "next_sequence": 9
+      }
+    ],
+    "original_isolated": true
+  },
+  "validation": {
+    "schedule_past": true,
+    "schedule_non_finite": true,
+    "schedule_numbered": true,
+    "backwards": true,
+    "clock_mutation": true,
+    "invalid_snapshot": true,
+    "time_after_rejections": 5,
+    "repeated_guard": true,
+    "repeat_dispatch_count": 6
+  }
+}

@@ -1,0 +1,11 @@
+[package]
+name = "fight-engine-black-mage"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+
+[dependencies]
+fight-engine = { path = "../.." }
+
+[dev-dependencies]
+serde_json = "1"

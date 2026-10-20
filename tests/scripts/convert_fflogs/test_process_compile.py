@@ -203,7 +203,7 @@ def _child_diagnostics():
     return {
         "pid": os.getpid(), "start_method": multiprocessing.get_start_method(),
         "torch_threads": torch.get_num_threads(), "torch_interop_threads": torch.get_num_interop_threads(),
-        "dotnet_loaded": inprocess_backend._DOTNET_TYPES is not None,
+        "native_loaded": inprocess_backend._NATIVE_MODULE is not None,
         "engine_type": type(process_compile._WORKER_ENGINE).__name__,
     }
 
@@ -236,7 +236,7 @@ def _assert_pool_closed(pool):
     pool.__exit__(None, None, None)
 
 
-def test_spawn_workers_use_one_torch_thread_and_do_not_load_dotnet(cs_backend):
+def test_spawn_workers_use_one_torch_thread_and_do_not_load_native(cs_backend):
     previous_children = {child.pid for child in multiprocessing.active_children()}
     with InProcessEngine("black_mage", capacity=2) as engine:
         with process_compile_module.ProcessCompilePool(engine, "black_mage", 2) as pool:
@@ -246,7 +246,7 @@ def test_spawn_workers_use_one_torch_thread_and_do_not_load_dotnet(cs_backend):
                 assert result["pid"] != os.getpid()
                 assert result["start_method"] == "spawn"
                 assert result["torch_threads"] == result["torch_interop_threads"] == 1
-                assert not result["dotnet_loaded"]
+                assert not result["native_loaded"]
                 assert result["engine_type"] == "_ProcessEngineProxy"
         assert len(pool._processes) == 2
         _assert_pool_closed(pool)
