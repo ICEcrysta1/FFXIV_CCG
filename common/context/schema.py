@@ -1,6 +1,6 @@
 """共享 schema 配置加载（config/schema.yaml）。
 
-C#（FightEngine）与 Python（common/）都以本文件为单一事实来源，
+Rust（fight-engine/）与 Python（common/）都以本文件为单一事实来源，
 承载共享常量、scene context schema、canonical 输出 schema 与
 状态向量字段模板；动态部分（职业量谱/Buff/DoT 列表）仍由运行时推导。
 """

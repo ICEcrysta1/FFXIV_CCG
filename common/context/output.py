@@ -1,7 +1,7 @@
 """canonical 输出 context schema 定义。
 
 顶层 keys、状态向量分组与版本由 `config/schema.yaml` 提供
-（C# 与 Python 单一事实来源）；`top_level_keys` 顺序即定义。
+（Rust 与 Python 单一事实来源）；`top_level_keys` 顺序即定义。
 """
 
 from __future__ import annotations

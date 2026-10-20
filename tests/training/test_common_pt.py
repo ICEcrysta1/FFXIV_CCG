@@ -133,7 +133,7 @@ def test_training_dataset_requires_existing_compiled_cache(tmp_path):
 
 
 def test_compiled_history_and_current_state_use_compact_state_contract(tmp_path):
-    """真实 C# 转换生成的当前请求与完整历史 bank 必须同时采用新输入维度。"""
+    """真实 Rust 转换生成的当前请求与完整历史 bank 必须同时采用新输入维度。"""
     pytest.importorskip("torch")
     source_path = make_demo_pt(tmp_path, ["fire_iii", "fire_iv"], fight_id="seconds_contract")
     dataset = make_dataset([source_path])

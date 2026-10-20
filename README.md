@@ -111,14 +111,10 @@ Project-owned source code in this repository is licensed under the GNU
 General Public License v3.0 only (GPL-3.0-only); see LICENSE. Third-party
 materials remain under their own applicable licenses.
 
-The FightEngine Library consists of the project-owned source files under
-Combat.Sim/FightEngine/ included by
-Combat.Sim/FightEngine/FightEngine.csproj. Those files also carry the
-additional permission in
-LICENSE-FightEngine-Linking-Exception, Version 1.0. The exception permits
-combining the FightEngine Library with Independent Modules under its stated
-conditions; it does not automatically apply to tests, tools, Python code, or
-other repository components.
+The Rust state machine, job crates and Python native extension under
+`fight-engine/` are licensed under GPL-3.0-only. The additional permission in
+`LICENSE-FightEngine-Linking-Exception` describes the historical C# library;
+it does not apply to the Rust implementation.
 
 Copyright notices for the relevant material identify ICE_crystal and, for
 the original Machinist implementation, SpikeHS.

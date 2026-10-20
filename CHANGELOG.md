@@ -14,7 +14,7 @@
 - Rust 补齐绝对动作序列、固定种子随机回放和完整快照缓存；整段回放复用所属队列锁，随机决策保持合法键顺序及 SplitMix64 算法，快照缓存隔离来源队列与调用方修改。
 - Python 状态机接入切换到独立 PyO3 原生扩展；绑定层显式装配职业，执行、队列锁等待及基础值数据包编码释放 GIL，保留既有 Python 接口、增量历史和父进程共享引擎流程。运行时依赖与安装入口改为 Maturin 构建的 Rust release 扩展，编译时嵌入共享 schema 契约并在惰性加载时核对。
 - 状态机支持外部 `player_death` 死亡重置标记：系统清零 MP 和公共 Buff，黑魔清空职业 Buff、量谱与计时截止时刻；取消尚未结算的旧读条及排队动作，保留 DoT、GCD、技能冷却和历史。同刻旧效果及周期结算先完成，再执行重置；机工暂未实现职业死亡清理。
-- 死亡事件成功提交后，C# `ExternalEventResult.Token`／Python `result.token` 返回独立的 `<dead/>`，普通外部事实返回空值。标记不占用技能 ID，现有黑魔 132 维状态和 25 个可选动作保持不变。
+- 死亡事件成功提交后，Rust `ExternalEventResult.token`／Python `result.token` 返回独立的 `<dead/>`，普通外部事实返回空值。标记不占用技能 ID，现有黑魔 132 维状态和 25 个可选动作保持不变。
 - FFLogs 转换器读取当前玩家的 `death` 日志，按统一时间线向状态机提交死亡重置事实，支持初始时刻死亡及与场景事实同刻结算。转换后的 PT 独立保存 `history_markers`，记录 `<dead/>` 的时间、已生效历史插入位置和首次可见样本步号；读取器只返回当前样本可见的标记前缀，不扩展技能词表和数值状态。
 - `<dead/>` 通过独立可训练的 FP32 embedding 和死亡角色进入模型历史，按已落实动作边界插入状态／技能对之间，支持零动作历史及同边界多次死亡；训练按首次可见样本步号读取标记，在线回放与 GRPO 消费当前轨迹的实际死亡回执，历史消融快照保留当时可见的事件。ONNX 输入、验收矩阵及模型分析同步识别死亡 token，技能输出集合保持不变。
 
@@ -22,14 +22,8 @@
 
 - 死亡历史新增 `history_dead_positions`／`history_dead_mask` 两项模型输入，checkpoint 输入契约由 `23` 升至 `24`，ONNX 部署契约由 `27` 升至 `28`，图输入由 `12` 项增至 `14` 项；旧 checkpoint 需重新训练，部署包需重新导出，旧 GRPO 轨迹需重新生成。已符合当前缓存契约且包含死亡标记的 compiled PT 可直接复用，无须仅为模型读取接入而重新转换。
 - 模型容量配置由 `model.scene_capacity`／`model.history_capacity` 改为统一的 `model.context_capacity`，旧字段不再接受。checkpoint 输入描述和 ONNX 部署容量契约同步调整，旧 checkpoint 与部署包明确拒绝复用，需重新训练、导出；本次读取侧窗口调整不要求重新转换已符合当前缓存契约的完整 PT。
-- **FightEngine 状态职责拆分不保留旧版公开接口兼容层。** 依赖旧版 `FightEngine.dll` 的宿主、自定义职业和桥接程序集需同步迁移并重新编译，Python.NET 脚本需更新旧成员访问。项目 Python 调用方升级后执行 `dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj`，同步更新核心与桥接 DLL，并重启已加载旧 DLL 的进程。
-- `CombatState.JobResources`、`JobTimelineDeadlines` 分别迁移为 `state.Job.Resources`、`state.Job.TimelineDeadlines`；`GetJobResource`／`SetJobResource` 改为 `state.Job.GetResource`／`state.Job.SetResource`。职业 Buff 改存 `state.Job.Statuses`，查询改用 `state.Job.HasStatus`／`StatusStacks`；根 `Statuses` 只保存公共状态。直接序列化原始状态或 `SimulationSnapshot` 的调用方需同步迁移结构。
-- `IJobStateMachine` 新增必需的 `JobStateRuntime State { get; }`；`RegisterTimeline` 参数改用 `Combat.Sim.Jobs.Timeline.JobTimelineRegistry`。职业量谱、Buff 和计时规则由 `State` 持有；手工构造职业状态到期事件时须显式指定 `Scope: TimelineEventScope.Job`。
-- 类型命名空间调整：`ResourceStateRegistry` 移至 `Combat.Sim.Jobs`，`JobTimelineRegistry`／`JobTimerProjection` 移至 `Combat.Sim.Jobs.Timeline`，`BuffStateRegistry`／`StatusTimelineRuntime` 移至 `Combat.Sim.State`；`SystemHistoryRuntime` 更名为 `Combat.Sim.Facade.ActionHistoryRuntime`，构造时改传 `JobStateRuntime`。
-- `SystemStateMachine` 构造不再接受 `maxHistory`，`InitialState` 收为 internal，删除 `CreateTimeline` 及职业资源、职业计时和历史转发接口。完整初始化、技能提交和时间推进统一通过 `JobSimulator`／`SimulationEngine`；职业量谱快照与差分改用 `job.State.BuildResourceSnapshot`／`BuildResourceTransition`，包含职业计时器投影。
-- `BuffStateRegistry` 的系统／职业注册入口统一为各实例的 `RegisterStatuses`，定义查询统一为 `Definitions`；删除 registry 和系统层的技能级 `ValidateSharedBehavior`／`ApplySharedBehavior`，改走 `JobSimulator.ValidateActionAt`／`SubmitAction`。单状态操作通过 `system.BuffState` 或 `job.State.Buffs` 调用，职业到期钩子通过 `job.State.StatusTimeline` 注册。
-
-以上状态机拆分保持正式秒制、GCD 制及 canonical／tensor 输出契约不变，原始 CLR 状态与快照对象结构不再兼容旧版。
+- 状态机运行入口改为 Rust／PyO3，不再使用 Python.NET 或旧 `FightEngine.dll` 接口。安装需要 Rust stable、Cargo 和 C 编译器；修改 Rust 或共享 schema 后，运行 `.venv/bin/python3 -m pip install ./fight-engine/python` 并重启已加载扩展的进程。Python 公开调用签名及返回字段保持不变，Rust 核心、职业与绑定分别构建，不保留 C# 接口兼容层。
+- 内部时间、计算及 canonical 数值保留 `f64`，模型 tensor 使用 FP32／INT32，不再执行旧输出的四位小数舍入；模型维度与既有数据契约保持不变，浮点值不要求逐字节复现旧舍入结果。
 
 ### Changed
 

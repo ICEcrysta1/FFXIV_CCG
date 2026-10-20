@@ -133,7 +133,7 @@ def test_cumulative_ppg_requires_independent_execution_metadata(metrics):
 
 
 def test_real_cumulative_ppg_tracks_dot_ticks_without_cumulative_model_fields(cs_backend):
-    """Python.NET 真实观测能取得最后一次请求之后的 DoT 结算。"""
+    """Rust 真实观测能取得最后一次请求之后的 DoT 结算。"""
     assert cs_backend.submit_action(0.0, "fire_iii").accepted
     cs_backend.advance_to(4.0)
     assert cs_backend.submit_action(4.0, "high_thunder").accepted

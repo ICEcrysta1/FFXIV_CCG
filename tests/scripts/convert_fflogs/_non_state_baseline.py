@@ -131,7 +131,7 @@ def main():
     if not output.name.lower().endswith(JSON_BROTLI_SUFFIX):
         parser.error(f"baseline output must end with {JSON_BROTLI_SUFFIX}")
     source_paths = (
-        "Combat.Sim/FightEngine/Outputs/TokenBuilders/SkillTokenBuilder.cs",
+        "fight-engine/src/outputs/tokens.rs",
         "scripts/convert_fflogs/training/training.py",
         "scripts/autoregressive_replay/context.py",
         "common/policy/data/context_encoding.py",

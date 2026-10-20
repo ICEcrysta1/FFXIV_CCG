@@ -1,4 +1,4 @@
-"""不依赖 C#、运行期职业 YAML 的微型因果模型测试契约。"""
+"""不依赖 Rust 状态机、运行期职业 YAML 的微型因果模型测试契约。"""
 
 from __future__ import annotations
 

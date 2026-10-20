@@ -111,7 +111,7 @@ class _CachedHistoryFeatureRow:
 class LiveBatchBuilder:
     """使用 compiled cache 的 schema 和 scene 模板构造 live 推理输入。
 
-    上下文原料（历史/动作）统一来自 C# 后端 observe_at(format="vector"),
+    上下文原料（历史/动作）统一来自 Rust 后端 observe_at(format="vector"),
     scene 向量来自 scene provider（模型输入，与状态机解耦）。
     """
 

@@ -48,7 +48,7 @@ class ActionSpace:
                 raise ValueError(f"duplicate output action key: {action.key}")
             raw_ids[action.key] = action.raw_id
             gcd_flags[action.key] = action.kind == "gcd"
-        # 与 C# StringComparer.Ordinal 一致；现行技能 key 均为 ASCII。
+        # 按 UTF-16 编码排序；现行技能 key 均为 ASCII，与 Rust 引擎的顺序一致。
         keys = tuple(sorted(raw_ids, key=lambda value: value.encode("utf-16-be")))
         rows = tuple(vocab.require_lookup(raw_ids[key], context=f"output action {key}") for key in keys)
         if not keys or len(set(rows)) != len(rows):

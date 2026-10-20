@@ -1,7 +1,7 @@
 """训练样本回放 —— 逐步展开战斗并生成逐决策样本（绝对时间线版）。
 
-状态机的推进、校验与结算由 C# FightEngine 独占，通过进程内后端直接调用；
-公开回放逐步提交请求与场景事实；编译回放把时间线与等待决策整批交给 C#，
+状态机的推进、校验与结算由 Rust FightEngine 独占，通过进程内后端直接调用；
+公开回放逐步提交请求与场景事实；编译回放把时间线与等待决策整批交给 Rust，
 本模块统一负责标签装配、场景字段合成与历史引用恢复。
 
 时间轴以日志为准：转换层已经把整场最早请求平移到 0；动作严格在归一化后的
@@ -234,7 +234,7 @@ def _collect_native_samples(
     facts: list[dict[str, object]], history_markers: list[dict[str, object]],
     *, fight_duration: float, policy_action_key: str,
 ) -> tuple[list[dict[str, object]], list[str]]:
-    """托管执行只负责时间线和决策；样本、标签及场景合成仍留在转换模块。"""
+    """原生执行只负责时间线和决策；样本、标签及场景合成仍留在转换模块。"""
     actions = fight_payload["actions"]
     requests = []
     for source_step, action in enumerate(actions, 1):
