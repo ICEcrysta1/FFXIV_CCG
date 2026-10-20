@@ -17,6 +17,7 @@ use crate::state::{
 use crate::system::timeline::{TIME_EPSILON, TimelineEvent};
 use crate::system::{SystemRules, ZERO_EPSILON};
 
+pub mod sessions;
 pub mod simulator;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -557,11 +558,6 @@ impl EngineRules {
         };
         let entries = Arc::make_mut(&mut effect.history);
         entries.push(Arc::new(history));
-        if let Some(limit) = self.max_history
-            && entries.len() > limit
-        {
-            entries.drain(..entries.len() - limit);
-        }
         Ok(())
     }
 

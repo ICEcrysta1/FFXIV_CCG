@@ -80,6 +80,7 @@ pub struct SimulationStatistics {
 pub struct Simulator {
     rules: Arc<EngineRules>,
     timeline: Timeline<EnginePayload>,
+    history_limit: Option<usize>,
 }
 
 impl Simulator {
@@ -93,9 +94,22 @@ impl Simulator {
     }
 
     pub fn from_state(rules: Arc<EngineRules>, state: CombatState) -> Result<Self, String> {
+        let history_limit = rules.max_history;
+        Self::with_history_limit(rules, state, history_limit)
+    }
+
+    pub fn with_history_limit(
+        rules: Arc<EngineRules>,
+        state: CombatState,
+        history_limit: Option<usize>,
+    ) -> Result<Self, String> {
         let mut timeline = Timeline::new(state)?;
         timeline.synchronize_resources(&mut |state| rules.describe_events(state))?;
-        Ok(Self { rules, timeline })
+        Ok(Self {
+            rules,
+            timeline,
+            history_limit,
+        })
     }
 
     pub fn rules(&self) -> &Arc<EngineRules> {
@@ -108,6 +122,10 @@ impl Simulator {
 
     pub fn history_cursor(&self) -> u64 {
         self.timeline.state().last_history_sequence
+    }
+
+    pub fn history_limit(&self) -> Option<usize> {
+        self.history_limit
     }
 
     pub fn get_state(&self) -> CombatState {
@@ -207,10 +225,11 @@ impl Simulator {
 
     pub fn advance_clock_to(&mut self, timestamp: f64) -> Result<(), String> {
         let rules = &self.rules;
+        let history_limit = self.history_limit;
         self.timeline.advance_clock_to(
             timestamp,
             &mut |state| rules.describe_events(state),
-            &mut |event, timeline| handle_event(rules, event, timeline),
+            &mut |event, timeline| handle_event(rules, event, timeline, history_limit),
         )
     }
 
@@ -379,6 +398,7 @@ impl Simulator {
         Self {
             rules: self.rules.clone(),
             timeline: self.timeline.fork(),
+            history_limit: self.history_limit,
         }
     }
 }
@@ -395,6 +415,7 @@ fn handle_event(
     rules: &EngineRules,
     event: &TimelineEvent<EnginePayload>,
     timeline: &Timeline<EnginePayload>,
+    history_limit: Option<usize>,
 ) -> Result<TimelineMutation<EnginePayload>, String> {
     if matches!(event.kind, Kind::JobPeriodicTick | Kind::JobTimerExpired) {
         let unit = unit_event(event);
@@ -465,6 +486,12 @@ fn handle_event(
                     model_state: payload.model_state.clone(),
                 },
             )?;
+            if let Some(limit) = history_limit {
+                let history = Arc::make_mut(&mut next.history);
+                if history.len() > limit {
+                    history.drain(..history.len() - limit);
+                }
+            }
         }
         Kind::PlayerDeath => {
             cancel.extend(

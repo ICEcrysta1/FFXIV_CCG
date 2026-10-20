@@ -9,7 +9,7 @@
 ```text
 FFXIV_CCG/
 ├── fight-engine/
-│   ├── tests/                                       核心配置、状态、系统规则、职业契约、动作生命周期与上下文对比；不依赖具体职业 crate
+│   ├── tests/                                       核心配置、状态、系统规则、职业契约、动作、输出、策略与多队列对比；不依赖具体职业 crate
 │   │   ├── common.rs / common/jobs.rs               通用比较及职业回放驱动，直接放实现，不使用 mod.rs
 │   │   └── fixtures/                                JSON 基线记录来源提交、输入和预期结果
 │   └── jobs/{black-mage,machinist}/tests/            各职业注册后独立验证；核心可在无职业代码时运行系统测试
