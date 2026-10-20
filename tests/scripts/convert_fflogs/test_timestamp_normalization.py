@@ -9,34 +9,52 @@ from scripts.convert_fflogs import build_fight_payload, extract_supported_action
 from tests.helpers import DEFAULT_BASE_GCD
 
 
-def test_hardcast_request_uses_paired_begincast(cs_skill_book):
-    payload = {
-        "events": [
-            {
-                "type": "begincast",
-                "sourceID": 10,
-                "timestamp": 1000,
-                "duration": 1926,
-                "abilityGameID": 3577,
-                "ability": {"name": "炽炎"},
-            },
-            {
-                "type": "cast",
-                "sourceID": 10,
-                "timestamp": 2382,
-                "abilityGameID": 3577,
-                "ability": {"name": "炽炎"},
-            },
-            {
-                "type": "cast",
-                "sourceID": 10,
-                "timestamp": 2500,
-                "abilityGameID": 25796,
-                "ability": {"name": "详述"},
-            },
-        ]
-    }
-
+@pytest.mark.parametrize("payload,expected", [
+    pytest.param({"events": [
+        {"type": "begincast", "sourceID": 10, "timestamp": 1000, "duration": 1926,
+         "abilityGameID": 3577, "ability": {"name": "炽炎"}},
+        {"type": "cast", "sourceID": 10, "timestamp": 2382,
+         "abilityGameID": 3577, "ability": {"name": "炽炎"}},
+        {"type": "cast", "sourceID": 10, "timestamp": 2500,
+         "abilityGameID": 25796, "ability": {"name": "详述"}},
+    ]}, [
+        {"cast_timing_source": "begincast_duration", "actual_cast_seconds": pytest.approx(1.926),
+         "request_timestamp": pytest.approx(1.0)},
+        {"cast_timing_source": "instant_skill", "request_timestamp": pytest.approx(2.5)},
+    ], id="paired_begincast"),
+    pytest.param({"fights": [{"start_time": 1000}], "events": [
+        {"type": "cast", "sourceID": 10, "timestamp": 1000,
+         "abilityGameID": 152, "ability": {"name": "爆炎"}},
+    ]}, [
+        {"cast_timing_source": "prepull_estimated",
+         "request_timestamp": pytest.approx(1.0 - 3.5 + SLIDECAST_WINDOW_SECONDS)},
+    ], id="cropped_prepull"),
+    pytest.param({"events": [
+        {"type": "begincast", "sourceID": 10, "timestamp": 12980, "duration": 1660,
+         "abilityGameID": 3577, "ability": {"name": "炽炎"}},
+        {"type": "applybuff", "sourceID": 10, "timestamp": 12983,
+         "abilityGameID": 1000049, "ability": {"name": "强化药"}},
+        {"type": "cast", "sourceID": 10, "timestamp": 14140,
+         "abilityGameID": 3577, "ability": {"name": "炽炎"}},
+    ]}, [
+        {"action_key": "potion", "request_timestamp": pytest.approx(12.983)},
+        {"action_key": "fire_iv", "request_timestamp": pytest.approx(12.983),
+         "request_order_adjustment_seconds": pytest.approx(0.003)},
+    ], id="queue_window_jitter"),
+    pytest.param({"events": [
+        {"type": "begincast", "sourceID": 10, "timestamp": 1000, "duration": 1709,
+         "abilityGameID": 154, "ability": {"name": "冰封"}},
+        {"type": "cast", "sourceID": 10, "timestamp": 29000,
+         "abilityGameID": 7561, "ability": {"name": "即刻咏唱"}},
+        {"type": "cast", "sourceID": 10, "timestamp": 29713,
+         "abilityGameID": 154, "ability": {"name": "冰封"}},
+    ]}, [
+        {},
+        {"cast_timing_source": "instant_cast_inferred", "actual_cast_seconds": 0.0,
+         "request_timestamp": pytest.approx(29.713)},
+    ], id="cancelled_begincast"),
+])
+def test_request_timing_reconstruction(cs_skill_book, payload, expected):
     actions, ignored = extract_supported_actions(
         payload,
         10,
@@ -47,128 +65,8 @@ def test_hardcast_request_uses_paired_begincast(cs_skill_book):
     )
 
     assert ignored == {}
-    assert actions[0]["cast_timing_source"] == "begincast_duration"
-    assert actions[0]["actual_cast_seconds"] == pytest.approx(1.926)
-    assert actions[0]["request_timestamp"] == pytest.approx(1.0)
-    assert actions[1]["cast_timing_source"] == "instant_skill"
-    assert actions[1]["request_timestamp"] == pytest.approx(2.5)
-
-
-def test_prepull_hardcast_recovers_cropped_request_with_slidecast_rule(cs_skill_book):
-    payload = {
-        "fights": [{"start_time": 1000}],
-        "events": [
-            {
-                "type": "cast",
-                "sourceID": 10,
-                "timestamp": 1000,
-                "abilityGameID": 152,
-                "ability": {"name": "爆炎"},
-            }
-        ],
-    }
-
-    actions, ignored = extract_supported_actions(
-        payload,
-        10,
-        cs_skill_book,
-        actual_base_gcd=DEFAULT_BASE_GCD,
-        skill_table_base_gcd=DEFAULT_BASE_GCD,
-        action_queue_window_seconds=0.5,
-    )
-
-    assert ignored == {}
-    assert actions[0]["cast_timing_source"] == "prepull_estimated"
-    assert actions[0]["request_timestamp"] == pytest.approx(
-        1.0 - 3.5 + SLIDECAST_WINDOW_SECONDS
-    )
-
-
-def test_request_order_uses_queue_window_for_server_event_jitter(cs_skill_book):
-    payload = {
-        "events": [
-            {
-                "type": "begincast",
-                "sourceID": 10,
-                "timestamp": 12980,
-                "duration": 1660,
-                "abilityGameID": 3577,
-                "ability": {"name": "炽炎"},
-            },
-            {
-                "type": "applybuff",
-                "sourceID": 10,
-                "timestamp": 12983,
-                "abilityGameID": 1000049,
-                "ability": {"name": "强化药"},
-            },
-            {
-                "type": "cast",
-                "sourceID": 10,
-                "timestamp": 14140,
-                "abilityGameID": 3577,
-                "ability": {"name": "炽炎"},
-            },
-        ]
-    }
-
-    actions, ignored = extract_supported_actions(
-        payload,
-        10,
-        cs_skill_book,
-        actual_base_gcd=DEFAULT_BASE_GCD,
-        skill_table_base_gcd=DEFAULT_BASE_GCD,
-        action_queue_window_seconds=0.5,
-    )
-
-    assert ignored == {}
-    assert [action["action_key"] for action in actions] == ["potion", "fire_iv"]
-    assert actions[0]["request_timestamp"] == pytest.approx(12.983)
-    assert actions[1]["request_timestamp"] == pytest.approx(12.983)
-    assert actions[1]["request_order_adjustment_seconds"] == pytest.approx(0.003)
-
-
-def test_cancelled_begincast_is_not_paired_with_a_later_instant_cast(cs_skill_book):
-    payload = {
-        "events": [
-            {
-                "type": "begincast",
-                "sourceID": 10,
-                "timestamp": 1000,
-                "duration": 1709,
-                "abilityGameID": 154,
-                "ability": {"name": "冰封"},
-            },
-            {
-                "type": "cast",
-                "sourceID": 10,
-                "timestamp": 29000,
-                "abilityGameID": 7561,
-                "ability": {"name": "即刻咏唱"},
-            },
-            {
-                "type": "cast",
-                "sourceID": 10,
-                "timestamp": 29713,
-                "abilityGameID": 154,
-                "ability": {"name": "冰封"},
-            },
-        ]
-    }
-
-    actions, ignored = extract_supported_actions(
-        payload,
-        10,
-        cs_skill_book,
-        actual_base_gcd=DEFAULT_BASE_GCD,
-        skill_table_base_gcd=DEFAULT_BASE_GCD,
-        action_queue_window_seconds=0.5,
-    )
-
-    assert ignored == {}
-    assert actions[1]["cast_timing_source"] == "instant_cast_inferred"
-    assert actions[1]["actual_cast_seconds"] == 0.0
-    assert actions[1]["request_timestamp"] == pytest.approx(29.713)
+    for action, fields in zip(actions, expected, strict=True):
+        assert {key: action[key] for key in fields} == fields
 
 
 def test_fight_payload_translates_all_requests_to_earliest_zero():

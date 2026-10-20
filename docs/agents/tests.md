@@ -108,7 +108,6 @@ FFXIV_CCG/
 │   │   ├── test_models.py                            公共模型测试，覆盖 compiled cache 动态维度、职业路由、position 编码、训练精度配置、技能价值辅助损失、推理路径和脚本层副本目录比例选 raw JSON
 │   │   ├── test_optimizer_master_weights.py          BF16 小更新累计、FP32 原生参考、梯度生命周期、新旧主权重 checkpoint 恢复与 CUDA 更新测试
 │   │   ├── test_output_head.py                       独立动作头复制初值、动作行顺序、FP32 softcap 与数值边界、分离梯度及低精度主权重连续恢复测试
-│   │   ├── test_policy_actions.py                    独立 policy 动作配置与训练词表测试，覆盖 raw id 0 的 `ogcd_wait` 非 padding 映射、固定动作顺序及非法配置拒绝
 │   │   ├── test_position_encoding.py                 共享 RoPE 公式、位置编号和各设备/精度一致性测试
 │   │   ├── test_residual_mix.py                      正式残差混合的初始化、真实 skip、初始 token 梯度、trace、KV 和激活重算一致性测试
 │   │   ├── test_runtime_debug.py                     训练运行时诊断测试，覆盖 RuntimeDebugRecorder 的 batch 上下文写入、Attention/FFN 阶段记录与事件聚合

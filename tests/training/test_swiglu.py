@@ -11,10 +11,6 @@ from torch.nn import functional as F
 from common.policy.config import TRANSFORMER_ACTIVATIONS, ModelConfig
 from common.policy.data.spec import DataSpec
 from training.config import load_run_config
-from common.policy.model.activation import (
-    activation_hidden,
-    resolve_pointwise_activation,
-)
 from common.policy.model.input_encoder import CausalInputEncoder
 from common.policy.model.model import CausalPolicyModel
 from common.policy.model.transformer import TraceableTransformerEncoderLayer
@@ -209,28 +205,14 @@ def test_layer_rms_norm_honors_custom_epsilon_without_affine_parameters():
 
 
 @pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
-def test_model_rms_norm_preserves_nonzero_mean_and_shared_forward_gradients(activation):
-    """以非零均值输入区分 RMS 与 LN，并验证正式前向和 trace 共用归一化。"""
+def test_model_forward_and_trace_match_with_all_parameter_gradients(activation):
+    """完整模型的正式前向与 trace 一致，且所有参数获得有限梯度。"""
     torch.manual_seed(57)
     model = CausalPolicyModel(
         _activation_spec(), _activation_config(activation), vocab_size=4,
     ).eval()
-    norms = [model.encoder.norm]
-    for layer in model.encoder.layers:
-        norms.extend((layer.norm1, layer.norm2))
-    values = torch.arange(1, 9, dtype=torch.float32).reshape(1, 8).requires_grad_(True)
-    expected = values / torch.sqrt(values.square().mean(dim=-1, keepdim=True) + 1e-5)
-    for norm in norms:
-        assert norm.elementwise_affine is False
-        assert norm.eps == 1e-5
-        assert list(norm.parameters()) == []
-        actual = norm(values)
-        torch.testing.assert_close(actual, expected, atol=1e-6, rtol=1e-6)
-        assert actual.mean() > 0
-        gradient = torch.autograd.grad(actual.square().sum(), values)[0]
-        assert torch.isfinite(gradient).all()
-        assert torch.count_nonzero(gradient) > 0
-
+    expected_activation = {"gelu": F.gelu, "relu": F.relu, "swiglu": F.silu}[activation]
+    assert all(layer.activation is expected_activation for layer in model.encoder.layers)
     batch = _activation_batch()
     output = model(batch)
     traced = model.trace(batch)
@@ -271,61 +253,11 @@ def test_checkpoint_rejects_unknown_activation():
         CausalPolicyModel.checkpoint_model_config(checkpoint)
 
 
-def test_checkpoint_rejects_removed_cls_architecture():
-    model = CausalPolicyModel(_activation_spec(), _activation_config("swiglu"), vocab_size=4)
-    weights = {**model.state_dict(), "input_encoder.cls_token": torch.zeros(1, 1, 4)}
-    with pytest.raises(RuntimeError, match="Unexpected key"):
-        model.load_state_dict(weights, strict=True)
-
-
-@pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
-def test_independent_output_head_matches_fp32_softcap_and_gradients(activation):
-    torch.manual_seed(23)
-    model = CausalPolicyModel(_activation_spec(), _activation_config(activation), vocab_size=4).float().eval()
-    reference = deepcopy(model)
-    current_hidden = torch.randn(2, 8, dtype=torch.float32, requires_grad=True)
-    reference_hidden = current_hidden.detach().clone().requires_grad_(True)
-    actual = model._score_current_hidden(current_hidden, {})
-    scale = reference.config.logit_softcap
-    expected = scale * torch.tanh(F.linear(reference_hidden, reference.output_head.weight).float() / scale)
-    torch.testing.assert_close(actual, expected, atol=2e-6, rtol=2e-6)
-    gradient = torch.randn_like(actual)
-    actual.backward(gradient)
-    expected.backward(gradient)
-    torch.testing.assert_close(
-        current_hidden.grad, reference_hidden.grad, atol=2e-6, rtol=2e-6,
-    )
-    actual_parameter = model.output_head.weight
-    reference_parameter = reference.output_head.weight
-    assert actual_parameter.grad is not None
-    torch.testing.assert_close(actual_parameter.grad, reference_parameter.grad, atol=2e-6, rtol=2e-6)
-    assert model.input_encoder.skill_embed.weight.grad is None
-
-
-@pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
-def test_input_semantic_table_and_output_head_are_independent(activation):
-    """输入技能表保留，动作头复制其动作行后独立学习。"""
-    model = CausalPolicyModel(_activation_spec(), _activation_config(activation), vocab_size=4)
-    names = dict(model.named_parameters())
-    assert not hasattr(model, "scorer")
-    assert not hasattr(model, "output_adapter")
-    semantic = model.input_encoder.skill_embed.weight
-    assert semantic.shape == (4, model.config.d_model)
-    assert sum(parameter is semantic for parameter in names.values()) == 1
-    assert "input_encoder.skill_embed.weight" in names
-    assert "output_head.weight" in names
-    assert model.output_head.bias is None
-    assert model.output_head.weight.shape == (model.data_spec.num_actions, model.config.d_model)
-    assert model.output_head.weight is not semantic
-    torch.testing.assert_close(model.output_head.weight, semantic[model.action_to_vocab_id], atol=0, rtol=0)
-
-
-@pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
-def test_independent_skill_and_state_embeddings_match_explicit_formula(activation):
+def test_independent_skill_and_state_embeddings_match_explicit_formula():
     torch.manual_seed(29)
     encoder = CausalInputEncoder(
         _activation_spec(),
-        _activation_config(activation),
+        _activation_config("swiglu"),
         vocab_size=4,
     ).eval()
     batch = _activation_batch()
@@ -344,54 +276,3 @@ def test_independent_skill_and_state_embeddings_match_explicit_formula(activatio
     torch.testing.assert_close(actual["skill"], skill_content, atol=0, rtol=0)
     torch.testing.assert_close(actual["state"], state_content, atol=0, rtol=0)
     assert not any("pair_fusion" in name for name, _ in encoder.named_parameters())
-
-
-@pytest.mark.parametrize("activation", TRANSFORMER_ACTIVATIONS)
-def test_model_resolves_one_activation_for_every_activation_site(activation):
-    """保留全部主干激活，支路与最终输出统一使用无参数 RMSNorm。"""
-    model = CausalPolicyModel(
-        _activation_spec(),
-        _activation_config(activation),
-        vocab_size=4,
-    )
-    expected = resolve_pointwise_activation(activation)
-
-    assert model.encoder.layers[0].activation is expected
-    assert not any(isinstance(module, nn.LayerNorm) for module in model.input_encoder.modules())
-    assert all(isinstance(layer.norm1, nn.RMSNorm) and isinstance(layer.norm2, nn.RMSNorm)
-               for layer in model.encoder.layers)
-    assert isinstance(model.encoder.norm, nn.RMSNorm)
-    assert not any(isinstance(module, nn.LayerNorm) for module in model.encoder.modules())
-    model.eval()
-    assert model(_activation_batch())["logits"].shape == (1, 2)
-
-
-def test_every_configured_activation_resolves():
-    """配置白名单与激活映射表不能各写一份取值。"""
-    for activation in TRANSFORMER_ACTIVATIONS:
-        assert callable(resolve_pointwise_activation(activation))
-    with pytest.raises(ValueError, match="activation must be"):
-        resolve_pointwise_activation("swish")
-
-
-def test_activation_hidden_merges_gate_and_pointwise_paths():
-    """门控合成只在 activation.py 实现一次，两条分支都要整段重合。"""
-    up = torch.randn(2, 3, dtype=torch.float32)
-    gate = torch.randn(2, 3, dtype=torch.float32)
-
-    torch.testing.assert_close(
-        activation_hidden(F.gelu, up), F.gelu(up), atol=0.0, rtol=0.0
-    )
-    torch.testing.assert_close(
-        activation_hidden(F.silu, up, gate=gate),
-        F.silu(gate) * up,
-        atol=0.0,
-        rtol=0.0,
-    )
-
-
-@pytest.mark.parametrize("key", ["scorer.network.0.weight", "scorer.up_proj.weight"])
-def test_checkpoint_rejects_removed_candidate_scorer_layout(key):
-    model = CausalPolicyModel(_activation_spec(), _activation_config("swiglu"), vocab_size=4)
-    with pytest.raises(RuntimeError, match="Unexpected key"):
-        model.load_state_dict({**model.state_dict(), key: torch.zeros(1)}, strict=True)

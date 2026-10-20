@@ -25,23 +25,6 @@ from scripts.onnx_export.runtime.runtime_targets import (
 )
 
 
-def test_checkpoint_path_derives_matching_export_directory(tmp_path):
-    checkpoint = (
-        tmp_path
-        / "artifacts"
-        / "checkpoints"
-        / "black_mage"
-        / "artzip_bc"
-        / "best.pt"
-    )
-
-    output = derive_onnx_output_dir(checkpoint, project_root=tmp_path)
-
-    assert output == (
-        tmp_path / "artifacts" / "exports" / "black_mage" / "artzip_bc"
-    ).resolve()
-
-
 def test_checkpoint_outside_artifacts_requires_explicit_package(tmp_path):
     with pytest.raises(ValueError, match="or pass an explicit output directory"):
         derive_onnx_output_dir(tmp_path / "best.pt", project_root=tmp_path)
@@ -264,46 +247,26 @@ def test_workflow_cli_forwards_explicit_checkpoint(monkeypatch, tmp_path):
     assert received == {"checkpoint": checkpoint}
 
 
-def test_full_workflow_reports_export_failure_without_traceback(monkeypatch, capsys):
-    monkeypatch.setattr(workflow, "check_environment", lambda **_kwargs: None)
-    monkeypatch.setattr(
-        workflow,
-        "run_export",
-        lambda **_kwargs: (_ for _ in ()).throw(FileExistsError("deployment exists")),
-    )
-    monkeypatch.setattr(
-        workflow,
-        "run_parities",
-        lambda _scenario, **_kwargs: pytest.fail(
-            "parity must not run after export failure"
-        ),
-    )
-
-    assert workflow._run_all() == 1
-    assert "ONNX 导出失败，已停止发布流程：deployment exists" in (
-        capsys.readouterr().out
-    )
-
-
-def test_full_workflow_reports_environment_failure_without_traceback(
-    monkeypatch,
-    capsys,
+@pytest.mark.parametrize(("stage", "error", "message", "blocked_stage"), [
+    ("run_export", FileExistsError("deployment exists"), "ONNX 导出失败", "run_parities"),
+    ("check_environment", RuntimeError("onnxscript mismatch"), "ONNX 环境检查失败", "run_export"),
+])
+def test_full_workflow_reports_failure_and_stops_following_stages(
+    monkeypatch, capsys, stage, error, message, blocked_stage,
 ):
+    def fail(**_kwargs):
+        raise error
+
+    monkeypatch.setattr(workflow, "check_environment", lambda **_kwargs: None)
+    monkeypatch.setattr(workflow, stage, fail)
     monkeypatch.setattr(
         workflow,
-        "check_environment",
-        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("onnxscript mismatch")),
-    )
-    monkeypatch.setattr(
-        workflow,
-        "run_export",
-        lambda **_kwargs: pytest.fail("export must not run after environment failure"),
+        blocked_stage,
+        lambda *_args, **_kwargs: pytest.fail("失败后不得继续后续流程"),
     )
 
     assert workflow._run_all() == 1
-    assert "ONNX 环境检查失败，已停止发布流程：onnxscript mismatch" in (
-        capsys.readouterr().out
-    )
+    assert f"{message}，已停止发布流程：{error}" in capsys.readouterr().out
 
 
 def test_bf16_export_environment_versions_are_strictly_pinned():

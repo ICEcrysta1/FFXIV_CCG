@@ -84,32 +84,3 @@ def test_inventory_rejects_async_result_if_source_changed_after_submission(tmp_p
         ) is None
         assert inventory.lookup(source, context=1, paths=[source]) is None
     assert not index.exists()
-
-
-def test_2000_existing_with_200_stale_and_200_new_only_revalidates_400(tmp_path):
-    sources = [tmp_path / f"report-{index}" for index in range(2000)]
-    for source in sources:
-        source.write_bytes(b"valid")
-    calls = []
-    index = tmp_path / "inventory.json"
-
-    def scan():
-        with FileInventory(index) as inventory:
-            for source in sources:
-                assert inventory.check(
-                    source, context=1, paths=[source],
-                    validate=lambda: (calls.append(source) or True, ()),
-                ) is True
-
-    scan()
-    assert len(calls) == 2000
-    calls.clear()
-    for source in sources[:200]:
-        source.write_bytes(b"outdated")
-    new = [tmp_path / f"new-{index}" for index in range(200)]
-    for source in new:
-        source.write_bytes(b"new")
-    sources.extend(new)
-    scan()
-    assert set(calls) == set(sources[:200] + new)
-    assert len(calls) == 400

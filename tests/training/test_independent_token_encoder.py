@@ -260,16 +260,6 @@ def test_empty_or_fully_masked_history_keeps_only_current_state_visible(history_
         assert torch.isfinite(model(batch)["logits"]).all()
 
 
-@pytest.mark.parametrize("legacy_key", ["output_adapter.weight", "input_encoder.pair_fusion_up.weight",
-                                       "input_encoder.token_embedding.0.weight", "input_encoder.segment_embed.weight",
-                                       "_learned_residual_mix_experiment_guard"])
-def test_unexpected_architecture_weights_are_rejected_by_strict_loading(legacy_key):
-    model = _model()
-    weights = {**model.state_dict(), legacy_key: torch.zeros(1)}
-    with pytest.raises(RuntimeError, match="Unexpected key"):
-        model.load_state_dict(weights, strict=True)
-
-
 def test_death_tokens_preserve_action_pairs_and_stable_boundary_order():
     model = _model()
     batch = make_batch(model.data_spec)

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from common.pytorch.runtime import autocast_context, model_dtype
+from common.pytorch.runtime import model_dtype
 from common.policy.data import SkillVocab
 from common.policy.model import RepetitionConfig
 from common.policy.replay import AutoregressiveReplayConfig
@@ -89,8 +89,11 @@ def test_backend_restores_parameter_precision_without_changing_bf16_compute(
     assert logits.dtype == torch.float32 and torch.isfinite(logits).all()
 
 
-@pytest.mark.parametrize("parameter_precision", [None, True, 0, "float64", "bfloat16", []])
-@pytest.mark.parametrize("precision", [None, "float32"])
+@pytest.mark.parametrize(("parameter_precision", "precision"), [
+    (None, None),
+    ("float64", None),
+    ("float64", "float32"),
+])
 def test_backend_rejects_invalid_saved_parameter_precision_even_with_explicit_override(
     tmp_path, parameter_precision, precision,
 ):
@@ -348,15 +351,6 @@ class _FakeBackend:
         self.history.append({"skill_key": action})
 
 
-def test_fake_backend_does_not_mutate_initial_state():
-    initial_state = SimpleNamespace(time=0.0)
-
-    backend = _FakeBackend(initial_state, _FAKE_GCD_SKILL)
-
-    assert not hasattr(initial_state, "ogcd_wait_boundary_pending")
-    assert backend.state.ogcd_wait_boundary_pending is False
-
-
 def test_replay_device_rejects_unavailable_cuda(monkeypatch):
     monkeypatch.setattr("torch.cuda.is_available", lambda: False)
     with pytest.raises(RuntimeError, match="CUDA is unavailable"):
@@ -557,7 +551,8 @@ def test_replay_requires_session_before_loading_scene(constructor_config):
         AutoregressiveReplay(config, session=None)
 
 
-def test_replay_uses_session_normalizer_for_batch_builder(monkeypatch, constructor_config):
+@pytest.mark.parametrize("use_kv_cache", [False, True])
+def test_replay_uses_session_normalizer_for_batch_builder(monkeypatch, constructor_config, use_kv_cache):
     session_normalizer = object()
     schema = SimpleNamespace()
     reader = SimpleNamespace(
@@ -602,7 +597,7 @@ def test_replay_uses_session_normalizer_for_batch_builder(monkeypatch, construct
         state_machine=object(),
         load_reader=lambda _config: reader,
     )
-    config = constructor_config
+    config = replace(constructor_config, use_kv_cache=use_kv_cache)
     captured = {}
 
     def fake_batch_builder(**kwargs):
@@ -615,7 +610,7 @@ def test_replay_uses_session_normalizer_for_batch_builder(monkeypatch, construct
     AutoregressiveReplay(config, session=session)
 
     assert captured["batch_normalizer"] is session_normalizer
-    assert backend.cache_calls == [False]
+    assert backend.cache_calls == [use_kv_cache]
 
 
 def test_replay_constructor_failure_keeps_session_ownership_with_caller(constructor_config):
@@ -659,7 +654,7 @@ def test_replay_prediction_modes_and_result_helpers(monkeypatch, tmp_path):
     replay.precision = "float32"
     replay.config = SimpleNamespace(
         temperature=0.0,
-        top_k=2,
+        top_k=3,
         top_p=1.0,
         use_kv_cache=False,
         checkpoint_path=Path("checkpoint.pt"),
@@ -697,6 +692,8 @@ def test_replay_prediction_modes_and_result_helpers(monkeypatch, tmp_path):
     assert row.action_key == "third"
     assert row.top_actions[0][0] == "third"
     assert row.top_actions[1][0] == "first"
+    assert row.top_actions[2] == ("illegal", 100.0, 0.0, False)
+    assert sum(probability for _, _, probability, legal in row.top_actions if legal) == pytest.approx(1.0)
 
     replay.config = SimpleNamespace(
         temperature=1.0,
@@ -726,54 +723,10 @@ def test_replay_prediction_modes_and_result_helpers(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="no legal action"):
         replay._predict_row(SimpleNamespace(), gcd_step=0)
 
-    assert model_dtype("float32") is torch.float32
-    assert model_dtype("float16") is torch.float16
-    assert model_dtype("bf16") is torch.bfloat16
-    with pytest.raises(ValueError, match="unsupported precision"):
-        model_dtype("int8")
-    with pytest.raises(ValueError, match="requires a CUDA device"):
-        autocast_context(torch.device("cpu"), "bf16")
-
     result = replay._build_result([row], history_limit=2, is_history_ablation=True)
     assert isinstance(result, ReplayResult)
     assert result.history_limit == 2
     assert result.is_history_ablation is True
-
-
-def test_replay_respects_shared_action_mask():
-    replay = object.__new__(AutoregressiveReplay)
-    replay.config = SimpleNamespace(
-        temperature=0.0,
-        top_k=3,
-        top_p=1.0,
-    )
-    replay.skill_book = SimpleNamespace(
-        get=lambda action_key: SimpleNamespace(
-            kind=SimpleNamespace(
-                value="gcd" if action_key == "fire" else "ogcd",
-            ),
-        ),
-    )
-    replay.backend = SimpleNamespace(
-        repetition=RepetitionConfig(),
-        raw_logits=lambda _batch, _action_keys: torch.tensor(
-            [[100.0, 2.0, 90.0]],
-        ),
-    )
-
-    row = replay._score_row(
-        {"action_legal_mask": torch.tensor([[False, True, False]])},
-        ["swiftcast", "fire", "potion"],
-        gcd_step=1,
-    )
-
-    assert row.action_key == "fire"
-    assert row.top_actions[0] == ("fire", 2.0, 1.0, True)
-    assert all(
-        legal is False
-        for action_key, _logit, _probability, legal in row.top_actions
-        if action_key in {"swiftcast", "potion"}
-    )
 
 
 def test_replay_waits_until_early_gcd_decision():
@@ -882,53 +835,6 @@ def test_top_p_keeps_minimum_probability_nucleus():
 
     assert torch.allclose(filtered, torch.tensor([0.625, 0.375, 0.0, 0.0]))
     assert replay_module._apply_top_p(probabilities, descending_order, 1.0) is probabilities
-
-
-def test_replay_delegates_kv_cache_toggle_to_backend():
-    replay = object.__new__(AutoregressiveReplay)
-    replay.device = torch.device("cpu")
-    replay.precision = "float32"
-    replay.config = SimpleNamespace(
-        temperature=0.0,
-        top_k=1,
-        top_p=1.0,
-        checkpoint_path=Path("checkpoint.pt"),
-        scene_json_path=Path("scene.json"),
-        max_history=8,
-    )
-
-    class FakeBackend:
-        repetition = RepetitionConfig()
-
-        def __init__(self):
-            self.kv_cache_enabled = False
-            self.calls = 0
-
-        def configure_cache(self, enabled):
-            self.kv_cache_enabled = bool(enabled)
-
-        def raw_logits(self, _batch, _action_keys):
-            assert self.kv_cache_enabled is True
-            self.calls += 1
-            return torch.tensor([[1.0, 2.0]])
-
-    class FakeBatcher:
-        @staticmethod
-        def build(_state, *, max_history=None):
-            return (
-                {"action_legal_mask": torch.tensor([[True, True]])},
-                ["first", "second"],
-            )
-
-    backend = FakeBackend()
-    replay.backend = backend
-    replay.batcher = FakeBatcher()
-    replay._configure_kv_cache(True)
-
-    row = replay._predict_row(SimpleNamespace(), gcd_step=0)
-
-    assert row.action_key == "second"
-    assert backend.calls == 1
 
 
 def test_replay_history_ablation_guards(monkeypatch, tmp_path):

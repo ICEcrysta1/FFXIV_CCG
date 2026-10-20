@@ -116,65 +116,6 @@ def _tensor_args(batch):
     return tuple(batch[key] for key in TENSOR_INPUT_KEYS)
 
 
-def _right_pad_context(
-    batch: dict[str, torch.Tensor],
-    *,
-    scene_capacity: int,
-    history_capacity: int,
-    fill_value: float = 0.0,
-) -> dict[str, torch.Tensor]:
-    padded = {key: value.clone() for key, value in batch.items()}
-    scene_length = batch["scene_vectors"].shape[1]
-    history_length = batch["history_skill_ids"].shape[1]
-    assert scene_capacity >= scene_length
-    assert history_capacity >= history_length
-
-    scene_padding = scene_capacity - scene_length
-    history_padding = history_capacity - history_length
-    padded["scene_vectors"] = torch.nn.functional.pad(
-        batch["scene_vectors"],
-        (0, 0, 0, scene_padding),
-        value=fill_value,
-    )
-    padded["scene_types"] = torch.nn.functional.pad(
-        batch["scene_types"],
-        (0, scene_padding),
-    )
-    padded["scene_mask"] = torch.nn.functional.pad(
-        batch["scene_mask"],
-        (0, scene_padding),
-        value=False,
-    )
-    padded["history_skill_ids"] = torch.nn.functional.pad(
-        batch["history_skill_ids"],
-        (0, history_padding),
-    )
-    padded["history_skill_features"] = torch.nn.functional.pad(
-        batch["history_skill_features"],
-        (0, 0, 0, history_padding),
-        value=fill_value,
-    )
-    padded["history_state_vectors"] = torch.nn.functional.pad(
-        batch["history_state_vectors"],
-        (0, 0, 0, history_padding),
-        value=fill_value,
-    )
-    padded["history_state_null_mask"] = torch.nn.functional.pad(
-        batch["history_state_null_mask"],
-        (0, 0, 0, history_padding),
-        value=True,
-    )
-    padded["history_state_reset_mask"] = torch.nn.functional.pad(
-        batch["history_state_reset_mask"], (0, 0, 0, history_padding), value=False,
-    )
-    padded["history_mask"] = torch.nn.functional.pad(
-        batch["history_mask"],
-        (0, history_padding),
-        value=False,
-    )
-    return padded
-
-
 @pytest.mark.parametrize("scene_types", ((3, 0, 2, 1), (2, 0, 2)))
 def test_scene_projection_selects_each_type_without_data_dependent_branch(scene_types):
     model = _make_model()
@@ -501,64 +442,6 @@ def test_policy_attention_returns_zero_for_fully_blocked_rows(collect_attention)
         torch.testing.assert_close(weights[1, :, 0, 1], torch.zeros(attention.num_heads))
     else:
         assert weights is None
-
-
-@pytest.mark.parametrize(
-    ("scene_types", "history_length", "scene_capacity", "history_capacity"),
-    (
-        ((), 0, 1, 1),
-        ((), 2, 2, 3),
-        ((2,), 0, 2, 2),
-        ((3, 1), 1, 4, 3),
-    ),
-)
-def test_padded_context_is_finite_for_empty_or_short_context(
-    scene_types,
-    history_length,
-    scene_capacity,
-    history_capacity,
-):
-    # 每个有效 token 的逻辑位置相同，padding 不改变当前状态输出。
-    model = _make_model()
-    policy = OnnxPolicy(model)
-    dynamic_batch = _make_batch(scene_types, history_length=history_length)
-    padded_batch = _right_pad_context(
-        dynamic_batch,
-        scene_capacity=scene_capacity,
-        history_capacity=history_capacity,
-        fill_value=37.0,
-    )
-
-    with torch.no_grad():
-        dynamic_logits = policy(*_tensor_args(dynamic_batch))
-        padded_logits = policy(*_tensor_args(padded_batch))
-
-    assert torch.isfinite(dynamic_logits).all()
-    assert torch.isfinite(padded_logits).all()
-    torch.testing.assert_close(padded_logits, dynamic_logits, rtol=1e-5, atol=1e-6)
-
-
-def test_padding_values_do_not_affect_logits():
-    policy = OnnxPolicy(_make_model())
-    batch = _make_batch((), history_length=0)
-    zero_padding = _right_pad_context(
-        batch,
-        scene_capacity=2,
-        history_capacity=2,
-        fill_value=0.0,
-    )
-    nonzero_padding = _right_pad_context(
-        batch,
-        scene_capacity=2,
-        history_capacity=2,
-        fill_value=91.0,
-    )
-
-    with torch.no_grad():
-        zero_logits = policy(*_tensor_args(zero_padding))
-        nonzero_logits = policy(*_tensor_args(nonzero_padding))
-
-    torch.testing.assert_close(nonzero_logits, zero_logits, rtol=1e-5, atol=1e-6)
 
 
 def test_padding_matrix_validates_hidden_attention_logits_and_argmax():

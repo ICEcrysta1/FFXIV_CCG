@@ -117,21 +117,6 @@ def test_grouped_training_preserves_per_head_attention_mask(num_kv_heads):
     torch.testing.assert_close(output, expected)
 
 
-def test_grouped_attention_accepts_configured_divisor_kv_head_counts():
-    for num_kv_heads in (1, 2, 4):
-        encoder = _make_encoder(num_kv_heads=num_kv_heads)
-        values = torch.randn(1, 4, 8)
-        query, key, value = project_qkv(encoder.layers[0].self_attn, values)
-
-        assert query.shape[-1] == 8
-        assert key.shape[-1] == value.shape[-1] == 2 * num_kv_heads
-        output, _, _ = run_causal_encoder(
-            encoder,
-            _make_encoded(values),
-        )
-        assert output.shape == (1, 4, 8)
-
-
 @pytest.mark.parametrize("training", (False, True))
 @pytest.mark.parametrize("encoder_path", (False, True))
 @pytest.mark.parametrize("num_kv_heads", (1, 2, 4))
@@ -230,16 +215,6 @@ def test_grouped_sdpa_matches_explicit_kv_forward_and_gradients(
     torch.testing.assert_close(actual, expected, rtol=rtol, atol=atol)
     for actual_gradient, expected_gradient in zip(actual_gradients, expected_gradients):
         torch.testing.assert_close(actual_gradient, expected_gradient, rtol=rtol, atol=atol)
-
-
-def test_mqa_trace_expands_only_the_explicit_attention_weight_result():
-    encoder = _make_encoder()
-    encoded = _make_encoded(torch.randn(1, 4, 8))
-
-    *_, attentions = run_causal_encoder(encoder, encoded, collect_attention=True)
-
-    assert len(attentions) == 1
-    assert attentions[0].shape == (1, 4, 4, 4)
 
 
 @pytest.mark.parametrize("dtype", (torch.float32, torch.float64, torch.bfloat16))

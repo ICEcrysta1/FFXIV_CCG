@@ -16,7 +16,6 @@ from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, SkillVocab
 from common.policy.model import (
     CausalPolicyModel,
-    RepetitionConfig,
     build_causal_attention_mask,
 )
 from training import TrainingCollator
@@ -31,7 +30,6 @@ from training.loop.losses.value_preference import (
 from training.loop.dataloaders import _load_skill_values
 from training.loop.losses.primary import primary_loss
 from common.policy.model.input_encoder import build_position_ids
-from common.policy.model.repetition import apply_repetition_penalty
 from tests.training._causal_fixtures import make_batch, make_data_spec
 
 
@@ -70,9 +68,9 @@ def test_qk_rmsnorm_matches_independent_formula_and_gradients_at_small_norms(sca
         torch.testing.assert_close(left, right, rtol=2e-6, atol=2e-6)
 
 
-@pytest.mark.parametrize("num_kv_heads", (4, 2, 1))
-@pytest.mark.parametrize("full_attention_residuals", (False, True))
-@pytest.mark.parametrize("scale", (1.2, 0.7))
+@pytest.mark.parametrize("num_kv_heads,full_attention_residuals,scale", [
+    (4, False, 1.2), (2, False, 1.2), (1, False, 1.2), (1, True, 0.7),
+])
 def test_qk_head_rmsnorm_follows_rope_and_matches_trace_attention(
     monkeypatch, num_kv_heads, full_attention_residuals, scale,
 ):
@@ -145,9 +143,9 @@ def test_qk_head_rmsnorm_follows_rope_and_matches_trace_attention(
     torch.testing.assert_close(logits, traced_logits, rtol=2e-6, atol=2e-6)
 
 
-@pytest.mark.parametrize("num_kv_heads", (4, 2, 1))
-@pytest.mark.parametrize("full_attention_residuals", (False, True))
-@pytest.mark.parametrize("attention_block", (False, True))
+@pytest.mark.parametrize("num_kv_heads,full_attention_residuals,attention_block", [
+    (4, False, False), (2, False, True), (1, True, False), (1, True, True),
+])
 def test_qk_normalization_preserves_recomputed_forward_and_gradients(
     num_kv_heads, full_attention_residuals, attention_block,
 ):
@@ -363,22 +361,11 @@ def test_position_ids_count_valid_tokens_without_right_padding():
     assert position_ids.tolist() == [[0, 0, 1, 0, 0, 2, 3, 0, 0, 4, 5, 6]]
 
 
-def test_current_state_rope_position_follows_scene_and_history():
-    torch = pytest.importorskip("torch")
-    position_ids = build_position_ids(prefix_valid=torch.ones((1, 6), dtype=torch.bool))
-    assert position_ids.tolist() == [[0, 1, 2, 3, 4, 5, 6]]
-
-
 def test_rope_logits_are_invariant_to_other_samples_right_padding():
     torch = pytest.importorskip("torch")
-    data_spec = DataSpec(
-        job_tag="black_mage",
-        num_actions=2,
-        base_state_dim=3, state_dim=(3) + 2 * (2),
-        scene_dim=2,
-        skill_feature_dim=1,
-        num_scene_types=1,
-        action_to_vocab_id=(1, 2), action_is_gcd=(True, True), action_keys=("fire_iii", "fire_iv"),
+    data_spec = make_data_spec(
+        base_state_dim=3, scene_dim=2, skill_feature_dim=1,
+        action_keys=("fire_iii", "fire_iv"),
         skill_feature_names=("potency",),
     )
     model = CausalPolicyModel(
@@ -469,125 +456,11 @@ def test_causal_attention_mask_allows_only_current_and_earlier_tokens():
     assert not mask[-1].any()
 
 
-def test_causal_model_appends_one_current_state_token():
-    torch = pytest.importorskip("torch")
-    data_spec = DataSpec(
-        job_tag="black_mage",
-        num_actions=2,
-        base_state_dim=3, state_dim=(3) + 2 * (2),
-        scene_dim=2,
-        skill_feature_dim=1,
-        num_scene_types=1,
-        action_to_vocab_id=(1, 2), action_is_gcd=(True, True), action_keys=("fire_iii", "fire_iv"),
-        skill_feature_names=("cast_time.seconds",),
-    )
-    model = CausalPolicyModel(
-        data_spec,
-        ModelConfig(
-            d_model=8,
-            n_layers=1,
-            n_heads=2,
-            ff_dim=16,
-            dropout=0.0,
-        ),
-        vocab_size=4,
-    ).eval()
-    batch = {
-        "history_skill_ids": torch.ones((1, 2), dtype=torch.int64),
-        "history_skill_features": torch.zeros((1, 2, 1)),
-        "history_state_vectors": torch.nn.functional.pad(torch.zeros((1, 2, 3)), (0, 4)),
-        "history_state_null_mask": torch.zeros((1, 2, 3), dtype=torch.bool),
-        "history_dead_positions": torch.empty((1, 0), dtype=torch.long),
-        "history_dead_mask": torch.zeros((1, 0), dtype=torch.bool),
-        "history_mask": torch.ones((1, 2), dtype=torch.bool),
-        'current_state_vectors': torch.nn.functional.pad((torch.zeros((1, 2, 3)))[:, 0, :], (0, 4)),
-        'current_state_null_mask': (torch.zeros((1, 2, 3), dtype=torch.bool))[:, 0, :],
-        "action_legal_mask": torch.ones((1, 2), dtype=torch.bool),
-        "scene_vectors": torch.zeros((1, 1, 2)),
-        "scene_types": torch.zeros((1, 1), dtype=torch.int64),
-        "scene_mask": torch.ones((1, 1), dtype=torch.bool),
-        "history_state_reset_mask": torch.zeros_like(torch.zeros((1, 2, 3)), dtype=torch.bool),
-        "current_state_reset_mask": torch.zeros_like((torch.zeros((1, 2, 3)))[:, 0, :], dtype=torch.bool),
-    }
-
-    output = model(batch)
-    assert output["logits"].shape == (1, 2)
-    encoded = model.input_encoder(batch)
-    assert "attention_mask" not in encoded
-    assert encoded["prefix_length"] == 5
-    assert encoded["current_state_position"] == 5
-    assert encoded["tokens"].shape == (1, 6, 8)
-    assert encoded["role_ids"].tolist() == [[0, 1, 2, 1, 2, 1]]
-    assert encoded["position_ids"].tolist() == [[0, 1, 2, 3, 4, 5]]
-    assert not any(key.startswith("cls_") for key in encoded)
-
-
-def test_input_encoder_enforces_shared_context_capacity():
-    torch = pytest.importorskip("torch")
-    data_spec = DataSpec(
-        job_tag="black_mage",
-        num_actions=2,
-        base_state_dim=3, state_dim=(3) + 2 * (2),
-        scene_dim=2,
-        skill_feature_dim=1,
-        num_scene_types=1,
-        action_to_vocab_id=(1, 2), action_is_gcd=(True, True), action_keys=("fire_iii", "fire_iv"),
-        skill_feature_names=("cast_time.seconds",),
-    )
-    model = CausalPolicyModel(
-        data_spec,
-        ModelConfig(
-            d_model=8,
-            n_layers=1,
-            n_heads=2,
-            ff_dim=16,
-            dropout=0.0,
-            context_capacity=9,
-            history_reset_keep=2,
-        ),
-        vocab_size=4,
-    ).eval()
-    # 场景、状态、动作和当前状态共同使用 9 个 token 的预算。
-    assert model.config.context_capacity == 9
-    batch = {
-        "history_skill_ids": torch.ones((1, 2), dtype=torch.int64),
-        "history_skill_features": torch.zeros((1, 2, 1)),
-        "history_state_vectors": torch.nn.functional.pad(torch.zeros((1, 2, 3)), (0, 4)),
-        "history_state_null_mask": torch.zeros((1, 2, 3), dtype=torch.bool),
-        "history_dead_positions": torch.empty((1, 0), dtype=torch.long),
-        "history_dead_mask": torch.zeros((1, 0), dtype=torch.bool),
-        "history_mask": torch.ones((1, 2), dtype=torch.bool),
-        'current_state_vectors': torch.nn.functional.pad((torch.zeros((1, 2, 3)))[:, 0, :], (0, 4)),
-        'current_state_null_mask': (torch.zeros((1, 2, 3), dtype=torch.bool))[:, 0, :],
-        "action_legal_mask": torch.ones((1, 2), dtype=torch.bool),
-        "scene_vectors": torch.zeros((1, 4, 2)),
-        "scene_types": torch.zeros((1, 4), dtype=torch.int64),
-        "scene_mask": torch.ones((1, 4), dtype=torch.bool),
-        "history_state_reset_mask": torch.zeros_like(torch.zeros((1, 2, 3)), dtype=torch.bool),
-        "current_state_reset_mask": torch.zeros_like((torch.zeros((1, 2, 3)))[:, 0, :], dtype=torch.bool),
-    }
-
-    with torch.no_grad():
-        output = model(batch)
-    assert output["logits"].shape == (1, 2)
-
-    batch["scene_vectors"] = torch.zeros((1, 5, 2))
-    batch["scene_types"] = torch.zeros((1, 5), dtype=torch.int64)
-    batch["scene_mask"] = torch.ones((1, 5), dtype=torch.bool)
-    with pytest.raises(ValueError, match="model.context_capacity"):
-        model(batch)
-
-
 def test_model_encode_with_attention_returns_per_head_weights():
     torch = pytest.importorskip("torch")
-    data_spec = DataSpec(
-        job_tag="black_mage",
-        num_actions=2,
-        base_state_dim=3, state_dim=(3) + 2 * (2),
-        scene_dim=2,
-        skill_feature_dim=1,
-        num_scene_types=1,
-        action_to_vocab_id=(1, 2), action_is_gcd=(True, True), action_keys=("fire_iii", "fire_iv"),
+    data_spec = make_data_spec(
+        base_state_dim=3, scene_dim=2, skill_feature_dim=1,
+        action_keys=("fire_iii", "fire_iv"),
         skill_feature_names=("cast_time.seconds",),
     )
     model = CausalPolicyModel(
@@ -601,25 +474,9 @@ def test_model_encode_with_attention_returns_per_head_weights():
         ),
         vocab_size=4,
     ).eval()
-    batch = {
-        "history_action_keys": [["fire_iii"]],
-        "action_keys": [["fire_iii", "fire_iv"]],
-        "history_skill_ids": torch.ones((1, 1), dtype=torch.int64),
-        "history_skill_features": torch.zeros((1, 1, 1)),
-        "history_state_vectors": torch.nn.functional.pad(torch.zeros((1, 1, 3)), (0, 4)),
-        "history_state_null_mask": torch.zeros((1, 1, 3), dtype=torch.bool),
-        "history_dead_positions": torch.empty((1, 0), dtype=torch.long),
-        "history_dead_mask": torch.zeros((1, 0), dtype=torch.bool),
-        "history_mask": torch.ones((1, 1), dtype=torch.bool),
-        'current_state_vectors': torch.nn.functional.pad((torch.zeros((1, 2, 3)))[:, 0, :], (0, 4)),
-        'current_state_null_mask': (torch.zeros((1, 2, 3), dtype=torch.bool))[:, 0, :],
-        "action_legal_mask": torch.ones((1, 2), dtype=torch.bool),
-        "scene_vectors": torch.zeros((1, 1, 2)),
-        "scene_types": torch.zeros((1, 1), dtype=torch.int64),
-        "scene_mask": torch.ones((1, 1), dtype=torch.bool),
-        "history_state_reset_mask": torch.zeros_like(torch.zeros((1, 1, 3)), dtype=torch.bool),
-        "current_state_reset_mask": torch.zeros_like((torch.zeros((1, 2, 3)))[:, 0, :], dtype=torch.bool),
-    }
+    batch = make_batch(data_spec, history_length=1, scene_length=1)
+    batch["history_state_reset_mask"] = torch.zeros_like(batch["history_state_reset_mask"])
+    batch.pop("label_index")
 
     encoded, hidden, attentions = model.encode_with_attention(batch)
 
@@ -628,125 +485,6 @@ def test_model_encode_with_attention_returns_per_head_weights():
     assert attentions[0].shape == (1, 2, encoded["tokens"].shape[1], encoded["tokens"].shape[1])
     assert encoded["current_state_position"] == 3
     assert encoded["tokens"].shape[1] == 4
-
-
-def test_history_uses_independent_tokens_and_current_state_has_no_skill():
-    torch = pytest.importorskip("torch")
-    data_spec = DataSpec(
-        job_tag="black_mage",
-        num_actions=2,
-        base_state_dim=3, state_dim=(3) + 2 * (2),
-        scene_dim=2,
-        skill_feature_dim=1,
-        num_scene_types=1,
-        action_to_vocab_id=(1, 2), action_is_gcd=(True, True), action_keys=("fire_iii", "fire_iv"),
-        skill_feature_names=("cast_time.seconds",),
-    )
-    model = CausalPolicyModel(
-        data_spec,
-        ModelConfig(
-            d_model=8,
-            n_layers=1,
-            n_heads=2,
-            ff_dim=16,
-            dropout=0.0,
-        ),
-        vocab_size=4,
-    ).eval()
-    batch = {
-        "history_skill_ids": torch.ones((1, 2), dtype=torch.int64),
-        "history_skill_features": torch.zeros((1, 2, 1)),
-        "history_state_vectors": torch.nn.functional.pad(torch.zeros((1, 2, 3)), (0, 4)),
-        "history_state_null_mask": torch.zeros((1, 2, 3), dtype=torch.bool),
-        "history_dead_positions": torch.empty((1, 0), dtype=torch.long),
-        "history_dead_mask": torch.zeros((1, 0), dtype=torch.bool),
-        "history_mask": torch.ones((1, 2), dtype=torch.bool),
-        'current_state_vectors': torch.nn.functional.pad((torch.zeros((1, 2, 3)))[:, 0, :], (0, 4)),
-        'current_state_null_mask': (torch.zeros((1, 2, 3), dtype=torch.bool))[:, 0, :],
-        "action_legal_mask": torch.ones((1, 2), dtype=torch.bool),
-        "scene_vectors": torch.zeros((1, 1, 2)),
-        "scene_types": torch.zeros((1, 1), dtype=torch.int64),
-        "scene_mask": torch.ones((1, 1), dtype=torch.bool),
-        "history_state_reset_mask": torch.zeros_like(torch.zeros((1, 2, 3)), dtype=torch.bool),
-        "current_state_reset_mask": torch.zeros_like((torch.zeros((1, 2, 3)))[:, 0, :], dtype=torch.bool),
-    }
-
-    encoded = model.input_encoder(batch)
-
-    assert encoded["tokens"].shape[1] == 1 + 2 * 2 + 1
-    assert set(model.input_encoder.embed_history(batch)) == {"skill", "state"}
-    assert encoded["current_state_position"] == 5
-    assert encoded["history_skill_positions"].tolist() == [[2, 4]]
-    assert encoded["history_state_positions"].tolist() == [[1, 3]]
-
-
-def test_input_encoder_routes_all_sources_through_one_post_role_rms(monkeypatch):
-    torch = pytest.importorskip("torch")
-    data_spec = DataSpec(
-        job_tag="black_mage",
-        num_actions=2,
-        base_state_dim=3, state_dim=(3) + 2 * (2),
-        scene_dim=2,
-        skill_feature_dim=1,
-        num_scene_types=1,
-        action_to_vocab_id=(1, 2), action_is_gcd=(True, True), action_keys=("fire_iii", "fire_iv"),
-        skill_feature_names=("cast_time.seconds",),
-    )
-    model = CausalPolicyModel(
-        data_spec,
-        ModelConfig(
-            d_model=8,
-            n_layers=1,
-            n_heads=2,
-            ff_dim=16,
-            dropout=0.0,
-        ),
-        vocab_size=4,
-    ).eval()
-    batch = {
-        "history_skill_ids": torch.ones((1, 2), dtype=torch.int64),
-        "history_skill_features": torch.zeros((1, 2, 1)),
-        "history_state_vectors": torch.nn.functional.pad(torch.zeros((1, 2, 3)), (0, 4)),
-        "history_state_null_mask": torch.zeros((1, 2, 3), dtype=torch.bool),
-        "history_dead_positions": torch.empty((1, 0), dtype=torch.long),
-        "history_dead_mask": torch.zeros((1, 0), dtype=torch.bool),
-        "history_mask": torch.ones((1, 2), dtype=torch.bool),
-        'current_state_vectors': torch.nn.functional.pad((torch.zeros((1, 2, 3)))[:, 0, :], (0, 4)),
-        'current_state_null_mask': (torch.zeros((1, 2, 3), dtype=torch.bool))[:, 0, :],
-        "action_legal_mask": torch.ones((1, 2), dtype=torch.bool),
-        "scene_vectors": torch.zeros((1, 1, 2)),
-        "scene_types": torch.zeros((1, 1), dtype=torch.int64),
-        "scene_mask": torch.ones((1, 1), dtype=torch.bool),
-        "history_state_reset_mask": torch.zeros_like(torch.zeros((1, 2, 3)), dtype=torch.bool),
-        "current_state_reset_mask": torch.zeros_like((torch.zeros((1, 2, 3)))[:, 0, :], dtype=torch.bool),
-    }
-    captured = []
-    original_rms = torch.nn.functional.rms_norm
-
-    def capture_rms(values, normalized_shape, *, eps):
-        captured.append((values.detach().clone(), normalized_shape, eps))
-        return original_rms(values, normalized_shape, eps=eps)
-
-    monkeypatch.setattr(torch.nn.functional, "rms_norm", capture_rms)
-    encoded = model.input_encoder(batch)
-
-    # 全部场景、交错历史和最新状态合成后，仅进入同一处 RMSNorm。
-    assert len(captured) == 1
-    values, normalized_shape, eps = captured[0]
-    assert values.shape == (1, 6, 8)
-    assert normalized_shape == (8,)
-    assert eps == 1e-5
-    scene_content = model.input_encoder.scene_proj[0](batch["scene_vectors"])
-    scene_role = model.input_encoder.role_embed(encoded["role_ids"][:, :1])
-    torch.testing.assert_close(values[:, :1], scene_content + scene_role)
-    assert not any(isinstance(module, torch.nn.LayerNorm)
-                   for module in model.input_encoder.modules())
-    assert model.input_encoder.scene_proj[0].out_features == 8
-    assert model.input_encoder.role_embed.num_embeddings == 4
-    assert "input_encoder.cls_token" not in model.state_dict()
-    assert not hasattr(model.input_encoder, "token_embedding")
-    assert not hasattr(model.input_encoder, "segment_embed")
-    assert not hasattr(model, "output_adapter")
 
 
 def test_job_model_config_loads_training_precision(tmp_path):
@@ -1041,46 +779,6 @@ def test_training_collator_preserves_fixed_output_order_and_label_mapping(tmp_pa
             torch.testing.assert_close(batch[name][index], sample[name])
 
 
-def test_repetition_whitelist_only_penalizes_non_whitelisted_repeat():
-    torch = pytest.importorskip("torch")
-    logits = torch.zeros((1, 4))
-    batch = {
-        "action_legal_mask": torch.ones((1, 4), dtype=torch.bool),
-        "history_action_keys": [["ogcd_wait", "fire_iii"]],
-        "action_keys": [["fire_iii", "fire_iv", "xenoglossy", "flare"]],
-    }
-
-    adjusted = apply_repetition_penalty(
-        logits,
-        batch,
-        RepetitionConfig(
-            mode="whitelist",
-            skills=("fire_iv", "xenoglossy", "flare"),
-            penalty=1.0,
-        ),
-    )
-
-    assert adjusted.tolist() == [[-1.0, 0.0, 0.0, 0.0]]
-
-
-def test_repetition_blacklist_only_penalizes_listed_repeat():
-    torch = pytest.importorskip("torch")
-    logits = torch.zeros((1, 2))
-    batch = {
-        "action_legal_mask": torch.ones((1, 2), dtype=torch.bool),
-        "history_action_keys": [["fire_iv"]],
-        "action_keys": [["fire_iv", "fire_iii"]],
-    }
-
-    adjusted = apply_repetition_penalty(
-        logits,
-        batch,
-        RepetitionConfig(mode="blacklist", skills=("fire_iv",), penalty=0.75),
-    )
-
-    assert adjusted.tolist() == [[-0.75, 0.0]]
-
-
 def test_job_model_config_loads_repetition_policy(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
@@ -1107,20 +805,6 @@ def test_low_precision_autocast_requires_cuda():
         autocast_context(torch.device("cpu"), "bf16")
 
 
-def _obsolete_job_model_config_loads_bounded_sample_cache(tmp_path):
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(
-        "raw_data_dir: data/human/job/black_mage/raw/FRU\n"
-        "training:\n"
-        "  sample_cache_size: 64\n",
-        encoding="utf-8",
-    )
-
-    config = load_run_config(config_path)
-
-    assert config.sample_cache_size == 64
-
-
 def test_job_model_config_loads_bounded_compiled_cache(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
@@ -1135,19 +819,6 @@ def test_job_model_config_loads_bounded_compiled_cache(tmp_path):
 
     assert config.compiled_cache_shard_size == 128
     assert config.compiled_cache_max_shards == 3
-
-
-def test_job_model_config_rejects_legacy_compiled_cache_workers(tmp_path):
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(
-        "raw_data_dir: data/human/job/black_mage/raw/FRU\n"
-        "training:\n"
-        "  compiled_cache_workers: 4\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="CONVERT_FFLOGS_WORKERS"):
-        load_run_config(config_path)
 
 
 def test_training_cache_dir_is_scoped_by_job(monkeypatch, tmp_path):

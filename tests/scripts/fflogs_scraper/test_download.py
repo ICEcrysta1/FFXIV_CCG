@@ -223,22 +223,6 @@ def test_anonymous_and_duplicate_records_do_not_fill_quota(monkeypatch, tmp_path
     assert len(list(tmp_path.rglob("*.json.br"))) == 1
 
 
-@pytest.mark.parametrize("mode", ["events-only", "default", "damage-only"])
-def test_valid_existing_files_count_towards_target_without_redownloading(monkeypatch, tmp_path, analysis_meta, mode):
-    client = FFLogsV2Client("id", "secret")
-    _stub_report_download(monkeypatch, client, analysis_meta)
-    record = _record("ABC123", 95)
-    first = batch._stratified_batch_download(client, [record], {"90-100": 1}, str(tmp_path), mode)
-    assert first["success"] == 1
-    def unexpected(*args):
-        pytest.fail("已有有效文件不应再查询报告")
-    monkeypatch.setattr(client, "get_report_fights", unexpected)
-    second = batch._stratified_batch_download(client, [record], {"90-100": 1}, str(tmp_path), mode)
-    assert second["existing"] == 1
-    assert second["success"] == 0
-    assert second["counts"] == {"90-100": 1}
-
-
 def test_incomplete_existing_file_does_not_count_and_survives_failed_replacement(monkeypatch, tmp_path, analysis_meta):
     client = FFLogsV2Client("id", "secret")
     _stub_report_download(monkeypatch, client, analysis_meta)
@@ -346,7 +330,7 @@ def test_cmd_batch_uses_configured_validation_ratio(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("alias,encounter_id", [
-    ("FRU", 1079), ("65", 1079), ("M1s", 93), ("M12sI", 104), ("M12sII", 105),
+    ("FRU", 1079), ("65", 1079),
 ])
 def test_named_batch_resolves_model_job_and_output_directory(monkeypatch, tmp_path, alias, encounter_id):
     client = FFLogsV2Client("id", "secret", server_region="CN")

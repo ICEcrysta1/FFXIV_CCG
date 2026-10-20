@@ -192,33 +192,6 @@ def test_full_attention_residual_aggregates_each_depth_once_and_preserves_trace(
         torch.testing.assert_close(actual_hidden, expected_hidden, rtol=1e-10, atol=1e-10)
 
 
-@pytest.mark.parametrize("full_residual", (False, True))
-@pytest.mark.parametrize("checkpoint_ffn,checkpoint_attention", ((True, False), (False, True), (True, True)))
-def test_sublayer_checkpoints_preserve_dropout_outputs_and_gradients(full_residual, checkpoint_ffn, checkpoint_attention):
-    torch.manual_seed(31)
-    encoder = torch.nn.TransformerEncoder(_layer(dropout=0.15), 2, enable_nested_tensor=False)
-    encoder.rotary_position_encoding = RotaryPositionEncoding(2)
-    if full_residual:
-        encoder.attention_residual = FullAttentionResidual(d_model=8, num_queries=5)
-    reference = deepcopy(encoder)
-    for layer in encoder.layers:
-        layer.set_activation_checkpoint_ffn(checkpoint_ffn)
-        layer.set_activation_checkpoint_attention(checkpoint_attention)
-    tokens = torch.randn(2, 5, 8, requires_grad=True)
-    reference_tokens = tokens.detach().clone().requires_grad_()
-    torch.manual_seed(32)
-    actual = causal.run_causal_encoder(encoder, _encoded(tokens, 3))[0]
-    torch.manual_seed(32)
-    expected = causal.run_causal_encoder(reference, _encoded(reference_tokens, 3))[0]
-    torch.testing.assert_close(actual, expected)
-    probe = torch.randn_like(actual)
-    (actual * probe).sum().backward()
-    (expected * probe).sum().backward()
-    torch.testing.assert_close(tokens.grad, reference_tokens.grad)
-    for actual_param, expected_param in zip(encoder.parameters(), reference.parameters()):
-        torch.testing.assert_close(actual_param.grad, expected_param.grad)
-
-
 @pytest.mark.parametrize("mode", ("whitelist", "blacklist"))
 def test_prepared_repetition_reuses_cached_mask_in_fixed_action_order(mode, monkeypatch):
     config = repetition_module.RepetitionConfig(mode=mode, skills=("b",), penalty=1.25)

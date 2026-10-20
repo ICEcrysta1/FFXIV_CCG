@@ -45,7 +45,7 @@ from scripts.convert_fflogs import cache as cache_module
 from scripts.convert_fflogs.cache import cache_compile as cache_compile_module
 from common.policy.data import source_selection as cache_paths_module
 from training.config import ActionQualityLossConfig, RunConfig, ValuePreferenceConfig
-from tests.training._causal_fixtures import make_checkpoint, make_data_spec, make_input_contract
+from tests.training._causal_fixtures import make_batch, make_checkpoint, make_data_spec, make_input_contract
 
 
 def _attach_rope(encoder):
@@ -154,7 +154,6 @@ def test_seed_everything_seeds_python_cpu_and_available_cuda(seed):
         ({"training": {"num_workers": -1}}, "num_workers must be >= 0"),
         ({"training": {"prefetch_factor": 0}}, "prefetch_factor must be >= 1"),
         ({"training": {"compiled_cache_shard_size": 0}}, "compiled_cache_shard_size must be >= 1"),
-        ({"training": {"compiled_cache_shard_size": 0}}, "compiled_cache_shard_size must be >= 1"),
         ({"training": {"compiled_cache_max_shards": 0}}, "compiled_cache_max_shards must be >= 1"),
         ({"training": {"compiled_cache_workers": 4}}, "CONVERT_FFLOGS_WORKERS"),
         ({"training": {"history_truncation": [1]}}, "history_truncation must be a mapping"),
@@ -250,42 +249,6 @@ def test_load_run_config_parses_full_attention_residuals_string_aliases(
     )
 
     assert config.model.full_attention_residuals is expected
-
-
-@pytest.mark.parametrize("raw_value", [False, 0, "false", "no"])
-def test_load_run_config_rejects_disabled_removed_scorer_switches(
-    tmp_path: Path,
-    raw_value: object,
-):
-    with pytest.raises(ValueError, match="removed model options"):
-        config_module.load_run_config(
-            _write_config(
-                tmp_path,
-                {
-                    "model": {
-                        "scorer_use_raw_projection": raw_value,
-                        "scorer_use_candidate_hidden": False,
-                    }
-                },
-            )
-        )
-
-
-@pytest.mark.parametrize("raw_value", [True, 1, "true", "yes"])
-def test_load_run_config_rejects_enabled_removed_scorer_switch_aliases(
-    tmp_path: Path,
-    raw_value: object,
-):
-    with pytest.raises(
-        ValueError,
-        match="removed model options",
-    ):
-        config_module.load_run_config(
-            _write_config(
-                tmp_path,
-                {"model": {"scorer_use_raw_projection": raw_value}},
-            )
-        )
 
 
 def test_policy_config_resolvers_select_job_and_variant_from_env_and_cover_path_branches(monkeypatch, tmp_path):
@@ -518,38 +481,10 @@ def test_repetition_config_checkpoint_and_disabled_mask_paths():
 
 
 def _encoder_spec() -> DataSpec:
-    return DataSpec(
-        job_tag="black_mage",
-        num_actions=2,
-        base_state_dim=3, state_dim=(3) + 2 * (2),
-        scene_dim=2,
-        skill_feature_dim=1,
-        num_scene_types=1,
-        action_to_vocab_id=(1, 2),
-        action_is_gcd=(True, True),
-        action_keys=("fire_iii", "fire_iv"),
-        skill_feature_names=("potency",),
+    return make_data_spec(
+        base_state_dim=3, scene_dim=2, skill_feature_dim=1,
+        action_keys=("fire_iii", "fire_iv"), skill_feature_names=("potency",),
     )
-
-
-def _encoder_batch() -> dict[str, torch.Tensor]:
-    return {
-        "history_skill_ids": torch.ones((1, 1), dtype=torch.long),
-        "history_skill_features": torch.zeros((1, 1, 1)),
-        "history_state_vectors": torch.nn.functional.pad(torch.zeros((1, 1, 3)), (0, 4)),
-        "history_state_null_mask": torch.zeros((1, 1, 3), dtype=torch.bool),
-        "history_dead_positions": torch.empty((1, 0), dtype=torch.long),
-        "history_dead_mask": torch.zeros((1, 0), dtype=torch.bool),
-        "history_mask": torch.ones((1, 1), dtype=torch.bool),
-        "current_state_vectors": torch.nn.functional.pad(torch.zeros((1, 3)), (0, 4)),
-        "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
-        "action_legal_mask": torch.ones((1, 2), dtype=torch.bool),
-        "scene_vectors": torch.zeros((1, 1, 2)),
-        "scene_types": torch.zeros((1, 1), dtype=torch.long),
-        "scene_mask": torch.ones((1, 1), dtype=torch.bool),
-        "history_state_reset_mask": torch.zeros_like(torch.zeros((1, 1, 3)), dtype=torch.bool),
-        "current_state_reset_mask": torch.zeros_like(torch.zeros((1, 3)), dtype=torch.bool),
-    }
 
 
 def test_input_encoder_handles_null_state_and_rejects_bad_shapes():
@@ -582,7 +517,8 @@ def test_input_encoder_handles_null_state_and_rejects_bad_shapes():
         ("action legal mask", "action_legal_mask", torch.ones((1, 1), dtype=torch.bool)),
     ]
     for message, key, value in invalid_batches:
-        batch = _encoder_batch()
+        batch = make_batch(spec, history_length=1)
+        batch["history_state_reset_mask"] = torch.zeros_like(batch["history_state_reset_mask"])
         batch[key] = value
         with pytest.raises(ValueError, match=message):
             encoder._validate_batch(batch)
@@ -2174,30 +2110,35 @@ def test_load_resume_checkpoint_rejects_missing_and_non_mapping(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("field", "value", "message"),
+    ("field", "value", "message", "error_type"),
     [
-        ("data_spec", {"job_tag": "black_mage", "state_dim": 999}, "training data spec mismatch"),
-        ("model_config", {"d_model": 999}, "resume checkpoint model config mismatch"),
-        ("model_config", {"transformer_activation": "swiglu"}, "resume checkpoint model config mismatch"),
-        ("training_precision", "bf16", "resume checkpoint training precision mismatch"),
+        ("data_spec", {"job_tag": "black_mage", "state_dim": 999}, "training data spec mismatch", ValueError),
+        ("model_config", {"d_model": 999}, "resume checkpoint model config mismatch", ValueError),
+        ("model_config", {"transformer_activation": "swiglu"}, "resume checkpoint model config mismatch", ValueError),
+        ("training_precision", "bf16", "resume checkpoint training precision mismatch", ValueError),
+        ("model_variant", None, "resume checkpoint missing model_variant", ValueError),
+        ("model_variant", "other_variant", "resume checkpoint model variant mismatch", ValueError),
+        ("model_config", {"scorer_use_raw_projection": False, "scorer_use_candidate_hidden": True}, "removed model options", ValueError),
+        ("model_config", {"position_id_semantics": "candidate_block_shared"}, "removed model options", ValueError),
+        ("epoch", None, "resume checkpoint epoch must be an integer", ValueError),
+        ("epoch", "not-an-int", "resume checkpoint epoch must be an integer", ValueError),
+        ("epoch", True, "resume checkpoint epoch must be an integer", TypeError),
+        ("epoch", 0, "resume checkpoint epoch must be >= 1", ValueError),
     ],
 )
 def test_validate_resume_checkpoint_rejects_contract_mismatches(
-    tmp_path,
-    field,
-    value,
-    message,
+    tmp_path, field, value, message, error_type,
 ):
     context = _resume_validation_context(tmp_path)
     checkpoint = dict(context.checkpoint)
-    if field == "data_spec":
-        checkpoint[field] = {**checkpoint[field], **value}
-    elif field == "model_config":
+    if field == "model_variant" and value is None:
+        checkpoint.pop(field)
+    elif isinstance(value, dict):
         checkpoint[field] = {**checkpoint[field], **value}
     else:
         checkpoint[field] = value
 
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(error_type, match=message):
         checkpoint_module._validate_resume_checkpoint(
             checkpoint,
             data_spec=context.data_spec,
@@ -2208,70 +2149,40 @@ def test_validate_resume_checkpoint_rejects_contract_mismatches(
 
 
 @pytest.mark.parametrize(
-    ("model_variant", "message"),
+    ("run_config", "max_files", "force", "field"),
     [
-        (None, "resume checkpoint missing model_variant"),
-        ("other_variant", "resume checkpoint model variant mismatch"),
+        pytest.param({"max_files": 1280}, None, False, "max_files", id="limited-to-unlimited"),
+        pytest.param({"max_files": None}, 1280, False, "max_files", id="unlimited-to-limited"),
+        pytest.param(None, None, False, "max_files", id="legacy-unknown"),
+        pytest.param({"validation_files": 101}, None, False, "validation_files", id="validation-count"),
+        pytest.param({"max_files": 1280}, None, True, "max_files", id="force-limited-to-unlimited"),
+        pytest.param(None, None, True, "max_files", id="force-legacy-unknown"),
     ],
 )
-def test_validate_resume_checkpoint_rejects_model_variant_mismatch(
-    tmp_path,
-    model_variant,
-    message,
+def test_validate_resume_checkpoint_checks_saved_data_counts(
+    tmp_path, caplog, run_config, max_files, force, field,
 ):
     context = _resume_validation_context(tmp_path)
     checkpoint = dict(context.checkpoint)
-    if model_variant is None:
-        checkpoint.pop("model_variant")
+    if run_config is None:
+        checkpoint.pop("run_config")
     else:
-        checkpoint["model_variant"] = model_variant
+        checkpoint["run_config"] = {**checkpoint["run_config"], **run_config}
+    config = replace(context.config, max_files=max_files)
+    message = f"resume checkpoint {field} mismatch"
 
-    with pytest.raises(ValueError, match=message):
-        checkpoint_module._validate_resume_checkpoint(
-            checkpoint,
-            data_spec=context.data_spec,
-            dataset=context.dataset,
-            config=context.config,
-            input_contract=context.input_contract,
-        )
-
-
-@pytest.mark.parametrize("checkpoint_max_files", [1280, None])
-def test_validate_resume_checkpoint_rejects_max_files_mismatch(
-    tmp_path,
-    checkpoint_max_files,
-):
-    context = _resume_validation_context(tmp_path)
-    checkpoint = dict(context.checkpoint)
-    checkpoint["run_config"] = {
-        **checkpoint["run_config"],
-        "max_files": checkpoint_max_files,
-    }
-    config = replace(context.config, max_files=1280 if checkpoint_max_files is None else None)
-
-    with pytest.raises(ValueError, match="resume checkpoint max_files mismatch"):
+    with caplog.at_level(logging.WARNING), (nullcontext() if force else pytest.raises(ValueError, match=message)):
         checkpoint_module._validate_resume_checkpoint(
             checkpoint,
             data_spec=context.data_spec,
             dataset=context.dataset,
             config=config,
             input_contract=context.input_contract,
+            force_resume_data_mismatch=force,
         )
 
-
-def test_validate_resume_checkpoint_rejects_unknown_legacy_max_files(tmp_path):
-    context = _resume_validation_context(tmp_path)
-    checkpoint = dict(context.checkpoint)
-    checkpoint.pop("run_config")
-
-    with pytest.raises(ValueError, match="resume checkpoint max_files mismatch"):
-        checkpoint_module._validate_resume_checkpoint(
-            checkpoint,
-            data_spec=context.data_spec,
-            dataset=context.dataset,
-            config=context.config,
-            input_contract=context.input_contract,
-        )
+    if force:
+        assert any(message in record.getMessage() for record in caplog.records)
 
 
 def test_validate_resume_checkpoint_accepts_explicit_unlimited_max_files(tmp_path):
@@ -2289,132 +2200,6 @@ def test_validate_resume_checkpoint_accepts_explicit_unlimited_max_files(tmp_pat
         config=context.config,
         input_contract=context.input_contract,
     )
-
-
-def test_validate_resume_checkpoint_rejects_validation_count_mismatch(tmp_path):
-    context = _resume_validation_context(tmp_path)
-    checkpoint = dict(context.checkpoint)
-    checkpoint["run_config"] = {
-        **checkpoint["run_config"],
-        "validation_files": context.config.validation_files + 1,
-    }
-    with pytest.raises(ValueError, match="resume checkpoint validation_files mismatch"):
-        checkpoint_module._validate_resume_checkpoint(
-            checkpoint,
-            data_spec=context.data_spec,
-            dataset=context.dataset,
-            config=context.config,
-            input_contract=context.input_contract,
-        )
-
-
-def test_validate_resume_checkpoint_allows_max_files_mismatch_when_forced(
-    tmp_path,
-    caplog,
-):
-    context = _resume_validation_context(tmp_path)
-    checkpoint = dict(context.checkpoint)
-    checkpoint["run_config"] = {
-        **checkpoint["run_config"],
-        "max_files": 1280,
-    }
-    with caplog.at_level(logging.WARNING):
-        checkpoint_module._validate_resume_checkpoint(
-            checkpoint,
-            data_spec=context.data_spec,
-            dataset=context.dataset,
-            config=context.config,
-            input_contract=context.input_contract,
-            force_resume_data_mismatch=True,
-        )
-
-    assert any(
-        "resume checkpoint max_files mismatch" in record.getMessage()
-        for record in caplog.records
-    )
-
-
-def test_validate_resume_checkpoint_allows_unknown_legacy_max_files_when_forced(
-    tmp_path,
-    caplog,
-):
-    context = _resume_validation_context(tmp_path)
-    checkpoint = dict(context.checkpoint)
-    checkpoint.pop("run_config")
-
-    with caplog.at_level(logging.WARNING):
-        checkpoint_module._validate_resume_checkpoint(
-            checkpoint,
-            data_spec=context.data_spec,
-            dataset=context.dataset,
-            config=context.config,
-            input_contract=context.input_contract,
-            force_resume_data_mismatch=True,
-        )
-
-    assert any(
-        "resume checkpoint max_files mismatch" in record.getMessage()
-        for record in caplog.records
-    )
-
-
-def test_validate_resume_checkpoint_rejects_legacy_false_raw_projection(tmp_path):
-    context = _resume_validation_context(tmp_path)
-    checkpoint = dict(context.checkpoint)
-    checkpoint["model_config"] = {
-        **checkpoint["model_config"],
-        "scorer_use_raw_projection": False,
-        "scorer_use_candidate_hidden": True,
-    }
-
-    with pytest.raises(ValueError, match="removed model options"):
-        checkpoint_module._validate_resume_checkpoint(
-            checkpoint,
-            data_spec=context.data_spec,
-            dataset=context.dataset,
-            config=context.config,
-            input_contract=context.input_contract,
-        )
-
-
-def test_validate_resume_checkpoint_rejects_removed_candidate_shared_semantics(tmp_path):
-    context = _resume_validation_context(tmp_path)
-    checkpoint = dict(context.checkpoint)
-    checkpoint["model_config"] = dict(checkpoint["model_config"])
-    checkpoint["model_config"]["position_id_semantics"] = "candidate_block_shared"
-
-    with pytest.raises(ValueError, match="removed model options"):
-        checkpoint_module._validate_resume_checkpoint(
-            checkpoint,
-            data_spec=context.data_spec,
-            dataset=context.dataset,
-            config=context.config,
-            input_contract=context.input_contract,
-        )
-
-
-@pytest.mark.parametrize(
-    ("epoch", "message", "error_type"),
-    [
-        (None, "resume checkpoint epoch must be an integer", ValueError),
-        ("not-an-int", "resume checkpoint epoch must be an integer", ValueError),
-        (True, "resume checkpoint epoch must be an integer", TypeError),
-        (0, "resume checkpoint epoch must be >= 1", ValueError),
-    ],
-)
-def test_validate_resume_checkpoint_rejects_invalid_epoch(tmp_path, epoch, message, error_type):
-    context = _resume_validation_context(tmp_path)
-    checkpoint = dict(context.checkpoint)
-    checkpoint["epoch"] = epoch
-
-    with pytest.raises(error_type, match=message):
-        checkpoint_module._validate_resume_checkpoint(
-            checkpoint,
-            data_spec=context.data_spec,
-            dataset=context.dataset,
-            config=context.config,
-            input_contract=context.input_contract,
-        )
 
 
 def test_run_training_rejects_resume_at_configured_epoch_limit(tmp_path, monkeypatch):

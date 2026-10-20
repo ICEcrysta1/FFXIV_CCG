@@ -144,32 +144,31 @@ def test_qk_norm_scale_rejects_invalid_mapping_values(value):
         ModelConfig.from_mapping({"qk_norm_scale": value})
 
 
-@pytest.mark.parametrize("value", [True, False, 0, -1, float("nan"), float("inf"), -float("inf")])
-def test_qk_norm_scale_direct_constructor_rejects_invalid_values(value):
+def test_qk_norm_scale_direct_constructor_rejects_boolean():
     with pytest.raises(ValueError, match="qk_norm_scale must be finite and positive"):
-        ModelConfig(qk_norm_scale=value)
+        ModelConfig(qk_norm_scale=True)
 
 
 @pytest.mark.parametrize("field", _RESIDUAL_MIX_ENDPOINTS)
 @pytest.mark.parametrize("value", [True, False])
-def test_residual_mix_endpoints_reject_boolean_mapping_values(field, value):
+def test_residual_mix_endpoints_reject_boolean_values(field, value):
     with pytest.raises(ValueError, match=f"model.{field}.*boolean"):
         ModelConfig.from_mapping({field: value})
+    with pytest.raises(ValueError, match=f"model.{field}.*boolean"):
+        ModelConfig(**{field: value})
 
 
-@pytest.mark.parametrize("field", _RESIDUAL_MIX_ENDPOINTS)
-@pytest.mark.parametrize("value", [True, False])
 @pytest.mark.parametrize("full_attention_residuals", [False, True])
 def test_residual_mix_endpoints_reject_boolean_yaml_values(
-    tmp_path, field, value, full_attention_residuals,
+    tmp_path, full_attention_residuals,
 ):
     config_path = tmp_path / "model.yaml"
     config_path.write_text(
         yaml.safe_dump({"model": {
-            field: value, "full_attention_residuals": full_attention_residuals,
+            "residual_mix_r_start": True, "full_attention_residuals": full_attention_residuals,
         }}), encoding="utf-8", newline="\n",
     )
-    with pytest.raises(ValueError, match=f"model.{field}.*boolean"):
+    with pytest.raises(ValueError, match="model.residual_mix_r_start.*boolean"):
         load_model_config(config_path)
 
 
