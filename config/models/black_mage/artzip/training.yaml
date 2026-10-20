@@ -100,8 +100,8 @@ training:
   # 仅训练集随机移除早期历史，保留最近 min_recent 条；scene 和当前状态始终完整。
   history_truncation:
     enabled: true
-    probability: 0.33
-    min_recent: 4
+    probability: 0.1
+    min_recent: 16
 
   # 可选的技能价值辅助损失；不会修改推理 logits 或绕过状态机合法性。
   value_preference:
