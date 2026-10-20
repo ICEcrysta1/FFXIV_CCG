@@ -28,7 +28,7 @@ fn empty_runtime() -> JobRuntime {
         &JobStateRegistration {
             job_tag: "rust_probe_typed".into(),
             resources: BTreeMap::new(),
-            statuses: BTreeMap::new(),
+            statuses: Default::default(),
         },
         &BTreeMap::new(),
     )
@@ -521,7 +521,7 @@ fn system_and_job_expiry_hooks_preserve_grant_order_and_residual_stacks() {
         ("system", TimelineEventScope::System),
         ("job", TimelineEventScope::Job),
     ] {
-        let definitions: BTreeMap<_, _> = [("z", 1), ("a", 2)]
+        let definitions: indexmap::IndexMap<_, _> = [("z", 1), ("a", 2)]
             .into_iter()
             .map(|(key, id)| {
                 (

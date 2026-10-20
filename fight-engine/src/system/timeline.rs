@@ -240,6 +240,10 @@ impl<P: Clone + PartialEq> Timeline<P> {
         self.events.values().cloned().collect()
     }
 
+    pub(crate) fn iter_pending_events(&self) -> impl Iterator<Item = &TimelineEvent<P>> {
+        self.events.values()
+    }
+
     pub fn next_scheduled_event_time(&self) -> Option<f64> {
         self.events
             .first_key_value()

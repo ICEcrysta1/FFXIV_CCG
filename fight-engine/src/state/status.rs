@@ -15,7 +15,7 @@ type ExpiryHook = dyn Fn(&mut CombatState) -> Result<(), String> + Send + Sync;
 
 #[derive(Clone)]
 pub struct StatusRules {
-    definitions: BTreeMap<String, StatusDefinition>,
+    definitions: IndexMap<String, StatusDefinition>,
     expiry_hooks: BTreeMap<String, Arc<ExpiryHook>>,
 }
 
@@ -33,14 +33,14 @@ impl fmt::Debug for StatusRules {
 }
 
 impl StatusRules {
-    pub fn new(definitions: BTreeMap<String, StatusDefinition>) -> Self {
+    pub fn new(definitions: IndexMap<String, StatusDefinition>) -> Self {
         Self {
             definitions,
             expiry_hooks: BTreeMap::new(),
         }
     }
 
-    pub fn definitions(&self) -> &BTreeMap<String, StatusDefinition> {
+    pub fn definitions(&self) -> &IndexMap<String, StatusDefinition> {
         &self.definitions
     }
 

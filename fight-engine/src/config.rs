@@ -6,6 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_yaml_ng::{Mapping, Value};
 
@@ -118,7 +119,7 @@ pub struct JobResourceDefinition {
 pub struct JobStateRegistration {
     pub job_tag: String,
     pub resources: BTreeMap<String, JobResourceDefinition>,
-    pub statuses: BTreeMap<String, StatusDefinition>,
+    pub statuses: IndexMap<String, StatusDefinition>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -159,7 +160,7 @@ pub struct SystemConfig {
     pub potency: SystemPotencyConfig,
     pub raid_buff_window_marker_skills: Vec<String>,
     pub raid_buff_window_duration: f64,
-    pub statuses: BTreeMap<String, StatusDefinition>,
+    pub statuses: IndexMap<String, StatusDefinition>,
     pub skills: Vec<SkillDefinition>,
 }
 
@@ -169,7 +170,7 @@ pub struct JobConfig {
     pub name: String,
     pub timing: BTreeMap<String, f64>,
     pub resource_limits: BTreeMap<String, f64>,
-    pub statuses: BTreeMap<String, StatusDefinition>,
+    pub statuses: IndexMap<String, StatusDefinition>,
     pub skills: Vec<SkillDefinition>,
 }
 
@@ -353,8 +354,8 @@ impl JobConfig {
 fn build_statuses(
     data: Option<&Mapping>,
     context: &str,
-) -> Result<BTreeMap<String, StatusDefinition>, String> {
-    let mut statuses = BTreeMap::new();
+) -> Result<IndexMap<String, StatusDefinition>, String> {
+    let mut statuses = IndexMap::new();
     for (key, value) in data.into_iter().flatten() {
         let key = to_text(key);
         let payload = as_mapping(value, &format!("status {key}"), context)?;

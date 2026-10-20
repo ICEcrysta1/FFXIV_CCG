@@ -3,7 +3,9 @@
 
 //! 公共玩家、MP、冷却、状态和目标 DoT 规则；职业规则由调用方独立组合。
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
+
+use indexmap::IndexMap;
 
 use crate::config::{
     ActionKind, EngineTimingConfig, SkillDefinition, StatusDefinition, SystemConfig,
@@ -53,7 +55,7 @@ impl SystemRules {
         &self.config
     }
 
-    pub fn status_definitions(&self) -> &BTreeMap<String, StatusDefinition> {
+    pub fn status_definitions(&self) -> &IndexMap<String, StatusDefinition> {
         self.statuses.definitions()
     }
 
@@ -237,11 +239,7 @@ impl SystemRules {
         let remaining = self
             .next_charge_ready_at(state, skill)
             .map_or(0.0, |deadline| (deadline - state.time()).max(0.0));
-        (
-            (remaining * 10_000.0).round_ties_even() / 10_000.0,
-            bucket.available_charges,
-            skill.charges,
-        )
+        (remaining, bucket.available_charges, skill.charges)
     }
 
     pub fn consume_cooldown(&self, state: &mut CombatState, skill: &SkillDefinition) {
@@ -310,6 +308,15 @@ impl SystemRules {
 
     /// 只描述公共资源，不读取或改写职业的状态容器。
     pub fn describe_events<P>(&self, state: &CombatState) -> Vec<TimelineEvent<P>> {
+        let mut events = self.describe_player_events(state);
+        events.extend(self.describe_status_events(state));
+        events.extend(self.describe_dot_events(state));
+        events.extend(self.describe_cooldown_events(state));
+        events.push(self.describe_mp_event(state));
+        events
+    }
+
+    pub fn describe_player_events<P>(&self, state: &CombatState) -> Vec<TimelineEvent<P>> {
         let now = state.time();
         let mut events = Vec::new();
         if state.gcd_ready_at > now
@@ -340,38 +347,64 @@ impl SystemRules {
                 "downtime_end",
             ));
         }
-        events.extend(state.statuses.iter().map(|(key, status)| {
-            owned_event(
-                now.max(status.expires_at),
-                Priority::ExpirationAndCooldown,
-                Kind::StatusExpired,
-                key,
-            )
-        }));
-        events.extend(state.dots.iter().map(|(key, dot)| {
-            owned_event(
-                now.max(dot.next_tick_at.min(dot.expires_at)),
-                Priority::PeriodicSettlement,
-                Kind::DotTick,
-                key,
-            )
-        }));
-        events.extend(state.cooldowns.iter().flat_map(|(key, bucket)| {
-            bucket.recharge_ready_at.iter().map(move |&deadline| {
+        events
+    }
+
+    pub fn describe_status_events<P>(&self, state: &CombatState) -> Vec<TimelineEvent<P>> {
+        state
+            .statuses
+            .iter()
+            .map(|(key, status)| {
                 owned_event(
-                    now.max(deadline),
+                    state.time().max(status.expires_at),
                     Priority::ExpirationAndCooldown,
-                    Kind::CooldownChargeReady,
+                    Kind::StatusExpired,
                     key,
                 )
             })
-        }));
-        events.push(TimelineEvent::new(
-            now.max(state.natural_mp_last_tick_at + self.config.mp_recovery.tick_interval_seconds),
+            .collect()
+    }
+
+    pub fn describe_dot_events<P>(&self, state: &CombatState) -> Vec<TimelineEvent<P>> {
+        state
+            .dots
+            .iter()
+            .map(|(key, dot)| {
+                owned_event(
+                    state.time().max(dot.next_tick_at.min(dot.expires_at)),
+                    Priority::PeriodicSettlement,
+                    Kind::DotTick,
+                    key,
+                )
+            })
+            .collect()
+    }
+
+    pub fn describe_cooldown_events<P>(&self, state: &CombatState) -> Vec<TimelineEvent<P>> {
+        state
+            .cooldowns
+            .iter()
+            .flat_map(|(key, bucket)| {
+                bucket.recharge_ready_at.iter().map(move |&deadline| {
+                    owned_event(
+                        state.time().max(deadline),
+                        Priority::ExpirationAndCooldown,
+                        Kind::CooldownChargeReady,
+                        key,
+                    )
+                })
+            })
+            .collect()
+    }
+
+    pub fn describe_mp_event<P>(&self, state: &CombatState) -> TimelineEvent<P> {
+        TimelineEvent::new(
+            state
+                .time()
+                .max(state.natural_mp_last_tick_at + self.config.mp_recovery.tick_interval_seconds),
             Priority::PeriodicSettlement,
             Kind::MpTick,
-        ));
-        events
+        )
     }
 
     pub fn settle_gcd_ready<P>(&self, state: &mut CombatState, event: &TimelineEvent<P>) {
