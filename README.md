@@ -10,7 +10,7 @@
   <img src="https://img.shields.io/badge/torch-2.12.0%2Bcu132-ee4c2c?labelColor=555&logo=pytorch" alt="torch 2.12.0+cu132" />
   <img src="https://img.shields.io/badge/ONNX%20Runtime-1.27.0%20GPU-005ced?labelColor=555&logo=onnx" alt="ONNX Runtime 1.27.0 GPU" />
   <img src="https://img.shields.io/badge/CUDA-13.x-76b900?labelColor=555&logo=nvidia" alt="CUDA 13.x" />
-  <img src="https://img.shields.io/badge/.NET-10.0-512bd4?labelColor=555&logo=dotnet" alt=".NET 10.0" />
+  <img src="https://img.shields.io/badge/Rust-2024-dea584?labelColor=555&logo=rust" alt="Rust 2024" />
   <img src="https://img.shields.io/badge/Node-22.x-339933?labelColor=555&logo=nodedotjs" alt="Node 22.x" />
   <img src="https://img.shields.io/badge/license-GPL--3.0--only-blue?labelColor=555" alt="License: GPL-3.0-only" />
 </p>
@@ -35,7 +35,7 @@
 
 ## 🚀 通过命令快速开始
 
-项目开发与运行主线为 Linux／WSL2，统一使用 `python3` 和 Bash 入口。先安装 Python 3.12+（含 venv）、.NET 10 SDK、Git、curl、tar、xz，以及支持 CUDA 13.x 的 NVIDIA 驱动；`setup.sh` 会安装项目专用 Linux Node 22、pnpm 10 和 Python 依赖，并构建 Python.NET 桥接。详细参数见 [命令行使用说明](./docs/命令行使用说明.md)。
+项目开发与运行主线为 Linux／WSL2，统一使用 `python3` 和 Bash 入口。先安装 Python 3.12+（含 venv）、通过 rustup 管理的 Rust stable（含 Cargo）、C 编译器、Git、curl、tar、xz，以及支持 CUDA 13.x 的 NVIDIA 驱动；`setup.sh` 会安装项目专用 Linux Node 22、pnpm 10 和 Python 依赖，并以 release 模式构建 Rust 原生扩展。详细参数见 [命令行使用说明](./docs/命令行使用说明.md)。
 
 ```bash
 # 1) 一键准备环境：创建根目录 .venv 和项目本地 .node，安装 Python GPU 与 Node 依赖
@@ -44,10 +44,10 @@
 # 2) 按 .env.example 配置职业、模型变体、FFLogs 凭证及本机参数
 [ -f .env ] || cp .env.example .env
 
-# 3) 构建 Python.NET 可加载的状态机程序集、依赖和运行时配置
-dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj --configuration Debug
+# 3) 修改 Rust 状态机或共享 schema 后，重新构建并安装原生扩展
+.venv/bin/python3 -m pip install ./fight-engine/python
 
-# 4) 验证配置与 Python.NET 状态机链路
+# 4) 验证配置与 Rust 状态机链路
 .venv/bin/python3 main.py validate --job-tag black_mage
 .venv/bin/python3 main.py smoke --job-tag black_mage
 
@@ -84,7 +84,7 @@ Windows 的 `.venv` 和 `.node` 不能搬入 Linux 复用，需要在 Linux 重�
 
 `tensorboard.graph` 控制结构图，`histogram_every_steps` 控制分布频率，`max_histogram_values` 限制每项分布的确定性采样量；`embedding_every_epochs` 控制向量快照频率，初始状态也会保存。BC 的 `pr_curves` / `pr_curve_max_samples` 控制 PR 曲线及其内存上限，混淆矩阵始终汇总全部有效验证样本。这些设置分别位于 BC / GRPO 的 YAML；诊断复用已有前向结果，不消耗训练随机数。HParams 在训练退出时写入最近一次完成的指标；训练中可先查看 Text 中的配置。
 
-训练、转换和回放通过 Python.NET 在当前 Python 进程内调用 C# 状态机。PythonBridge 构建会生成 CoreCLR 运行时配置，并将 FightEngine 与 YAML 依赖复制到同一输出目录；观测树由桥接程序集直接映射为 Python 原生字典和列表，不经过 JSON 文本。
+训练、转换和回放通过 PyO3 在当前 Python 进程内调用 Rust 状态机。核心与各职业为独立 crate，Python 原生扩展负责注册职业；执行和观测编码释放 GIL，各队列使用独立锁。观测通过基础值 pickle 包由 Python 标准库还原为独立字典和列表，转换子进程继续复用父进程中的引擎。
 
 本项目只支持 NVIDIA CUDA 环境，训练、导出和自回归不提供 CPU 支持。
 

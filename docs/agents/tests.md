@@ -12,7 +12,8 @@ FFXIV_CCG/
 │   ├── tests/                                       核心配置、状态、系统规则、职业契约、动作、输出、策略与多队列对比；不依赖具体职业 crate
 │   │   ├── common.rs / common/jobs.rs               通用比较及职业回放驱动，直接放实现，不使用 mod.rs
 │   │   └── fixtures/                                JSON 基线记录来源提交、输入和预期结果
-│   └── jobs/{black-mage,machinist}/tests/            各职业注册后独立验证；核心可在无职业代码时运行系统测试
+│   ├── jobs/{black-mage,machinist}/tests/            各职业注册后独立验证；核心可在无职业代码时运行系统测试
+│   └── python/src/packet.rs                         私有编码单测：整数位宽、IEEE 浮点及可变容器不复用
 ├── Combat.Sim/FightEngine.Tests/                     xUnit 测试工程，按 Common/Config/Facade/Jobs/Outputs/Policy/Sessions/Skills/System 分组
 │   ├── Common/                                       公共层测试目录
 │   │   ├── ProjectConfigLoaderTests.cs               配置加载测试：真实仓库解析 + 校验错误路径
@@ -120,10 +121,10 @@ FFXIV_CCG/
 │   │   │   └── test_tensor_runtime.py                ORT Tensor I/O 职责级测试，覆盖 CPU I/O Binding、bool NumPy 回退、非 bool DLPack 路径和 CUDA BF16 golden NPZ 字节确定性
 │   │   ├── __init__.py                               子包入口
 │   │   ├── action_quality_runtime.test.cjs           Node 职业路由、实例事件匹配、消息序列化与机工量谱循环引用边界测试
-│   │   ├── conftest.py                               scripts 测试公共 fixture：cs_backend（托管状态机运行文件未构建时跳过）与 cs_skill_book，转换与自回归回放测试共用
+│   │   ├── conftest.py                               scripts 测试公共 fixture：cs_backend（Rust 原生扩展未安装时跳过）与 cs_skill_book，转换与自回归回放测试共用
 │   │   ├── test_action_quality.py                    离线标注 raw 保留、目录映射、失败保护、.env 和职业权重隔离测试
 │   │   ├── test_action_quality_pool.py               常驻 Node 客户端与线程池的并发、复用、异常、取消和资源回收测试
-│   │   ├── test_context_packet.py                    批量桥接的基础类型、数值边界、可变容器隔离、并发编码、GC 生命周期及异常输入回归
+│   │   ├── test_context_packet.py                    原生批量回放包、可变容器隔离、并发编码及重置回归
 │   │   ├── test_dataset_compression.py               旧战斗数据压缩迁移、标注来源一致性和验证后删除测试
 │   │   ├── test_dataset_layout.py                    数据阶段路径映射、区间目录校验、旧目录兼容与转换按副本/区间分组测试
 │   │   ├── test_file_inventory.py                    持久校验复用、依赖变化、索引损坏回退和 2000 份已有文件中只校验 200 份变化与 200 份新增的测试

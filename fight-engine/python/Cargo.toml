@@ -1,0 +1,17 @@
+[package]
+name = "fight-engine-python"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+
+[lib]
+name = "fight_engine_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+fight-engine = { path = ".." }
+fight-engine-black-mage = { path = "../jobs/black-mage" }
+fight-engine-machinist = { path = "../jobs/machinist" }
+pyo3 = "0.29.3"
+serde_json = { version = "1", features = ["float_roundtrip"] }
+serde_yaml_ng = "0.10"

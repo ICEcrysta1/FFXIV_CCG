@@ -1,9 +1,8 @@
-"""C# 状态机进程内适配器测试。"""
+"""Rust 状态机进程内适配器测试。"""
 
 from __future__ import annotations
 
 import subprocess
-from pathlib import Path
 
 import pytest
 
@@ -31,32 +30,36 @@ def test_inprocess_backend_submit_rejects_illegal_cooldown_action(cs_backend):
 @pytest.mark.parametrize("astral_fire", [1, 3])
 @pytest.mark.parametrize(("mp", "accepted"), [(799, False), (800, True)])
 def test_black_mage_full_mp_spenders_share_800_mp_boundary(cs_backend, skill_key, astral_fire, mp, accepted):
-    """通过 Python.NET 的真实快照恢复检验精确 MP 边界，不扩展生产队列 API。"""
-    del cs_backend
-    from Combat.Sim.Facade import CombatStateMachine, JobSimulator
-    from System import Int32
-
-    machine = CombatStateMachine.FromDefaultConfig(str(Path(__file__).resolve().parents[3]), "black_mage")
-    simulator = JobSimulator(machine)
-    snapshot = simulator.CreateSnapshot()
-    snapshot.State.Mp = mp
-    snapshot.State.Job.SetResource("astral_fire", Int32(astral_fire))
-    simulator.RestoreSnapshot(snapshot)
-
-    validation = simulator.ValidateActionAt(0.0, skill_key)
-    assert validation.Ok is accepted
-    assert (skill_key in list(simulator.AvailableActionKeysAt(0.0))) is accepted
-    submitted = simulator.SubmitAction(0.0, skill_key)
-    assert submitted.Accepted is accepted
-    assert not submitted.Queued
+    """通过正式复活和转姿态建立精确 MP 边界，不扩展生产队列 API。"""
+    # AF1 路径先转冰，让一次自然回蓝补回 200 MP，再转回火。
+    initial_mp = mp + (1800 if astral_fire == 1 else 2000)
+    cs_backend.apply_external_events([
+        {"timestamp": 0.0, "event_kind": "player_death"},
+        {"timestamp": 0.0, "event_kind": "player_revived", "mp": initial_mp},
+    ])
+    assert cs_backend.submit_action(0.0, "fire_iii", actual_cast_seconds=0.0).accepted
+    if astral_fire == 1:
+        assert cs_backend.submit_action(0.0, "transpose").accepted
+        assert cs_backend.submit_action(5.0, "transpose").accepted
+    timestamp = 5.0 if astral_fire == 1 else 2.5
+    before = cs_backend.observe_at(timestamp, format="seconds").context
+    assert before["mp"] == mp
+    assert before["astral_fire"] == astral_fire
+    history_count = cs_backend.statistics()["action_history_count"]
+    validation = cs_backend.validate_at(timestamp, skill_key)
+    assert validation.legal is accepted
+    context = cs_backend.observe_at(timestamp, format="vector", next_observation_timestamp=timestamp).context
+    assert context["action_legal_mask"][context["action_keys"].index(skill_key)] is accepted
+    submitted = cs_backend.submit_action(timestamp, skill_key)
+    assert submitted.accepted is accepted
+    assert not submitted.queued
     if accepted:
-        simulator.AdvanceTo(submitted.EffectTimestamp)
-        assert simulator.GetState().Mp == 0
+        assert cs_backend.observe_at(submitted.effect_timestamp, format="seconds").context["mp"] == 0
     else:
-        assert validation.Reason == "not_enough_mp"
-        assert submitted.Reason == "not_enough_mp"
-        assert simulator.GetState().Mp == mp
-        assert simulator.GetState().History.Count == 0
+        assert validation.reason == "not_enough_mp"
+        assert submitted.reason == "not_enough_mp"
+        assert cs_backend.observe_at(timestamp, format="seconds").context["mp"] == mp
+        assert cs_backend.statistics()["action_history_count"] == history_count
 
 
 def test_inprocess_backend_accepts_observed_cast_duration_override(cs_backend):
@@ -74,7 +77,7 @@ def test_inprocess_backend_accepts_observed_cast_duration_override(cs_backend):
 
 
 def test_inprocess_backend_never_launches_a_host_process(monkeypatch):
-    """进程内状态机即使首次装载 .NET runtime 也不得启动子进程。"""
+    """进程内状态机首次装载原生扩展也不得启动子进程。"""
     _require_inprocess_backend()
 
     def reject_process(*_args, **_kwargs):
@@ -86,7 +89,7 @@ def test_inprocess_backend_never_launches_a_host_process(monkeypatch):
 
 
 def test_inprocess_backend_returns_native_python_context():
-    """观测结果由 PythonBridge 直接转换为 Python 原生容器。"""
+    """观测结果由原生扩展直接转换为 Python 原生容器。"""
     _require_inprocess_backend()
     with InProcessEngine("black_mage") as engine, engine.create_backend(actual_base_gcd=2.46, max_history=32) as backend:
         observation = backend.observe_at(

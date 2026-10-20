@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # === 核心依赖 (状态机运行必需) ===
 pyyaml>=6.0
-pythonnet>=3.0.5,<4.0
+./fight-engine/python
 # 连续速度曲线与训练共用数值计算。
 numpy>=1.24
 

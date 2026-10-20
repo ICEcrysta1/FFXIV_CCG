@@ -1,9 +1,9 @@
-"""统一多队列引擎的 Python.NET 并发、生命周期和转换接入回归。"""
+"""统一多队列 Rust 引擎的并发、生命周期和转换接入回归。"""
 
 from concurrent.futures import ThreadPoolExecutor
 import sys
 from threading import Barrier
-from types import ModuleType, SimpleNamespace
+from types import ModuleType
 
 import pytest
 
@@ -129,63 +129,36 @@ def test_six_conversion_workers_share_engine_and_preserve_full_history(cs_skill_
 @pytest.mark.parametrize("capacity", [0, -1, 101, 1.5, True, False])
 def test_invalid_capacity_is_rejected_before_loading_runtime(capacity, monkeypatch):
     monkeypatch.setattr(
-        backend_module, "_load_dotnet_types",
-        lambda: pytest.fail("非法队列容量必须在加载 .NET runtime 前拒绝"),
+        backend_module, "_load_native_module",
+        lambda: pytest.fail("非法队列容量必须在加载原生扩展前拒绝"),
     )
     with pytest.raises(ValueError, match="capacity"):
         InProcessEngine("black_mage", capacity=capacity)
 
 
 @pytest.mark.parametrize("old_contract", [True, False], ids=["reject_v18", "accept_current"])
-def test_loader_checks_assembly_contract_before_creating_engine(old_contract, monkeypatch, tmp_path):
-    """通过真实加载入口校验版本门禁，不依赖本机已有旧 DLL 或启动 CLR。"""
+def test_loader_checks_native_contract_before_creating_engine(old_contract, monkeypatch):
+    """通过真实加载入口校验版本门禁，不依赖本机已有旧扩展。"""
     expected_version = backend_module.SIDECAR_CONTRACT_VERSION
     assert expected_version > 18
-    assembly_version = 18 if old_contract else expected_version
-    engine_type = type("FakeSimulationEngine", (), {})
-    event_type = type("FakeExternalCombatEvent", (), {})
-    encoder_type = type("FakeContextPacketEncoder", (), {})
-    references = []
-    modules = {
-        "pythonnet": {
-            "get_runtime_info": lambda: SimpleNamespace(kind="CoreCLR"),
-            "load": lambda *args, **kwargs: pytest.fail("版本门禁测试不应启动真实 CLR"),
-        },
-        "clr": {"AddReference": references.append},
-        "Combat.Sim.Config": {
-            "SchemaConfigLoader": SimpleNamespace(AssemblySidecarContractVersion=assembly_version),
-        },
-        "Combat.Sim.Models.Timeline": {"ExternalCombatEvent": event_type},
-        "Combat.Sim.Sessions": {"SimulationEngine": engine_type},
-        "Combat.Sim.PythonBridge": {"ContextPacketEncoder": encoder_type},
-    }
-    for name, attributes in modules.items():
-        module = ModuleType(name)
-        module.__dict__.update(attributes)
-        monkeypatch.setitem(sys.modules, name, module)
-    for name in ("_RUNTIME_CONFIG", "_FIGHT_ENGINE_DLL", "_YAML_DOTNET_DLL", "_PYTHON_BRIDGE_DLL"):
-        path = tmp_path / name
-        path.touch()
-        monkeypatch.setattr(backend_module, name, path)
-    monkeypatch.setattr(backend_module, "_DOTNET_TYPES", None)
+    native = ModuleType("fight_engine_native")
+    native.CONTRACT_VERSION = 18 if old_contract else expected_version
+    monkeypatch.setitem(sys.modules, "fight_engine_native", native)
+    monkeypatch.setattr(backend_module, "_NATIVE_MODULE", None)
 
     if old_contract:
-        with pytest.raises(RuntimeError, match=rf"expected={expected_version}, dll=18"):
+        with pytest.raises(RuntimeError, match=rf"expected={expected_version}, native=18"):
             InProcessEngine("black_mage", capacity=1)
-        assert backend_module._DOTNET_TYPES is None
+        assert backend_module._NATIVE_MODULE is None
     else:
-        loaded = backend_module._load_dotnet_types()
-        assert loaded == (engine_type, event_type, encoder_type)
-        assert backend_module._load_dotnet_types() is loaded
-    assert references == [
-        str(backend_module._YAML_DOTNET_DLL), str(backend_module._FIGHT_ENGINE_DLL),
-        str(backend_module._PYTHON_BRIDGE_DLL),
-    ]
+        loaded = backend_module._load_native_module()
+        assert loaded is native
+        assert backend_module._load_native_module() is loaded
 
 
-def test_python_queue_capacity_matches_csharp_limit(require_engine):
-    engine_type, _, _ = backend_module._load_dotnet_types()
-    assert MAX_QUEUE_CAPACITY == int(engine_type.MaxCapacity) == 100
+def test_python_queue_capacity_matches_native_limit(require_engine):
+    native = backend_module._load_native_module()
+    assert MAX_QUEUE_CAPACITY == native.MAX_QUEUE_CAPACITY == 100
 
 
 def test_default_engine_holds_one_hundred_independent_queues_and_reuses_capacity(require_engine):

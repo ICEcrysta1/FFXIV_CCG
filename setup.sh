@@ -5,7 +5,7 @@ PROJECT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 for argument in "$@"; do
     case "$argument" in
         --help|-h)
-            printf '用法：./setup.sh [--help]\n准备 Python 3.12+、项目 Node 22/pnpm 10、.NET 10 桥接与既有 GPU 依赖。\n'
+            printf '用法：./setup.sh [--help]\n准备 Python 3.12+、项目 Node 22/pnpm 10、Rust 状态机扩展与既有 GPU 依赖。\n'
             exit 0 ;;
         *) printf '未知参数：%s\n' "$argument" >&2; exit 2 ;;
     esac
@@ -13,14 +13,10 @@ done
 cd "$PROJECT_ROOT"
 export PYTHONUTF8=1
 [[ "$(uname -s)" == Linux ]] || { printf '开发与运行环境要求 Linux／WSL2。\n' >&2; exit 1; }
-for executable in python3 dotnet git curl tar xz sha256sum; do
+for executable in python3 rustc cargo cc git curl tar xz sha256sum; do
     command -v "$executable" >/dev/null || { printf '缺少命令：%s，请先安装后重新运行。\n' "$executable" >&2; exit 1; }
 done
 python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else "需要 Python 3.12 或更新版本")'
-dotnet --list-sdks | awk '$1 ~ /^10\./ { found=1 } END { exit !found }' || {
-    printf '需要 .NET 10 SDK，请先安装后重新运行。\n' >&2
-    exit 1
-}
 PROJECT_PYTHON="$PROJECT_ROOT/.venv/bin/python3"
 VENV_PYTHON=python3
 if [[ -e .venv && ! -d .venv ]] || [[ -d .venv/Scripts ]]; then
@@ -109,8 +105,7 @@ if [[ ! -f third_party/xivanalysis/package.json ]]; then
 fi
 "$NODE" "$NODE_RUNTIME/lib/node_modules/npm/bin/npm-cli.js" ci --ignore-scripts --no-audit --no-fund
 "$NODE" "$PNPM_CLI" --dir "$PROJECT_ROOT/third_party/xivanalysis" install --frozen-lockfile --store-dir "$NODE_HOME/pnpm-store"
-dotnet build Combat.Sim/PythonBridge/PythonBridge.csproj --configuration Debug
-"$PROJECT_PYTHON" -c 'import torch, onnxruntime; from pythonnet import load; load("coreclr"); print("torch:", torch.__version__, "CUDA:", torch.cuda.is_available()); print("ONNX providers:", onnxruntime.get_available_providers())'
+"$PROJECT_PYTHON" -c 'import torch, onnxruntime; from scripts.common.inprocess_backend import InProcessEngine; engine = InProcessEngine("black_mage"); backend = engine.create_backend(max_history=0); backend.close(); engine.close(); print("torch:", torch.__version__, "CUDA:", torch.cuda.is_available()); print("ONNX providers:", onnxruntime.get_available_providers())'
 if [[ ! -f .env ]]; then
     printf '请参考 .env.example 创建根目录 .env：cp .env.example .env\n'
 fi
