@@ -1,42 +1,20 @@
+mod common;
+
 use fight_engine::state::{CombatState, StatusState};
-use fight_engine::system::{
+use fight_engine::system::timeline::{
     TIME_EPSILON, Timeline, TimelineEvent, TimelineEventKind as Kind,
     TimelineEventPriority as Priority, TimelineEventScope as Scope, TimelineMutation,
 };
 use serde_json::{Value, json};
 
-fn fixture() -> Value {
-    serde_json::from_str(include_str!("fixtures/system.json")).unwrap()
+use common::assert_equivalent;
+
+fn assert_equivalent_at_root(expected: &Value, actual: &Value) {
+    assert_equivalent(expected, actual, "root");
 }
 
-fn assert_equivalent(expected: &Value, actual: &Value) {
-    match (expected, actual) {
-        (Value::Object(expected), Value::Object(actual)) => {
-            assert_eq!(expected.len(), actual.len());
-            for (key, expected) in expected {
-                assert_equivalent(expected, actual.get(key).unwrap());
-            }
-        }
-        (Value::Array(expected), Value::Array(actual)) => {
-            assert_eq!(expected.len(), actual.len());
-            for (expected, actual) in expected.iter().zip(actual) {
-                assert_equivalent(expected, actual);
-            }
-        }
-        (Value::Number(expected), Value::Number(actual)) => {
-            if let (Some(expected), Some(actual)) = (expected.as_i64(), actual.as_i64()) {
-                assert_eq!(expected, actual);
-            } else {
-                let expected = expected.as_f64().unwrap();
-                let actual = actual.as_f64().unwrap();
-                assert!(
-                    (expected - actual).abs() <= expected.abs().max(1.0) * 1e-6,
-                    "基线 {expected} 与结果 {actual} 不同"
-                );
-            }
-        }
-        _ => assert_eq!(expected, actual),
-    }
+fn fixture() -> Value {
+    serde_json::from_str(include_str!("fixtures/system.json")).unwrap()
 }
 
 fn event(time: f64, priority: Priority, kind: Kind, owner: &str) -> TimelineEvent {
@@ -137,7 +115,7 @@ fn same_time_order_cancellation_and_followup_match_baseline() {
             })
         })
         .unwrap();
-    assert_equivalent(
+    assert_equivalent_at_root(
         &fixture()["ordering"],
         &json!({
             "dispatch": log,
@@ -195,7 +173,7 @@ fn refreshing_a_due_resource_preserves_its_old_fact() {
                         .statuses
                         .insert("probe".into(), StatusState::new(state.time(), 5.0, 1));
                 } else if state.statuses["probe"].expires_at <= state.time() {
-                    state.statuses.remove("probe");
+                    state.statuses.shift_remove("probe");
                 }
                 Ok(TimelineMutation {
                     state: Some(state),
@@ -215,7 +193,7 @@ fn refreshing_a_due_resource_preserves_its_old_fact() {
         }
         actual.insert(format!("at_{}", time as i32), point);
     }
-    assert_equivalent(&fixture()["refresh"], &Value::Object(actual));
+    assert_equivalent_at_root(&fixture()["refresh"], &Value::Object(actual));
 }
 
 fn scoped_status_resources(state: &CombatState) -> Vec<TimelineEvent> {
@@ -249,7 +227,7 @@ fn settle_scoped_statuses(timeline: &mut Timeline) -> Value {
             } else {
                 &mut state.job.statuses
             };
-            statuses.remove(item.owner_key.as_deref().unwrap());
+            statuses.shift_remove(item.owner_key.as_deref().unwrap());
             state.mp += 1;
             Ok(TimelineMutation {
                 state: Some(state),
@@ -297,7 +275,7 @@ fn pending_facts_keep_scope_and_survive_snapshot_and_fork() {
     let original_isolated = snapshot.state.time() == 5.0
         && snapshot.state.statuses["probe"].stacks == 1
         && snapshot.state.job.statuses["probe"].stacks == 1;
-    assert_equivalent(
+    assert_equivalent_at_root(
         &fixture()["snapshot"],
         &json!({
             "at_5": at_5,
@@ -369,7 +347,7 @@ fn invalid_requests_and_non_consuming_handlers_match_baseline() {
             },
         )
         .is_err();
-    assert_equivalent(
+    assert_equivalent_at_root(
         &fixture()["validation"],
         &json!({
             "schedule_past": schedule_past,

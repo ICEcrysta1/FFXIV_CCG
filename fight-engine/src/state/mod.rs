@@ -3,9 +3,57 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 use crate::config::ResourceValue;
+
+pub mod resources;
+pub mod status;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidationResult {
+    pub ok: bool,
+    pub reason: String,
+}
+
+impl ValidationResult {
+    pub fn valid() -> Self {
+        Self {
+            ok: true,
+            reason: String::new(),
+        }
+    }
+
+    pub fn invalid(reason: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            reason: reason.into(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalEventKind {
+    BossTargetableChanged,
+    MovementChanged,
+    RaidBuffWindowChanged,
+    TargetCountChanged,
+    PlayerDeath,
+    PlayerRevived,
+    PlayerRevivedLb3,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ExternalCombatEvent {
+    pub timestamp: f64,
+    pub kind: ExternalEventKind,
+    pub value: Option<bool>,
+    pub target_count: Option<i32>,
+    pub remaining_seconds: Option<f64>,
+    pub mp: Option<i32>,
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StatusState {
@@ -84,7 +132,7 @@ impl CooldownState {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct JobState {
     pub resources: BTreeMap<String, ResourceValue>,
-    pub statuses: BTreeMap<String, StatusState>,
+    pub statuses: IndexMap<String, StatusState>,
     pub timeline_deadlines: BTreeMap<String, f64>,
 }
 
@@ -130,9 +178,9 @@ pub struct CombatState {
     pub current_potency: f64,
     pub current_gcd_dot_potency: f64,
     pub job: JobState,
-    pub cooldowns: BTreeMap<String, CooldownState>,
-    pub statuses: BTreeMap<String, StatusState>,
-    pub dots: BTreeMap<String, DotState>,
+    pub cooldowns: IndexMap<String, CooldownState>,
+    pub statuses: IndexMap<String, StatusState>,
+    pub dots: IndexMap<String, DotState>,
     /// 历史条目不可变；写入列表时通过 Arc::make_mut 保持分支隔离。
     pub history: Arc<Vec<Arc<ActionHistoryEntry>>>,
     pub last_decision_id: Option<u64>,
@@ -168,9 +216,9 @@ impl Default for CombatState {
             current_potency: 0.0,
             current_gcd_dot_potency: 0.0,
             job: JobState::default(),
-            cooldowns: BTreeMap::new(),
-            statuses: BTreeMap::new(),
-            dots: BTreeMap::new(),
+            cooldowns: IndexMap::new(),
+            statuses: IndexMap::new(),
+            dots: IndexMap::new(),
             history: Arc::new(Vec::new()),
             last_decision_id: None,
             last_decision_after: None,

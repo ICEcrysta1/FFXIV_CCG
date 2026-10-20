@@ -12,6 +12,7 @@ checksum = "00d174d5400e5e8fd687ad1049e2f578285fa914201b1af7e8b112a4546bd826"
 name = "fight-engine"
 version = "0.1.0"
 dependencies = [
+ "indexmap",
  "serde",
  "serde_json",
  "serde_yaml_ng",
@@ -32,6 +33,8 @@ checksum = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855"
 dependencies = [
  "equivalent",
  "hashbrown",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]

@@ -1,0 +1,440 @@
+{
+  "source_commit": "837d841ca49d504bbf7de996f90af195fc3cdb7d",
+  "registry": {
+    "after_registration_count": 0,
+    "after_get_count": 2,
+    "fresh_instances": true,
+    "unknown_none": true,
+    "typed_collision": true,
+    "factory_collision": true,
+    "factory_duplicate": true,
+    "factory_after_registration_count": 0,
+    "factory_after_get_count": 2,
+    "tags": [
+      "rust_probe_factory",
+      "rust_probe_typed"
+    ]
+  },
+  "timeline": {
+    "registration": {
+      "job_tag": "probe",
+      "resources": {
+        "disabled": {
+          "key": "disabled",
+          "resource_type": "float",
+          "default_value": 2,
+          "vector_group": "resource",
+          "display_unit": "count",
+          "max_value": 10
+        },
+        "elapsed": {
+          "key": "elapsed",
+          "resource_type": "float",
+          "default_value": 0,
+          "vector_group": "resource",
+          "display_unit": "count",
+          "max_value": 3
+        },
+        "remaining": {
+          "key": "remaining",
+          "resource_type": "float",
+          "default_value": 0,
+          "vector_group": "resource",
+          "display_unit": "count",
+          "max_value": 5
+        },
+        "residue": {
+          "key": "residue",
+          "resource_type": "int",
+          "default_value": 0,
+          "vector_group": "resource",
+          "display_unit": "count",
+          "max_value": 3
+        },
+        "targetable": {
+          "key": "targetable",
+          "resource_type": "bool",
+          "default_value": true,
+          "vector_group": "resource",
+          "display_unit": "count",
+          "max_value": null
+        },
+        "ticks": {
+          "key": "ticks",
+          "resource_type": "int",
+          "default_value": 0,
+          "vector_group": "resource",
+          "display_unit": "count",
+          "max_value": null
+        }
+      },
+      "statuses": {
+        "charge": {
+          "key": "charge",
+          "game_id": 1,
+          "duration": 4,
+          "max_stacks": 3
+        }
+      }
+    },
+    "points": [
+      {
+        "time": 0,
+        "events": [
+          {
+            "timestamp": 3,
+            "priority": 30,
+            "kind": "JobPeriodicTick",
+            "owner": "z_periodic",
+            "scope": "Job"
+          },
+          {
+            "timestamp": 5,
+            "priority": 40,
+            "kind": "JobTimerExpired",
+            "owner": "a_countdown",
+            "scope": "Job"
+          }
+        ],
+        "timers": [
+          {
+            "output_key": "disabled",
+            "value": 0
+          },
+          {
+            "output_key": "elapsed",
+            "value": 0
+          },
+          {
+            "output_key": "remaining",
+            "value": 5
+          }
+        ],
+        "resources": {
+          "disabled": 0,
+          "elapsed": 0,
+          "remaining": 5,
+          "residue": 0,
+          "targetable": true,
+          "ticks": 0
+        },
+        "raw_resources": {
+          "disabled": 2,
+          "elapsed": 0,
+          "remaining": 0,
+          "residue": 0,
+          "targetable": true,
+          "ticks": 0
+        },
+        "deadlines": {
+          "p": 3,
+          "c": 5
+        },
+        "statuses": {
+          "charge": {
+            "expires_at": 4,
+            "stacks": 3
+          }
+        },
+        "mp_tick_amount": 200
+      },
+      {
+        "time": 2,
+        "events": [
+          {
+            "timestamp": 3,
+            "priority": 30,
+            "kind": "JobPeriodicTick",
+            "owner": "z_periodic",
+            "scope": "Job"
+          },
+          {
+            "timestamp": 5,
+            "priority": 40,
+            "kind": "JobTimerExpired",
+            "owner": "a_countdown",
+            "scope": "Job"
+          }
+        ],
+        "timers": [
+          {
+            "output_key": "disabled",
+            "value": 0
+          },
+          {
+            "output_key": "elapsed",
+            "value": 2
+          },
+          {
+            "output_key": "remaining",
+            "value": 3
+          }
+        ],
+        "resources": {
+          "disabled": 0,
+          "elapsed": 2,
+          "remaining": 3,
+          "residue": 0,
+          "targetable": true,
+          "ticks": 0
+        },
+        "raw_resources": {
+          "disabled": 2,
+          "elapsed": 0,
+          "remaining": 0,
+          "residue": 0,
+          "targetable": true,
+          "ticks": 0
+        },
+        "deadlines": {
+          "p": 3,
+          "c": 5
+        },
+        "statuses": {
+          "charge": {
+            "expires_at": 4,
+            "stacks": 3
+          }
+        },
+        "mp_tick_amount": 200
+      },
+      {
+        "time": 3,
+        "events": [
+          {
+            "timestamp": 6,
+            "priority": 30,
+            "kind": "JobPeriodicTick",
+            "owner": "z_periodic",
+            "scope": "Job"
+          },
+          {
+            "timestamp": 5,
+            "priority": 40,
+            "kind": "JobTimerExpired",
+            "owner": "a_countdown",
+            "scope": "Job"
+          }
+        ],
+        "timers": [
+          {
+            "output_key": "disabled",
+            "value": 0
+          },
+          {
+            "output_key": "elapsed",
+            "value": 0
+          },
+          {
+            "output_key": "remaining",
+            "value": 2
+          }
+        ],
+        "resources": {
+          "disabled": 0,
+          "elapsed": 0,
+          "remaining": 2,
+          "residue": 0,
+          "targetable": true,
+          "ticks": 1
+        },
+        "raw_resources": {
+          "disabled": 2,
+          "elapsed": 0,
+          "remaining": 0,
+          "residue": 0,
+          "targetable": true,
+          "ticks": 1
+        },
+        "deadlines": {
+          "p": 6,
+          "c": 5
+        },
+        "statuses": {
+          "charge": {
+            "expires_at": 4,
+            "stacks": 3
+          }
+        },
+        "mp_tick_amount": 210
+      },
+      {
+        "time": 5,
+        "events": [
+          {
+            "timestamp": 6,
+            "priority": 30,
+            "kind": "JobPeriodicTick",
+            "owner": "z_periodic",
+            "scope": "Job"
+          }
+        ],
+        "timers": [
+          {
+            "output_key": "disabled",
+            "value": 0
+          },
+          {
+            "output_key": "elapsed",
+            "value": 2
+          },
+          {
+            "output_key": "remaining",
+            "value": 0
+          }
+        ],
+        "resources": {
+          "disabled": 0,
+          "elapsed": 2,
+          "remaining": 0,
+          "residue": 3,
+          "targetable": false,
+          "ticks": 1
+        },
+        "raw_resources": {
+          "disabled": 2,
+          "elapsed": 0,
+          "remaining": 0,
+          "residue": 3,
+          "targetable": false,
+          "ticks": 1
+        },
+        "deadlines": {
+          "p": 6
+        },
+        "statuses": {},
+        "mp_tick_amount": 210
+      },
+      {
+        "time": 6,
+        "events": [
+          {
+            "timestamp": 9,
+            "priority": 30,
+            "kind": "JobPeriodicTick",
+            "owner": "z_periodic",
+            "scope": "Job"
+          }
+        ],
+        "timers": [
+          {
+            "output_key": "disabled",
+            "value": 0
+          },
+          {
+            "output_key": "elapsed",
+            "value": 0
+          },
+          {
+            "output_key": "remaining",
+            "value": 0
+          }
+        ],
+        "resources": {
+          "disabled": 0,
+          "elapsed": 0,
+          "remaining": 0,
+          "residue": 3,
+          "targetable": false,
+          "ticks": 2
+        },
+        "raw_resources": {
+          "disabled": 2,
+          "elapsed": 0,
+          "remaining": 0,
+          "residue": 3,
+          "targetable": false,
+          "ticks": 2
+        },
+        "deadlines": {
+          "p": 9
+        },
+        "statuses": {},
+        "mp_tick_amount": 220
+      }
+    ],
+    "errors": {
+      "duplicate_periodic": true,
+      "cross_kind_duplicate": true,
+      "duplicate_mp_modifier": true,
+      "invalid_interval": true,
+      "blank_key": true,
+      "blank_output": true,
+      "duplicate_expiry_hook": true
+    },
+    "default_mp_amount": 200,
+    "negative_mp_amount": 0
+  },
+  "expiry_order": {
+    "system": {
+      "hooks": [
+        {
+          "key": "z",
+          "other_present": true,
+          "own_stacks": 3
+        },
+        {
+          "key": "a",
+          "other_present": false,
+          "own_stacks": 2
+        }
+      ],
+      "dispatch": [
+        "z",
+        "a"
+      ],
+      "remaining": []
+    },
+    "job": {
+      "hooks": [
+        {
+          "key": "z",
+          "other_present": true,
+          "own_stacks": 3
+        },
+        {
+          "key": "a",
+          "other_present": false,
+          "own_stacks": 2
+        }
+      ],
+      "dispatch": [
+        "z",
+        "a"
+      ],
+      "remaining": []
+    }
+  },
+  "callback_mutations": {
+    "dispatch": [
+      {
+        "time": 1,
+        "kind": "JobPeriodicTick",
+        "owner": "periodic",
+        "sequence": 3
+      },
+      {
+        "time": 1.5,
+        "kind": "JobTimerExpired",
+        "owner": "countdown",
+        "sequence": 4
+      },
+      {
+        "time": 2,
+        "kind": "ActionEffect",
+        "owner": "countdown_follow",
+        "sequence": 6
+      },
+      {
+        "time": 2,
+        "kind": "DecisionBoundary",
+        "owner": "periodic_follow",
+        "sequence": 5
+      }
+    ],
+    "mp": 112,
+    "next_sequence": 7,
+    "pending_events": 0,
+    "cancelled_owners_absent": true
+  }
+}

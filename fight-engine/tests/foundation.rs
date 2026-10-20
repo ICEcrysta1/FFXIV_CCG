@@ -1,5 +1,7 @@
 //! 固定基线来自 fixture 中 source_commit 指定的 C# 实现；Rust 测试不依赖 .NET。
 
+mod common;
+
 use std::path::{Path, PathBuf};
 
 use fight_engine::config::{
@@ -7,8 +9,10 @@ use fight_engine::config::{
     SkillBook, SystemConfig,
 };
 use fight_engine::state::{CombatState, CooldownState, DotState, StatusState};
-use fight_engine::system::{Timeline, TimelineMutation};
+use fight_engine::system::timeline::{Timeline, TimelineMutation};
 use serde_json::{Value, json};
+
+use common::assert_equivalent;
 
 fn project_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -18,40 +22,6 @@ fn project_root() -> PathBuf {
 }
 
 // 整数、布尔、对象键和数组顺序严格比较，浮点允许 FP32 级误差。
-fn assert_equivalent(expected: &Value, actual: &Value, path: &str) {
-    match (expected, actual) {
-        (Value::Object(expected), Value::Object(actual)) => {
-            assert_eq!(expected.len(), actual.len(), "{path}: 对象字段数量不同");
-            for (key, expected) in expected {
-                let next = format!("{path}.{key}");
-                let actual = actual
-                    .get(key)
-                    .unwrap_or_else(|| panic!("{next}: Rust 结果缺少字段"));
-                assert_equivalent(expected, actual, &next);
-            }
-        }
-        (Value::Array(expected), Value::Array(actual)) => {
-            assert_eq!(expected.len(), actual.len(), "{path}: 数组长度不同");
-            for (index, (expected, actual)) in expected.iter().zip(actual).enumerate() {
-                assert_equivalent(expected, actual, &format!("{path}[{index}]"));
-            }
-        }
-        (Value::Number(expected), Value::Number(actual)) => {
-            if let (Some(expected), Some(actual)) = (expected.as_i64(), actual.as_i64()) {
-                assert_eq!(expected, actual, "{path}: 整数不同");
-            } else {
-                let expected = expected.as_f64().expect("基线数值应可表示为 f64");
-                let actual = actual.as_f64().expect("Rust 数值应可表示为 f64");
-                assert!(
-                    (expected - actual).abs() <= expected.abs().max(1.0) * 1e-6,
-                    "{path}: C#={expected}, Rust={actual}"
-                );
-            }
-        }
-        _ => assert_eq!(expected, actual, "{path}: 值或类型不同"),
-    }
-}
-
 #[test]
 fn configuration_and_skill_lookup_match_csharp() {
     let baseline: Value = serde_json::from_str(include_str!("fixtures/foundation.json"))
