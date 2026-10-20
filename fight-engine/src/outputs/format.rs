@@ -8,7 +8,7 @@ use std::sync::Arc;
 use serde_json::{Map, Number, Value, json};
 
 use super::{ModelHistoryRow, OutputContextBuilder};
-use crate::config::{ProjectConfig, SchemaConfig};
+use crate::config::{PrecisionConfig, ProjectConfig, SchemaConfig, TensorDtype};
 use crate::contracts::JobStateMachine;
 use crate::state::{CombatState, ModelStateSnapshot};
 use crate::system::SystemRules;
@@ -104,14 +104,12 @@ impl OutputFormatter {
         action_values: &[f64],
         current: &ModelStateSnapshot,
         history: Option<&[Arc<ModelHistoryRow>]>,
+        precision: &PrecisionConfig,
     ) -> Result<Value, String> {
-        pack_tensor_payload(&self.format_vectors(
-            state,
-            action_keys,
-            action_values,
-            current,
-            history,
-        )?)
+        pack_tensor_payload(
+            &self.format_vectors(state, action_keys, action_values, current, history)?,
+            precision,
+        )
     }
 }
 
@@ -257,13 +255,40 @@ fn map_nested(
     }
 }
 
+fn pack_float(raw: f64, dtype: TensorDtype) -> Result<Value, String> {
+    let (fraction_bits, min_exponent, max_exponent, name) = match dtype {
+        TensorDtype::Float32 => (23, -126, 127, "FP32"),
+        TensorDtype::Float16 => (10, -14, 15, "FP16"),
+        TensorDtype::Bfloat16 => (7, -126, 127, "BF16"),
+        _ => return Err("tensor float_dtype must be floating-point".into()),
+    };
+    let value = if dtype == TensorDtype::Float32 {
+        f64::from(raw as f32)
+    } else {
+        // 以目标 ULP 直接舍入 F64，避免先转 FP32 导致中点附近双重舍入。
+        // 次正规数固定使用最小 ULP；所有缩放因子均为精确的 2 的幂。
+        let exponent = ((raw.to_bits() >> 52) & 0x7ff) as i32 - 1023;
+        let step = 2.0_f64.powi(exponent.max(min_exponent) - fraction_bits);
+        let rounded = (raw / step).round_ties_even() * step;
+        let maximum = (2.0 - 2.0_f64.powi(-fraction_bits)) * 2.0_f64.powi(max_exponent);
+        if rounded.abs() > maximum {
+            f64::INFINITY.copysign(raw)
+        } else {
+            rounded
+        }
+    };
+    Number::from_f64(value)
+        .map(Value::Number)
+        .ok_or_else(|| format!("tensor {name} value is not finite"))
+}
+
 /// 纯数值矩阵保持形状；浮点/null 附缺失掩码，同键对象列表转为列式结构。
-/// 仅此末端执行 FP32 舍入；模型输入的组装和所有引擎计算保持 F64。
-pub fn pack_tensor_payload(payload: &Value) -> Result<Value, String> {
+/// 仅此末端按已加载的精度配置舍入；canonical 与引擎计算保持 F64。
+pub fn pack_tensor_payload(payload: &Value, precision: &PrecisionConfig) -> Result<Value, String> {
     match payload {
         Value::Object(object) => object
             .iter()
-            .map(|(key, value)| Ok((key.clone(), pack_tensor_payload(value)?)))
+            .map(|(key, value)| Ok((key.clone(), pack_tensor_payload(value, precision)?)))
             .collect::<Result<Map<_, _>, String>>()
             .map(Value::Object),
         Value::Array(values) => {
@@ -278,9 +303,7 @@ pub fn pack_tensor_payload(payload: &Value) -> Result<Value, String> {
                                 .ok_or_else(|| "invalid tensor number".to_owned())?,
                             _ => unreachable!("数值布局只包含数值、布尔和 null"),
                         };
-                        Number::from_f64(f64::from(raw as f32))
-                            .map(Value::Number)
-                            .ok_or_else(|| "tensor FP32 value is not finite".to_owned())
+                        pack_float(raw, precision.float_dtype)
                     })?;
                     return Ok(
                         json!({"values":values,"is_null":map_nested(payload,&|value| Ok(json!(value.is_null())))?}),
@@ -308,14 +331,14 @@ pub fn pack_tensor_payload(payload: &Value) -> Result<Value, String> {
                     .map(|key| {
                         let column =
                             Value::Array(values.iter().map(|value| value[key].clone()).collect());
-                        Ok((key.clone(), pack_tensor_payload(&column)?))
+                        Ok((key.clone(), pack_tensor_payload(&column, precision)?))
                     })
                     .collect::<Result<Map<_, _>, String>>()
                     .map(Value::Object);
             }
             values
                 .iter()
-                .map(pack_tensor_payload)
+                .map(|value| pack_tensor_payload(value, precision))
                 .collect::<Result<Vec<_>, _>>()
                 .map(Value::Array)
         }

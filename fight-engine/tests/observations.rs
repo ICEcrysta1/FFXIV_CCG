@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
-use fight_engine::config::SchemaConfig;
+use fight_engine::config::{PrecisionConfig, SchemaConfig, TensorDtype};
 use fight_engine::engine::ActionRequest;
 use fight_engine::engine::simulator::{EnginePayload, Simulator};
 use fight_engine::outputs::{
@@ -97,6 +97,7 @@ fn snapshots_vectors_tensors_and_cache_restoration_match_baseline() {
     let rules = probe::rules(&baseline, None);
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let schema = Arc::new(SchemaConfig::load(root).unwrap());
+    let precision = PrecisionConfig::load(root).unwrap();
     let formatter = |limit| {
         OutputFormatter::new(
             rules.project().clone(),
@@ -173,10 +174,10 @@ fn snapshots_vectors_tensors_and_cache_restoration_match_baseline() {
                     .format_vectors(&state, keys, &values, &current, None)
                     .unwrap();
                 let tensor = output
-                    .format_tensors(&state, keys, &values, &current, None)
+                    .format_tensors(&state, keys, &values, &current, None, &precision)
                     .unwrap();
-                // 格式器实际使用完整 F64 canonical，在最后一步才转换 FP32。
-                assert_eq!(tensor, pack_tensor_payload(&vector).unwrap());
+                // 格式器实际使用完整 F64 canonical，在最后一步才按配置转换。
+                assert_eq!(tensor, pack_tensor_payload(&vector, &precision).unwrap());
                 let vector = legacy_vector(vector, &floats);
                 let mut seconds = output.format(&state, "seconds").unwrap();
                 let mut gcd = output.format(&state, "gcd").unwrap();
@@ -209,7 +210,7 @@ fn snapshots_vectors_tensors_and_cache_restoration_match_baseline() {
                     })
                     .collect::<Vec<_>>();
                 assert_eq!(before, simulator.create_snapshot(), "输出改变了时间线");
-                json!({"seconds":seconds,"gcd":gcd,"tensor":pack_tensor_payload(&vector).unwrap(),
+                json!({"seconds":seconds,"gcd":gcd,"tensor":pack_tensor_payload(&vector, &precision).unwrap(),
                     "metadata":output_schema_metadata(&vector,&schema).unwrap(),"vector":vector,"retained":retained})
             }
             op => panic!("输出基线含未知操作: {op}"),
@@ -223,9 +224,10 @@ fn numeric_layouts_scene_schema_and_death_marker_match_baseline() {
     let baseline = fixture();
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let schema = SchemaConfig::load(root).unwrap();
+    let precision = PrecisionConfig::load(root).unwrap();
     common::assert_equivalent(
         &baseline["packing"]["output"],
-        &pack_tensor_payload(&baseline["packing"]["input"]).unwrap(),
+        &pack_tensor_payload(&baseline["packing"]["input"], &precision).unwrap(),
         "packing",
     );
     common::assert_equivalent(
@@ -242,4 +244,123 @@ fn numeric_layouts_scene_schema_and_death_marker_match_baseline() {
         ),
         "death_token",
     );
+}
+
+#[test]
+fn tensor_precision_is_applied_without_changing_canonical_or_layout() {
+    let baseline = fixture();
+    let rules = probe::rules(&baseline, None);
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let output = OutputFormatter::new(
+        rules.project().clone(),
+        rules.system().clone(),
+        rules.job().clone(),
+        Arc::new(SchemaConfig::load(root).unwrap()),
+        None,
+    )
+    .unwrap();
+    let simulator = Simulator::from_state(
+        rules.clone(),
+        probe::initial_state(&rules, &baseline["initial"]),
+    )
+    .unwrap();
+    let state = simulator.get_state();
+    let current = simulator.capture_model_state(&state).unwrap();
+    let keys = rules.action_keys();
+    let values = vec![0.4; keys.len()];
+    let canonical = output
+        .format_vectors(&state, keys, &values, &current, None)
+        .unwrap();
+    let mut precision = PrecisionConfig::load(root).unwrap();
+    for (dtype, expected) in [
+        (TensorDtype::Float32, 0.4000000059604645),
+        (TensorDtype::Float16, 0.39990234375),
+        (TensorDtype::Bfloat16, 0.400390625),
+    ] {
+        precision.float_dtype = dtype;
+        let tensor = output
+            .format_tensors(&state, keys, &values, &current, None, &precision)
+            .unwrap();
+        assert_eq!(tensor["action_values"]["values"][0], json!(expected));
+        assert_eq!(tensor["action_values"]["is_null"][0], json!(false));
+        assert_eq!(
+            pack_tensor_payload(
+                &json!([
+                    {"value": 0.4, "missing": null, "flag": true, "id": 1},
+                    {"value": -0.4, "missing": 1.0, "flag": false, "id": 2},
+                ]),
+                &precision,
+            )
+            .unwrap(),
+            json!({
+                "value": {"values": [expected, -expected], "is_null": [false, false]},
+                "missing": {"values": [0.0, 1.0], "is_null": [true, false]},
+                "flag": [true, false], "id": [1, 2],
+            }),
+        );
+        assert_eq!(
+            canonical,
+            output
+                .format_vectors(&state, keys, &values, &current, None)
+                .unwrap(),
+        );
+        assert_eq!(canonical["action_values"][0], json!(0.4));
+    }
+}
+
+#[test]
+fn tensor_precision_rounds_once_at_midpoints_subnormals_and_overflow() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let mut precision = PrecisionConfig::load(root).unwrap();
+    for (dtype, ulp, smallest, largest, overflow_midpoint) in [
+        (
+            TensorDtype::Float32,
+            2.0_f64.powi(-23),
+            2.0_f64.powi(-149),
+            f64::from(f32::MAX),
+            2.0_f64.powi(128) - 2.0_f64.powi(103),
+        ),
+        (
+            TensorDtype::Float16,
+            2.0_f64.powi(-10),
+            2.0_f64.powi(-24),
+            65504.0,
+            65520.0,
+        ),
+        (
+            TensorDtype::Bfloat16,
+            2.0_f64.powi(-7),
+            2.0_f64.powi(-133),
+            f64::from(f32::from_bits(0x7f7f0000)),
+            2.0_f64.powi(128) - 2.0_f64.powi(119),
+        ),
+    ] {
+        precision.float_dtype = dtype;
+        let midpoint = 1.0 + ulp / 2.0;
+        for (raw, expected) in [
+            (0.0, 0.0),
+            (-0.0, -0.0),
+            (midpoint.next_down(), 1.0),
+            (midpoint, 1.0),
+            (midpoint.next_up(), 1.0 + ulp),
+            (1.0 + 1.5 * ulp, 1.0 + 2.0 * ulp),
+            (-midpoint.next_up(), -1.0 - ulp),
+            (smallest / 2.0, 0.0),
+            ((smallest / 2.0).next_up(), smallest),
+            (-smallest / 2.0, -0.0),
+            (smallest, smallest),
+            (overflow_midpoint.next_down(), largest),
+            (largest, largest),
+        ] {
+            let packed = pack_tensor_payload(&json!([raw]), &precision).unwrap();
+            assert_eq!(
+                packed["values"][0].as_f64().unwrap().to_bits(),
+                expected.to_bits(),
+                "{dtype:?}: {raw:e}",
+            );
+        }
+        for raw in [overflow_midpoint, -overflow_midpoint, f64::MAX] {
+            assert!(pack_tensor_payload(&json!([raw]), &precision).is_err());
+        }
+    }
 }
