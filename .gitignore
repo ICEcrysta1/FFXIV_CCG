@@ -51,6 +51,3 @@ docs/onnx-export-readiness-issues-2026-08-12.md
 docs/polyglot-debug-handoff-2026-07-09.md
 *.pdf
 docs/对比.md
-
-# .NET test results
-TestResults/
