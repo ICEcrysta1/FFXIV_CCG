@@ -105,6 +105,32 @@ pub enum ResourceValue {
     Bool(bool),
 }
 
+impl ResourceValue {
+    pub fn as_integer(self) -> i32 {
+        match self {
+            Self::Integer(value) => value,
+            Self::Float(value) => value as i32,
+            Self::Bool(value) => i32::from(value),
+        }
+    }
+
+    pub fn as_float(self) -> f64 {
+        match self {
+            Self::Integer(value) => f64::from(value),
+            Self::Float(value) => value,
+            Self::Bool(value) => f64::from(u8::from(value)),
+        }
+    }
+
+    pub fn as_bool(self) -> bool {
+        match self {
+            Self::Integer(value) => value != 0,
+            Self::Float(value) => value != 0.0,
+            Self::Bool(value) => value,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct JobResourceDefinition {
     pub key: String,

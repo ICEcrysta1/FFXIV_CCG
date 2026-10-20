@@ -158,13 +158,13 @@ impl ResourceRegistry {
                 .ok_or_else(|| format!("resource snapshot is missing {key}"))?;
             let value = match self.definitions[key].resource_type.as_str() {
                 "int" => ResourceValue::Integer(
-                    as_integer(previous).wrapping_sub(as_integer(next)).max(0),
+                    previous.as_integer().wrapping_sub(next.as_integer()).max(0),
                 ),
                 "float" => {
-                    let difference = as_float(previous) - as_float(next);
+                    let difference = previous.as_float() - next.as_float();
                     ResourceValue::Float(if difference < 0.0 { 0.0 } else { difference })
                 }
-                "bool" => ResourceValue::Bool(as_bool(previous) && !as_bool(next)),
+                "bool" => ResourceValue::Bool(previous.as_bool() && !next.as_bool()),
                 value => return Err(format!("unsupported job resource type: {value}")),
             };
             consumed.insert(key.clone(), value);
@@ -189,14 +189,14 @@ fn normalize_value(
 ) -> Result<ResourceValue, String> {
     match definition.resource_type.as_str() {
         "int" => {
-            let mut value = as_integer(value);
+            let mut value = value.as_integer();
             if let Some(maximum) = definition.max_value {
                 value = value.min(maximum as i32).max(0);
             }
             Ok(ResourceValue::Integer(value))
         }
         "float" => {
-            let mut value = as_float(value);
+            let mut value = value.as_float();
             if let Some(maximum) = definition.max_value {
                 // 比较式保留原有 NaN 传播语义，避免 min/max 把它替换成普通数值。
                 if value > maximum || maximum.is_nan() {
@@ -208,31 +208,7 @@ fn normalize_value(
             }
             Ok(ResourceValue::Float(value))
         }
-        "bool" => Ok(ResourceValue::Bool(as_bool(value))),
+        "bool" => Ok(ResourceValue::Bool(value.as_bool())),
         value => Err(format!("unsupported job resource type: {value}")),
-    }
-}
-
-fn as_integer(value: ResourceValue) -> i32 {
-    match value {
-        ResourceValue::Integer(value) => value,
-        ResourceValue::Float(value) => value as i32,
-        ResourceValue::Bool(value) => i32::from(value),
-    }
-}
-
-fn as_float(value: ResourceValue) -> f64 {
-    match value {
-        ResourceValue::Integer(value) => f64::from(value),
-        ResourceValue::Float(value) => value,
-        ResourceValue::Bool(value) => f64::from(u8::from(value)),
-    }
-}
-
-fn as_bool(value: ResourceValue) -> bool {
-    match value {
-        ResourceValue::Integer(value) => value != 0,
-        ResourceValue::Float(value) => value != 0.0,
-        ResourceValue::Bool(value) => value,
     }
 }

@@ -2,12 +2,17 @@
 
 路径相对仓库根目录。返回[项目目录](./项目目录.md)。
 
-本文件集中记录 `Combat.Sim/FightEngine.Tests/` 的 xUnit 测试、`tests/` 下的 Python 与 Node 测试，以及 pytest 配置和测试产物。目录按原有位置展示。
+本文件集中记录 `fight-engine/` 的纯 Rust 测试、`Combat.Sim/FightEngine.Tests/` 的现有 xUnit 测试、`tests/` 下的 Python 与 Node 测试，以及 pytest 配置和测试产物。目录按原有位置展示。Rust 测试消费真实 C# 生成的 JSON 基线，不包含或调用 C#；临时差分探针仅放在忽略目录 `.tmp/rust-migration/`。
 
 ## 目录与覆盖职责
 
 ```text
 FFXIV_CCG/
+├── fight-engine/
+│   ├── tests/                                       核心配置、状态、系统规则、职业契约、动作生命周期与上下文对比；不依赖具体职业 crate
+│   │   ├── common.rs / common/jobs.rs               通用比较及职业回放驱动，直接放实现，不使用 mod.rs
+│   │   └── fixtures/                                JSON 基线记录来源提交、输入和预期结果
+│   └── jobs/{black-mage,machinist}/tests/            各职业注册后独立验证；核心可在无职业代码时运行系统测试
 ├── Combat.Sim/FightEngine.Tests/                     xUnit 测试工程，按 Common/Config/Facade/Jobs/Outputs/Policy/Sessions/Skills/System 分组
 │   ├── Common/                                       公共层测试目录
 │   │   ├── ProjectConfigLoaderTests.cs               配置加载测试：真实仓库解析 + 校验错误路径
