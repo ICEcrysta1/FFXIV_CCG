@@ -1,8 +1,8 @@
 # 训练
 
-路径相对仓库根目录。返回[项目目录](./项目目录.md)。
+路径相对仓库根目录。返回[项目目录](./index.md)。
 
-`training/` 负责 BC 预训练的数据读取、损失、训练循环与 checkpoint 生命周期。跨 BC、GRPO、回放和部署共用的策略模型、输入编码、优化器及监控组件见[公共](./公共.md)。
+`training/` 负责 BC 预训练的数据读取、损失、训练循环与 checkpoint 生命周期。跨 BC、GRPO、回放和部署共用的策略模型、输入编码、优化器及监控组件见[公共](./common.md)。
 
 BC 续训恢复 checkpoint 的学习率、优化器状态和 scheduler 步号，权重衰减使用当前训练配置的 `weight_decay`，使 `optimizer.yaml` 中的调整在续训时生效。
 
@@ -40,6 +40,6 @@ FFXIV_CCG/
 
 ## 相关入口
 
-- 模型变体配置、compiled cache 数据目录与输入契约见[公共](./公共.md)。
-- cache 编译、PPG 评估、训练菜单与 TensorBoard 启动见[脚本](./脚本.md)。
+- 模型变体配置、compiled cache 数据目录与输入契约见[公共](./common.md)。
+- cache 编译、PPG 评估、训练菜单与 TensorBoard 启动见[脚本](./scripts.md)。
 - 后训练见[GRPO](./grpo.md)，回归覆盖见[tests](./tests.md)。

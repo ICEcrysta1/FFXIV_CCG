@@ -1,6 +1,6 @@
 # tests
 
-路径相对仓库根目录。返回[项目目录](./项目目录.md)。
+路径相对仓库根目录。返回[项目目录](./index.md)。
 
 本文件集中记录 `fight-engine/` 的纯 Rust 测试、`tests/` 下的 Python 与 Node 测试，以及 pytest 配置和测试产物。目录按原有位置展示。Rust 测试消费真实 C# 生成的 JSON 基线，不包含或调用 C#；临时差分探针仅放在忽略目录 `.tmp/rust-migration/`。
 
