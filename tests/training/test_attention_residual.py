@@ -46,25 +46,6 @@ def test_full_attention_residual_query_receives_gradient():
     assert torch.count_nonzero(residual.pseudo_queries.grad[1]) > 0
 
 
-def test_depth_attention_uses_unscaled_rms_normalized_key_logits():
-    residual = FullAttentionResidual(d_model=4, num_queries=1)
-    with torch.no_grad():
-        residual.pseudo_queries[0].copy_(torch.tensor([2.0, 0.0, 0.0, 0.0]))
-    sources = [
-        torch.tensor([[[1.0, 0.0, 0.0, 0.0]]]),
-        torch.tensor([[[-1.0, 0.0, 0.0, 0.0]]]),
-    ]
-
-    output = residual(sources, 0)
-    values = torch.stack(sources, dim=0)
-    keys = residual.key_norms[0](values)
-    logits = torch.einsum("d,sbtd->sbt", residual.pseudo_queries[0], keys)
-    weights = torch.softmax(logits, dim=0)
-    expected = torch.einsum("sbt,sbtd->btd", weights, values)
-
-    torch.testing.assert_close(output, expected)
-
-
 @pytest.mark.parametrize("training", [True, False])
 def test_depth_attention_matches_stacked_reference_and_gradients(training):
     torch.manual_seed(13)

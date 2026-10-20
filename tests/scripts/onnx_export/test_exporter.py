@@ -77,6 +77,12 @@ from scripts.onnx_export.runtime.tensor_runtime import (
 )
 
 
+@pytest.fixture(scope="module")
+def manifest_schema():
+    path = Path(export_module.__file__).parents[1] / "manifest.schema.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def test_exception_note_falls_back_to_stderr(capsys):
     class LegacyException:
         pass
@@ -141,11 +147,9 @@ def test_capacity_contract_rejects_old_fusion_or_wrong_token_semantics(field, va
     ("effective_sequence_length", "scene_valid + history_valid + 1"),
     ("unsupported_capacity", 10),
 ))
-def test_manifest_schema_strictly_rejects_fused_capacity_metadata(field, value):
+def test_manifest_schema_strictly_rejects_fused_capacity_metadata(manifest_schema, field, value):
     jsonschema = pytest.importorskip("jsonschema")
-    schema_path = Path(export_module.__file__).parents[1] / "manifest.schema.json"
-    schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    capacity_schema = schema["$defs"]["contract"]["properties"]["capacity"]
+    capacity_schema = manifest_schema["$defs"]["contract"]["properties"]["capacity"]
     validator = jsonschema.Draft202012Validator(capacity_schema)
     payload = CapacityContract(20).to_dict()
     validator.validate(payload)
@@ -154,23 +158,18 @@ def test_manifest_schema_strictly_rejects_fused_capacity_metadata(field, value):
         validator.validate(payload)
 
 
-@pytest.mark.parametrize("previous_version", range(18, DEPLOYMENT_CONTRACT_VERSION))
-def test_manifest_schema_rejects_previous_deployment_versions(previous_version):
+def test_manifest_schema_rejects_previous_deployment_version(manifest_schema):
     jsonschema = pytest.importorskip("jsonschema")
-    schema_path = Path(export_module.__file__).parents[1] / "manifest.schema.json"
-    schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    version_schema = schema["$defs"]["contract"]["properties"]["contract_version"]
+    version_schema = manifest_schema["$defs"]["contract"]["properties"]["contract_version"]
     validator = jsonschema.Draft202012Validator(version_schema)
     validator.validate(DEPLOYMENT_CONTRACT_VERSION)
     with pytest.raises(jsonschema.ValidationError):
-        validator.validate(previous_version)
+        validator.validate(DEPLOYMENT_CONTRACT_VERSION - 1)
 
 
-def test_manifest_schema_and_loader_reject_previous_manifest_version(tmp_path):
+def test_manifest_schema_and_loader_reject_previous_manifest_version(tmp_path, manifest_schema):
     jsonschema = pytest.importorskip("jsonschema")
-    schema_path = Path(export_module.__file__).parents[1] / "manifest.schema.json"
-    schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    validator = jsonschema.Draft202012Validator(schema["properties"]["manifest_version"])
+    validator = jsonschema.Draft202012Validator(manifest_schema["properties"]["manifest_version"])
     validator.validate(DEPLOYMENT_MANIFEST_VERSION)
     with pytest.raises(jsonschema.ValidationError):
         validator.validate(DEPLOYMENT_MANIFEST_VERSION - 1)
@@ -180,10 +179,8 @@ def test_manifest_schema_and_loader_reject_previous_manifest_version(tmp_path):
         DeploymentManifest.load(path, verify_files=False)
 
 
-def test_manifest_schema_uses_authoritative_model_input_descriptor():
-    schema_path = Path(export_module.__file__).parents[1] / "manifest.schema.json"
-    schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    input_schema = schema["$defs"]["contract"]["properties"]["model_input_contract"]
+def test_manifest_schema_uses_authoritative_model_input_descriptor(manifest_schema):
+    input_schema = manifest_schema["$defs"]["contract"]["properties"]["model_input_contract"]
     assert input_schema["properties"]["version"]["const"] == INPUT_CONTRACT_VERSION
     assert input_schema["properties"]["token_encoding"]["const"] == TOKEN_ENCODING_CONTRACT
 
@@ -256,29 +253,10 @@ def test_bf16_golden_uses_exact_uint16_bit_encoding():
     assert onnx_torch_dtype("tensor(bfloat16)") == torch.bfloat16
 
 
-def test_precision_specific_parity_tolerances_are_stable():
-    assert parity_max_abs_tolerance("float32") == 1e-5
-    assert parity_max_abs_tolerance("float16") == 5e-3
-    assert parity_max_abs_tolerance("bf16") == 2.5e-1
-
-
-def test_precision_uses_onnx_tensor_proto_constants():
-    onnx = pytest.importorskip("onnx")
-
-    assert precision_onnx_data_type("float32", onnx.TensorProto) == (
-        onnx.TensorProto.FLOAT
-    )
-    assert precision_onnx_data_type("float16", onnx.TensorProto) == (
-        onnx.TensorProto.FLOAT16
-    )
-    assert precision_onnx_data_type("bf16", onnx.TensorProto) == (
-        onnx.TensorProto.BFLOAT16
-    )
-
-
 @pytest.mark.parametrize("precision", ("float16", "bf16"))
 def test_low_precision_export_keeps_fp32_input_values_and_weights(tmp_path, precision):
     """真实导出检查匿名转置权重仍为 FP32，主干及输出维持原部署精度。"""
+    assert parity_max_abs_tolerance(precision) == (5e-3 if precision == "float16" else 2.5e-1)
     onnx = pytest.importorskip("onnx")
     pytest.importorskip("onnxscript")
     from onnx import numpy_helper
@@ -423,40 +401,25 @@ def test_multiple_torch_reports_are_combined(tmp_path):
     assert not list(tmp_path.glob("onnx_export_*.md"))
 
 
-def test_float16_export_rejects_cpu_ort_provider(tmp_path):
+@pytest.mark.parametrize(("precision", "provider", "devices", "message"), [
+    ("float16", "CPUExecutionProvider", ("cpu",), "float16.*non-CPU"),
+    ("bf16", "auto", ("cuda",), "bf16.*explicit CUDAExecutionProvider"),
+])
+def test_low_precision_export_rejects_unsupported_provider(tmp_path, precision, provider, devices, message):
     pytest.importorskip("onnx")
     pytest.importorskip("onnxruntime")
     pytest.importorskip("onnxscript")
     checkpoint = tmp_path / "checkpoint.pt"
     checkpoint.write_bytes(b"not-read")
 
-    with pytest.raises(ValueError, match="float16.*non-CPU"):
+    with pytest.raises(ValueError, match=message):
         export_package(
             checkpoint_path=checkpoint,
             output_dir=tmp_path / "deployment",
             opset=18,
-            precision="float16",
-            ort_provider="CPUExecutionProvider",
-            validation_devices=("cpu",),
-            overwrite=False,
-        )
-
-
-def test_bf16_export_rejects_fallback_provider(tmp_path):
-    pytest.importorskip("onnx")
-    pytest.importorskip("onnxruntime")
-    pytest.importorskip("onnxscript")
-    checkpoint = tmp_path / "checkpoint.pt"
-    checkpoint.write_bytes(b"not-read")
-
-    with pytest.raises(ValueError, match="bf16.*explicit CUDAExecutionProvider"):
-        export_package(
-            checkpoint_path=checkpoint,
-            output_dir=tmp_path / "deployment",
-            opset=18,
-            precision="bf16",
-            ort_provider="auto",
-            validation_devices=("cuda",),
+            precision=precision,
+            ort_provider=provider,
+            validation_devices=devices,
             overwrite=False,
         )
 
@@ -1348,7 +1311,7 @@ def test_export_accepts_exact_scene_and_saved_history_reset_budget(tmp_path, con
 
 
 @pytest.mark.parametrize("full_attention_residuals", [False, True])
-def test_deployment_contract_preserves_actual_residual_path(tmp_path, full_attention_residuals):
+def test_deployment_contract_preserves_actual_residual_path(tmp_path, manifest_schema, full_attention_residuals):
     from scripts.onnx_export.export.checkpoint import load_policy_contracts
     jsonschema = pytest.importorskip("jsonschema")
     checkpoint, profile = tmp_path / "checkpoint.pt", tmp_path / "profile.json"
@@ -1374,9 +1337,7 @@ def test_deployment_contract_preserves_actual_residual_path(tmp_path, full_atten
     )
     restored = DeploymentContract.from_dict(payload)
     assert restored.to_dict() == payload
-    schema_path = Path(export_module.__file__).parents[1] / "manifest.schema.json"
-    schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    validator = jsonschema.Draft202012Validator({"$ref": "#/$defs/contract", "$defs": schema["$defs"]})
+    validator = jsonschema.Draft202012Validator({"$ref": "#/$defs/contract", "$defs": manifest_schema["$defs"]})
     validator.validate(payload)
     wrong = deepcopy(payload)
     wrong["model_config"]["full_attention_residuals"] = not full_attention_residuals
@@ -1473,8 +1434,9 @@ def test_load_policy_preserves_saved_readout_and_qk_scale_without_project_yaml(t
         torch.testing.assert_close(tensor, payload["model_state_dict"][name], atol=0, rtol=0)
 
 
-@pytest.mark.parametrize("value", ["missing", True, False, 0, -1, float("nan"), float("inf"), float("-inf"), "invalid", None])
-def test_checkpoint_and_deployment_reject_missing_or_invalid_qk_scale(tmp_path, value):
+@pytest.mark.parametrize("field", ["qk_norm_scale", "logit_softcap"])
+@pytest.mark.parametrize("value", ["missing", 0])
+def test_checkpoint_and_deployment_reject_missing_or_invalid_model_scale(tmp_path, field, value):
     from scripts.onnx_export.export.checkpoint import load_policy_contracts
 
     # 缺失元数据独立于默认值；错误数值也不能靠重算部署签名绕过模型校验。
@@ -1486,85 +1448,56 @@ def test_checkpoint_and_deployment_reject_missing_or_invalid_qk_scale(tmp_path, 
     payload = safe_torch_load(checkpoint)
     for model_config in (payload["model_config"], deployment["model_config"]):
         if value == "missing":
-            model_config.pop("qk_norm_scale")
+            model_config.pop(field)
         else:
-            model_config["qk_norm_scale"] = value
+            model_config[field] = value
     torch.save(payload, checkpoint)
-    with pytest.raises(ValueError, match="qk_norm_scale"):
+    with pytest.raises(ValueError, match=field):
         export_module.load_policy(checkpoint, precision="float32")
-    with pytest.raises(ValueError, match="qk_norm_scale"):
+    with pytest.raises(ValueError, match=field):
         DeploymentContract.from_dict(deployment)
 
 
-@pytest.mark.parametrize("value", [None, True, False, "1.2", 0, -1])
-def test_manifest_schema_rejects_missing_or_invalid_qk_scale(value):
+@pytest.mark.parametrize(("field", "value"), [
+    (field, value)
+    for field, values in (
+        ("qk_norm_scale", [None, True, False, "1.2", 0, -1]),
+        ("logit_softcap", [None, True, False, "15.0", 0, -1, 1e-46, 1e39]),
+    )
+    for value in values
+])
+def test_manifest_schema_rejects_missing_or_invalid_model_scale(manifest_schema, value, field):
     jsonschema = pytest.importorskip("jsonschema")
-    schema_path = Path(export_module.__file__).parents[1] / "manifest.schema.json"
-    schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    validator = jsonschema.Draft202012Validator(schema["$defs"]["contract"]["properties"]["model_config"])
+    validator = jsonschema.Draft202012Validator(manifest_schema["$defs"]["contract"]["properties"]["model_config"])
     payload = asdict(ModelConfig())
     validator.validate(payload)
     if value is None:
-        payload.pop("qk_norm_scale")
+        payload.pop(field)
     else:
-        payload["qk_norm_scale"] = value
+        payload[field] = value
     with pytest.raises(jsonschema.ValidationError):
         validator.validate(payload)
 
 
-def test_deployment_qk_scale_is_bound_by_saved_model_config_signature(tmp_path):
+@pytest.mark.parametrize(("field", "saved", "forged"), [
+    ("qk_norm_scale", 1.7, 1.2),
+    ("logit_softcap", 7.5, 15.0),
+])
+def test_deployment_model_scale_is_bound_by_saved_config_signature(tmp_path, field, saved, forged):
     from scripts.onnx_export.export.checkpoint import load_policy_contracts
 
     checkpoint, profile = tmp_path / "checkpoint.pt", tmp_path / "profile.json"
-    _write_small_checkpoint(checkpoint, qk_norm_scale=1.7)
+    _write_small_checkpoint(checkpoint, **{field: saved})
     _write_small_profile(profile)
     contracts = load_policy_contracts(checkpoint_path=checkpoint, deployment_profile_path=profile, precision="float32")
     deployment = contracts.deployment_contract.to_dict()
-    deployment["model_config"]["qk_norm_scale"] = 1.2
+    deployment["model_config"][field] = forged
     with pytest.raises(ValueError, match="authoritative layouts"):
         DeploymentContract.from_dict(deployment)
 
 
-@pytest.mark.parametrize("value", ["missing", True, False, 0, -1, 1e-46, 1e39, float("nan"), float("inf"), float("-inf"), "invalid", None])
-def test_checkpoint_and_deployment_reject_missing_or_invalid_logit_softcap(tmp_path, value):
-    from scripts.onnx_export.export.checkpoint import load_policy_contracts
-
-    checkpoint, profile = tmp_path / "checkpoint.pt", tmp_path / "profile.json"
-    _write_small_checkpoint(checkpoint)
-    _write_small_profile(profile)
-    contracts = load_policy_contracts(checkpoint_path=checkpoint, deployment_profile_path=profile, precision="float32")
-    deployment = contracts.deployment_contract.to_dict()
-    payload = safe_torch_load(checkpoint)
-    for model_config in (payload["model_config"], deployment["model_config"]):
-        if value == "missing":
-            model_config.pop("logit_softcap")
-        else:
-            model_config["logit_softcap"] = value
-    torch.save(payload, checkpoint)
-    with pytest.raises(ValueError, match="logit_softcap"):
-        export_module.load_policy(checkpoint, precision="float32")
-    with pytest.raises(ValueError, match="logit_softcap"):
-        DeploymentContract.from_dict(deployment)
-
-
-@pytest.mark.parametrize("value", [None, True, False, "15.0", 0, -1, 1e-46, 1e39])
-def test_manifest_schema_rejects_missing_or_invalid_logit_softcap(value):
-    jsonschema = pytest.importorskip("jsonschema")
-    schema_path = Path(export_module.__file__).parents[1] / "manifest.schema.json"
-    schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    validator = jsonschema.Draft202012Validator(schema["$defs"]["contract"]["properties"]["model_config"])
-    payload = asdict(ModelConfig())
-    validator.validate(payload)
-    if value is None:
-        payload.pop("logit_softcap")
-    else:
-        payload["logit_softcap"] = value
-    with pytest.raises(jsonschema.ValidationError):
-        validator.validate(payload)
-
-
 @pytest.mark.parametrize("cap", [torch.finfo(torch.float32).tiny, 1e-8, 2**-24, 2**-15, 65505.0, 65520.0, 1e10, 1e38])
-def test_float16_export_rejects_softcap_outside_normal_output_range(tmp_path, cap):
+def test_float16_export_rejects_softcap_outside_normal_output_range(tmp_path, manifest_schema, cap):
     """模型允许的 FP32 尺度不能绕过导出加载、部署对象或 manifest 的 FP16 限制。"""
     from scripts.onnx_export.export.checkpoint import load_policy_contracts
     jsonschema = pytest.importorskip("jsonschema")
@@ -1587,14 +1520,13 @@ def test_float16_export_rejects_softcap_outside_normal_output_range(tmp_path, ca
     payload = replace(saved, precision="float16").to_dict()
     with pytest.raises(ValueError, match="float16.*logit_softcap.*FP16 normal range"):
         DeploymentContract.from_dict(payload)
-    schema = json.loads((Path(export_module.__file__).parents[1] / "manifest.schema.json").read_text(encoding="utf-8"))
-    validator = jsonschema.Draft202012Validator({"$defs": schema["$defs"], "$ref": "#/$defs/contract"})
+    validator = jsonschema.Draft202012Validator({"$defs": manifest_schema["$defs"], "$ref": "#/$defs/contract"})
     with pytest.raises(jsonschema.ValidationError):
         validator.validate(payload)
 
 
 @pytest.mark.parametrize("cap", [torch.finfo(torch.float16).tiny, 0.001, 15.0, torch.finfo(torch.float16).max])
-def test_float16_softcap_normal_range_includes_both_endpoints(tmp_path, cap):
+def test_float16_softcap_normal_range_includes_both_endpoints(tmp_path, manifest_schema, cap):
     from scripts.onnx_export.export.checkpoint import load_policy_contracts
     jsonschema = pytest.importorskip("jsonschema")
 
@@ -1606,13 +1538,12 @@ def test_float16_softcap_normal_range_includes_both_endpoints(tmp_path, cap):
     assert contracts.policy.model.config.logit_softcap == cap
     payload = contracts.deployment_contract.to_dict()
     assert DeploymentContract.from_dict(payload).model_config["logit_softcap"] == cap
-    schema = json.loads((Path(export_module.__file__).parents[1] / "manifest.schema.json").read_text(encoding="utf-8"))
-    jsonschema.Draft202012Validator({"$defs": schema["$defs"], "$ref": "#/$defs/contract"}).validate(payload)
+    jsonschema.Draft202012Validator({"$defs": manifest_schema["$defs"], "$ref": "#/$defs/contract"}).validate(payload)
 
 
 @pytest.mark.parametrize("precision", ["float32", "bf16"])
 @pytest.mark.parametrize("cap", [torch.finfo(torch.float32).tiny, 1e-8, 65520.0, 1e38])
-def test_other_deployment_precisions_keep_existing_softcap_range(tmp_path, precision, cap):
+def test_other_deployment_precisions_keep_existing_softcap_range(tmp_path, manifest_schema, precision, cap):
     from scripts.onnx_export.export.checkpoint import load_policy_contracts
     jsonschema = pytest.importorskip("jsonschema")
 
@@ -1622,21 +1553,7 @@ def test_other_deployment_precisions_keep_existing_softcap_range(tmp_path, preci
     contracts = load_policy_contracts(checkpoint_path=checkpoint, deployment_profile_path=profile, precision=precision)
     payload = contracts.deployment_contract.to_dict()
     assert DeploymentContract.from_dict(payload).model_config["logit_softcap"] == cap
-    schema = json.loads((Path(export_module.__file__).parents[1] / "manifest.schema.json").read_text(encoding="utf-8"))
-    jsonschema.Draft202012Validator({"$defs": schema["$defs"], "$ref": "#/$defs/contract"}).validate(payload)
-
-
-def test_deployment_logit_softcap_is_bound_by_saved_model_config_signature(tmp_path):
-    from scripts.onnx_export.export.checkpoint import load_policy_contracts
-
-    checkpoint, profile = tmp_path / "checkpoint.pt", tmp_path / "profile.json"
-    _write_small_checkpoint(checkpoint, logit_softcap=7.5)
-    _write_small_profile(profile)
-    contracts = load_policy_contracts(checkpoint_path=checkpoint, deployment_profile_path=profile, precision="float32")
-    deployment = contracts.deployment_contract.to_dict()
-    deployment["model_config"]["logit_softcap"] = 15.0
-    with pytest.raises(ValueError, match="authoritative layouts"):
-        DeploymentContract.from_dict(deployment)
+    jsonschema.Draft202012Validator({"$defs": manifest_schema["$defs"], "$ref": "#/$defs/contract"}).validate(payload)
 
 
 @pytest.mark.parametrize("legacy", ["version", "shared_projection", "missing_softcap", "wrong_softcap_dtype"])

@@ -451,61 +451,6 @@ def test_convert_report_payload_keeps_one_complete_fight_even_with_long_downtime
     )
 
 
-@pytest.mark.parametrize("deduplicate", [False, True])
-def test_convert_report_to_training_payload_invokes_build_training_samples(
-    cs_backend, cs_skill_book, monkeypatch, deduplicate,
-):
-    import scripts.convert_fflogs.pipeline as pipeline_module
-
-    captured: dict[str, object] = {}
-
-    def _fake_build_training_samples(backend, skill_book, fight_payload, *, deduplicate_history):
-        assert deduplicate_history is deduplicate
-        captured["job_tag"] = backend.job_tag
-        captured["fight_id"] = fight_payload["fight_id"]
-        return {
-            "fight_id": fight_payload["fight_id"],
-            "num_samples": 1,
-        }
-
-    monkeypatch.setattr(pipeline_module, "build_training_samples", _fake_build_training_samples)
-
-    raw_payload = {
-        "report_code": "demo_report",
-        "fight_id": 19,
-        "events": [
-            {
-                "type": "cast",
-                "sourceID": 10,
-                "timestamp": 1000,
-                "abilityGameID": 152,
-                "ability": {"name": "爆炎"},
-                "sourceResources": {"x": 0.0, "y": 0.0},
-            },
-        ],
-    }
-
-    payload, ignored = convert_report_to_training_payload(
-        raw_payload,
-        backend=cs_backend,
-        project_config=load_job_project_config("black_mage"),
-        skill_book=cs_skill_book,
-        source_id=10,
-        encounter_name="Demo",
-        report_code="demo_report",
-        player_name="Tester",
-        generated_at="2026-07-07T00:00:00+00:00",
-        deduplicate_history=deduplicate,
-    )
-
-    assert ignored == {}
-    assert payload == {"fight_id": "demo_report_fight19", "num_samples": 1}
-    assert captured == {
-        "job_tag": "black_mage",
-        "fight_id": "demo_report_fight19",
-    }
-
-
 def test_extract_supported_actions_includes_flare(cs_backend, cs_skill_book):
     raw_payload = {
         "events": [

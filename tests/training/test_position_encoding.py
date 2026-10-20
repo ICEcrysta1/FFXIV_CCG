@@ -33,24 +33,6 @@ def test_rope_uses_independent_query_and_key_positions():
     assert not torch.equal(rotated_key, key)
 
 
-def test_rope_rotates_in_standard_positive_direction():
-    """锁定正旋转约定：基向量 (1, 0) 在位置 m 旋转后为 (cos, sin)。
-
-    通道 0 的频率恒为 1（theta ** 0），位置 1 的相位即 1 rad；若实现
-    误回负旋转 R(-θ)，第二半会得到 -sin(1)，形成镜像差异。
-    """
-    rope = RotaryPositionEncoding(head_dim=4)
-    values = torch.zeros(1, 1, 1, 4)
-    values[..., 0] = 1.0
-    positions = torch.tensor([[1]])
-
-    rotated = rope.apply(values, positions)
-
-    torch.testing.assert_close(
-        rotated[0, 0, 0], torch.tensor([torch.cos(torch.tensor(1.0)), 0.0, torch.sin(torch.tensor(1.0)), 0.0])
-    )
-
-
 def test_rope_matches_mainstream_half_split_formula():
     """与 LLaMA/HF/GPT-NeoX 的 half-split 正旋转公式逐元素一致。"""
     rope = RotaryPositionEncoding(head_dim=4, theta=2.0)

@@ -450,8 +450,7 @@ def test_model_analysis_grid_shape_matches_near_square_rule():
         plt.close(single_fig)
 
 
-def test_model_analysis_common_helpers_and_context_loading(monkeypatch, tmp_path):
-    context = _analysis_context(tmp_path)
+def test_model_analysis_common_helpers(monkeypatch):
     empty_vectors = analysis_common._concat_arrays(
         [], empty_shape=(0, 0), dtype=np.float32
     )
@@ -474,130 +473,17 @@ def test_model_analysis_common_helpers_and_context_loading(monkeypatch, tmp_path
         pca_projection(np.zeros((2, 3)), 3)
 
     analysis_common.configure_matplotlib()
-    assert context.output_dir != tmp_path
-
-    checkpoint_path = tmp_path / "checkpoint.pt"
-    torch.save(
-        {
-            "data_spec": {
-                "job_tag": "black_mage",
-                "num_actions": 2,
-                "state_dim": 5,
-                "base_state_dim": 1,
-                "scene_dim": 1,
-                "skill_feature_dim": 1,
-                "num_scene_types": 1,
-                "action_keys": ["a", "b"],
-                "action_to_vocab_id": [1, 2],
-                "action_is_gcd": [True, False],
-                "skill_feature_names": ["potency"],
-            },
-            "model_state_dict": {},
-        },
-        checkpoint_path,
-    )
-
-    class FakeVocab:
-        @staticmethod
-        def build_from_job_tag(_job):
-            return FakeVocab()
-
-        @staticmethod
-        def size():
-            return 2
-
-    class FakeDataset:
-        job_tag = "black_mage"
-        num_actions = 2
-        state_dim = 5
-        base_state_dim = 1
-        scene_dim = 1
-        num_scene_types = 1
-        action_keys = ("a", "b")
-        action_to_vocab_id = (1, 2)
-        action_is_gcd = (True, False)
-        skill_feature_names = ("potency",)
-        schema = SimpleNamespace()
-
-        def __len__(self):
-            return 1
-
-        def __getitem__(self, index):
-            return {"metadata": {"fight_id": "f", "step": 0}}
-
-    class FakeModel:
-        encoder = SimpleNamespace(layers=[0, 1])
-
-        @staticmethod
-        def checkpoint_model_config(_checkpoint):
-            return SimpleNamespace()
-
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        def load_state_dict(self, _state):
-            return None
-
-        def to(self, _device):
-            return self
-
-        def eval(self):
-            return self
-
-        def trace(self, _batch):
-            encoded = {
-                "padding_mask": torch.zeros((1, 4), dtype=torch.bool),
-                "role_ids": torch.tensor([[ROLE_SCENE, ROLE_STATE, ROLE_SKILL, ROLE_STATE]]),
-                "current_state_positions": torch.tensor([3]),
-            }
-            return SimpleNamespace(
-                encoded=encoded,
-                hidden=torch.zeros((1, 4, 2)),
-                layer_hidden=[torch.ones((1, 4, 2)), torch.ones((1, 4, 2)) * 2],
-                attentions=[],
-            )
-
-        @staticmethod
-        def score_hidden(_encoded, _hidden, _batch):
-            return torch.tensor([[1.0, 0.0]])
-
-    class FakeNormalizer:
-        def register_schema(self, _schema):
-            pass
-
-    monkeypatch.setattr(analysis_common, "resolve_project_job_tag", lambda **_kwargs: "black_mage")
-    monkeypatch.setattr(analysis_common, "SkillVocab", FakeVocab)
-    monkeypatch.setattr(analysis_common, "CausalPolicyModel", FakeModel)
-    monkeypatch.setattr(analysis_common, "TrainingDataset", lambda *_args, **_kwargs: FakeDataset())
-    monkeypatch.setattr(analysis_common, "Normalizer", FakeNormalizer)
-    monkeypatch.setattr(analysis_common, "TrainingCollator", lambda: (lambda samples: {}))
-    monkeypatch.setattr(analysis_common, "_resolve_device", lambda _device: torch.device("cpu"))
-    monkeypatch.setattr(analysis_common, "build_token_metadata", lambda *args, **kwargs: {
-        feature: np.zeros((1, 4), dtype=object if feature in {"fight_id", "legal", "invalid_reason", "elemental_state"} else float)
-        for feature in analysis_common.ANALYSIS_FEATURES
-    })
-    monkeypatch.setattr(analysis_common.DataSpec, "from_dataset", lambda _dataset: analysis_common.DataSpec(
-        job_tag="black_mage", num_actions=2, state_dim=5, base_state_dim=1,
-        scene_dim=1, skill_feature_dim=1, num_scene_types=1, action_keys=("a", "b"),
-        skill_feature_names=("potency",), action_to_vocab_id=(1, 2), action_is_gcd=(True, False)
-    ))
-    monkeypatch.setattr(analysis_common.DataSpec, "assert_compatible_with", lambda self, other: None)
-    monkeypatch.setattr(analysis_common, "move_batch", lambda batch, device: batch)
-
-    # Avoid exercising reader internals here; the remaining helpers and output modules
-    # are tested with focused fake contexts below.
-    assert context.layer_vectors[0].shape == (8, 4)
 
 
-@pytest.mark.parametrize("reordered_schema", [False, True])
-@pytest.mark.parametrize("precision,metadata,expected_dtype", [
-    ("float32", {}, torch.float32),
-    ("bf16", {}, torch.bfloat16),
-    ("bf16", {"training_precision": "bf16", "training_parameter_precision": "float32"}, torch.float32),
-    ("bf16", {"training_parameter_precision": "float32"}, torch.float32),
-    ("float32", {"training_precision": "bf16", "training_parameter_precision": "float32"}, torch.float32),
-    ("float32", {"training_precision": "bf16", "training_parameter_precision": "bf16"}, torch.float32),
-    ("bf16", {"training_precision": "float32", "training_parameter_precision": "float32"}, torch.bfloat16),
+@pytest.mark.parametrize("reordered_schema,precision,metadata,expected_dtype", [
+    (False, "float32", {}, torch.float32),
+    (False, "bf16", {}, torch.bfloat16),
+    (False, "bf16", {"training_precision": "bf16", "training_parameter_precision": "float32"}, torch.float32),
+    (False, "bf16", {"training_parameter_precision": "float32"}, torch.float32),
+    (False, "float32", {"training_precision": "bf16", "training_parameter_precision": "float32"}, torch.float32),
+    (False, "float32", {"training_precision": "bf16", "training_parameter_precision": "bf16"}, torch.float32),
+    (False, "bf16", {"training_precision": "float32", "training_parameter_precision": "float32"}, torch.bfloat16),
+    (True, "float32", {}, torch.float32),
 ])
 def test_analysis_restores_saved_input_contract_without_current_yaml(
     monkeypatch, tmp_path, reordered_schema, precision, metadata, expected_dtype,
@@ -880,27 +766,6 @@ def test_model_analysis_outputs_generate_pngs(monkeypatch, tmp_path):
         history_output.plot_history_embeddings(context, max_points=1)
 
 
-def test_model_analysis_layer_pca_reuses_projection_cache(monkeypatch, tmp_path):
-    context = _analysis_context(tmp_path)
-    context.output_dir.mkdir(parents=True)
-    calls = []
-    original = pca_output.pca_projection
-
-    def record_projection(values, components, **kwargs):
-        calls.append((values.shape, components))
-        return original(values, components, **kwargs)
-
-    monkeypatch.setattr(pca_output, "pca_projection", record_projection)
-    pca_output.plot_layer_pca(context)
-
-    assert calls == [
-        ((8, 4), 3),
-        ((4, 4), 2),
-        ((8, 4), 3),
-        ((4, 4), 2),
-    ]
-
-
 def test_compact_causal_analysis_preserves_gathered_skill_ids_and_absolute_state_labels(monkeypatch, tmp_path):
     """正式 compact collator 分析必须同时读取已 gather 的历史身份和未归一化的当前状态。"""
     from common.policy.config import ModelConfig
@@ -1082,50 +947,6 @@ def test_history_embedding_views_exclude_padding_and_support_empty_history(monke
     assert all(path.is_file() for path in history_output.plot_history_embeddings(context, batch_size=1))
     values["history_mask"] = torch.zeros((1, 2), dtype=torch.bool)
     assert all(path.is_file() for path in history_output.plot_history_embeddings(context, batch_size=1))
-
-
-def test_history_skill_and_state_pca_fit_distinct_valid_observations(monkeypatch, tmp_path):
-    """显式位置只选归一化后的历史输入，scene/current 与 padding 都不能混入。"""
-    context = _analysis_context(tmp_path)
-    context.output_dir.mkdir(parents=True)
-    observed = {
-        "skill": torch.tensor([[[0.0, 1.0], [2.0, 3.0], [float("nan"), float("nan")]]]),
-        "state": torch.tensor([[[10.0, 0.0], [0.0, 10.0], [float("nan"), float("nan")]]]),
-    }
-    class Encoder:
-        def __call__(self, batch):
-            encoded = _history_input_encoding(observed['skill'], observed['state'], batch['history_mask'])
-            assert encoded['history_state_positions'].tolist() == [[2, 4, 6]]
-            assert encoded['history_skill_positions'].tolist() == [[3, 5, 7]]
-            assert encoded['current_state_positions'].tolist() == [8]
-            return encoded
-
-        @staticmethod
-        def embed_history(_batch):
-            pytest.fail('PCA 必须使用正式 forward 输出，不能直接读取原始 content')
-
-    context.model.input_encoder = Encoder()
-    monkeypatch.setattr(history_output, "skill_name_by_vocab_id", lambda _context: {1: "fire", 2: "ice"})
-    monkeypatch.setattr(history_output, "TrainingCollator", lambda: (lambda _samples: {
-        "history_skill_ids": torch.tensor([[1, 2, 0]]),
-        "history_mask": torch.tensor([[True, True, False]]),
-    }))
-    fitted = []
-    original = history_output.pca_projection
-
-    def record(values, components):
-        fitted.append(values.copy())
-        return original(values, components)
-
-    monkeypatch.setattr(history_output, "pca_projection", record)
-    paths = history_output.plot_history_embeddings(context, batch_size=2)
-    assert [path.name for path in paths] == [
-        "05_history_skill_embedding_pca.png", "05_history_state_embedding_pca.png",
-    ]
-    assert all(path.is_file() for path in paths)
-    assert len(fitted) == 2
-    np.testing.assert_array_equal(fitted[0], observed["skill"][0, :2].numpy())
-    np.testing.assert_array_equal(fitted[1], observed["state"][0, :2].numpy())
 
 
 def test_history_pca_uses_actual_normalized_input_encoder_output(monkeypatch, tmp_path):

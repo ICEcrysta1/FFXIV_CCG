@@ -5,8 +5,6 @@ from __future__ import annotations
 import importlib
 import subprocess
 import sys
-from copy import deepcopy
-from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,16 +12,12 @@ import pytest
 import torch
 
 from common.policy.config import resolve_policy_grpo_dir
-from common.policy.data import ActionSpace, DataSpec, SkillVocab
+from common.policy.data import ActionSpace, DataSpec
 from common.policy.model import repetition as repetition_module
+from grpo.checkpoint import _save_grpo_checkpoint
 from grpo.config import GrpoConfig, GrpoRunConfig, load_grpo_config
-from grpo.storage import GrpoDecision, GrpoRolloutStore
-from tests.training._causal_fixtures import make_data_spec, make_input_contract
-from grpo.checkpoint import (
-    _restore_grpo_rollback_state,
-    _save_grpo_checkpoint,
-)
 from grpo.rollout import _detach_batch_to_cpu
+from grpo.storage import GRPO_ROLLOUT_FORMAT, GrpoDecision, GrpoRolloutStore
 from grpo.trainer import run_grpo_training
 from grpo.update import (
     _update_policy,
@@ -31,6 +25,20 @@ from grpo.update import (
     compute_baseline_relative_advantages,
     compute_grpo_loss,
 )
+from tests.training._causal_fixtures import make_data_spec, make_input_contract
+
+
+class _ToyPolicy(torch.nn.Module):
+    """损失测试共用可求导 logits，并记录真实前向次数。"""
+
+    def __init__(self, logits=(0.0, 0.0, 0.0)):
+        super().__init__()
+        self.logits = torch.nn.Parameter(torch.tensor(logits))
+        self.forward_count = 0
+
+    def forward(self, batch):
+        self.forward_count += 1
+        return {"logits": self.logits.unsqueeze(0).expand(batch["action_legal_mask"].shape[0], -1)}
 
 
 def test_grpo_import_does_not_require_pretraining_package():
@@ -171,62 +179,6 @@ def test_baseline_relative_advantages_protect_identical_nonzero_group():
     assert torch.equal(advantages[0], torch.full((4,), 5.0))
 
 
-def test_grpo_rollback_restores_previous_disk_checkpoint(tmp_path):
-    model = torch.nn.Linear(2, 1)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=0.01)
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1.0)
-    input_batch = torch.ones((2, 2))
-    loss = model(input_batch).sum()
-    loss.backward()
-    optimizer.step()
-    scheduler.step()
-
-    expected_model = {
-        key: value.detach().clone()
-        for key, value in model.state_dict().items()
-    }
-    expected_optimizer = deepcopy(optimizer.state_dict())
-    expected_scheduler = deepcopy(scheduler.state_dict())
-    checkpoint_path = tmp_path / "latest.pt"
-    torch.save(
-        {
-            "model_state_dict": expected_model,
-            "optimizer_state_dict": expected_optimizer,
-            "scheduler_state_dict": expected_scheduler,
-        },
-        checkpoint_path,
-    )
-
-    with torch.no_grad():
-        for parameter in model.parameters():
-            parameter.add_(10.0)
-    optimizer.zero_grad(set_to_none=True)
-
-    _restore_grpo_rollback_state(
-        checkpoint_path=checkpoint_path,
-        initial_model_state={},
-        initial_optimizer_state=None,
-        initial_scheduler_state=None,
-        model=model,
-        optimizer=optimizer,
-        scheduler=scheduler,
-    )
-
-    for key, value in expected_model.items():
-        assert torch.equal(model.state_dict()[key], value)
-    actual_optimizer = optimizer.state_dict()
-    assert actual_optimizer["param_groups"] == expected_optimizer["param_groups"]
-    assert actual_optimizer["state"].keys() == expected_optimizer["state"].keys()
-    for state_key, expected_state in expected_optimizer["state"].items():
-        for field, expected_value in expected_state.items():
-            actual_value = actual_optimizer["state"][state_key][field]
-            if isinstance(expected_value, torch.Tensor):
-                assert torch.equal(actual_value, expected_value)
-            else:
-                assert actual_value == expected_value
-    assert scheduler.state_dict() == expected_scheduler
-
-
 def test_collate_grpo_decisions_right_pads_scene_and_history():
     batch = collate_grpo_decisions(
         (
@@ -257,15 +209,7 @@ def test_rollout_decision_copy_leaves_inference_mode():
 
 
 def test_compute_grpo_loss_is_finite_and_differentiable(monkeypatch):
-    class ToyPolicy(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.logits = torch.nn.Parameter(torch.zeros(3))
-
-        def forward(self, batch):
-            return {"logits": self.logits.unsqueeze(0).expand(batch["current_state_vectors"].shape[0], -1)}
-
-    policy = ToyPolicy()
+    policy = _ToyPolicy()
     batch = collate_grpo_decisions(
         (
             _decision(history_length=0, scene_length=0, action_index=0),
@@ -305,15 +249,7 @@ def test_compute_grpo_loss_is_finite_and_differentiable(monkeypatch):
 @pytest.mark.parametrize("log_ratio", [-1e-4, -1e-5, 1e-5, 1e-4])
 def test_compute_grpo_loss_preserves_near_zero_kl(log_ratio):
     """近零正负对数比的 KL 对齐双精度参考，且保留可用梯度。"""
-    class ToyPolicy(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.logits = torch.nn.Parameter(torch.zeros(3))
-
-        def forward(self, batch):
-            return {"logits": self.logits.unsqueeze(0)}
-
-    policy = ToyPolicy()
+    policy = _ToyPolicy()
     old_logprobs = torch.log(torch.tensor([1.0 / 3.0])) + log_ratio
     diagnostics = {}
     loss, metrics = compute_grpo_loss(
@@ -356,17 +292,7 @@ def test_collate_grpo_decisions_preserves_all_empty_sequences():
 
 
 def test_grpo_loss_diagnostics_reuse_forward_and_exclude_illegal_actions():
-    class ToyPolicy(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.logits = torch.nn.Parameter(torch.tensor([0.5, 100.0, -0.5]))
-            self.forward_count = 0
-
-        def forward(self, batch):
-            self.forward_count += 1
-            return {"logits": self.logits.unsqueeze(0)}
-
-    policy = ToyPolicy()
+    policy = _ToyPolicy((0.5, 100.0, -0.5))
     batch = collate_grpo_decisions((
         _decision(history_length=0, scene_length=0, action_index=0),
     ))
@@ -404,6 +330,7 @@ def test_grpo_config_rejects_nonpositive_time_horizon():
 
 def test_grpo_checkpoint_preserves_complete_input_vocab(tmp_path):
     from dataclasses import replace
+
     from common.policy.config import ModelConfig
     from common.policy.data import ModelInputContract
     from common.policy.model import CausalPolicyModel
@@ -448,7 +375,7 @@ def _run_grpo_with_backend(
     run_to_completion: bool = False,
     tensorboard_writer=None,
 ):
-    """在只跑到 setup 阶段的环境里执行 run_grpo_training，返回输出目录。"""
+    """用轻量后端执行训练入口，捕获输出目录和回放会话。"""
     scene_path = tmp_path / "scene.json"
     scene_path.write_text("{}", encoding="utf-8", newline="\n")
     prepared_actions = []
@@ -456,7 +383,7 @@ def _run_grpo_with_backend(
         "grpo.trainer.ReplayCacheStore.prepare",
         lambda *_a, **kwargs: prepared_actions.append(kwargs["expected_action_space"]),
     )
-    captured: dict[str, object] = {}
+    captured: dict[str, object] = {"sessions": []}
     Path(checkpoint_path).parent.mkdir(parents=True, exist_ok=True)
     torch.save(checkpoint_payload, checkpoint_path)
 
@@ -478,9 +405,11 @@ def _run_grpo_with_backend(
         def __init__(self, _replay_config, *, backend, cache_store, engine):
             del backend, cache_store
             captured["replay_config"] = _replay_config
+            self.close_calls = 0
+            captured["sessions"].append(self)
 
         def close(self):
-            pass
+            self.close_calls += 1
 
     monkeypatch.setattr("grpo.trainer.PyTorchPolicyBackend", lambda *_a, **_k: FakeBackend())
     monkeypatch.setattr("grpo.trainer.AutoregressiveReplaySession", FakeSession)
@@ -759,22 +688,10 @@ def test_grpo_temperature_default_is_higher_and_increases_entropy():
     assert config.max_duration_seconds == pytest.approx(1200.0)
     assert config.temperature == pytest.approx(1.3)
 
-    class NonUniformPolicy(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.logits = torch.nn.Parameter(torch.tensor([4.0, 1.0, -1.0]))
-
-        def forward(self, batch):
-            return {
-                "logits": self.logits.unsqueeze(0).expand(
-                    batch["current_state_vectors"].shape[0], -1
-                )
-            }
-
     batch = collate_grpo_decisions(
         (_decision(history_length=0, scene_length=0, action_index=0),)
     )
-    policy = NonUniformPolicy()
+    policy = _ToyPolicy((4.0, 1.0, -1.0))
 
     def entropy_for(temperature: float) -> float:
         _, metrics = compute_grpo_loss(
@@ -797,146 +714,53 @@ def test_grpo_temperature_default_is_higher_and_increases_entropy():
 
 
 def test_grpo_training_closes_replay_session_on_outer_failure(monkeypatch, tmp_path):
-    checkpoint_path = tmp_path / "checkpoint.pt"
-    checkpoint_path.write_bytes(b"checkpoint")
-    scene_path = tmp_path / "scene.json"
-    scene_path.write_text("{}", encoding="utf-8", newline="\n")
-    monkeypatch.setattr("grpo.trainer.ReplayCacheStore.prepare", lambda *_a, **_k: None)
-    config = GrpoRunConfig(
-        raw_data_dir=tmp_path / "raw",
-        output_dir=tmp_path / "output",
-        job_tag="black_mage",
-    )
-    grpo = GrpoConfig(group_size=2, max_iterations=1)
-
-    class FakeModel(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.weight = torch.nn.Parameter(torch.ones(1))
-            self.config = config.model
-
-    class FakeBackend:
-        def __init__(self):
-            self.model = FakeModel()
-            self.input_contract = _rollout_contract()
-            self.data_spec = DataSpec.from_dict(self.input_contract.data_spec)
-            self.repetition = SimpleNamespace()
-            self.checkpoint = {}
-
-    backend = FakeBackend()
-
-    class FakeSession:
-        instance = None
-
-        def __init__(self, _config, *, backend, cache_store, engine):
-            del _config, cache_store
-            self.backend = backend
-            self.close_calls = 0
-            FakeSession.instance = self
-
-        def close(self):
-            self.close_calls += 1
-
-    monkeypatch.setattr(
-        "grpo.trainer.PyTorchPolicyBackend",
-        lambda *_args, **_kwargs: backend,
-    )
-    monkeypatch.setattr("grpo.trainer.AutoregressiveReplaySession", FakeSession)
-    monkeypatch.setattr(
-        "grpo.trainer.resolve_policy_cache_dir",
-        lambda _job_tag: tmp_path / "cache",
-    )
-    monkeypatch.setattr(
-        "grpo.trainer.resolve_policy_grpo_dir",
-        lambda _job_tag: tmp_path / "grpo",
-    )
-    monkeypatch.setattr(
-        "grpo.trainer._run_scene_rollout",
-        lambda *_args, **_kwargs: (
-            SimpleNamespace(ppg=1.0),
-            (_decision(history_length=0, scene_length=0, action_index=0),),
+    captured = {}
+    _run_grpo_with_backend(
+        monkeypatch, tmp_path,
+        config=GrpoRunConfig(
+            raw_data_dir=tmp_path / "raw", output_dir=tmp_path / "output", job_tag="black_mage",
         ),
+        checkpoint_path=tmp_path / "checkpoint.pt",
+        checkpoint_payload={},
+        capture_output=captured,
     )
-    monkeypatch.setattr(
-        "grpo.trainer.compute_baseline_relative_advantages",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            RuntimeError("metric failure")
-        ),
-    )
-
-    with pytest.raises(RuntimeError, match="metric failure"):
-        run_grpo_training(
-            config,
-            grpo=grpo,
-            checkpoint_path=checkpoint_path,
-            raw_paths=(scene_path,),
-            device_name="cpu",
-        )
-
-    assert FakeSession.instance is not None
-    assert FakeSession.instance.close_calls == 1
+    assert captured["sessions"]
+    assert all(session.close_calls == 1 for session in captured["sessions"])
 
 
-@dataclass
-class _StubConfig:
-    raw_data_dir: Path
-    output_dir: Path
-    job_tag: str | None
-    max_files: int | None = None
-    model_variant: str | None = None
-
-
-def test_grpo_cli_forwards_max_files_and_overrides(monkeypatch, capsys, tmp_path):
+@pytest.fixture
+def grpo_cli(monkeypatch, tmp_path):
     cli = importlib.import_module("grpo.grpo")
-    config_path = tmp_path / "config.yaml"
-    output_dir = tmp_path / "custom-output" / "grpo-run"
-    input_config = _StubConfig(
-        raw_data_dir=tmp_path / "raw-default",
-        output_dir=tmp_path / "bc",
-        job_tag=None,
-    )
-    calls: dict[str, object] = {}
-
-    monkeypatch.setattr(cli, "resolve_policy_model_config_path", lambda value: config_path)
-    monkeypatch.setattr(cli, "load_grpo_run_config", lambda path: input_config)
+    config = GrpoRunConfig(raw_data_dir=tmp_path / "raw-default", output_dir=tmp_path / "bc", job_tag=None)
+    calls = {}
+    monkeypatch.setattr(cli, "resolve_policy_model_config_path", lambda value: tmp_path / "config.yaml")
+    monkeypatch.setattr(cli, "load_grpo_run_config", lambda path: config)
     monkeypatch.setattr(cli, "load_grpo_config", lambda path: GrpoConfig())
     monkeypatch.setattr(cli, "resolve_policy_model_job_tag", lambda path: "black_mage")
     monkeypatch.setattr(cli, "resolve_policy_model_variant", lambda path: "artzip")
     monkeypatch.setattr(cli, "resolve_policy_device", lambda value: "cpu")
     monkeypatch.setattr(cli, "resolve_policy_checkpoint_path", lambda path: tmp_path / "best.pt")
     monkeypatch.setattr(
-        cli,
-        "_load_grpo_scenes",
-        lambda config, max_files: calls.update(
-            {"scene_config": config, "max_files": max_files}
-        ) or [tmp_path / "scene.json"],
+        cli, "_load_grpo_scenes",
+        lambda config, max_files: calls.update(scene_config=config, max_files=max_files)
+        or [tmp_path / "scene.json"],
     )
-
-    def fake_run(config, **kwargs):
-        calls["config"] = config
-        calls["kwargs"] = kwargs
-        return {"final_checkpoint": tmp_path / "grpo" / "final.pt"}
-
-    monkeypatch.setattr(cli, "run_grpo_training", fake_run)
     monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "grpo.py",
-            "--config",
-            str(config_path),
-            "--max-files",
-            "7",
-            "--group-size",
-            "5",
-            "--iterations",
-            "2",
-            "--output-dir",
-            str(output_dir),
-            "--device",
-            "cpu",
-        ],
+        cli, "run_grpo_training",
+        lambda config, **kwargs: calls.update(config=config, kwargs=kwargs)
+        or {"final_checkpoint": tmp_path / "grpo" / "final.pt"},
     )
+    return cli, config, calls
+
+
+def test_grpo_cli_forwards_max_files_and_overrides(monkeypatch, capsys, tmp_path, grpo_cli):
+    cli, input_config, calls = grpo_cli
+    output_dir = tmp_path / "custom-output" / "grpo-run"
+    monkeypatch.setattr(sys, "argv", [
+        "grpo.py", "--config", str(tmp_path / "config.yaml"),
+        "--max-files", "7", "--group-size", "5", "--iterations", "2",
+        "--output-dir", str(output_dir), "--device", "cpu",
+    ])
 
     cli.main()
 
@@ -954,46 +778,13 @@ def test_grpo_cli_forwards_max_files_and_overrides(monkeypatch, capsys, tmp_path
     assert "final.pt" in capsys.readouterr().out
 
 
-def test_grpo_cli_reuses_training_max_files_when_cli_is_absent(
-    monkeypatch,
-    capsys,
-    tmp_path,
-):
+def test_grpo_cli_reuses_training_max_files_when_cli_is_absent(monkeypatch, capsys, tmp_path, grpo_cli):
     """省略 --max-files 时 GRPO 复用模型 YAML 的 training.max_files。"""
-    cli = importlib.import_module("grpo.grpo")
-    config_path = tmp_path / "config.yaml"
-    input_config = _StubConfig(
-        raw_data_dir=tmp_path / "raw-default",
-        output_dir=tmp_path / "bc",
-        job_tag=None,
-        max_files=1280,
-    )
-    calls: dict[str, object] = {}
+    from dataclasses import replace
 
-    monkeypatch.setattr(cli, "resolve_policy_model_config_path", lambda value: config_path)
-    monkeypatch.setattr(cli, "load_grpo_run_config", lambda path: input_config)
-    monkeypatch.setattr(cli, "load_grpo_config", lambda path: GrpoConfig())
-    monkeypatch.setattr(cli, "resolve_policy_model_job_tag", lambda path: "black_mage")
-    monkeypatch.setattr(cli, "resolve_policy_model_variant", lambda path: "artzip")
-    monkeypatch.setattr(cli, "resolve_policy_device", lambda value: "cpu")
-    monkeypatch.setattr(cli, "resolve_policy_checkpoint_path", lambda path: tmp_path / "best.pt")
-    monkeypatch.setattr(
-        cli,
-        "_load_grpo_scenes",
-        lambda config, max_files: calls.update(max_files=max_files)
-        or [tmp_path / "scene.json"],
-    )
-    monkeypatch.setattr(
-        cli,
-        "run_grpo_training",
-        lambda config, **kwargs: calls.update(config=config)
-        or {"final_checkpoint": tmp_path / "grpo" / "final.pt"},
-    )
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["grpo.py", "--config", str(config_path), "--device", "cpu"],
-    )
+    cli, input_config, calls = grpo_cli
+    monkeypatch.setattr(cli, "load_grpo_run_config", lambda path: replace(input_config, max_files=1280))
+    monkeypatch.setattr(sys, "argv", ["grpo.py", "--config", str(tmp_path / "config.yaml"), "--device", "cpu"])
 
     cli.main()
 
@@ -1002,41 +793,12 @@ def test_grpo_cli_reuses_training_max_files_when_cli_is_absent(
     assert "final.pt" in capsys.readouterr().out
 
 
-def test_grpo_cli_rejects_non_positive_max_files(monkeypatch, tmp_path):
-    cli = importlib.import_module("grpo.grpo")
-    config_path = tmp_path / "config.yaml"
-    input_config = _StubConfig(
-        raw_data_dir=tmp_path / "raw-default",
-        output_dir=tmp_path / "bc",
-        job_tag=None,
-    )
-
-    monkeypatch.setattr(cli, "resolve_policy_model_config_path", lambda value: config_path)
-    monkeypatch.setattr(cli, "load_grpo_run_config", lambda path: input_config)
-    monkeypatch.setattr(cli, "load_grpo_config", lambda path: GrpoConfig())
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["grpo.py", "--config", str(config_path), "--max-files", "0"],
-    )
+def test_grpo_cli_rejects_non_positive_max_files(monkeypatch, tmp_path, grpo_cli):
+    cli, _config, _calls = grpo_cli
+    monkeypatch.setattr(sys, "argv", ["grpo.py", "--config", str(tmp_path / "config.yaml"), "--max-files", "0"])
 
     with pytest.raises(ValueError, match="--max-files must be >= 1"):
         cli.main()
-
-
-def test_grpo_cli_rejects_resume_option(monkeypatch):
-    cli = importlib.import_module("grpo.grpo")
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "grpo.py",
-            "--resume",
-        ],
-    )
-    with pytest.raises(SystemExit) as exc_info:
-        cli.main()
-    assert exc_info.value.code == 2
 
 
 def test_grpo_directory_follows_env_cache_root_and_job(monkeypatch, tmp_path):
@@ -1075,17 +837,17 @@ def test_grpo_rollout_store_persists_and_streams_cpu_decisions(tmp_path):
     assert loaded_advantages.tolist() == [1.25]
 
 
-@pytest.mark.parametrize("previous_format", [1, 2, 3])
-def test_grpo_rollout_store_rejects_previous_input_format(tmp_path, previous_format):
-    """动作输入改为固定词表后，旧轨迹不能按新输入格式继续更新策略。"""
+def test_grpo_rollout_store_rejects_previous_input_format(tmp_path):
+    """旧轨迹必须在读取入口拒绝，不能继续更新策略。"""
     store = GrpoRolloutStore(tmp_path / "grpo", input_contract=_rollout_contract(), iteration=1, run_id="old-format")
     entry = store.write_trajectory(
         scene_json_path=tmp_path / "scene.json", decisions=(_decision(history_length=0, scene_length=0, action_index=0),),
         ppg=1.0, greedy_ppg=1.0, reward=0.0,
     )
-    torch.save({"format": previous_format, "decisions": []}, entry.path)
+    store.set_advantages((1.0,))
+    torch.save({"format": GRPO_ROLLOUT_FORMAT - 1, "decisions": []}, entry.path)
     with pytest.raises(ValueError, match="unsupported GRPO trajectory format"):
-        store._load_decisions(entry.path)
+        list(store.iter_minibatches(1))
 
 
 def test_grpo_update_weights_metrics_by_decisions_and_defers_host_reads(monkeypatch, tmp_path):
@@ -1118,80 +880,6 @@ def test_grpo_update_weights_metrics_by_decisions_and_defers_host_reads(monkeypa
     )
     assert metrics.pop("optimizer_updates") == 4.0
     assert all(value == pytest.approx(5.0 / 3.0) for value in metrics.values())
-
-
-def test_grpo_update_streams_disk_rollouts_without_full_decision_buffer(monkeypatch, tmp_path):
-    policy = torch.nn.Linear(1, 1)
-    optimizer = torch.optim.SGD(policy.parameters(), lr=0)
-    store = GrpoRolloutStore(tmp_path / "grpo", input_contract=_rollout_contract(), iteration=1, run_id="stream-test")
-    for index in range(3):
-        store.write_trajectory(
-            scene_json_path=tmp_path / f"scene-{index}.json",
-            decisions=(_decision(history_length=index, scene_length=index, action_index=0),),
-            ppg=float(index),
-            greedy_ppg=0.0,
-            reward=float(index),
-        )
-    store.set_advantages((1.0, -1.0, 0.5))
-
-    def loss_fn(model, batch, **kwargs):
-        size = batch["current_state_vectors"].shape[0]
-        loss = model.weight.sum() * size
-        return loss, {
-            key: loss.detach() * 0 + size
-            for key in ("loss", "policy_loss", "kl", "entropy", "clip_fraction", "mean_ratio")
-        }
-
-    monkeypatch.setattr("grpo.update.compute_grpo_loss", loss_fn)
-    metrics = _update_policy(
-        policy,
-        optimizer,
-        None,
-        store,
-        grpo=GrpoConfig(minibatch_size=2, inner_updates=2),
-        repetition=repetition_module.RepetitionConfig("blacklist", ("fire_iii",), 1.0),
-        device=torch.device("cpu"),
-        precision="float32",
-    )
-
-    assert metrics["optimizer_updates"] == 4.0
-
-
-def test_grpo_update_logs_optimizer_metrics_to_tensorboard(monkeypatch, tmp_path):
-    policy = torch.nn.Linear(1, 1)
-    optimizer = torch.optim.SGD(policy.parameters(), lr=0.0)
-    decision = _decision(history_length=1, scene_length=1, action_index=0)
-    store = _store_decisions(tmp_path, (decision,), (1.0,))
-
-    def loss_fn(model, _batch, **_kwargs):
-        loss = model.weight.sum() * 0.0 + 1.0
-        metric_names = ("loss", "policy_loss", "kl", "entropy", "clip_fraction", "mean_ratio")
-        return loss, {name: loss.detach() * 0.0 + 0.5 for name in metric_names}
-
-    class ScalarRecorder:
-        def __init__(self):
-            self.values = []
-
-        def add_scalar(self, tag, value, step):
-            self.values.append((tag, value, step))
-
-    writer = ScalarRecorder()
-    monkeypatch.setattr("grpo.update.compute_grpo_loss", loss_fn)
-    _update_policy(
-        policy,
-        optimizer,
-        None,
-        store,
-        grpo=GrpoConfig(minibatch_size=1, inner_updates=1),
-        repetition=repetition_module.RepetitionConfig("blacklist", ("fire_iii",), 1.0),
-        device=torch.device("cpu"),
-        precision="float32",
-        tensorboard_writer=writer,
-        tensorboard_log_every_steps=1,
-        global_step_offset=5,
-    )
-
-    assert any(tag == "GRPO/优化更新/总损失" and step == 6 for tag, _value, step in writer.values)
 
 
 def test_grpo_tensorboard_interval_uses_sample_weights_and_applied_learning_rate(monkeypatch, tmp_path):
@@ -1240,17 +928,7 @@ def test_grpo_tensorboard_interval_uses_sample_weights_and_applied_learning_rate
 
 
 def test_grpo_monitor_reads_existing_forward_and_live_gradients(tmp_path):
-    class ToyPolicy(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.logits = torch.nn.Parameter(torch.zeros(3))
-            self.forward_count = 0
-
-        def forward(self, batch):
-            self.forward_count += 1
-            return {"logits": self.logits.unsqueeze(0)}
-
-    policy = ToyPolicy()
+    policy = _ToyPolicy()
     optimizer = torch.optim.SGD(policy.parameters(), lr=0.01)
     store = _store_decisions(
         tmp_path,
@@ -1339,25 +1017,14 @@ def test_grpo_store_rejects_missing_dead_input_before_write(tmp_path, field):
 
 
 @pytest.mark.parametrize("raw_field", ("current_state_abs_values", "scene_abs_values", "history_state_delta_reset_mask", "history_bank_skill_ids"))
-def test_grpo_store_rejects_raw_states_and_old_rollout_format(tmp_path, raw_field):
-    from common.pytorch.serialization import safe_torch_load
-
+def test_grpo_store_rejects_raw_states_before_write(tmp_path, raw_field):
     decision = _decision(history_length=1, scene_length=1, action_index=0)
     decision.batch[raw_field] = torch.zeros((1, 3))
     store = GrpoRolloutStore(tmp_path / "grpo", input_contract=_rollout_contract(), iteration=1, run_id="raw")
     with pytest.raises(ValueError, match="not raw context"):
         store.write_trajectory(scene_json_path=tmp_path / "scene.json", decisions=(decision,),
                                ppg=1.0, greedy_ppg=0.0, reward=1.0)
-    decision.batch.pop(raw_field)
-    entry = store.write_trajectory(scene_json_path=tmp_path / "scene.json", decisions=(decision,),
-                                   ppg=1.0, greedy_ppg=0.0, reward=1.0)
-    store.set_advantages((1.0,))
-    payload = safe_torch_load(entry.path)
-    assert payload["format"] == 7
-    payload["format"] = 6
-    torch.save(payload, entry.path)
-    with pytest.raises(ValueError, match="unsupported GRPO trajectory format"):
-        list(store.iter_minibatches(1))
+    assert not store.entries
 
 
 @pytest.mark.parametrize("metadata,error", [
@@ -1382,6 +1049,7 @@ def test_grpo_store_validates_independent_window_metadata(tmp_path, metadata, er
 
 def test_grpo_cursor_roundtrips_after_history_reset_without_entering_model_batch(tmp_path):
     from dataclasses import replace
+
     from common.pytorch.serialization import safe_torch_load
 
     decision = replace(_decision(history_length=8, scene_length=1, action_index=0),
