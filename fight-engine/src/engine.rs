@@ -17,6 +17,7 @@ use crate::state::{
 use crate::system::timeline::{TIME_EPSILON, TimelineEvent};
 use crate::system::{SystemRules, ZERO_EPSILON};
 
+pub mod replay;
 pub mod sessions;
 pub mod simulator;
 

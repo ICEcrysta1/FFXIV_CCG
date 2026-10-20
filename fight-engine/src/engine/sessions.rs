@@ -186,10 +186,10 @@ impl Drop for SimulationEngine {
     }
 }
 
-struct SessionRuntime {
-    simulator: Simulator,
+pub(super) struct SessionRuntime {
+    pub(super) simulator: Simulator,
     policy: PolicySession,
-    formatter: OutputFormatter,
+    pub(super) formatter: OutputFormatter,
 }
 
 pub struct SimulationSession {
@@ -378,7 +378,7 @@ impl SimulationSession {
         }
     }
 
-    fn execute<T>(
+    pub(super) fn execute<T>(
         &self,
         action: impl FnOnce(&mut SessionRuntime) -> Result<T, String>,
     ) -> Result<SessionResult<T>, String> {
