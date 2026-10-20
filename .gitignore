@@ -14,6 +14,7 @@ build/
 dist/
 bin/
 obj/
+/fight-engine/target/
 
 # Virtual environments
 node_modules/
