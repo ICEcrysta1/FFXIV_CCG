@@ -16,6 +16,7 @@ from common.training.tensorboard_monitor import TensorBoardMonitor
 from ..config import ActionQualityLossConfig, ValuePreferenceConfig
 from ..runtime import RuntimeDebugRecorder
 from .loss import LossBreakdown, compose_training_loss, configured_auxiliary_losses
+from .progress import EpochProgress
 
 _EPOCH_METRICS = ("loss", "cross_entropy_loss", "top1_accuracy", "top3_accuracy")
 
@@ -50,6 +51,7 @@ def train_epoch(
     value_preference: ValuePreferenceConfig | None = None,
     runtime_debug: RuntimeDebugRecorder | None = None,
     epoch: int = 0,
+    max_epochs: int | None = None,
     tensorboard_writer=None,
     tensorboard_monitor: TensorBoardMonitor | None = None,
     tensorboard_log_every_steps: int = 50,
@@ -70,72 +72,76 @@ def train_epoch(
         else None
     )
     repetition = getattr(model, "repetition", RepetitionConfig())
-    for step, batch in enumerate(loader, start=1):
-        optimizer.zero_grad(set_to_none=True)
-        if runtime_debug is not None:
-            runtime_debug.begin_step(epoch=epoch, step=step, batch=batch)
-        try:
-            with _debug_stage(runtime_debug, "batch_to_device"):
-                batch = prepare_repetition_penalty(batch, repetition)
-                batch = move_batch(batch, device, non_blocking=device.type == "cuda")
-            if context_encoder is not None:
-                with _debug_stage(runtime_debug, "context_encoding"):
-                    batch = context_encoder.encode(batch)
-            if tensorboard_monitor is not None:
-                with autocast_context(device, precision):
-                    tensorboard_monitor.log_graph(batch)
-            with _debug_stage(runtime_debug, "forward"), autocast_context(device, precision):
-                output = model(batch)
-            with _debug_stage(runtime_debug, "training_loss"):
-                losses = compose_training_loss(
-                    output,
-                    batch,
-                    auxiliary_losses,
-                    action_quality=action_quality,
-                )
-            with _debug_stage(runtime_debug, "backward"):
-                losses.total.backward()
-            with _debug_stage(runtime_debug, "clip_grad_norm"):
-                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            global_step = global_step_offset + step
-            if tensorboard_monitor is not None:
-                tensorboard_monitor.log_gradients(global_step, grad_norm=grad_norm)
-            # 记录这次更新真正使用的学习率，调度器推进后的值属于下一次更新。
-            learning_rate = optimizer.param_groups[0]["lr"]
-            with _debug_stage(runtime_debug, "optimizer_step"):
-                optimizer.step()
-            with _debug_stage(runtime_debug, "scheduler_step"):
-                scheduler.step()
-        finally:
+    with EpochProgress(
+        totals, device, epoch=epoch, max_epochs=max_epochs, phase="Epoch", total=len(loader),
+    ) as progress:
+        for step, batch in enumerate(loader, start=1):
+            optimizer.zero_grad(set_to_none=True)
             if runtime_debug is not None:
-                runtime_debug.end_step()
-        count = batch["label_index"].shape[0]
-        step_metrics = _batch_metrics(output, losses)
-        totals.update(step_metrics, weight=count)
-        if interval_totals is not None:
-            interval_totals.update(
-                {
-                    **step_metrics,
-                    "learning_rate": torch.tensor(learning_rate, dtype=torch.float64, device=device),
-                    "gradient_norm": torch.as_tensor(grad_norm, device=device),
-                },
-                weight=count,
-            )
-        if tensorboard_monitor is not None:
-            tensorboard_monitor.log_step(
-                output["logits"], global_step=global_step, labels=batch["label_index"],
-            )
-        if tensorboard_writer is not None and (
-            step % tensorboard_log_every_steps == 0 or step == len(loader)
-        ):
-            write_scalar_metrics(
-                tensorboard_writer,
-                interval_totals.mean(),
-                prefix="train/step",
-                global_step=global_step_offset + step,
-            )
-            # 每个点汇总本日志区间的所有样本，末尾不足一个区间也会写入。
-            interval_totals = MetricAccumulator(interval_totals.names, device=device)
+                runtime_debug.begin_step(epoch=epoch, step=step, batch=batch)
+            try:
+                with _debug_stage(runtime_debug, "batch_to_device"):
+                    batch = prepare_repetition_penalty(batch, repetition)
+                    batch = move_batch(batch, device, non_blocking=device.type == "cuda")
+                if context_encoder is not None:
+                    with _debug_stage(runtime_debug, "context_encoding"):
+                        batch = context_encoder.encode(batch)
+                if tensorboard_monitor is not None:
+                    with autocast_context(device, precision):
+                        tensorboard_monitor.log_graph(batch)
+                with _debug_stage(runtime_debug, "forward"), autocast_context(device, precision):
+                    output = model(batch)
+                with _debug_stage(runtime_debug, "training_loss"):
+                    losses = compose_training_loss(
+                        output,
+                        batch,
+                        auxiliary_losses,
+                        action_quality=action_quality,
+                    )
+                with _debug_stage(runtime_debug, "backward"):
+                    losses.total.backward()
+                with _debug_stage(runtime_debug, "clip_grad_norm"):
+                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                global_step = global_step_offset + step
+                if tensorboard_monitor is not None:
+                    tensorboard_monitor.log_gradients(global_step, grad_norm=grad_norm)
+                # 记录这次更新真正使用的学习率，调度器推进后的值属于下一次更新。
+                learning_rate = optimizer.param_groups[0]["lr"]
+                with _debug_stage(runtime_debug, "optimizer_step"):
+                    optimizer.step()
+                with _debug_stage(runtime_debug, "scheduler_step"):
+                    scheduler.step()
+            finally:
+                if runtime_debug is not None:
+                    runtime_debug.end_step()
+            count = batch["label_index"].shape[0]
+            step_metrics = _batch_metrics(output, losses)
+            totals.update(step_metrics, weight=count)
+            if interval_totals is not None:
+                interval_totals.update(
+                    {
+                        **step_metrics,
+                        "learning_rate": torch.tensor(learning_rate, dtype=torch.float64, device=device),
+                        "gradient_norm": torch.as_tensor(grad_norm, device=device),
+                    },
+                    weight=count,
+                )
+            if tensorboard_monitor is not None:
+                tensorboard_monitor.log_step(
+                    output["logits"], global_step=global_step, labels=batch["label_index"],
+                )
+            if tensorboard_writer is not None and (
+                step % tensorboard_log_every_steps == 0 or step == len(loader)
+            ):
+                write_scalar_metrics(
+                    tensorboard_writer,
+                    interval_totals.mean(),
+                    prefix="train/step",
+                    global_step=global_step_offset + step,
+                )
+                # 每个点汇总本日志区间的所有样本，末尾不足一个区间也会写入。
+                interval_totals = MetricAccumulator(interval_totals.names, device=device)
+            progress.update()
     return totals.mean()
 
 
@@ -147,6 +153,8 @@ def validate(
     precision: str = "float32",
     *,
     value_preference: ValuePreferenceConfig | None = None,
+    epoch: int = 0,
+    max_epochs: int | None = None,
     context_encoder: ContextEncoder | None = None,
     tensorboard_monitor: TensorBoardMonitor | None = None,
     global_step: int = 0,
@@ -160,25 +168,29 @@ def validate(
     repetition = getattr(model, "repetition", RepetitionConfig())
     if tensorboard_monitor is not None:
         tensorboard_monitor.begin_validation()
-    for batch in loader:
-        batch = prepare_repetition_penalty(batch, repetition)
-        batch = move_batch(batch, device, non_blocking=device.type == "cuda")
-        if context_encoder is not None:
-            batch = context_encoder.encode(batch)
-        with autocast_context(device, precision):
-            output = model(batch)
-        if tensorboard_monitor is not None:
-            tensorboard_monitor.update_validation(output["logits"], batch["label_index"])
-        losses = compose_training_loss(
-            output,
-            batch,
-            auxiliary_losses,
-        )
-        count = batch["label_index"].shape[0]
-        totals.update(
-            _batch_metrics(output, losses),
-            weight=count,
-        )
+    with EpochProgress(
+        totals, device, epoch=epoch, max_epochs=max_epochs, phase="Val", total=len(loader),
+    ) as progress:
+        for batch in loader:
+            batch = prepare_repetition_penalty(batch, repetition)
+            batch = move_batch(batch, device, non_blocking=device.type == "cuda")
+            if context_encoder is not None:
+                batch = context_encoder.encode(batch)
+            with autocast_context(device, precision):
+                output = model(batch)
+            if tensorboard_monitor is not None:
+                tensorboard_monitor.update_validation(output["logits"], batch["label_index"])
+            losses = compose_training_loss(
+                output,
+                batch,
+                auxiliary_losses,
+            )
+            count = batch["label_index"].shape[0]
+            totals.update(
+                _batch_metrics(output, losses),
+                weight=count,
+            )
+            progress.update()
     if tensorboard_monitor is not None:
         tensorboard_monitor.end_validation(global_step=global_step)
     return totals.mean()
