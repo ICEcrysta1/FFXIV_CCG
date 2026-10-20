@@ -1,3 +1,6 @@
+// Copyright (C) 2026 ICE_crystal
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! 真实 C# 回放门面对照：绝对请求、固定随机流、完整快照和独立队列。
 
 mod common;

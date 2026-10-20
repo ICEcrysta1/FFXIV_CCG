@@ -1,3 +1,6 @@
+// Copyright (C) 2026 ICE_crystal
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! 通过合成职业重放真实 C# 探针；输入与基线同时保存在 JSON 中。
 
 mod common;

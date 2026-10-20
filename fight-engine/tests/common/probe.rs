@@ -1,3 +1,6 @@
+// Copyright (C) 2026 ICE_crystal
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! 引擎差分测试共用合成职业，不依赖任何真实职业 crate。
 
 use fight_engine::config::{

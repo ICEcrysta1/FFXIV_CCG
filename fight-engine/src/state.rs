@@ -1,3 +1,6 @@
+// Copyright (C) 2026 ICE_crystal
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! 战斗状态与不可变历史；剩余时间始终由绝对截止时刻派生。
 
 use std::collections::BTreeMap;

@@ -1,3 +1,6 @@
+// Copyright (C) 2026 ICE_crystal
+// SPDX-License-Identifier: GPL-3.0-only
+
 #[path = "../../../tests/common.rs"]
 mod common;
 #[path = "../../../tests/common/jobs.rs"]

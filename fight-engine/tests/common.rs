@@ -1,3 +1,6 @@
+// Copyright (C) 2026 ICE_crystal
+// SPDX-License-Identifier: GPL-3.0-only
+
 use serde_json::Value;
 
 /// 离散值和顺序严格比较；浮点保留 FP32 级误差边界并报告字段路径。

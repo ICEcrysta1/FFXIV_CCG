@@ -1,3 +1,6 @@
+// Copyright (C) 2026 ICE_crystal
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! 固定基线来自 fixture 中 source_commit 指定的 C# 实现；Rust 测试不依赖 .NET。
 
 mod common;

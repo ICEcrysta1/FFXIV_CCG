@@ -1,3 +1,6 @@
+// Copyright (C) 2026 ICE_crystal
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! 实际基线重放：输出不推进队列，冻结历史、缓存恢复和模型列式载荷共用同一状态。
 
 mod common;

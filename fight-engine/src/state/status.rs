@@ -1,3 +1,6 @@
+// Copyright (C) 2026 ICE_crystal
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! Buff 定义与层数操作；调用方明确传入自己拥有的状态容器。
 
 use std::collections::BTreeMap;

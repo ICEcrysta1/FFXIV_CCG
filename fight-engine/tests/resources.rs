@@ -1,3 +1,6 @@
+// Copyright (C) 2026 ICE_crystal
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! 通用资源规则对照固定基线，浮点输出允许保留原先四位舍入之前的精度。
 
 use std::collections::BTreeMap;

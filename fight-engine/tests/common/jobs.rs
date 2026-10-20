@@ -1,3 +1,6 @@
+// Copyright (C) 2026 ICE_crystal
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! 职业 crate 共用的纯 Rust 基线重放器，不依赖任何具体职业。
 
 use std::collections::BTreeMap;
