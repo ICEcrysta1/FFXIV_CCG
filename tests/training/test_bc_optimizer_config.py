@@ -10,7 +10,6 @@ import pytest
 import yaml
 
 from common.policy.config import ModelConfig
-from common.policy.data.normalization import NormalizerConfig
 from common.training.optimizer_config import OptimizerConfig
 from grpo.config import GrpoConfig, load_grpo_config, load_grpo_run_config
 from training.config import RunConfig, load_run_config
@@ -37,14 +36,7 @@ def test_bc_optimizer_defaults_preserve_adamw(tmp_path):
     assert direct.fp32_gradients is loaded.fp32_gradients is False
 
 
-def test_bc_nested_defaults_are_independent_and_use_current_normalizer(tmp_path, monkeypatch):
-    load_normalizer = Mock(side_effect=[
-        NormalizerConfig(time_scale=90.0), NormalizerConfig(time_scale=180.0),
-    ])
-    monkeypatch.setattr(
-        "common.policy.data.normalization.load_normalizer_config", load_normalizer,
-    )
-
+def test_bc_nested_defaults_are_independent(tmp_path):
     first = RunConfig(raw_data_dir=tmp_path, output_dir=tmp_path, job_tag="black_mage")
     second = RunConfig(raw_data_dir=tmp_path, output_dir=tmp_path, job_tag="black_mage")
 
@@ -52,13 +44,11 @@ def test_bc_nested_defaults_are_independent_and_use_current_normalizer(tmp_path,
         assert getattr(first, name) is not getattr(second, name)
     assert first.runtime_debug == second.runtime_debug
     assert first.repetition == second.repetition
-    assert first.model.time_delta_scale == 90.0
-    assert second.model.time_delta_scale == 180.0
-    assert load_normalizer.call_count == 2
+    assert first.model == second.model == ModelConfig()
 
 
 def test_bc_explicit_model_bypasses_default_normalizer(tmp_path, monkeypatch):
-    model = ModelConfig(time_delta_scale=123.0)
+    model = ModelConfig(d_model=128)
     load_normalizer = Mock(side_effect=AssertionError("显式模型不应读取默认归一化配置"))
     monkeypatch.setattr(
         "common.policy.data.normalization.load_normalizer_config", load_normalizer,
@@ -72,14 +62,11 @@ def test_bc_explicit_model_bypasses_default_normalizer(tmp_path, monkeypatch):
     load_normalizer.assert_not_called()
 
 
-@pytest.mark.parametrize("model_raw,expected_scale,normalizer_reads", [
-    ({}, 135.0, 1),
-    ({"time_delta_scale": 123.0}, 123.0, 0),
-])
+@pytest.mark.parametrize("model_raw", [{}, {"d_model": 128}])
 def test_bc_loader_preserves_parsed_model_without_default_factory(
-    tmp_path, monkeypatch, model_raw, expected_scale, normalizer_reads,
+    tmp_path, monkeypatch, model_raw,
 ):
-    load_normalizer = Mock(return_value=NormalizerConfig(time_scale=135.0))
+    load_normalizer = Mock(side_effect=AssertionError("模型配置不应读取归一化配置"))
     monkeypatch.setattr(
         "common.policy.data.normalization.load_normalizer_config", load_normalizer,
     )
@@ -90,8 +77,8 @@ def test_bc_loader_preserves_parsed_model_without_default_factory(
 
     loaded = load_run_config(tmp_path / "config.yaml")
 
-    assert loaded.model.time_delta_scale == expected_scale
-    assert load_normalizer.call_count == normalizer_reads
+    assert loaded.model == ModelConfig.from_mapping(model_raw)
+    load_normalizer.assert_not_called()
 
 
 @pytest.mark.parametrize("enabled", [False, True])

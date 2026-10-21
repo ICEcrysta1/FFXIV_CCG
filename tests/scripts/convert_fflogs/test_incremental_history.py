@@ -683,7 +683,6 @@ def test_history_skill_features_keep_fp32_through_collation_and_context_encoding
     """低精度缓存也必须保留技能数值差异，并能直接进入正式上下文编码。"""
     import torch
 
-    from common.policy.config import ModelConfig
     from common.policy.data import Normalizer, SkillVocab
     from common.policy.data.context_encoding import ContextEncoder
     from common.policy.data.context_fields import ENCODING_BANK_FIELDS
@@ -727,7 +726,7 @@ def test_history_skill_features_keep_fp32_through_collation_and_context_encoding
         int_dtype=torch.int32, index_dtype=torch.int64, float_dtype=float_dtype,
     )(samples)
     encoded = ContextEncoder(
-        normalizer, reader.schema, ModelConfig(), layout=reader.schema.state_layout(reader.action_keys),
+        normalizer, reader.schema, layout=reader.schema.state_layout(reader.action_keys),
     ).encode(batch)
     assert encoded["history_skill_features"].dtype == torch.float32
     assert torch.count_nonzero(encoded["history_skill_features"][0]) == 0

@@ -130,7 +130,7 @@ def test_read_side_training_settings_and_other_job_routing_are_excluded(config_r
     model_path = config_root / "config/models/black_mage/artzip/model.yaml"
     rewrite(model_path, ("model", "context_capacity"), 17)
     rewrite(model_path, ("model", "history_reset_keep"), 1)
-    rewrite(model_path, ("model", "time_delta_scale"), 99)
+    rewrite(model_path, ("model", "qk_norm_scale"), 1.7)
     training_path = config_root / "config/models/black_mage/artzip/training.yaml"
     rewrite(training_path, ("training", "max_files"), 1)
     monkeypatch.setenv("CONVERT_FFLOGS_WORKERS", "99")

@@ -7,7 +7,6 @@ from collections.abc import Mapping
 import torch
 from torch import nn
 
-from ..config import ModelConfig
 from .context_fields import (
     CURRENT_STATE_RAW_FIELDS,
     ENCODING_BANK_FIELDS,
@@ -51,7 +50,7 @@ def _validate_raw_state(values: torch.Tensor, nulls: torch.Tensor) -> None:
 class ContextEncoder(nn.Module):
     """共享读侧编码：完整 raw bank 的窗口 gather、重锚和有符号归一化。"""
 
-    def __init__(self, normalizer: Normalizer, schema: TrainingSchema, config: ModelConfig, *, layout: StateFeatureLayout):
+    def __init__(self, normalizer: Normalizer, schema: TrainingSchema, *, layout: StateFeatureLayout):
         super().__init__()
         metadata = normalizer.state_encoding_metadata(schema)
         if layout.groups != schema.state_groups or layout.snapshots != schema.state_snapshots:
@@ -60,22 +59,15 @@ class ContextEncoder(nn.Module):
         self.base_state_dim = layout.base_state_dim
         self.state_dim = layout.state_dim
         self.scene_dim = schema.scene_feature_dim()
-        self.time_delta_scale = config.time_delta_scale
+        self.time_scale = normalizer.time_scale
         if metadata.feature_keys != layout.base_feature_keys:
             raise ValueError("normalizer base field order must match the state layout")
         self.request_time_index = layout.request_time_index
-        time_mask = [key.rsplit(".", 1)[-1] == "time_seconds" for key in metadata.feature_keys]
-        divisors = [self.time_delta_scale if is_time else divisor
-                    for is_time, divisor in zip(time_mask, metadata.divisors, strict=True)]
-        lower = [-float("inf") if is_time else bound
-                 for is_time, bound in zip(time_mask, metadata.absolute_lower_bounds, strict=True)]
-        upper = [float("inf") if is_time else bound
-                 for is_time, bound in zip(time_mask, metadata.absolute_upper_bounds, strict=True)]
         for name, values, dtype in (
-            ("state_divisors", divisors, torch.float32),
-            ("state_absolute_lower", lower, torch.float32),
-            ("state_absolute_upper", upper, torch.float32),
-            ("state_time_mask", time_mask, torch.bool),
+            ("state_divisors", metadata.divisors, torch.float32),
+            ("state_absolute_lower", metadata.absolute_lower_bounds, torch.float32),
+            ("state_absolute_upper", metadata.absolute_upper_bounds, torch.float32),
+            ("state_time_mask", metadata.time_anchors, torch.bool),
         ):
             self.register_buffer(name, torch.tensor(values, dtype=dtype), persistent=False)
 
@@ -213,9 +205,9 @@ class ContextEncoder(nn.Module):
         types, mask = types.gather(1, order), mask.gather(1, order)
         starts, ends = starts.gather(1, order) - anchor[:, None], ends.gather(1, order) - anchor[:, None]
         for indices, encoded in (
-            (self.scene_start_indices, torch.diff(starts, dim=1, prepend=torch.zeros_like(starts[:, :1])) / self.time_delta_scale),
-            (self.scene_end_indices, torch.diff(ends, dim=1, prepend=torch.zeros_like(ends[:, :1])) / self.time_delta_scale),
-            (self.scene_duration_indices, (ends - starts) / self.time_delta_scale),
+            (self.scene_start_indices, torch.diff(starts, dim=1, prepend=torch.zeros_like(starts[:, :1])) / self.time_scale),
+            (self.scene_end_indices, torch.diff(ends, dim=1, prepend=torch.zeros_like(ends[:, :1])) / self.time_scale),
+            (self.scene_duration_indices, (ends - starts) / self.time_scale),
         ):
             values.scatter_(-1, indices[types][..., None], encoded[..., None])
         counts = values.clamp(min=0.0, max=self.target_count_max) / self.target_count_max

@@ -48,7 +48,8 @@ from .deployment_profile import stable_sha256
 #     同版本统一数值入口与输入投影为 FP32，主干及输出沿用部署精度。
 # 27：将场景、历史和当前状态收敛为统一 token 预算，拒绝旧容量结构。
 # 28：增加独立死亡事件输入与 embedding，所有事件纳入共用 token 预算。
-DEPLOYMENT_CONTRACT_VERSION = 28
+# 29：输入归一化仅使用冻结 normalizer 契约中的公共尺度。
+DEPLOYMENT_CONTRACT_VERSION = 29
 DEPLOYMENT_MANIFEST_VERSION = 17
 MANIFEST_SCHEMA_FILENAME = "manifest.schema.json"
 

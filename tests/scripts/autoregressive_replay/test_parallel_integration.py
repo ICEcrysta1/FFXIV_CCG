@@ -41,7 +41,7 @@ def test_real_model_variable_history_matches_serial(dataset, use_cache, precisio
     model.encoder.to(dtype=parameter_dtype)
     model.output_head.to(dtype=parameter_dtype)
     policy = TrainingPolicyBackend(model, data_spec=spec, device=device, precision=precision)
-    encoder = ContextEncoder(dataset.normalizer, dataset.schema, model.config, layout=dataset.state_layout).to(device=device)
+    encoder = ContextEncoder(dataset.normalizer, dataset.schema, layout=dataset.state_layout).to(device=device)
     samples = [encoder.encode(move_batch(TrainingCollator()([dataset[index]]), device))
                for index in range(min(3, len(dataset)))]
     # 标签与训练监督字段不属于在线模型输入。
@@ -100,7 +100,7 @@ def test_same_canonical_compact_training_live_and_onnx_host_encode_identically(t
         d_model=16, n_layers=1, n_heads=2, num_kv_heads=1, ff_dim=32,
         dropout=0.0, context_capacity=9, history_reset_keep=2,
     )
-    encoder = ContextEncoder(dataset.normalizer, dataset.schema, config, layout=dataset.state_layout)
+    encoder = ContextEncoder(dataset.normalizer, dataset.schema, layout=dataset.state_layout)
     scene_provider = SceneTemplateProvider(
         next(dataset.iter_source_readers()),
     )
@@ -188,7 +188,7 @@ def test_context_encoder_prunes_expired_scenes_before_onnx_padding(tmp_path):
     )
     schema = input_contract.schema
     encoder = ContextEncoder(
-        input_contract.create_normalizer(), schema, contracts.policy.model.config,
+        input_contract.create_normalizer(), schema,
         layout=schema.state_layout(spec.action_keys),
     )
     current = torch.tensor([[9.0, 10.0, 8000.0]])

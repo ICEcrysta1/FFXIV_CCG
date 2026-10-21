@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from common.configuration.environment import (
@@ -117,18 +117,6 @@ def _parse_history_integer(value: object, *, field_name: str) -> int:
     return value
 
 
-def _parse_time_delta_scale(value: object) -> float:
-    """单步时间尺度以 FP32 计算，必须是可表示的正常正数。"""
-    return _parse_positive_fp32(value, field_name="model.time_delta_scale")
-
-
-def _default_time_delta_scale() -> float:
-    """模型读侧默认继承公共归一化 YAML，显式覆盖仍随 checkpoint 保存。"""
-    from .data.normalization import load_normalizer_config
-
-    return load_normalizer_config().time_scale
-
-
 @dataclass(frozen=True)
 class ModelConfig:
     """只保存策略模型架构超参数，数据维度由 DataSpec 提供。"""
@@ -151,7 +139,6 @@ class ModelConfig:
     logit_softcap: float = 15.0
     context_capacity: int = 1024
     history_reset_keep: int = 8
-    time_delta_scale: float = field(default_factory=_default_time_delta_scale)
 
     def __post_init__(self) -> None:
         if self.ff_dim < 1:
@@ -164,7 +151,6 @@ class ModelConfig:
             raise ValueError("model.history_reset_keep must be >= 1")
         if self.context_capacity < 2 * self.history_reset_keep + 1:
             raise ValueError("model.context_capacity must be >= 2 * model.history_reset_keep + 1")
-        object.__setattr__(self, "time_delta_scale", _parse_time_delta_scale(self.time_delta_scale))
         if self.n_heads <= 0:
             raise ValueError("model.n_heads must be positive")
         if self.num_kv_heads <= 0 or self.num_kv_heads > self.n_heads:
@@ -214,7 +200,7 @@ class ModelConfig:
             )
         removed = {
             "num_candidates", "scorer_use_raw_projection",
-            "scorer_use_candidate_hidden", "position_id_semantics",
+            "scorer_use_candidate_hidden", "position_id_semantics", "time_delta_scale",
         }.intersection(values)
         if removed:
             raise ValueError("removed model options: " + ", ".join(sorted(removed)))
@@ -268,9 +254,6 @@ class ModelConfig:
             history_reset_keep=_parse_history_integer(
                 values.get("history_reset_keep", cls.history_reset_keep),
                 field_name="model.history_reset_keep",
-            ),
-            time_delta_scale=_parse_time_delta_scale(
-                values["time_delta_scale"] if "time_delta_scale" in values else _default_time_delta_scale(),
             ),
         )
 

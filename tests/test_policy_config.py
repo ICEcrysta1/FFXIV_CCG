@@ -183,7 +183,7 @@ def test_residual_mix_endpoints_preserve_finite_numeric_values_and_round_trip(va
 
 
 @pytest.mark.parametrize("value", [1, 15.0, 30.0, "7.5", 1e-30, 1e38])
-@pytest.mark.parametrize("field", ["logit_softcap", "time_delta_scale"])
+@pytest.mark.parametrize("field", ["logit_softcap"])
 def test_positive_fp32_model_parameters_normalize_and_round_trip(value, field):
     config = ModelConfig.from_mapping({field: value})
     assert getattr(config, field) == float(value)
@@ -195,7 +195,7 @@ def test_positive_fp32_model_parameters_normalize_and_round_trip(value, field):
 @pytest.mark.parametrize("value", [True, False, 0, -1, float("nan"), float("inf"),
                                   -float("inf"), "invalid", None, [], {},
                                   1e-46, 1e-300, 1e39, 1e300])
-@pytest.mark.parametrize("field", ["logit_softcap", "time_delta_scale"])
+@pytest.mark.parametrize("field", ["logit_softcap"])
 def test_positive_fp32_model_parameters_reject_invalid_values(value, field):
     message = f"model.{field} must be finite and positive within the FP32 normal range"
     with pytest.raises(ValueError) as mapping_error:

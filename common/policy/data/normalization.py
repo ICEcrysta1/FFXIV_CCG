@@ -12,6 +12,39 @@ DEFAULT_CONFIG_PATH = (
     Path(__file__).resolve().parents[3] / "config" / "policy" / "normalizer.yaml"
 )
 
+# 固定字段的单位由此声明；职业资源和 Buff 层数使用各自注册的单位与上限。
+# 名称中碰巧包含 seconds/ready/timer 的其他字段不会自动获得对应语义。
+FIELD_UNITS = {
+    "available": "binary",
+    "active": "binary",
+    "is_legal": "binary",
+    "boss_targetable": "binary",
+    "is_moving": "binary",
+    "kind": "identity",
+    "mp_ratio": "identity",
+    "mp": "mp",
+    "max_mp": "mp",
+    "actual_mp_cost": "mp_cost",
+    "mp_cost": "mp_cost",
+    "time_seconds": "time_anchor",
+    "current_gcd_seconds": "seconds",
+    "next_untargetable_in_seconds": "seconds",
+    "downtime_remaining_seconds": "seconds",
+    "remaining_seconds": "seconds",
+    "next_cooldown_seconds": "seconds",
+    "cast_time.seconds": "seconds",
+    "gcd_window.seconds": "seconds",
+    "start_offset_seconds": "seconds",
+    "end_offset_seconds": "seconds",
+    "duration_seconds": "seconds",
+    "potency": "potency",
+    "current_potency": "potency",
+    "current_gcd_dot_potency": "potency",
+    "target_count": "target_count",
+    "available_charges": "charges",
+    "max_charges": "charges",
+}
+
 
 @dataclass(frozen=True)
 class NormalizerConfig:

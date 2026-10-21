@@ -72,5 +72,4 @@ model:
   # 历史超出容量时保留最近这些动作，再重新累积；仅影响读取，不改变完整 raw bank。
   history_reset_keep: 8
 
-  # 状态/场景时间默认继承 config/policy/normalizer.yaml 的 time_scale（270 秒）。
-  # 如需独立实验可显式设置 time_delta_scale；它只影响读侧，不改变完整 raw cache。
+  # 所有时间输入统一使用 config/policy/normalizer.yaml 的 time_scale（270 秒）。

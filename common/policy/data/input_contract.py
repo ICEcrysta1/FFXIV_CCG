@@ -44,7 +44,8 @@ from .spec import DataSpec
 #     黑魔绝望最低 MP 修正为 800；旧 checkpoint 的输入与执行语义均不可复用。
 #     同版本统一输入数值投影、token 合成和输入归一化为 FP32。
 # 24：独立死亡事件 embedding 按已落实历史边界插入，死亡 token 纳入共享上下文预算。
-INPUT_CONTRACT_VERSION = 24
+# 25：归一化规则统一由保存的 normalizer 契约提供，状态和场景共享秒数尺度。
+INPUT_CONTRACT_VERSION = 25
 
 RESIDUAL_MIX_CONFIG_FIELDS = (
     "residual_mix_r_start", "residual_mix_r_end",
@@ -164,7 +165,7 @@ TOKEN_ENCODING_CONTRACT = {
         "scene": "clip_at_state_anchor_then_stable_start_end_type_order",
         "scene_time": "first_anchor_offset_then_separate_start_end_DELTA",
         "scene_duration": "own_clipped_duration",
-        "time_scale": "model_config.time_delta_scale",
+        "time_scale": "normalizer_contract.config.time_scale",
         "history_window": "shared_context_token_budget_block_reset",
         "overflow_keep": "model_config.history_reset_keep",
         "time_clipping": False,

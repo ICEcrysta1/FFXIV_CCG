@@ -7,10 +7,10 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
-from .normalization import NormalizerConfig, load_normalizer_config
+from .normalization import FIELD_UNITS, NormalizerConfig, load_normalizer_config
 
-# 3：统一公共尺度、按冻结上限编码充能，并移除累计威力输入。
-NORMALIZER_CONTRACT_VERSION = 3
+# 4：字段单位统一声明，状态、技能与场景共用归一化尺度。
+NORMALIZER_CONTRACT_VERSION = 4
 
 
 class Normalizer:
@@ -162,27 +162,38 @@ class Normalizer:
 
     def register_feature_keys(self, group_key: str, feature_keys: list[str] | tuple[str, ...]) -> None:
         """注册一个状态分组的 feature key 列表。"""
-        rules: list[_FieldRule] = []
-        for feature_name in feature_keys:
-            raw_name = _strip_prefix(feature_name)
-            rule_type = _infer_rule_type(
-                raw_name,
-                self._resource_limits,
-                self._status_limits,
-                self._resource_time_fields,
-            )
-            rules.append(
-                _FieldRule(
-                    feature_name=feature_name,
-                    rule_type=rule_type,
-                    max_value=_max_value_for_feature(
-                        raw_name,
-                        self._resource_limits,
-                        self._status_limits,
-                    ),
-                )
-            )
-        self._rules[group_key] = rules
+        self._rules[group_key] = [self._field_rule(name) for name in feature_keys]
+
+    def _field_rule(self, feature_name: str) -> _FieldRule:
+        """把字段声明或已注册单位解析成同一份缩放常量。"""
+        raw_name = _strip_prefix(feature_name)
+        leaf_name = raw_name.rsplit(".", 1)[-1]
+        if leaf_name in {"cumulative_potency", "cumulative_dot_potency"}:
+            raise ValueError("cumulative potency must not enter model features; rebuild old input artifacts")
+        maximum = None
+        if leaf_name in self._resource_time_fields:
+            unit = "seconds"
+        elif leaf_name in self._resource_limits:
+            unit, maximum = "count", self._resource_limits[leaf_name]
+        elif leaf_name == "stacks" and raw_name.rsplit(".", 1)[0] in self._status_limits:
+            unit, maximum = "count", self._status_limits[raw_name.rsplit(".", 1)[0]]
+        else:
+            unit = FIELD_UNITS.get(raw_name, FIELD_UNITS.get(leaf_name, "identity"))
+        divisor = {
+            "mp": self._config.mp_max,
+            "mp_cost": self._config.mp_max,
+            "seconds": self._config.time_scale,
+            "time_anchor": self._config.time_scale,
+            "potency": self._config.current_potency_max,
+            "target_count": self._config.target_count_max,
+            "count": maximum,
+        }.get(unit, 1.0)
+        bounded = unit in {"mp_cost", "seconds", "potency", "target_count", "count"}
+        return _FieldRule(
+            feature_name, unit, float(divisor),
+            0.0 if bounded else -math.inf,
+            float(divisor) if bounded else math.inf,
+        )
 
     def register_schema(self, schema) -> None:
         """从训练 schema 注册全部状态分组。"""
@@ -193,31 +204,14 @@ class Normalizer:
     def state_encoding_metadata(self, schema) -> StateEncodingMetadata:
         """从已注册规则生成向量化 ABS/有符号 DELTA 元数据，不重复推断字段。"""
         self.register_schema(schema)
-        keys, divisors, lower_bounds, upper_bounds = [], [], [], []
-        for group in schema.state_groups:
-            if group.encoding != "anchored_delta":
-                continue
-            for rule in self._rules[group.group_key]:
-                divisor, lower, upper = 1.0, -math.inf, math.inf
-                kind = rule.rule_type
-                if kind in {"divide_mp_max", "divide_max_mp"}:
-                    divisor = self._config.mp_max
-                elif kind == "clip_divide_seconds_max":
-                    divisor, lower, upper = self._config.time_scale, 0.0, self._config.time_scale
-                elif kind == "divide_time_scale":
-                    divisor = self._config.time_scale
-                elif kind in {"clip_divide_resource_max", "clip_divide_status_max"}:
-                    if rule.max_value is None or rule.max_value <= 0:
-                        raise ValueError(f"state field {rule.feature_name!r} requires a positive max_value")
-                    divisor, lower, upper = rule.max_value, 0.0, rule.max_value
-                elif kind == "divide_current_potency_max":
-                    divisor, lower, upper = self._config.current_potency_max, 0.0, self._config.current_potency_max
-                keys.append(rule.feature_name)
-                divisors.append(float(divisor))
-                lower_bounds.append(float(lower))
-                upper_bounds.append(float(upper))
+        rules = [rule for group in schema.state_groups if group.encoding == "anchored_delta"
+                 for rule in self._rules[group.group_key]]
         return StateEncodingMetadata(
-            tuple(keys), tuple(divisors), tuple(lower_bounds), tuple(upper_bounds),
+            tuple(rule.feature_name for rule in rules),
+            tuple(rule.divisor for rule in rules),
+            tuple(rule.absolute_lower for rule in rules),
+            tuple(rule.absolute_upper for rule in rules),
+            tuple(rule.unit == "time_anchor" for rule in rules),
         )
 
     @property
@@ -252,100 +246,12 @@ class Normalizer:
                     raise ValueError("skill charges must be finite and within the frozen max_charges")
                 values.div_(charge_limits)
                 continue
-            _apply_skill_normalize_inplace(
-                result[..., index : index + 1],
-                str(feature_name),
-                self._config,
-                resource_limits=self._resource_limits,
-                resource_time_fields=self._resource_time_fields,
-            )
+            rule = self._field_rule(str(feature_name))
+            result[..., index : index + 1].clamp_(
+                min=rule.absolute_lower, max=rule.absolute_upper,
+            ).div_(rule.divisor)
         result[result.isnan()] = 0.0
         return result
-
-def _apply_skill_normalize_inplace(
-    values,
-    feature_name: str,
-    config: NormalizerConfig,
-    *,
-    resource_limits: dict[str, float],
-    resource_time_fields: tuple[str, ...],
-) -> None:
-    """把 compiled cache 中的动态 skill 数值压到模型可比较的尺度。"""
-    leaf_name = feature_name.split(".")[-1]
-    if leaf_name in {"is_legal", "kind"}:
-        return
-    if leaf_name in {"cumulative_potency", "cumulative_dot_potency"}:
-        raise ValueError("cumulative potency must not enter model features; rebuild old input artifacts")
-    if leaf_name == "potency":
-        values.clamp_(min=0.0, max=config.current_potency_max).div_(config.current_potency_max)
-        return
-    if leaf_name in {"actual_mp_cost", "mp_cost"}:
-        values.clamp_(min=0.0, max=config.mp_max).div_(config.mp_max)
-        return
-    if leaf_name in resource_time_fields:
-        values.clamp_(min=0.0, max=config.time_scale).div_(config.time_scale)
-        return
-    resource_max = resource_limits.get(leaf_name)
-    if resource_max is not None:
-        values.clamp_(min=0.0, max=resource_max).div_(resource_max)
-        return
-    if feature_name.endswith(".seconds") or leaf_name.endswith("_seconds"):
-        values.clamp_(min=0.0, max=config.time_scale).div_(config.time_scale)
-        return
-    if leaf_name.endswith("_timer"):
-        values.clamp_(min=0.0, max=config.time_scale).div_(config.time_scale)
-
-
-def _infer_rule_type(
-    raw_name: str,
-    resource_limits: dict[str, float],
-    status_limits: dict[str, float],
-    resource_time_fields: tuple[str, ...],
-) -> str:
-    """根据字段名推断归一化规则。"""
-    leaf_name = _leaf_name(raw_name)
-    if leaf_name in {"cumulative_potency", "cumulative_dot_potency"}:
-        raise ValueError("cumulative potency must not enter model features; rebuild old input artifacts")
-
-    if leaf_name in _BINARY_FIELDS:
-        return "keep"
-    if raw_name.endswith(".active"):
-        return "keep"
-    if raw_name.endswith(".stacks"):
-        if _status_key_from_stacks_feature(raw_name) in status_limits:
-            return "clip_divide_status_max"
-        return "keep"
-    if leaf_name.endswith("_ready"):
-        return "keep"
-    if leaf_name == "mp_ratio":
-        return "keep"
-    if leaf_name == "mp":
-        return "divide_mp_max"
-    if leaf_name == "max_mp":
-        return "divide_max_mp"
-    if leaf_name == "time_seconds":
-        return "divide_time_scale"
-    if leaf_name in resource_time_fields:
-        return "clip_divide_seconds_max"
-    if leaf_name in resource_limits:
-        return "clip_divide_resource_max"
-    if leaf_name.endswith("_seconds"):
-        return "clip_divide_seconds_max"
-    if leaf_name == "current_potency":
-        return "divide_current_potency_max"
-    if leaf_name == "current_gcd_dot_potency":
-        return "divide_current_potency_max"
-    if leaf_name.endswith("_timer"):
-        return "clip_divide_seconds_max"
-    return "skip"
-
-
-_BINARY_FIELDS = frozenset(
-    {
-        "boss_targetable",
-        "is_moving",
-    }
-)
 
 
 def _strip_prefix(name: str) -> str:
@@ -353,30 +259,6 @@ def _strip_prefix(name: str) -> str:
         if name.startswith(prefix):
             return name[len(prefix) :]
     return name
-
-
-def _leaf_name(raw_name: str) -> str:
-    return raw_name.split(".")[-1]
-
-
-def _status_key_from_stacks_feature(raw_name: str) -> str:
-    """把 `job.triplecast.stacks` 映射为状态定义键。"""
-    suffix = ".stacks"
-    if not raw_name.endswith(suffix):
-        return ""
-    return raw_name[: -len(suffix)]
-
-
-def _max_value_for_feature(
-    raw_name: str,
-    resource_limits: dict[str, float],
-    status_limits: dict[str, float],
-) -> float | None:
-    if raw_name.endswith(".stacks"):
-        return status_limits.get(_status_key_from_stacks_feature(raw_name))
-    return resource_limits.get(_leaf_name(raw_name))
-
-
 @dataclass(frozen=True)
 class StateEncodingMetadata:
     """按完整状态向量字段排列的固定归一化常量。"""
@@ -385,13 +267,16 @@ class StateEncodingMetadata:
     divisors: tuple[float, ...]
     absolute_lower_bounds: tuple[float, ...]
     absolute_upper_bounds: tuple[float, ...]
+    time_anchors: tuple[bool, ...]
 
 
 @dataclass(frozen=True)
 class _FieldRule:
     feature_name: str
-    rule_type: str
-    max_value: float | None = None
+    unit: str
+    divisor: float
+    absolute_lower: float
+    absolute_upper: float
 
 
 def _contract_limits(contract: Mapping[str, object], key: str) -> dict[str, float]:

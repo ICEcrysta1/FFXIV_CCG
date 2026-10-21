@@ -439,7 +439,7 @@ def _load_model_analysis_context(
         vocab=vocab,
         device=device,
         precision=precision,
-        context_encoder=ContextEncoder(normalizer, input_contract.schema, model_config,
+        context_encoder=ContextEncoder(normalizer, input_contract.schema,
                                        layout=input_contract.schema.state_layout(data_spec.action_keys)).to(device=device),
     )
 

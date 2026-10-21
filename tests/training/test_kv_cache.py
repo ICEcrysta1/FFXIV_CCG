@@ -161,7 +161,7 @@ def test_shared_context_reanchor_and_scene_clip_rebuild_kv(full_attention_residu
             cached.input_encoder.state_reset_proj.weight.fill_(0.031)
         full.load_state_dict(cached.state_dict())
     cached.enable_kv_cache(True)
-    context = ContextEncoder(Normalizer(NormalizerConfig()), schema, config, layout=schema.state_layout(spec.action_keys))
+    context = ContextEncoder(Normalizer(NormalizerConfig()), schema, layout=schema.state_layout(spec.action_keys))
     states = torch.tensor([[1199 + 3 * i, 1200 + 3 * i, 10000 - 400 * i]
                            for i in range(9)], dtype=torch.float32)
     nulls = torch.zeros_like(states, dtype=torch.bool)

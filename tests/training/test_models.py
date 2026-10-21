@@ -271,7 +271,7 @@ def test_common_model_uses_pt_dimensions_and_job_route(tmp_path):
     batch = TrainingCollator()([dataset[0], dataset[1]])
     from common.policy.data.context_encoding import ContextEncoder
 
-    batch = ContextEncoder(dataset.normalizer, dataset.schema, model.config, layout=dataset.state_layout).encode(batch)
+    batch = ContextEncoder(dataset.normalizer, dataset.schema, layout=dataset.state_layout).encode(batch)
 
     output = model(batch)
     assert data_spec.job_tag == "black_mage"
@@ -311,7 +311,7 @@ def test_swiglu_training_updates_all_ffn_projections_with_checkpointing(tmp_path
     batch = move_batch(TrainingCollator()([dataset[0], dataset[1]]), device)
     from common.policy.data.context_encoding import ContextEncoder
 
-    batch = ContextEncoder(dataset.normalizer, dataset.schema, model.config, layout=dataset.state_layout).to(device=device).encode(batch)
+    batch = ContextEncoder(dataset.normalizer, dataset.schema, layout=dataset.state_layout).to(device=device).encode(batch)
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.01)
     weights_before = {
         (index, name): getattr(layer, name).weight.detach().clone()

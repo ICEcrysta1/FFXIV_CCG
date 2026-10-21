@@ -7,7 +7,6 @@ from tests.training._causal_fixtures import make_state_groups
 import pytest
 import torch
 
-from common.policy.config import ModelConfig
 from common.policy.data import Normalizer
 from common.policy.data.context_encoding import ContextEncoder, raw_state_delta
 from common.policy.data.schema import SceneWindowSchema, TrainingSchema
@@ -38,7 +37,7 @@ def _encode_states(normalizer, feature_keys, rows):
         torch.cat((torch.ones_like(nulls[:1]), nulls[:-1])),
     )
     history_size = len(rows) - 1
-    output = ContextEncoder(normalizer, schema, ModelConfig(), layout=schema.state_layout(("first", "second"))).encode({
+    output = ContextEncoder(normalizer, schema, layout=schema.state_layout(("first", "second"))).encode({
         "history_state_skill_availability": torch.zeros((*(values[:-1][None]).shape[:-1], 4), dtype=torch.bool),
         "current_state_skill_availability": torch.zeros((*(values[-1:]).shape[:-1], 4), dtype=torch.bool),
         "history_skill_ids": torch.ones((1, history_size), dtype=torch.long),
@@ -86,9 +85,9 @@ def test_normalizer_contract_preserves_config_field_validation(missing, extra, m
     assert str(exc.value) == message
 
 
-def test_state_encoder_does_not_treat_midfield_seconds_name_as_time_rule():
+def test_state_encoder_only_scales_declared_time_fields():
     encoded = _encode_states(Normalizer(), (
-        "previous_action_after.some_seconds_counter", "previous_action_after.real_remaining_seconds",
+        "previous_action_after.some_seconds_counter", "previous_action_after.remaining_seconds",
     ), [[7, 60], [8, 0]])
     torch.testing.assert_close(encoded, torch.tensor([[7, 60 / 270], [1, -60 / 270]]))
 
@@ -166,11 +165,11 @@ def test_scene_window_schema_resolves_indices_once_and_reports_missing_fields():
         )
 
 
-def test_state_encoder_infers_job_agnostic_ready_and_timer_fields():
+def test_state_encoder_does_not_infer_units_from_ready_or_timer_suffix():
     encoded = _encode_states(Normalizer(), (
         "previous_action_after.some_ready", "previous_action_after.some_timer",
     ), [[1, 60], [0, 0]])
-    torch.testing.assert_close(encoded, torch.tensor([[1, 60 / 270], [-1, -60 / 270]]))
+    torch.testing.assert_close(encoded, torch.tensor([[1, 60], [-1, -60]], dtype=torch.float32))
 
 
 def test_normalizer_uses_job_resource_limits_for_state_and_skill_features():
@@ -255,12 +254,13 @@ def test_time_resources_share_time_scale_in_state_skill_and_saved_contract(job, 
                                torch.tensor([[10 / 270], [-5 / 270]]))
 
 
-def test_model_default_time_scale_comes_from_public_normalization_config(monkeypatch):
-    import common.policy.data.normalization as normalization_module
-    monkeypatch.setattr(normalization_module, "load_normalizer_config", lambda: NormalizerConfig(time_scale=180))
-    assert ModelConfig().time_delta_scale == 180
-    assert ModelConfig.from_mapping({}).time_delta_scale == 180
-    assert ModelConfig.from_mapping({"time_delta_scale": 90}).time_delta_scale == 90
+def test_time_scale_comes_from_saved_public_normalization_config(monkeypatch):
+    import common.policy.data.normalizer as normalization_module
+    monkeypatch.setattr(normalization_module, "load_normalizer_config", lambda _path=None: NormalizerConfig(time_scale=180))
+    normalizer = Normalizer()
+    assert normalizer.time_scale == 180
+    monkeypatch.setattr(normalization_module, "load_normalizer_config", lambda _path=None: pytest.fail("恢复不能重新读取配置"))
+    assert Normalizer.from_contract(normalizer.normalization_contract).time_scale == 180
 
 
 @pytest.mark.parametrize("field", ["mp_max", "time_scale", "target_count_max", "current_potency_max"])

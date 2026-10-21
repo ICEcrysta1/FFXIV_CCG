@@ -273,7 +273,7 @@
       ],
       "properties": {
         "contract_version": {
-          "const": 28
+          "const": 29
         },
         "job_tag": {
           "type": "string",
@@ -322,7 +322,7 @@
           ],
           "properties": {
             "version": {
-              "const": 24
+              "const": 25
             },
             "token_encoding": {
               "const": {
@@ -419,7 +419,7 @@
                   "scene": "clip_at_state_anchor_then_stable_start_end_type_order",
                   "scene_time": "first_anchor_offset_then_separate_start_end_DELTA",
                   "scene_duration": "own_clipped_duration",
-                  "time_scale": "model_config.time_delta_scale",
+                  "time_scale": "normalizer_contract.config.time_scale",
                   "history_window": "shared_context_token_budget_block_reset",
                   "overflow_keep": "model_config.history_reset_keep",
                   "time_clipping": false
@@ -465,8 +465,7 @@
             "qk_norm_scale",
             "logit_softcap",
             "context_capacity",
-            "history_reset_keep",
-            "time_delta_scale"
+            "history_reset_keep"
           ],
           "properties": {
             "residual_mix_r_start": {
@@ -500,10 +499,6 @@
             "history_reset_keep": {
               "type": "integer",
               "minimum": 0
-            },
-            "time_delta_scale": {
-              "type": "number",
-              "exclusiveMinimum": 0
             }
           }
         },

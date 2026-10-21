@@ -283,7 +283,7 @@ def test_native_padding_preserves_values_dtypes_empty_shapes_and_null_mask(lengt
     samples = [_sample(*length) for length in lengths]
     originals = deepcopy(samples)
     contract = make_input_contract(make_data_spec(base_state_dim=3, scene_dim=3))
-    encoder = ContextEncoder(contract.create_normalizer(), contract.schema, ModelConfig(), layout=contract.schema.state_layout(tuple(contract.data_spec["action_keys"])))
+    encoder = ContextEncoder(contract.create_normalizer(), contract.schema, layout=contract.schema.state_layout(tuple(contract.data_spec["action_keys"])))
     expected = [encoder.encode(TrainingCollator()([sample])) for sample in samples]
     batch = encoder.encode(TrainingCollator()(samples))
     for kind, key in (("history", "history_skill_ids"), ("scene", "scene_vectors")):

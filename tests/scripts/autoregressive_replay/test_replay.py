@@ -458,7 +458,7 @@ def test_replay_cache_store_reuses_reader_for_unchanged_scene(monkeypatch, tmp_p
 
 def test_replay_session_reset_reinitializes_backend_and_state_machine():
     class FakeBackend:
-        model_config = SimpleNamespace(context_capacity=33, history_reset_keep=8, time_delta_scale=120.0)
+        model_config = SimpleNamespace(context_capacity=33, history_reset_keep=8)
         input_device = torch.device("cpu")
 
         def __init__(self):
@@ -571,7 +571,7 @@ def test_replay_uses_session_normalizer_for_batch_builder(monkeypatch, construct
 
     class FakeBackend:
         input_device = torch.device("cpu")
-        model_config = SimpleNamespace(context_capacity=33, history_reset_keep=8, time_delta_scale=120.0)
+        model_config = SimpleNamespace(context_capacity=33, history_reset_keep=8)
 
         def __init__(self):
             self.cache_calls = []

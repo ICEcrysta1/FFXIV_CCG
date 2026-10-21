@@ -291,7 +291,7 @@ def test_parity_failure_writes_auditable_partial_report(
             self.name = name
             self.logits = logits
             self.source_path = tmp_path / f"{name}.model"
-            self.model_config = SimpleNamespace(context_capacity=1024, history_reset_keep=8, time_delta_scale=120.0)
+            self.model_config = SimpleNamespace(context_capacity=1024, history_reset_keep=8)
             self.input_device = torch.device("cpu")
             self.data_spec = DataSpec(
                 "black_mage", 3, 7, 1, 1, 1, 1, ("fire_iii", "fire_iv", "blizzard_iii"),

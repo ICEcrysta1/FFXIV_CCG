@@ -154,7 +154,7 @@ class LiveBatchBuilder:
         self._action_kinds = dict(zip(self._action_keys, kinds, strict=True))
         self._layout = schema.state_layout(self._action_keys)
         self._context_encoder = ContextEncoder(
-            normalizer, schema, model_config, layout=self._layout,
+            normalizer, schema, layout=self._layout,
         ).to(device=device)
         self._state_dim = self._layout.base_state_dim
         player_group = next(group for group in self._layout.base_groups if group.group_key == "player_state")

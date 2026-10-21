@@ -15,7 +15,7 @@ from common.policy.data.normalizer import NORMALIZER_CONTRACT_VERSION, Normalize
 from common.policy.data.schema import SceneWindowSchema, TrainingSchema
 
 
-def _encoder(model_config=None):
+def _encoder(normalizer_config=None):
     schema = TrainingSchema(
         serialization_format="test", sample_schema_version=11, context_schema_version=14,
         scene_context_mode="absolute", skill_history_fields=("kind",),
@@ -36,7 +36,7 @@ def _encoder(model_config=None):
             ),
         ),
     )
-    return ContextEncoder(Normalizer(NormalizerConfig()), schema, model_config or ModelConfig(), layout=schema.state_layout(("first", "second")))
+    return ContextEncoder(Normalizer(normalizer_config or NormalizerConfig()), schema, layout=schema.state_layout(("first", "second")))
 
 
 def _raw_batch():
@@ -158,7 +158,7 @@ def test_resources_timers_and_buff_refresh_reconstruct_raw_and_keep_signed_scale
         torch.testing.assert_close(reconstructed, values[:, index], rtol=0, atol=0, msg=key)
     assert reset[0].all()
     assert not reset[1:].any()
-    output = ContextEncoder(normalizer, schema, ModelConfig(time_delta_scale=60.0), layout=schema.state_layout(("first", "second"))).encode({
+    output = ContextEncoder(normalizer, schema, layout=schema.state_layout(("first", "second"))).encode({
         "history_state_skill_availability": torch.zeros((*(values[:3][None]).shape[:-1], 4), dtype=torch.bool),
         "current_state_skill_availability": torch.zeros((*(values[3:]).shape[:-1], 4), dtype=torch.bool),
         "history_skill_ids": torch.tensor([[1, 2, 3]]),
@@ -215,9 +215,9 @@ def test_scene_target_count_uses_default_five_target_limit(count, expected):
     assert batch["scene_abs_values"][0, 0, 0] == count
 
 
-def test_explicit_model_time_scale_applies_to_state_and_scene_without_clipping():
-    """模型读取尺度允许显式覆盖；状态和场景同时换算且保留超过一的值。"""
-    output = _encoder(ModelConfig(time_delta_scale=30.0)).encode(_raw_batch())
+def test_public_time_scale_applies_to_state_and_scene_without_clipping():
+    """状态和场景统一读取公共时间尺度，并保留超过一的锚点与差分。"""
+    output = _encoder(NormalizerConfig(time_scale=30.0)).encode(_raw_batch())
     torch.testing.assert_close(output["history_state_vectors"][0, :, 2], torch.tensor([0, 3 / 30]))
     assert output["history_state_vectors"][0, 0, 4] == pytest.approx(-2 / 30)
     assert output["current_state_vectors"][0, 2] == pytest.approx(4 / 30)
@@ -557,17 +557,14 @@ def test_cpu_raw_entry_rejects_unknown_or_nonfinite_request_anchor(bad, has_hist
 
 @pytest.mark.parametrize("field,value", [("history_reset_keep", True), ("history_reset_keep", 8.5),
                                        ("history_reset_keep", "8"), ("history_reset_keep", 0),
-                                       ("history_capacity", 7), ("time_delta_scale", False),
-                                       ("time_delta_scale", 0), ("time_delta_scale", float("inf")),
-                                       ("time_delta_scale", float("nan")), ("time_delta_scale", 1e-50)])
+                                       ("history_capacity", 7), ("time_delta_scale", 270)])
 def test_model_context_config_is_strict(field, value):
-    with pytest.raises(ValueError, match="model\\."):
+    with pytest.raises(ValueError, match="model"):
         ModelConfig.from_mapping({field: value})
 
 
 def test_model_context_defaults_and_no_history_boundary():
     assert ModelConfig().history_reset_keep == 8
-    assert ModelConfig().time_delta_scale == 270
     assert ModelConfig().context_capacity == 1024
     with pytest.raises(ValueError, match="context_capacity"):
         ModelConfig(context_capacity=16)
