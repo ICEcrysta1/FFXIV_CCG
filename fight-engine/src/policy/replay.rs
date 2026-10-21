@@ -1,5 +1,6 @@
 // Copyright (C) 2026 ICE_crystal
 // SPDX-License-Identifier: GPL-3.0-only
+// 附加许可：FightEngine 链接例外 1.1 版，见 LICENSE-FightEngine-Linking-Exception。
 
 //! 绝对时间策略回放：同步同刻场景事实，补充停止织入的等待并输出增量观测。
 

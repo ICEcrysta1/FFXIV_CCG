@@ -1,5 +1,6 @@
 // Copyright (C) 2026 ICE_crystal
 // SPDX-License-Identifier: GPL-3.0-only
+// 附加许可：FightEngine 链接例外 1.1 版，见 LICENSE-FightEngine-Linking-Exception。
 
 //! 黑魔职业规则；公共时钟、MP、冷却和目标结算由核心系统持有。
 

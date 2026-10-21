@@ -1,5 +1,6 @@
 // Copyright (C) 2026 ICE_crystal
 // SPDX-License-Identifier: GPL-3.0-only
+// 附加许可：FightEngine 链接例外 1.1 版，见 LICENSE-FightEngine-Linking-Exception。
 
 //! 冻结状态、历史 token 与 canonical 上下文；格式翻译留在输出模块内部。
 

@@ -111,10 +111,16 @@ Project-owned source code in this repository is licensed under the GNU
 General Public License v3.0 only (GPL-3.0-only); see LICENSE. Third-party
 materials remain under their own applicable licenses.
 
-The Rust state machine, job crates and Python native extension under
-`fight-engine/` are licensed under GPL-3.0-only. The additional permission in
-`LICENSE-FightEngine-Linking-Exception` describes the historical C# library;
-it does not apply to the Rust implementation.
+The Rust core and the Black Mage and Machinist library sources under
+`fight-engine/`, together with their compiled code portions, have the
+additional permission in [FightEngine GPLv3 Linking Exception, Version 1.1](./LICENSE-FightEngine-Linking-Exception).
+Independent Modules need not disclose their source solely because they are
+combined with the library; the GPLv3 source obligations for the library and
+its modifications remain in effect. The three library Cargo packages carry
+both the GPLv3 and exception texts.
+The exception does not automatically apply to the Python binding code,
+tests, tools, or third-party dependencies, nor to a combined native extension
+as a whole. See the exception for the precise scope and conditions.
 
 Copyright notices for the relevant material identify ICE_crystal and, for
 the original Machinist implementation, SpikeHS.

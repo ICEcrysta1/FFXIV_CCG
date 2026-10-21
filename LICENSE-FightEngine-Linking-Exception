@@ -7,7 +7,7 @@ Project: FFXIV_CCG
 Full name: Context Combat Generator
 Repository: https://github.com/ICEcrysta1/FFXIV_CCG
 
-Version 1.0
+Version 1.1
 
 This document is an additional permission under section 7 of the GNU
 General Public License, version 3 (GPLv3).  It is not a standalone license
@@ -17,7 +17,7 @@ file.
 Capitalized terms used but not defined in this exception have the meanings
 given in the GPLv3.  "Combined Work" means a work formed by combining the
 FightEngine Library with one or more Independent Modules.  "Public API"
-means the publicly accessible types and members of the FightEngine Library
+means the publicly accessible items of the FightEngine Library
 that are intended for use by Independent Modules and are documented or
 otherwise identified as public in the project.
 
@@ -27,30 +27,37 @@ Scope
 For purposes of this exception, the "FightEngine Library" consists only of
 the following two categories:
 
-1. The project-owned source files under `Combat.Sim/FightEngine/` that are
-   included by `Combat.Sim/FightEngine/FightEngine.csproj`, including
+1. The project-owned Rust library source files under `fight-engine/src/`,
+   `fight-engine/jobs/black-mage/src/`, and
+   `fight-engine/jobs/machinist/src/`, compiled by the library targets in
+   `fight-engine/Cargo.toml`, `fight-engine/jobs/black-mage/Cargo.toml`, and
+   `fight-engine/jobs/machinist/Cargo.toml`, respectively, including
    modified versions of those files.
-2. The managed .NET assembly named `FightEngine.dll` produced by building
-   `Combat.Sim/FightEngine/FightEngine.csproj` from that source set,
-   including modified builds of that same project.
+2. The compiled code generated from that source set, including modified
+   builds of those same crates and the corresponding code portions linked
+   into other artifacts.
 
-The filename `FightEngine.dll` alone does not bring an assembly within this
-scope.  An assembly produced by another project, or an assembly that has
-been merged, bundled, or rewritten with code from another project, is not
-covered as a whole by this exception.  Generated source, generated assets,
-embedded resources, and other inputs from outside `Combat.Sim/FightEngine/`
-are covered only if a project or source notice expressly identifies them as
+The paths above identify source locations in the project repository.
+Packaging those source files separately does not change their coverage.
+
+A crate name or artifact filename alone does not bring code within this
+scope.  An artifact that includes code from other crates or projects, such
+as the `fight_engine_native` Python extension, is not covered as a whole by
+this exception.  Generated source, generated assets, embedded resources,
+and other inputs from outside the source directories listed above are
+covered only if a project or source notice expressly identifies them as
 project-owned material covered by this exception.  Otherwise they remain
-under their own applicable license.  In particular, third-party assemblies
-referenced by the project are not relicensed by this exception.
+under their own applicable license.  In particular, third-party
+dependencies are not relicensed by this exception.
 
-This exception does not automatically apply to SidecarHost, tests, tools,
-Python code, or any other part of the repository unless that part carries a
-separate notice referring to this exception.
+This exception does not automatically apply to the Python bindings under
+`fight-engine/python/`, tests, tools, Python code, or any other part of the
+repository unless that part carries a separate notice referring to this
+exception.
 
-SidecarHost, a test, a tool, a Python module, or another repository component
-may nevertheless qualify as an Independent Module if it is not derived from
-or based on the FightEngine Library.  Only a component that meets the
+A binding, a test, a tool, a Python module, or another repository component
+may nevertheless qualify as an Independent Module if it is not derived
+from or based on the FightEngine Library.  Only a component that meets the
 Independent Module definition may rely on this exception when combined with
 the FightEngine Library.  If a component contains code derived from the
 FightEngine Library, it is not an Independent Module for this exception and
@@ -66,23 +73,24 @@ combine the FightEngine Library, whether unmodified or modified, with one
 or more Independent Modules to produce a Combined Work.
 
 The FightEngine Library, any modified version of it, and any work based on
-it remain subject to the GPLv3 and this additional permission.  The
-Independent Modules and the Combined Work, to the extent it consists of
-Independent Modules and the combination, may be conveyed under terms of the
-distributor's choice, provided that the FightEngine Library and any work
-based on it included in the Combined Work remain subject to the GPLv3 and
-this additional permission and all applicable GPLv3 obligations are
-satisfied.  This permission does not make an Independent Module subject to
-the GPLv3 merely because it is combined with the FightEngine Library.
+it remain subject to the GPLv3, with this additional permission where it
+has been retained.  The Independent Modules and the Combined Work, to the
+extent it consists of Independent Modules and the combination, may be
+conveyed under terms of the distributor's choice, provided that the
+FightEngine Library and any work based on it included in the Combined Work
+remain subject to the GPLv3, with this additional permission where retained,
+and all applicable GPLv3 obligations are satisfied.  This permission does
+not make an Independent Module subject to the GPLv3 merely because it is
+combined with the FightEngine Library.
 
 For this exception, an Independent Module is a module that is not derived
 from or based on the FightEngine Library.  Referencing the Public API of the
-FightEngine Library, loading its .NET assembly, or communicating with its
-Public API does not by itself make an Independent Module a work based on
-the FightEngine Library.
+FightEngine Library, declaring it as a Rust crate dependency, loading a
+compiled form of it, or communicating with its Public API does not by
+itself make an Independent Module a work based on the FightEngine Library.
 
 An Independent Module may include interface declarations, header files,
-IDL, Public API descriptions, type signatures, assembly metadata, or stubs
+IDL, Public API descriptions, type signatures, linkage metadata, or stubs
 to the extent reasonably necessary to call or interoperate with the
 Public API of the FightEngine Library, provided that the material is
 independently authored, derived from publicly available documentation, or
@@ -90,42 +98,49 @@ otherwise permitted by law.  This permission does not allow copying
 implementation code, non-public internals, or expressive code beyond what
 is necessary to describe or access the Public API.
 
-This permission covers static or dynamic linking, .NET assembly references,
-plugin loading, and equivalent forms of combining the FightEngine Library
-with an Independent Module.  It does not grant permission to copy source
-code from the FightEngine Library into an Independent Module, nor does it
-remove any GPLv3 obligation that applies to the FightEngine Library itself.
+This permission covers static or dynamic linking, Rust crate dependencies,
+foreign-function interfaces, plugin loading, and equivalent forms of
+combining the FightEngine Library with an Independent Module.  It does not
+grant permission to copy source code from the FightEngine Library into an
+Independent Module, nor does it remove any GPLv3 obligation that applies to
+the FightEngine Library itself.
 
 Conditions
 ----------
 
 1. The FightEngine Library, its modified versions, and any work based on
-   it remain subject to the GPLv3, as modified by this additional
-   permission.  This condition does not require an Independent Module to be
+   it remain subject to the GPLv3, with this additional permission where
+   retained.  This condition does not require an Independent Module to be
    licensed under the GPLv3 merely because it is part of a Combined Work.
 2. Anyone who conveys the FightEngine Library, or a Combined Work
    containing it, must satisfy the GPLv3 obligations applicable to the
    FightEngine Library and any work based on it, including providing the
    Corresponding Source for the FightEngine Library and any work based on
    it when conveying object code, as required by the GPLv3, and preserving
-   the applicable copyright, license, and exception notices.
+   the applicable copyright and license notices and, subject to Condition 4,
+   exception notices.  Providing Corresponding Source does not require
+   disclosure of the source code of an Independent Module solely because
+   it is combined with the FightEngine Library.  This does not exclude
+   source code or scripts included in the Corresponding Source for the
+   FightEngine Library, including modifications to it, under section 1 of
+   the GPLv3.
 3. The license of an Independent Module is not changed by this exception.
    Subject to the paragraph above concerning public interfaces, this
    exception does not grant permission to copy source code or implementation
    code from the FightEngine Library into an Independent Module, or to remove
    or weaken GPLv3 obligations applicable to source code copied into, or
    modifications made to, the FightEngine Library.
-4. A person who modifies and conveys the FightEngine Library may choose
-   whether to preserve this exception for that modified version.  If the
-   exception is not preserved, the modified version is governed by the
-   GPLv3 without this additional permission.
+4. Anyone who conveys a copy of the FightEngine Library may, at their
+   option, remove this additional permission from that copy or from any
+   part of it, as permitted by section 7 of the GPLv3.  Any part from which
+   this exception is removed is governed by the GPLv3 without this
+   additional permission.
 5. This exception grants no additional trademark, patent, or other
    permission beyond the copyright permission stated here.  It does not
-   limit, modify, weaken, or replace any right or obligation under the GPLv3,
-   including the patent license granted under section 11.
+   alter the patent rights or obligations under section 11 of the GPLv3.
 
 The copyright holders may publish revised versions of this exception and may
 withdraw this exception for future releases.  You may use this exception
-under Version 1.0 or any later version published by the copyright holders.
+under Version 1.1 or any later version published by the copyright holders.
 Revision or withdrawal does not revoke permissions already granted for
 copies lawfully conveyed under an applicable version of this exception.

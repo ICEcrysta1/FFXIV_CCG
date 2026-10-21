@@ -8,12 +8,13 @@
 
 ### Rust 状态机
 
-`fight-engine/` 是独立的 Cargo library crate，包名为 `fight-engine`，Rust 导入名为 `fight_engine`，使用 Rust 2024 edition。`jobs/` 下各职业分别是依赖核心的独立 crate，核心不引用它们，也不以 workspace 成员关系绑定它们。正式 Python 调用通过 `python/` 的 PyO3 扩展接入 Rust；旧 C# 工程已移除，仅保留冻结 JSON 基线中的来源记录与历史许可声明。
+`fight-engine/` 是独立的 Cargo library crate，包名为 `fight-engine`，Rust 导入名为 `fight_engine`，使用 Rust 2024 edition。`jobs/` 下各职业分别是依赖核心的独立 crate，核心不引用它们，也不以 workspace 成员关系绑定它们。正式 Python 调用通过 `python/` 的 PyO3 扩展接入 Rust；旧 C# 工程已移除，冻结 JSON 基线保留来源记录。核心、黑魔和机工库源码及其编译代码部分适用根目录 `LICENSE-FightEngine-Linking-Exception` 的 `1.1` 版附加许可，Python 绑定不自动适用，具体边界以许可正文为准。
 
 ```text
 fight-engine/
-├── Cargo.toml                                       包元数据与依赖声明
+├── Cargo.toml                                       包元数据、依赖声明及根目录 GPL 文本的打包路径
 ├── Cargo.lock                                       Cargo 生成的依赖版本锁文件
+├── LICENSE-FightEngine-Linking-Exception              指向根目录例外全文的相对符号链接，Cargo 打包时展开为普通文件
 ├── src/
 │   ├── lib.rs                                       核心库模块入口
 │   ├── config.rs                                    配置装配、通用定义、技能索引、策略配置与输出 schema
@@ -42,10 +43,12 @@ fight-engine/
 ├── jobs/
 │   ├── black-mage/                                  黑魔独立 crate：fight-engine-black-mage
 │   │   ├── Cargo.toml / Cargo.lock                   只依赖上级核心；固定独立构建依赖
+│   │   ├── LICENSE-FightEngine-Linking-Exception      指向根目录例外全文的相对符号链接
 │   │   ├── src/lib.rs                               BlackMage 工厂、元素、瞬发、MP、通晓和死亡规则
 │   │   └── tests/                                   本职业的真实 C# JSON 基线对比
 │   └── machinist/                                   机工独立 crate：fight-engine-machinist
 │       ├── Cargo.toml / Cargo.lock                   只依赖上级核心；固定独立构建依赖
+│       ├── LICENSE-FightEngine-Linking-Exception      指向根目录例外全文的相对符号链接
 │       ├── src/lib.rs                               Machinist 工厂、连击、整备、过热、野火和冷却规则
 │       └── tests/                                   本职业的真实 C# JSON 基线对比
 ├── python/                                          独立 Python 原生扩展，装配核心与两个职业 crate

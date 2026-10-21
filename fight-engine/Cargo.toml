@@ -3,6 +3,7 @@ name = "fight-engine"
 version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-only"
+license-file = "../LICENSE"
 
 [dependencies]
 indexmap = { version = "2", features = ["serde"] }

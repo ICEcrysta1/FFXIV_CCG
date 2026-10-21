@@ -1,6 +1,7 @@
 // Copyright (C) 2026 ICE_crystal
 // Copyright (C) 2026 SpikeHS (original Machinist implementation)
 // SPDX-License-Identifier: GPL-3.0-only
+// 附加许可：FightEngine 链接例外 1.1 版，见 LICENSE-FightEngine-Linking-Exception。
 
 //! 机工资源、连击、过热、整备和野火规则；公共时间线与战斗状态由核心持有。
 
