@@ -14,6 +14,7 @@ use crate::config::{PolicyActionDefinition, PolicyActionRegistry};
 use crate::engine::EngineRules;
 use crate::engine::simulator::{Simulator, reserve_decision_id};
 use crate::outputs::{ModelHistoryRow, OutputContextBuilder, SkillTokenInput, build_skill_token};
+use crate::state::skills::SkillState;
 use crate::state::{CombatState, ModelStateFrame, ModelStateSnapshot};
 use crate::system::timeline::TIME_EPSILON;
 
@@ -334,15 +335,25 @@ fn compose(
     registry: &PolicyActionRegistry,
 ) -> Result<ModelStateSnapshot, String> {
     let frame = |frame: &ModelStateFrame| -> Result<Arc<ModelStateFrame>, String> {
-        let mut availability = frame.skill_availability.clone();
+        let mut skill_state = frame.skill_state.clone();
         for action in registry.actions() {
-            if availability.insert(action.key.clone(), true).is_some() {
+            if skill_state
+                .insert(
+                    action.key.clone(),
+                    SkillState {
+                        available: true,
+                        current_charges: 1,
+                        next_cooldown_seconds: 0.0,
+                    },
+                )
+                .is_some()
+            {
                 return Err("policy and real action keys must be unique".into());
             }
         }
         Ok(Arc::new(ModelStateFrame {
             state: frame.state.clone(),
-            skill_availability: availability,
+            skill_state,
         }))
     };
     Ok(ModelStateSnapshot {

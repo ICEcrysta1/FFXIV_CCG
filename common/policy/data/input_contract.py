@@ -44,7 +44,7 @@ from .spec import DataSpec
 #     黑魔绝望最低 MP 修正为 800；旧 checkpoint 的输入与执行语义均不可复用。
 #     同版本统一输入数值投影、token 合成和输入归一化为 FP32。
 # 24：独立死亡事件 embedding 按已落实历史边界插入，死亡 token 纳入共享上下文预算。
-# 25：归一化规则统一由保存的 normalizer 契约提供，状态和场景共享秒数尺度。
+# 25：统一归一化入口；独立注册的技能状态按绝对三元组进入状态向量。
 INPUT_CONTRACT_VERSION = 25
 
 RESIDUAL_MIX_CONFIG_FIELDS = (
@@ -104,9 +104,15 @@ def residual_composition_contract(model_config: Mapping[str, object]) -> dict[st
 # 描述固定的输入结构，不作为可调运行参数；d_model 仍由保存的 model_config 提供。
 # 数据 bank 的字段与时间语义由 schema 与转换版本负责，不把读取窗口加入 cache 身份。
 TOKEN_ENCODING_CONTRACT = {
-    "state_availability": {
-        "encoding": "absolute_binary",
-        "order": "snapshot_then_saved_action_keys",
+    "skill_state": {
+        "encoding": "absolute_numeric",
+        "order": "snapshot_then_saved_action_keys_then_registered_fields",
+        "fields": ["available", "current_charges", "next_cooldown_seconds"],
+        "scales": {
+            "available": 1,
+            "current_charges": "normalizer_contract.skill_charge_limits[action_key]",
+            "next_cooldown_seconds": "normalizer_contract.config.time_scale",
+        },
         "projection": "shared_state_content",
         "auxiliary_masks": "base_state_only",
         "scene_execution_time": "raw_fp32_endpoints_promoted_to_double",
@@ -211,7 +217,9 @@ class ModelInputContract:
 
     def __post_init__(self) -> None:
         data_spec = DataSpec.from_dict(self.data_spec)
-        self.schema.state_layout(data_spec.action_keys).assert_matches_data_spec(data_spec)
+        layout = self.schema.state_layout(data_spec.action_keys)
+        layout.assert_matches_data_spec(data_spec)
+        Normalizer.from_contract(self.normalizer_contract).skill_state_encoding_metadata(layout)
         vocab = self.create_skill_vocab()
         if any(row >= vocab.size() for row in data_spec.action_to_vocab_id):
             raise ValueError("input contract output actions exceed the saved skill vocab")

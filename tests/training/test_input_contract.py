@@ -7,7 +7,7 @@ from tests.training._causal_fixtures import make_state_groups
 import pytest
 
 from common.policy.data import ModelInputContract, Normalizer, SkillVocab
-from common.policy.data.schema import SceneWindowSchema, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
+from common.policy.data.schema import SceneWindowSchema, StateFeatureLayout, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
 from common.policy.data.spec import DataSpec
 from common.policy.data.input_contract import (
     INPUT_CONTRACT_VERSION, TOKEN_ENCODING_CONTRACT, RESIDUAL_MIX_CONFIG_FIELDS,
@@ -20,7 +20,7 @@ def _build_contract() -> ModelInputContract:
     data_spec = DataSpec(
         job_tag="black_mage",
         num_actions=1,
-        base_state_dim=1, state_dim=(1) + 2 * (1),
+        base_state_dim=1, state_dim=(1) + 6 * (1),
         scene_dim=3,
         skill_feature_dim=1,
         num_scene_types=1,
@@ -58,7 +58,8 @@ def _build_contract() -> ModelInputContract:
     )
 
 
-def test_model_input_contract_round_trips_without_project_yaml(monkeypatch):
+@pytest.mark.parametrize("invalid_charge_limit", [None, "missing", "missing_action", 0, .5])
+def test_model_input_contract_round_trips_without_project_yaml(monkeypatch, invalid_charge_limit):
     contract = _build_contract()
     import common.game.config as config_module
 
@@ -67,7 +68,18 @@ def test_model_input_contract_round_trips_without_project_yaml(monkeypatch):
         "load_project_config",
         lambda **_kwargs: pytest.fail("checkpoint contract must not load project YAML"),
     )
-    restored = ModelInputContract.from_dict(contract.to_dict())
+    payload = contract.to_dict()
+    if invalid_charge_limit is not None:
+        if invalid_charge_limit == "missing":
+            payload["normalizer"].pop("skill_charge_limits")
+        elif invalid_charge_limit == "missing_action":
+            payload["normalizer"]["skill_charge_limits"].pop("fire_iii")
+        else:
+            payload["normalizer"]["skill_charge_limits"]["fire_iii"] = invalid_charge_limit
+        with pytest.raises((TypeError, ValueError), match="skill_charge_limits|charge limit"):
+            ModelInputContract.from_dict(payload)
+        return
+    restored = ModelInputContract.from_dict(payload)
 
     assert restored.job_tag == "black_mage"
     assert restored.data_spec == contract.data_spec
@@ -81,6 +93,12 @@ def test_model_input_contract_round_trips_without_project_yaml(monkeypatch):
     metadata = normalizer.state_encoding_metadata(restored.schema)
     assert metadata.feature_keys == ("request_state.time_seconds",)
     assert normalizer.normalization_contract == restored.normalizer_contract
+    assert restored.normalizer_contract["skill_charge_limits"]["ley_lines"] == 2
+    skill_layout = StateFeatureLayout(
+        make_state_groups({"player_state": ("request_state.time_seconds",)}, ("ley_lines",)),
+        ("previous_action_after", "request_state"), ("ley_lines",),
+    )
+    assert normalizer.skill_state_encoding_metadata(skill_layout).divisors == (1, 2, 270) * 2
 
 
 def test_model_input_contract_rejects_checkpoint_without_contract():

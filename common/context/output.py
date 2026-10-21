@@ -25,6 +25,7 @@ ACTION_LEGAL_MASK_KEY = CANONICAL_CONTEXT_TOP_LEVEL_KEYS[7]
 ACTION_VALUES_KEY = CANONICAL_CONTEXT_TOP_LEVEL_KEYS[8]
 STATE_CONTEXT_TOKEN_KEY = str(_output["token_key"])
 STATE_SNAPSHOTS = tuple(str(value) for value in _output["state_snapshots"])
+SKILL_STATE_FIELDS = tuple(str(value) for value in load_schema_config()["state_vector_fields"]["skill_state"])
 
 
 @dataclass(frozen=True)
@@ -37,7 +38,7 @@ class StateVectorGroupSchema:
     encoding: str
 
     def __post_init__(self) -> None:
-        if self.encoding not in {"anchored_delta", "absolute_binary"}:
+        if self.encoding not in {"anchored_delta", "absolute_numeric"}:
             raise ValueError(f"unknown state group encoding: {self.encoding!r}")
 
 

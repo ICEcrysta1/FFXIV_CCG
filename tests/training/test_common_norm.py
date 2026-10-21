@@ -16,6 +16,8 @@ from common.policy.data.normalizer import NORMALIZER_CONTRACT_VERSION
 
 def _encode_states(normalizer, feature_keys, rows):
     """从 raw ABS/DELTA 经正式入口编码，覆盖首条绝对锚点和后续有符号差分。"""
+    contract = normalizer.normalization_contract
+    normalizer = Normalizer.from_contract({**contract, "skill_charge_limits": {**contract["skill_charge_limits"], "first": 2, "second": 2}})
     keys = tuple(feature_keys)
     values = torch.tensor(rows, dtype=torch.float32)
     if "request_state.time_seconds" not in keys:
@@ -38,8 +40,8 @@ def _encode_states(normalizer, feature_keys, rows):
     )
     history_size = len(rows) - 1
     output = ContextEncoder(normalizer, schema, layout=schema.state_layout(("first", "second"))).encode({
-        "history_state_skill_availability": torch.zeros((*(values[:-1][None]).shape[:-1], 4), dtype=torch.bool),
-        "current_state_skill_availability": torch.zeros((*(values[-1:]).shape[:-1], 4), dtype=torch.bool),
+        "history_state_skill_state": torch.zeros((*(values[:-1][None]).shape[:-1], 12), dtype=torch.float32),
+        "current_state_skill_state": torch.zeros((*(values[-1:]).shape[:-1], 12), dtype=torch.float32),
         "history_skill_ids": torch.ones((1, history_size), dtype=torch.long),
         "history_skill_features": torch.zeros((1, history_size, 1)),
         "history_state_abs_values": values[:-1][None],
@@ -128,7 +130,7 @@ def test_normalizer_keeps_configured_time_scale_when_job_cooldowns_change(monkey
 
 
 def test_normalizer_rejects_removed_skill_time_feature():
-    with pytest.raises(ValueError, match="skill features must not include time_seconds"):
+    with pytest.raises(ValueError, match="removed skill time/charge features"):
         Normalizer().normalize_skill_features(torch.tensor([[900.0]]), ("time_seconds",))
 
 
@@ -201,38 +203,38 @@ def test_state_encoder_uses_system_and_job_status_max_stacks():
 
 
 @pytest.mark.parametrize("names", [
-    ("max_charges", "available_charges", "potency", "kind", "is_legal"),
-    ("available_charges", "potency", "kind", "is_legal", "max_charges"),
+    ("max_charges", "potency", "kind", "is_legal"),
+    ("potency", "kind", "is_legal", "max_charges"),
 ])
-def test_skill_charge_ratios_use_frozen_limits_without_mutating_raw(names):
+def test_skill_maximum_charge_ratios_use_frozen_limits_without_mutating_raw(names):
     """不同技能的充能上限不同，字段顺序不能改变每行的分母。"""
-    rows = [dict(max_charges=2, available_charges=1, potency=1000, kind=0, is_legal=1),
-            dict(max_charges=3, available_charges=2, potency=2000, kind=1, is_legal=0),
-            dict(max_charges=1, available_charges=0, potency=0, kind=0, is_legal=1)]
+    rows = [dict(max_charges=2, potency=1000, kind=0, is_legal=1),
+            dict(max_charges=3, potency=2000, kind=1, is_legal=0),
+            dict(max_charges=1, potency=0, kind=0, is_legal=1)]
     raw = torch.tensor([[row[key] for key in names] for row in rows], dtype=torch.float32)
     saved = raw.clone()
     encoded = Normalizer().normalize_skill_features(raw, names)
-    for key, values in {"available_charges": [.5, 2 / 3, 0], "max_charges": [1, 1, 1],
+    for key, values in {"max_charges": [1, 1, 1],
                         "potency": [.5, 1, 0], "kind": [0, 1, 0], "is_legal": [1, 0, 1]}.items():
         torch.testing.assert_close(encoded[:, names.index(key)], torch.tensor(values, dtype=torch.float32))
     torch.testing.assert_close(raw, saved, rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("available,maximum", [(0, 0), (0, -1), (0, float("nan")),
-                                               (0, float("inf")), (-1, 2), (3, 2)])
-def test_skill_charge_ratios_reject_invalid_raw_limits_and_counts(available, maximum):
+@pytest.mark.parametrize("maximum", [0, -1, float("nan"), float("inf")])
+def test_skill_charge_ratios_reject_invalid_raw_limits(maximum):
     with pytest.raises(ValueError, match="charges"):
         Normalizer().normalize_skill_features(
-            torch.tensor([[available, maximum]]), ("available_charges", "max_charges"),
+            torch.tensor([[maximum]]), ("max_charges",),
         )
 
 
-def test_skill_charge_ratios_require_frozen_limit_and_allow_empty_history():
+def test_skill_features_reject_moved_fields_and_allow_empty_history():
     normalizer = Normalizer()
-    with pytest.raises(ValueError, match="requires.*max_charges"):
-        normalizer.normalize_skill_features(torch.tensor([[1.0]]), ("available_charges",))
-    empty = torch.empty((0, 2))
-    assert normalizer.normalize_skill_features(empty, ("available_charges", "max_charges")).shape == (0, 2)
+    for field in ("available_charges", "next_cooldown_seconds"):
+        with pytest.raises(ValueError, match="skill.*field|skill.*state|removed"):
+            normalizer.normalize_skill_features(torch.tensor([[1.0]]), (field,))
+    empty = torch.empty((0, 1))
+    assert normalizer.normalize_skill_features(empty, ("max_charges",)).shape == (0, 1)
 
 
 @pytest.mark.parametrize("job,resource", [("black_mage", "polyglot_timer"),

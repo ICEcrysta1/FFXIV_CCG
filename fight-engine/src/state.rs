@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::ResourceValue;
 
 pub mod resources;
+pub mod skills;
 pub mod status;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -386,7 +387,7 @@ pub struct StateContext {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ModelStateFrame {
     pub state: StateContext,
-    pub skill_availability: BTreeMap<String, bool>,
+    pub skill_state: skills::SkillStateSnapshot,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

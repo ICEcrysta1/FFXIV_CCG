@@ -175,8 +175,8 @@ def test_real_ppg_counts_queued_gcds_and_masks_policy_wait(cs_backend, monkeypat
         context_schema_version=CANONICAL_CONTEXT_SCHEMA_VERSION, scene_context_mode="absolute",
         state_groups=tuple(StateFeatureGroup(group, f"{group}_feature_keys", tuple(fields), "anchored_delta")
                            for group, fields in groups.items()) + (
-            StateFeatureGroup("skill_availability", "skill_availability_feature_keys",
-                              tuple(state_context["skill_availability_feature_keys"]), "absolute_binary"),
+            StateFeatureGroup("skill_state", "skill_state_feature_keys",
+                              tuple(state_context["skill_state_feature_keys"]), "absolute_numeric"),
         ),
         state_snapshots=("previous_action_after", "request_state"), skill_history_fields=("kind",),
         scene_windows=(SceneWindowSchema.from_feature_keys(
@@ -387,8 +387,9 @@ def test_validation_ppg_recovers_initial_base_gcd_from_saved_current_state(base_
                 ("previous_action_after.current_gcd_seconds", "request_state.current_gcd_seconds", "request_state.time_seconds"), "anchored_delta"),
             StateFeatureGroup("buff_state", "buff_state_feature_keys",
                 ("previous_action_after.job.ley_lines.active", "request_state.job.ley_lines.active"), "anchored_delta"),
-            StateFeatureGroup("skill_availability", "skill_availability_feature_keys",
-                ("previous_action_after.test", "request_state.test"), "absolute_binary"),
+            StateFeatureGroup("skill_state", "skill_state_feature_keys",
+                tuple(f"{snapshot}.test.{field}" for snapshot in ("previous_action_after", "request_state")
+                      for field in ("available", "current_charges", "next_cooldown_seconds")), "absolute_numeric"),
         ), state_snapshots=("previous_action_after", "request_state"), skill_history_fields=(),
     )
     normalizer.register_schema(schema)
@@ -420,8 +421,9 @@ def test_initial_ppg_state_cannot_silently_fall_back_to_local_gcd(missing_state,
     normalizer.register_feature_keys("player_state", list(keys))
     groups = (
         StateFeatureGroup("player_state", "player_state_feature_keys", keys, "anchored_delta"),
-        StateFeatureGroup("skill_availability", "skill_availability_feature_keys",
-                          ("previous_action_after.test", "request_state.test"), "absolute_binary"),
+        StateFeatureGroup("skill_state", "skill_state_feature_keys",
+                          tuple(f"{snapshot}.test.{field}" for snapshot in ("previous_action_after", "request_state")
+                                for field in ("available", "current_charges", "next_cooldown_seconds")), "absolute_numeric"),
     )
     schema = SimpleNamespace(state_layout=lambda actions: StateFeatureLayout(
         groups, ("previous_action_after", "request_state"), actions))

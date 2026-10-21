@@ -7,7 +7,7 @@ from copy import deepcopy
 import pytest
 import torch
 
-from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
+from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION, SKILL_STATE_FIELDS
 from common.policy.data import ActionSpace, SkillVocab
 from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION
 from scripts.convert_fflogs.source.source_reader import TrainingSourceReader
@@ -23,9 +23,10 @@ def _source(*, history_length=0):
         "buff_state_feature_keys": [],
         "target_buff_state_feature_keys": ["previous_action_after.target.current_gcd_dot_potency", "request_state.target.current_gcd_dot_potency"],
         "resource_state_feature_keys": [],
-        "skill_availability_feature_keys": [f"{snapshot}.{key}" for snapshot in ("previous_action_after", "request_state") for key in space.action_keys],
+        "skill_state_feature_keys": [f"{snapshot}.{key}.{field}" for snapshot in ("previous_action_after", "request_state")
+                                     for key in space.action_keys for field in SKILL_STATE_FIELDS],
     }
-    token = {"player_state": [10000.0, 10000.0, 0.0], "buff_state": [], "target_buff_state": [0.0, 0.0], "resource_state": [], "skill_availability": [1] * (2 * len(space.action_keys))}
+    token = {"player_state": [10000.0, 10000.0, 0.0], "buff_state": [], "target_buff_state": [0.0, 0.0], "resource_state": [], "skill_state": [1, 1, 0] * (2 * len(space.action_keys))}
     samples = []
     for step in range(history_length + 1):
         history = [{"skill_id": 0, "skill_key": "ogcd_wait", "kind": 0, "potency": 0.0,
@@ -65,7 +66,8 @@ def test_empty_history_and_wait_only_history_share_stable_skill_schema():
     wait = TrainingSourceReader(_source(history_length=1))
     assert empty.schema == wait.schema
     assert empty.skill_feature_names == wait.skill_feature_names
-    assert len(empty.skill_feature_names) == 18
+    assert len(empty.skill_feature_names) == 16
+    assert not {"available_charges", "next_cooldown_seconds"}.intersection(empty.skill_feature_names)
     assert "time_seconds" not in empty.skill_feature_names
     assert "time_seconds" not in empty.schema.skill_history_fields
     empty_sample = _builder(empty).build(empty, 0)

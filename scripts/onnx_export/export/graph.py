@@ -32,6 +32,7 @@ def export_and_stamp(
     golden_inputs = make_inputs(
         contracts.data_spec,
         contracts.contract,
+        state_layout=contracts.deployment_contract.input_contract.schema.state_layout(contracts.data_spec.action_keys),
         vocab_size=contracts.vocab_size,
         scene_valid=0,
         history_valid=0,

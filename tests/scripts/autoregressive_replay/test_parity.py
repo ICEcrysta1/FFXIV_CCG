@@ -119,7 +119,7 @@ def test_bf16_float_compute_reference_keeps_quantized_checkpoint_weights(tmp_pat
     from tests.scripts.onnx_export.test_exporter import _write_small_checkpoint
 
     checkpoint = tmp_path / "model.pt"
-    data_spec, _ = _write_small_checkpoint(checkpoint)
+    data_spec, input_contract = _write_small_checkpoint(checkpoint)
     reference = PyTorchPolicyBackend(
         checkpoint,
         device="cuda",
@@ -135,6 +135,7 @@ def test_bf16_float_compute_reference_keeps_quantized_checkpoint_weights(tmp_pat
     inputs = make_inputs(
         data_spec,
         CapacityContract(context_capacity=12),
+        state_layout=input_contract.schema.state_layout(data_spec.action_keys),
         vocab_size=8,
         scene_valid=1,
         history_valid=1,
@@ -205,6 +206,7 @@ def test_parity_fixed_capacity_batch_stays_on_reference_device(tmp_path):
         make_inputs(
             data_spec,
             contract,
+            state_layout=_input_contract.schema.state_layout(data_spec.action_keys),
             vocab_size=8,
             scene_valid=2,
             history_valid=3,

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .normalization import FIELD_UNITS, NormalizerConfig, load_normalizer_config
 
-# 4：字段单位统一声明，状态、技能与场景共用归一化尺度。
+# 4：字段单位统一声明，并冻结技能状态的注册充能上限。
 NORMALIZER_CONTRACT_VERSION = 4
 
 
@@ -28,6 +28,7 @@ class Normalizer:
         self._rules: dict[str, list[_FieldRule]] = {}
         self._resource_limits: dict[str, float] = {}
         self._status_limits: dict[str, float] = {}
+        self._skill_charge_limits: dict[str, float] = {}
         self._resource_time_fields: tuple[str, ...] = ()
         self._configured_job_tag: str | None = None
 
@@ -51,12 +52,14 @@ class Normalizer:
                 self.register_feature_keys(group_key, feature_keys)
 
     def configure_job_resources(self, job_tag: str) -> None:
-        """缓存职业量谱单位和 Buff 层数上限，公共尺度保持 YAML 配置值。"""
+        """缓存量谱单位、Buff 与技能层数上限，公共尺度保持 YAML 配置值。"""
         normalized_job_tag = str(job_tag)
         if self._configured_job_tag == normalized_job_tag:
             return
 
         from common.game.config import load_project_config
+
+        from .policy_actions import load_policy_actions
 
         project_config = load_project_config(job_tag=normalized_job_tag)
         status_limits = {
@@ -72,6 +75,15 @@ class Normalizer:
 
         self._resource_time_fields = project_config.job.resource_time_fields
         self._status_limits = status_limits
+        self._skill_charge_limits = {
+            skill.key: float(skill.charges)
+            for skill in (*project_config.system.skills, *project_config.job.skills)
+            if skill.enabled
+        }
+        self._skill_charge_limits.update({action.key: 1.0 for action in load_policy_actions()})
+        if any(not math.isfinite(value) or value < 1 or not value.is_integer()
+               for value in self._skill_charge_limits.values()):
+            raise ValueError("skill charges must be positive integers")
         self.register_resource_limits(project_config.job.resource_limits)
         self._configured_job_tag = normalized_job_tag
 
@@ -102,6 +114,7 @@ class Normalizer:
             "config": asdict(self._config),
             "resource_limits": dict(sorted(self._resource_limits.items())),
             "status_limits": dict(sorted(self._status_limits.items())),
+            "skill_charge_limits": dict(sorted(self._skill_charge_limits.items())),
             "resource_time_fields": sorted(self._resource_time_fields),
         }
 
@@ -146,6 +159,9 @@ class Normalizer:
             _contract_limits(contract, "resource_limits")
         )
         normalizer._status_limits = _contract_limits(contract, "status_limits")
+        normalizer._skill_charge_limits = _contract_limits(contract, "skill_charge_limits")
+        if any(not value.is_integer() for value in normalizer._skill_charge_limits.values()):
+            raise ValueError("normalizer contract skill_charge_limits must contain positive integers")
         time_fields = contract.get("resource_time_fields")
         if (not isinstance(time_fields, (list, tuple))
                 or any(not isinstance(key, str) or key not in normalizer._resource_limits for key in time_fields)
@@ -214,6 +230,29 @@ class Normalizer:
             tuple(rule.unit == "time_anchor" for rule in rules),
         )
 
+    def skill_state_encoding_metadata(self, layout) -> StateEncodingMetadata:
+        """按冻结技能表生成绝对值缩放；上限仅来自保存的注册元数据。"""
+        divisors, lower, upper = [], [], []
+        for feature_key in layout.skill_state_feature_keys:
+            action_key, field = _strip_prefix(feature_key).rsplit(".", 1)
+            if action_key not in self._skill_charge_limits:
+                raise ValueError(f"normalizer contract missing skill charge limit: {action_key}")
+            if field == "current_charges":
+                divisor = self._skill_charge_limits[action_key]
+            elif field == "available":
+                divisor = 1.0
+            elif field == "next_cooldown_seconds":
+                divisor = self.time_scale
+            else:
+                raise ValueError(f"unknown registered skill state field: {field}")
+            divisors.append(divisor)
+            lower.append(0.0)
+            upper.append(divisor)
+        return StateEncodingMetadata(
+            layout.skill_state_feature_keys, tuple(divisors), tuple(lower), tuple(upper),
+            (False,) * layout.skill_state_dim,
+        )
+
     @property
     def time_scale(self) -> float:
         """返回普通时间字段使用的公共秒数尺度。"""
@@ -225,26 +264,22 @@ class Normalizer:
 
     def normalize_skill_features(self, tensor, feature_names):
         """按 skill 字段名归一化技能数值特征。"""
-        if any(str(name).split(".")[-1] == "time_seconds" for name in feature_names):
-            raise ValueError("skill features must not include time_seconds; rebuild old input artifacts")
+        removed = {"time_seconds", "available_charges", "next_cooldown_seconds"}
+        if any(str(name).rsplit(".", 1)[-1] in removed for name in feature_names):
+            raise ValueError("removed skill time/charge features; rebuild old input artifacts")
         result = tensor.clone()
         # 分母必须来自尚未归一化的冻结记录，不能受字段排列顺序影响。
         names = tuple(str(name) for name in feature_names)
         if tensor.shape[-1] != len(names):
             raise ValueError("skill feature width must match feature names")
         charge_limits = None
-        if "available_charges" in names or "max_charges" in names:
-            if "max_charges" not in names:
-                raise ValueError("available_charges requires the frozen max_charges field")
+        if "max_charges" in names:
             charge_limits = tensor[..., names.index("max_charges") : names.index("max_charges") + 1]
             if not bool((charge_limits.isfinite() & (charge_limits > 0)).all()):
                 raise ValueError("skill max_charges must be finite and positive")
         for index, feature_name in enumerate(feature_names):
-            if feature_name in {"available_charges", "max_charges"}:
-                values = result[..., index : index + 1]
-                if not bool((values.isfinite() & (values >= 0) & (values <= charge_limits)).all()):
-                    raise ValueError("skill charges must be finite and within the frozen max_charges")
-                values.div_(charge_limits)
+            if feature_name == "max_charges":
+                result[..., index : index + 1].div_(charge_limits)
                 continue
             rule = self._field_rule(str(feature_name))
             result[..., index : index + 1].clamp_(

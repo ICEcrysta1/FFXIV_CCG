@@ -89,6 +89,7 @@ impl StateTokens {
             "buff_state",
             "target_buff_dot_state",
             "target_buff_fixed",
+            "skill_state",
         ] {
             schema.require_state_vector_fields(group)?;
         }
@@ -159,7 +160,14 @@ impl StateTokens {
                 .chain(self.fields("target_buff_fixed")?.iter().cloned())
                 .collect(),
             "resource_state" => self.resources.clone(),
-            "skill_availability" => actions.to_vec(),
+            "skill_state" => actions
+                .iter()
+                .flat_map(|key| {
+                    self.schema.state_vector_fields["skill_state"]
+                        .iter()
+                        .map(move |field| format!("{key}.{field}"))
+                })
+                .collect(),
             group => return Err(format!("unsupported state group: {group}")),
         })
     }
@@ -176,13 +184,13 @@ impl StateTokens {
         let frames = [&snapshot.previous_action_after, &snapshot.request_state];
         if actions.iter().collect::<BTreeSet<_>>().len() != actions.len()
             || frames.iter().any(|frame| {
-                frame.skill_availability.len() != actions.len()
+                frame.skill_state.len() != actions.len()
                     || actions
                         .iter()
-                        .any(|key| !frame.skill_availability.contains_key(key))
+                        .any(|key| !frame.skill_state.contains_key(key))
             })
         {
-            return Err("frozen skill availability must match the complete action layout".into());
+            return Err("frozen skill state must match the complete action layout".into());
         }
         self.schema
             .state_vector_groups
@@ -201,10 +209,25 @@ impl StateTokens {
                         "resource_state" => {
                             resource_vector(&frame.state.resources, &self.resources)?
                         }
-                        "skill_availability" => actions
-                            .iter()
-                            .map(|key| f64::from(frame.skill_availability[key]))
-                            .collect(),
+                        "skill_state" => {
+                            let mut values = Vec::new();
+                            for key in actions {
+                                let skill = &frame.skill_state[key];
+                                for field in self.fields("skill_state")? {
+                                    values.push(match field.as_str() {
+                                        "available" => f64::from(skill.available),
+                                        "current_charges" => f64::from(skill.current_charges),
+                                        "next_cooldown_seconds" => skill.next_cooldown_seconds,
+                                        field => {
+                                            return Err(format!(
+                                                "schema.yaml 中未知的技能状态字段: {field}"
+                                            ));
+                                        }
+                                    });
+                                }
+                            }
+                            values
+                        }
                         group => return Err(format!("unsupported state group: {group}")),
                     });
                 }

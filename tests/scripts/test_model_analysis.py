@@ -181,7 +181,7 @@ def test_checkpoint_exposes_job_tag_at_top_level(tmp_path: Path):
     data_spec = DataSpec(
         job_tag="black_mage",
         num_actions=1,
-        state_dim=3,
+        state_dim=7,
         base_state_dim=1,
         scene_dim=0,
         skill_feature_dim=1,
@@ -193,6 +193,9 @@ def test_checkpoint_exposes_job_tag_at_top_level(tmp_path: Path):
     )
     normalizer = Normalizer()
     normalizer.configure_job_resources("black_mage")
+    normalizer = Normalizer.from_contract({
+        **normalizer.normalization_contract, "skill_charge_limits": {"fire": 2},
+    })
     input_contract = ModelInputContract.from_training(
         skill_vocab=SkillVocab.from_entries([(1001, 1)]),
         data_spec=data_spec,
@@ -566,6 +569,7 @@ def test_analysis_restores_saved_input_contract_without_current_yaml(
         torch.testing.assert_close(parameter, payload["model_state_dict"][name].to(parameter_dtype), rtol=0, atol=0)
     inputs = make_inputs(
         spec, CapacityContract(context_capacity=12), vocab_size=8, scene_valid=1, history_valid=1,
+        state_layout=saved.schema.state_layout(spec.action_keys),
         dtype=torch.float32, seed=7,
     )
     forward_dtypes = []
@@ -1272,7 +1276,7 @@ def test_model_analysis_attention_output_and_main(monkeypatch, tmp_path):
         data_spec=SimpleNamespace(
             job_tag="black_mage",
             num_actions=2,
-            state_dim=7,
+            state_dim=15,
             base_state_dim=3,
             scene_dim=1,
             skill_feature_dim=1,

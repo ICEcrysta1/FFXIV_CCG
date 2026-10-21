@@ -69,7 +69,7 @@ def tensor_dimensions(data_spec, *, batch=None, scene=None, history=None, dead=N
         "dead": "dead" if dead is None else dead,
         "bank": "bank" if bank is None else bank,
         "base_state": data_spec.base_state_dim,
-        "availability": data_spec.state_dim - data_spec.base_state_dim,
+        "skill_state": data_spec.state_dim - data_spec.base_state_dim,
         "state": data_spec.state_dim,
         "scene_feature": data_spec.scene_dim,
         "skill_feature": data_spec.skill_feature_dim if skill_feature_dim is None else skill_feature_dim,
@@ -84,7 +84,7 @@ HISTORY_BANK_FIELDS = (
     TensorField("state_delta_values", _ENCODING_STAGES, "float32", ("bank", "base_state")),
     TensorField("state_null_mask", _ENCODING_STAGES, "bool", ("bank", "base_state"), False),
     TensorField("state_delta_reset_mask", _ENCODING_STAGES, "bool", ("bank", "base_state"), False),
-    TensorField("state_skill_availability", _ENCODING_STAGES, "bool", ("bank", "availability"), False),
+    TensorField("state_skill_state", _ENCODING_STAGES, "float32", ("bank", "skill_state")),
     TensorField("skill_potencies", ("cache", "dataset"), "float", ("bank",), semantic="execution"),
     TensorField("cumulative_dot_potencies", ("cache", "dataset"), "float", ("bank",), semantic="execution"),
 )

@@ -11,6 +11,7 @@ from common.context.contracts import (
     TARGET_COUNT_WINDOW_CONTEXT_KEY,
     TARGETABLE_WINDOW_CONTEXT_KEY,
 )
+from common.context.output import SKILL_STATE_FIELDS
 from common.context.window import resolve_scene_window_indices
 
 SCENE_TYPE_TARGETABLE = 0
@@ -18,7 +19,7 @@ SCENE_TYPE_MOVEMENT = 1
 SCENE_TYPE_RAID_BUFF = 2
 SCENE_TYPE_TARGET_COUNT = 3
 TRAINING_SOURCE_FORMAT = "raw_training_source_v1"
-TRAINING_SAMPLE_SCHEMA_VERSION = 11
+TRAINING_SAMPLE_SCHEMA_VERSION = 12
 
 
 @dataclass(frozen=True)
@@ -87,7 +88,7 @@ class StateFeatureGroup:
             raise TypeError("state feature keys must be an immutable tuple")
         if any(not isinstance(value, str) or not value for value in (self.group_key, self.feature_keys_field)):
             raise ValueError("state group names must be nonempty strings")
-        if self.encoding not in {"anchored_delta", "absolute_binary"}:
+        if self.encoding not in {"anchored_delta", "absolute_numeric"}:
             raise ValueError(f"unknown state encoding: {self.encoding!r}")
         if any(not isinstance(key, str) or not key for key in self.feature_keys):
             raise ValueError("state feature keys must be nonempty strings")
@@ -125,13 +126,12 @@ class StateFeatureLayout:
         fields = tuple(group.feature_keys_field for group in self.groups)
         if len(set(names)) != len(names) or len(set(fields)) != len(fields):
             raise ValueError("state group and metadata field names must be unique")
-        if not self.base_groups or len(self.binary_groups) != 1:
-            raise ValueError("state layout requires base groups and one absolute binary group")
-        if self.groups != (*self.base_groups, *self.binary_groups):
-            raise ValueError("absolute binary state group must follow all base groups")
-        expected = tuple(f"{snapshot}.{key}" for snapshot in self.snapshots for key in self.action_keys)
-        if self.binary_groups[0].feature_keys != expected:
-            raise ValueError("availability feature order must match snapshots and fixed action keys")
+        if not self.base_groups or len(self.skill_state_groups) != 1:
+            raise ValueError("state layout requires base groups and one absolute numeric skill group")
+        if self.groups != (*self.base_groups, *self.skill_state_groups):
+            raise ValueError("absolute numeric skill state group must follow all base groups")
+        if self.skill_state_groups[0].feature_keys != self.skill_state_feature_keys:
+            raise ValueError("skill state feature order must match snapshots, fixed action keys and registered fields")
         if self.base_feature_keys.count("request_state.time_seconds") != 1:
             raise ValueError("state layout requires exactly one request_state.time_seconds")
         if len(set(self.base_feature_keys)) != len(self.base_feature_keys):
@@ -142,8 +142,13 @@ class StateFeatureLayout:
         return tuple(group for group in self.groups if group.encoding == "anchored_delta")
 
     @property
-    def binary_groups(self) -> tuple[StateFeatureGroup, ...]:
-        return tuple(group for group in self.groups if group.encoding == "absolute_binary")
+    def skill_state_groups(self) -> tuple[StateFeatureGroup, ...]:
+        return tuple(group for group in self.groups if group.encoding == "absolute_numeric")
+
+    @property
+    def skill_state_feature_keys(self) -> tuple[str, ...]:
+        return tuple(f"{snapshot}.{key}.{field}" for snapshot in self.snapshots
+                     for key in self.action_keys for field in SKILL_STATE_FIELDS)
 
     @property
     def base_feature_keys(self) -> tuple[str, ...]:
@@ -154,12 +159,17 @@ class StateFeatureLayout:
         return sum(len(group.feature_keys) for group in self.base_groups)
 
     @property
-    def availability_dim(self) -> int:
-        return sum(len(group.feature_keys) for group in self.binary_groups)
+    def skill_state_dim(self) -> int:
+        return len(self.skill_state_feature_keys)
+
+    @property
+    def availability_indices(self) -> tuple[int, ...]:
+        offset = SKILL_STATE_FIELDS.index("available")
+        return tuple(self.base_state_dim + index for index in range(offset, self.skill_state_dim, len(SKILL_STATE_FIELDS)))
 
     @property
     def state_dim(self) -> int:
-        return self.base_state_dim + self.availability_dim
+        return self.base_state_dim + self.skill_state_dim
 
     @property
     def request_time_index(self) -> int:

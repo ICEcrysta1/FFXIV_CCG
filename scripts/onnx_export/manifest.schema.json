@@ -326,9 +326,15 @@
             },
             "token_encoding": {
               "const": {
-                "state_availability": {
-                  "encoding": "absolute_binary",
-                  "order": "snapshot_then_saved_action_keys",
+                "skill_state": {
+                  "encoding": "absolute_numeric",
+                  "order": "snapshot_then_saved_action_keys_then_registered_fields",
+                  "fields": ["available", "current_charges", "next_cooldown_seconds"],
+                  "scales": {
+                    "available": 1,
+                    "current_charges": "normalizer_contract.skill_charge_limits[action_key]",
+                    "next_cooldown_seconds": "normalizer_contract.config.time_scale"
+                  },
                   "projection": "shared_state_content",
                   "auxiliary_masks": "base_state_only",
                   "scene_execution_time": "raw_fp32_endpoints_promoted_to_double",
@@ -671,7 +677,7 @@
                 "minLength": 1
               },
               "encoding": {
-                "enum": ["anchored_delta", "absolute_binary"]
+                "enum": ["anchored_delta", "absolute_numeric"]
               }
             }
           }

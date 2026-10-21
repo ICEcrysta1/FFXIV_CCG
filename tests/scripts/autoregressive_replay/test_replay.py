@@ -81,6 +81,7 @@ def test_backend_restores_parameter_precision_without_changing_bf16_compute(
     )
     inputs = make_inputs(
         spec, CapacityContract(context_capacity=12), vocab_size=8, scene_valid=1, history_valid=1,
+        state_layout=backend.input_contract.schema.state_layout(spec.action_keys),
         dtype=torch.float32, seed=7,
     )
     batch = dict(zip(TENSOR_INPUT_NAMES, inputs, strict=True))
@@ -193,8 +194,9 @@ def test_checkpoint_restores_history_embedding_and_logits_after_yaml_vocab_drift
             "request_state.time_seconds", "request_state.mp")
     keys += tuple(f"{prefix}.{field}" for prefix in ("previous_action_after", "request_state")
                   for field in ("next_untargetable_in_seconds", "downtime_remaining_seconds"))
-    availability_keys = tuple(f"{prefix}.{key}" for prefix in ("previous_action_after", "request_state")
-                              for key in actions.action_keys)
+    skill_state_keys = tuple(f"{prefix}.{key}.{field}" for prefix in ("previous_action_after", "request_state")
+                            for key in actions.action_keys
+                            for field in ("available", "current_charges", "next_cooldown_seconds"))
     schema = TrainingSchema(
         serialization_format="test", sample_schema_version=TRAINING_SAMPLE_SCHEMA_VERSION,
         context_schema_version=CANONICAL_CONTEXT_SCHEMA_VERSION, scene_context_mode="absolute",
@@ -203,7 +205,7 @@ def test_checkpoint_restores_history_embedding_and_logits_after_yaml_vocab_drift
             feature_keys=("start_offset_seconds", "end_offset_seconds", "duration_seconds"),
         ),), state_groups=(
             StateFeatureGroup("player_state", "player_state_feature_keys", keys, "anchored_delta"),
-            StateFeatureGroup("skill_availability", "skill_availability_feature_keys", availability_keys, "absolute_binary"),
+            StateFeatureGroup("skill_state", "skill_state_feature_keys", skill_state_keys, "absolute_numeric"),
         ), state_snapshots=("previous_action_after", "request_state"),
         skill_history_fields=("kind", "potency"),
     )
@@ -244,10 +246,10 @@ def test_checkpoint_restores_history_embedding_and_logits_after_yaml_vocab_drift
     }
 
     for name in ("state_history_context", "current_state_context"):
-        canonical[name]["skill_availability_feature_keys"] = availability_keys
+        canonical[name]["skill_state_feature_keys"] = skill_state_keys
         for token in canonical[name]["tokens"]:
             token["player_state"].extend([0.0] * 4)
-            token["skill_availability"] = [1] * layout.availability_dim
+            token["skill_state"] = [1, 1, 0] * (2 * spec.num_actions)
 
     def build(saved_vocab, saved_normalizer):
         return LiveBatchBuilder(

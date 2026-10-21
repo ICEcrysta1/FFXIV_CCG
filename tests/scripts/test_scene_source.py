@@ -27,7 +27,7 @@ from scripts.common.scene_source import find_prepared_scene_source
 def _scene_data_spec():
     actions = ActionSpace.from_job_tag("black_mage")
     return {
-        "job_tag": "black_mage", "num_actions": len(actions.action_keys), "state_dim": 1 + 2 * len(actions.action_keys), "base_state_dim": 1,
+        "job_tag": "black_mage", "num_actions": len(actions.action_keys), "state_dim": 1 + 6 * len(actions.action_keys), "base_state_dim": 1,
         "scene_dim": 0, "skill_feature_dim": 1, "num_scene_types": 0,
         "action_keys": list(actions.action_keys), "action_to_vocab_id": list(actions.action_to_vocab_id),
         "action_is_gcd": list(actions.action_is_gcd), "skill_feature_names": ["potency"],
@@ -46,9 +46,10 @@ def _scene_schema():
         context_schema_version=CANONICAL_CONTEXT_SCHEMA_VERSION, scene_context_mode="absolute", scene_windows=(),
         state_groups=(
             StateFeatureGroup("player_state", "player_state_feature_keys", ("request_state.time_seconds",), "anchored_delta"),
-            StateFeatureGroup("skill_availability", "skill_availability_feature_keys",
-                tuple(f"{prefix}.{key}" for prefix in ("previous_action_after", "request_state")
-                      for key in ActionSpace.from_job_tag("black_mage").action_keys), "absolute_binary"),
+            StateFeatureGroup("skill_state", "skill_state_feature_keys",
+                tuple(f"{prefix}.{key}.{field}" for prefix in ("previous_action_after", "request_state")
+                      for key in ActionSpace.from_job_tag("black_mage").action_keys
+                      for field in ("available", "current_charges", "next_cooldown_seconds")), "absolute_numeric"),
         ),
         state_snapshots=("previous_action_after", "request_state"),
         skill_history_fields=("potency",),
@@ -63,7 +64,7 @@ def _scene_sample():
         "current_state_delta_values": torch.zeros(1),
         "current_state_null_mask": torch.zeros(1, dtype=torch.bool),
         "current_state_delta_reset_mask": torch.ones(1, dtype=torch.bool),
-        "current_state_skill_availability": torch.ones(2 * actions["num_actions"], dtype=torch.bool),
+        "current_state_skill_state": torch.ones(6 * actions["num_actions"], dtype=torch.float32),
         "history_end": 1, "history_length": 0,
         "scene_vectors": torch.zeros(0, 0), "scene_types": torch.zeros(0, dtype=torch.int32),
         "action_values": torch.ones(actions["num_actions"]),
@@ -105,7 +106,7 @@ def scene_cache(tmp_path):
             "state_delta_values": torch.zeros(1, 1, dtype=torch.float32),
             "state_null_mask": torch.zeros(1, 1, dtype=torch.bool),
             "state_delta_reset_mask": torch.zeros(1, 1, dtype=torch.bool),
-            "state_skill_availability": torch.zeros(1, 2 * _scene_data_spec()["num_actions"], dtype=torch.bool),
+            "state_skill_state": torch.zeros(1, 6 * _scene_data_spec()["num_actions"], dtype=torch.float32),
             "skill_potencies": torch.zeros(1, dtype=precision.resolve_float_dtype()),
             "cumulative_dot_potencies": torch.zeros(1, dtype=precision.resolve_float_dtype()),
             "action_keys": [""],

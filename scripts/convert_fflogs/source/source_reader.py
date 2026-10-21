@@ -294,7 +294,7 @@ class TrainingSourceReader:
         return StateTokenTensors(
             self._current_states.base_values[start:end].clone(),
             self._current_states.base_null_mask[start:end].clone(),
-            self._current_states.availability[start:end].clone(),
+            self._current_states.skill_state[start:end].clone(),
         )
 
     def scene_tokens(self, sample_idx: int, *, float_dtype, int_dtype):

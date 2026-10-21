@@ -11,7 +11,7 @@ from common.policy.data import DataSpec, ModelInputContract, Normalizer, SkillVo
 from common.policy.data.normalization import NormalizerConfig
 from common.policy.data.normalizer import NORMALIZER_CONTRACT_VERSION
 from common.policy.data.schema import SceneWindowSchema, StateFeatureGroup, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
-from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
+from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION, SKILL_STATE_FIELDS
 
 
 def make_data_spec(**overrides) -> DataSpec:
@@ -19,7 +19,7 @@ def make_data_spec(**overrides) -> DataSpec:
                   skill_feature_dim=2, num_scene_types=1, action_keys=("first", "second"),
                   skill_feature_names=("kind", "potency"), action_to_vocab_id=(1, 2), action_is_gcd=(True, True))
     values.update(overrides)
-    values.setdefault("state_dim", values["base_state_dim"] + 2 * values["num_actions"])
+    values.setdefault("state_dim", values["base_state_dim"] + 2 * len(SKILL_STATE_FIELDS) * values["num_actions"])
     return DataSpec(**values)
 
 
@@ -28,9 +28,10 @@ def make_state_groups(base_groups, action_keys=("first", "second")):
     return (
         *(StateFeatureGroup(key, f"{key}_feature_keys", tuple(keys), "anchored_delta")
           for key, keys in base_groups.items()),
-        StateFeatureGroup("skill_availability", "skill_availability_feature_keys",
-                          tuple(f"{snapshot}.{key}" for snapshot in ("previous_action_after", "request_state") for key in action_keys),
-                          "absolute_binary"),
+        StateFeatureGroup("skill_state", "skill_state_feature_keys",
+                          tuple(f"{snapshot}.{key}.{field}" for snapshot in ("previous_action_after", "request_state")
+                                for key in action_keys for field in SKILL_STATE_FIELDS),
+                          "absolute_numeric"),
     )
 
 
@@ -83,6 +84,7 @@ def make_input_contract(data_spec=None, *, vocab_size=None) -> ModelInputContrac
         "version": NORMALIZER_CONTRACT_VERSION, "job_tag": spec.job_tag,
         "config": asdict(NormalizerConfig()), "resource_limits": {}, "status_limits": {},
         "resource_time_fields": (),
+        "skill_charge_limits": {key: 1 if key == "ogcd_wait" else 2 for key in spec.action_keys},
     })
     normalizer.register_schema(schema)
     vocab_size = vocab_size or max(spec.action_to_vocab_id) + 1

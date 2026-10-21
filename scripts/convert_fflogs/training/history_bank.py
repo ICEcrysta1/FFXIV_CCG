@@ -230,7 +230,7 @@ def build_history_bank(
         "state_delta_values": state_delta_values,
         "state_null_mask": state_null_mask,
         "state_delta_reset_mask": state_delta_reset_mask,
-        "state_skill_availability": torch.cat((torch.zeros((1, state_matrix.availability.shape[-1]), dtype=torch.bool), state_matrix.availability), dim=0),
+        "state_skill_state": torch.cat((torch.zeros((1, state_matrix.skill_state.shape[-1]), dtype=torch.float32), state_matrix.skill_state), dim=0),
         "action_keys": tuple(action_keys),
         # PPG 使用原始历史威力；kind 已经在 skill_features 中以数值维度保存。
         "skill_potencies": torch.tensor(skill_potencies, dtype=float_dtype),

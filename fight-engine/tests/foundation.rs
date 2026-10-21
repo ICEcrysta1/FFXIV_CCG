@@ -40,11 +40,29 @@ fn configuration_and_skill_lookup_match_csharp() {
             .unwrap(),
         "independent_system_config",
     );
-    assert_equivalent(
-        &baseline["schema"],
-        &serde_json::to_value(SchemaConfig::load(&root).unwrap()).unwrap(),
-        "schema",
+    let mut schema = serde_json::to_value(SchemaConfig::load(&root).unwrap()).unwrap();
+    assert_eq!(schema["sidecar_contract_version"], 20);
+    assert_eq!(schema["canonical_schema_version"], 17);
+    assert_eq!(
+        schema["state_vector_fields"]["skill_state"],
+        json!(["available", "current_charges", "next_cooldown_seconds"])
     );
+    schema["sidecar_contract_version"] = baseline["schema"]["sidecar_contract_version"].clone();
+    schema["canonical_schema_version"] = baseline["schema"]["canonical_schema_version"].clone();
+    schema["state_vector_fields"]
+        .as_object_mut()
+        .unwrap()
+        .remove("skill_state");
+    for group in schema["state_vector_groups"].as_array_mut().unwrap() {
+        if group["group_key"] == "skill_state" {
+            assert_eq!(group["encoding"], "absolute_numeric");
+            assert_eq!(group["feature_keys_field"], "skill_state_feature_keys");
+            group["group_key"] = json!("skill_availability");
+            group["encoding"] = json!("absolute_binary");
+            group["feature_keys_field"] = json!("skill_availability_feature_keys");
+        }
+    }
+    assert_equivalent(&baseline["schema"], &schema, "schema");
     assert_equivalent(
         &baseline["precision"],
         &serde_json::to_value(PrecisionConfig::load(&root).unwrap()).unwrap(),

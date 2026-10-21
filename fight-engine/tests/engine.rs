@@ -33,7 +33,12 @@ fn context_projection(context: &StateContext) -> Value {
 
 fn frame(frame: Option<&ModelStateFrame>) -> Value {
     frame.map_or(Value::Null, |frame| {
-        json!({"state": context_projection(&frame.state), "availability": frame.skill_availability})
+        let availability: BTreeMap<_, _> = frame
+            .skill_state
+            .iter()
+            .map(|(key, skill)| (key, skill.available))
+            .collect();
+        json!({"state": context_projection(&frame.state), "availability": availability})
     })
 }
 

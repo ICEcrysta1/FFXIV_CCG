@@ -745,11 +745,11 @@ impl SchemaConfig {
             let key = to_text(key);
             let group = as_mapping(value, &key, &context)?;
             let encoding = to_text(require(group, "encoding", &context)?);
-            if !matches!(encoding.as_str(), "anchored_delta" | "absolute_binary") {
+            if !matches!(encoding.as_str(), "anchored_delta" | "absolute_numeric") {
                 return Err(format!("{context}: unsupported state encoding {encoding}"));
             }
-            let expected = if key == "skill_availability" {
-                "absolute_binary"
+            let expected = if key == "skill_state" {
+                "absolute_numeric"
             } else {
                 "anchored_delta"
             };

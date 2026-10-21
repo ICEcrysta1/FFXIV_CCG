@@ -383,14 +383,14 @@ def test_rope_logits_are_invariant_to_other_samples_right_padding():
     short_batch = {
         "history_skill_ids": torch.tensor([[1]]),
         "history_skill_features": torch.tensor([[[0.25]]]),
-        "history_state_vectors": torch.nn.functional.pad(torch.tensor([[[0.1, 0.2, 0.3]]]), (0, 4)),
+        "history_state_vectors": torch.nn.functional.pad(torch.tensor([[[0.1, 0.2, 0.3]]]), (0, 12)),
         "history_state_null_mask": torch.zeros((1, 1, 3), dtype=torch.bool),
         "history_dead_positions": torch.empty((1, 0), dtype=torch.long),
         "history_dead_mask": torch.zeros((1, 0), dtype=torch.bool),
         "history_mask": torch.ones((1, 1), dtype=torch.bool),
         'current_state_vectors': torch.nn.functional.pad((torch.tensor(
             [[[0.2, 0.3, 0.4], [0.5, 0.6, 0.7]]]
-        ))[:, 0, :], (0, 4)),
+        ))[:, 0, :], (0, 12)),
         'current_state_null_mask': (torch.zeros((1, 2, 3), dtype=torch.bool))[:, 0, :],
         "action_legal_mask": torch.ones((1, 2), dtype=torch.bool),
         "scene_vectors": torch.tensor([[[0.1, 0.2], [0.3, 0.4]]]),
@@ -425,7 +425,7 @@ def test_rope_logits_are_invariant_to_other_samples_right_padding():
             [[0.1, 0.2, 0.3], [0.0, 0.0, 0.0]],
             [[0.8, 0.9, 1.0], [1.1, 1.2, 1.3]],
         ]
-    ), (0, 4))
+    ), (0, 12))
     padded_batch["history_state_null_mask"] = torch.tensor(
         [
             [[False, False, False], [True, True, True]],

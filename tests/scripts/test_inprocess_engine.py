@@ -265,7 +265,7 @@ def test_death_returns_special_token_without_changing_model_inputs(require_engin
         context = backend.observe_at(6.0, format="vector", next_observation_timestamp=6.0).context
         current = context["current_state_context"]
         token = current["tokens"][0]
-        assert sum(len(values) for values in token.values()) == 132
+        assert sum(len(values) for values in token.values()) == 232
         assert len(context["action_keys"]) == 25
         assert [row["skill_key"] for row in context["skill_history_context"]] == ["fire_iii", "high_thunder"]
         fields = {

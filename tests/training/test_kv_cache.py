@@ -142,7 +142,7 @@ def test_shared_context_reanchor_and_scene_clip_rebuild_kv(full_attention_residu
         ),),
     )
     spec = DataSpec(
-        job_tag="black_mage", num_actions=3, base_state_dim=3, state_dim=(3) + 2 * (3), scene_dim=3,
+        job_tag="black_mage", num_actions=3, base_state_dim=3, state_dim=schema.state_layout(("fire_iii", "fire_iv", "blizzard_iii")).state_dim, scene_dim=3,
         skill_feature_dim=2, num_scene_types=1,
         action_keys=("fire_iii", "fire_iv", "blizzard_iii"), action_to_vocab_id=(1, 2, 3),
         action_is_gcd=(True, True, True), skill_feature_names=("potency", "cast_time.seconds"),
@@ -161,7 +161,11 @@ def test_shared_context_reanchor_and_scene_clip_rebuild_kv(full_attention_residu
             cached.input_encoder.state_reset_proj.weight.fill_(0.031)
         full.load_state_dict(cached.state_dict())
     cached.enable_kv_cache(True)
-    context = ContextEncoder(Normalizer(NormalizerConfig()), schema, layout=schema.state_layout(spec.action_keys))
+    normalizer = Normalizer(NormalizerConfig())
+    normalizer = Normalizer.from_contract({
+        **normalizer.normalization_contract, "skill_charge_limits": dict.fromkeys(spec.action_keys, 1),
+    })
+    context = ContextEncoder(normalizer, schema, layout=schema.state_layout(spec.action_keys))
     states = torch.tensor([[1199 + 3 * i, 1200 + 3 * i, 10000 - 400 * i]
                            for i in range(9)], dtype=torch.float32)
     nulls = torch.zeros_like(states, dtype=torch.bool)
@@ -179,8 +183,8 @@ def test_shared_context_reanchor_and_scene_clip_rebuild_kv(full_attention_residu
             )
             start = cursor - length
             raw = {
-        "history_state_skill_availability": torch.zeros((*(states[start:cursor][None]).shape[:-1], 6), dtype=torch.bool),
-        "current_state_skill_availability": torch.zeros((*(states[cursor:cursor + 1]).shape[:-1], 6), dtype=torch.bool),
+                "history_state_skill_state": torch.zeros((1, length, context.layout.skill_state_dim), dtype=torch.float32),
+                "current_state_skill_state": torch.zeros((1, context.layout.skill_state_dim), dtype=torch.float32),
                 "history_skill_ids": torch.ones((1, length), dtype=torch.long),
                 "history_skill_features": torch.zeros((1, length, 2)),
                 "history_state_abs_values": states[start:cursor][None],

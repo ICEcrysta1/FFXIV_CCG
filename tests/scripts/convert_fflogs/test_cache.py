@@ -918,7 +918,7 @@ def test_scene_execution_view_survives_real_compiled_cache_roundtrip(tmp_path, m
 
 
 def test_non_state_tokens_match_frozen_pre_refactor_baseline():
-    """保留旧基线，仅允许本次明确修改的威力、场景时间和目标数尺度变化。"""
+    """保留旧基线，迁移技能状态两列后继续逐项验收其余非状态输入。"""
     from copy import deepcopy
 
     import torch
@@ -934,10 +934,12 @@ def test_non_state_tokens_match_frozen_pre_refactor_baseline():
     expected = deepcopy(baseline["cases"])
 
     def check_scaled_values(current, saved, *, scene_types=None):
-        assert current["shape"] == saved["shape"]
         assert current["dtype"] == saved["dtype"]
         values = torch.tensor(saved["values"], dtype=torch.float32).reshape(saved["shape"])
         if scene_types is None:
+            # 旧 18 列中的 available_charges/next_cooldown_seconds 已移入状态。
+            values = values[..., [index for index in range(values.shape[-1]) if index not in (1, 16)]]
+            saved["shape"] = list(values.shape)
             # 固定技能字段按名称排序，末列为 potency；旧基线技能的充能上限均为 1。
             values[..., -1] = (values[..., -1] * (2500 / 2000)).clamp(max=1)
         else:
@@ -945,6 +947,7 @@ def test_non_state_tokens_match_frozen_pre_refactor_baseline():
             values[..., :3] *= 120 / 270
             types = torch.tensor(scene_types["values"], dtype=torch.long).reshape(scene_types["shape"])
             values[..., 3] = torch.where(types == 3, values[..., 3] * (3 / 5), values[..., 3])
+        assert current["shape"] == saved["shape"]
         new_values = torch.tensor(current["values"], dtype=torch.float32).reshape(current["shape"])
         torch.testing.assert_close(new_values, values, rtol=1e-6, atol=1e-7)
         # 浮点重新除法允许末位舍入差异，其余结构与原始记录仍逐项精确比较。

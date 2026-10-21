@@ -48,7 +48,7 @@ from .deployment_profile import stable_sha256
 #     同版本统一数值入口与输入投影为 FP32，主干及输出沿用部署精度。
 # 27：将场景、历史和当前状态收敛为统一 token 预算，拒绝旧容量结构。
 # 28：增加独立死亡事件输入与 embedding，所有事件纳入共用 token 预算。
-# 29：输入归一化仅使用冻结 normalizer 契约中的公共尺度。
+# 29：统一归一化入口，独立注册的技能绝对三元组替代可用性尾表。
 DEPLOYMENT_CONTRACT_VERSION = 29
 DEPLOYMENT_MANIFEST_VERSION = 17
 MANIFEST_SCHEMA_FILENAME = "manifest.schema.json"
@@ -301,10 +301,10 @@ class DeploymentContract:
             "scene_mask": "true for valid scene tokens",
             "history_skill_ids": "right-padded vocab ids",
             "history_skill_features": "ordered skill features",
-            "history_state_vectors": "base first-visible ABS then numeric DELTA; absolute binary availability tail",
+            "history_state_vectors": "base first-visible ABS then numeric DELTA; absolute normalized skill triples",
             "history_state_null_mask": "base state null flags; right-padded positions are true",
             "history_mask": "true for valid actions; shared by independent skill and state tokens",
-            "current_state_vectors": "base current DELTA or ABS without history; absolute binary availability tail",
+            "current_state_vectors": "base current DELTA or ABS without history; absolute normalized skill triples",
             "current_state_null_mask": "current base state null flags",
             "history_state_reset_mask": "base per-field ABS reset markers; first visible state is absolute",
             "current_state_reset_mask": "current base per-field ABS reset markers",
@@ -360,8 +360,15 @@ class DeploymentContract:
         valid_tokens = named_inputs["scene_mask"].sum(dim=1) + 2 * history_valid + dead_mask.sum(dim=1) + 1
         if bool((valid_tokens > self.capacity.context_capacity).any()):
             raise ValueError("valid scene and history exceed shared context_capacity")
+        layout = self.input_contract.schema.state_layout(self.data_spec.action_keys)
         for prefix in ("history", "current"):
-            availability = named_inputs[f"{prefix}_state_vectors"][..., self.data_spec.base_state_dim:]
+            values = named_inputs[f"{prefix}_state_vectors"]
+            skill_state = values[..., self.data_spec.base_state_dim:]
+            if prefix == "history":
+                skill_state = skill_state[named_inputs["history_mask"]]
+            if not bool((skill_state.isfinite() & (skill_state >= 0) & (skill_state <= 1)).all()):
+                raise ValueError("state skill state must contain finite absolute values in [0, 1]")
+            availability = values[..., list(layout.availability_indices)]
             if prefix == "history":
                 availability = availability[named_inputs["history_mask"]]
             if not bool(((availability == 0) | (availability == 1)).all()):

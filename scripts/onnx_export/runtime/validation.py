@@ -54,6 +54,7 @@ def validate_pytorch_matrix(
     data_spec,
     contract: CapacityContract,
     *,
+    state_layout,
     vocab_size: int,
     dtype: torch.dtype,
     device: torch.device,
@@ -71,6 +72,7 @@ def validate_pytorch_matrix(
         fixed_cpu = make_inputs(
             data_spec,
             contract,
+            state_layout=state_layout,
             vocab_size=vocab_size,
             scene_valid=scene_valid,
             history_valid=history_valid,
@@ -200,6 +202,7 @@ def validate_ort_matrix(
     data_spec,
     contract: CapacityContract,
     *,
+    state_layout,
     vocab_size: int,
     dtype: torch.dtype,
     reference_device: torch.device,
@@ -213,6 +216,7 @@ def validate_ort_matrix(
         fixed_cpu = make_inputs(
             data_spec,
             contract,
+            state_layout=state_layout,
             vocab_size=vocab_size,
             scene_valid=scene_valid,
             history_valid=history_valid,

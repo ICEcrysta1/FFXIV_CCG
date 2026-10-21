@@ -146,7 +146,7 @@ fn normalize_sequence(mut output: Value) -> Value {
         }
     }
     output["action_ids_unique"] = json!(true);
-    output
+    common::legacy_skill_state(output)
 }
 
 #[test]

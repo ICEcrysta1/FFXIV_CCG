@@ -71,6 +71,16 @@ class ContextEncoder(nn.Module):
         ):
             self.register_buffer(name, torch.tensor(values, dtype=dtype), persistent=False)
 
+        skill_metadata = normalizer.skill_state_encoding_metadata(layout)
+        if skill_metadata.feature_keys != layout.skill_state_feature_keys:
+            raise ValueError("normalizer skill field order must match the state layout")
+        for name, values in (
+            ("skill_state_divisors", skill_metadata.divisors),
+            ("skill_state_lower", skill_metadata.absolute_lower_bounds),
+            ("skill_state_upper", skill_metadata.absolute_upper_bounds),
+        ):
+            self.register_buffer(name, torch.tensor(values, dtype=torch.float32), persistent=False)
+
         windows = sorted(schema.scene_windows, key=lambda window: window.scene_type_id)
         if not windows or [window.scene_type_id for window in windows] != list(range(len(windows))):
             raise ValueError("context encoding requires contiguous scene type IDs")
@@ -147,10 +157,10 @@ class ContextEncoder(nn.Module):
         prepared.update(
             history_skill_ids=dense["history_skill_ids"].masked_fill(~history_mask, 0),
             history_skill_features=dense["history_skill_features"].masked_fill(~history_mask[..., None], 0),
-            history_state_vectors=assemble_state_inputs(history_vectors, dense["history_state_skill_availability"], history_mask, self.layout),
+            history_state_vectors=assemble_state_inputs(history_vectors, self._encode_skill_state(dense["history_state_skill_state"]), history_mask, self.layout),
             history_state_null_mask=history_null | ~history_mask[..., None],
             history_state_reset_mask=history_reset & history_mask[..., None],
-            current_state_vectors=assemble_state_inputs(current_vectors, batch["current_state_skill_availability"], None, self.layout),
+            current_state_vectors=assemble_state_inputs(current_vectors, self._encode_skill_state(batch["current_state_skill_state"]), None, self.layout),
             current_state_null_mask=current_null,
             current_state_reset_mask=current_reset,
         )
@@ -181,6 +191,10 @@ class ContextEncoder(nn.Module):
         values = torch.where(reset, bounded, delta)
         values = values / self.state_divisors
         return values.masked_fill(nulls, -1.0), reset
+
+    def _encode_skill_state(self, values):
+        """技能表逐快照保留绝对值，只应用注册字段的归一化尺度。"""
+        return torch.minimum(torch.maximum(values, self.skill_state_lower), self.skill_state_upper) / self.skill_state_divisors
 
     def _encode_scene(self, batch, anchor):
         values, types, mask = batch["scene_abs_values"], batch["scene_types"], batch["scene_mask"]

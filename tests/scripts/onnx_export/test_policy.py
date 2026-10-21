@@ -11,6 +11,8 @@ from scripts.onnx_export import CapacityContract, OnnxPolicy
 from scripts.onnx_export.runtime.validation import _assert_padding_keys_blocked, validate_pytorch_matrix
 from common.policy.config import ModelConfig
 from common.policy.data import DataSpec
+from common.policy.data.schema import StateFeatureLayout
+from tests.training._causal_fixtures import make_state_groups
 from common.policy.model.attention_variants import run_head_attention
 from common.policy.model import (
     CausalPolicyModel,
@@ -49,7 +51,7 @@ def _make_model(
         job_tag="black_mage",
         num_actions=3,
         base_state_dim=3,
-        state_dim=9,
+        state_dim=21,
         scene_dim=2,
         skill_feature_dim=2,
         num_scene_types=4,
@@ -96,13 +98,13 @@ def _make_batch(
             dtype=torch.float32,
         ).reshape(1, history_length, 2),
         "history_state_vectors": torch.cat((torch.arange(history_length * 3, dtype=torch.float32).reshape(1, history_length, 3),
-                                            torch.zeros((1, history_length, 6))), dim=-1),
+                                            torch.zeros((1, history_length, 18))), dim=-1),
         "history_state_null_mask": torch.zeros(
             (1, history_length, 3),
             dtype=torch.bool,
         ),
         "history_mask": torch.ones((1, history_length), dtype=torch.bool),
-        "current_state_vectors": torch.tensor([[0.1, 0.2, 0.3, 1., 0., 1., 0., 1., 0.]]),
+        "current_state_vectors": torch.tensor([[0.1, 0.2, 0.3] + [1., 1., 0.] * 6]),
         "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
         "history_state_reset_mask": torch.zeros((1, history_length, 3), dtype=torch.bool),
         "current_state_reset_mask": torch.zeros((1, 3), dtype=torch.bool),
@@ -450,6 +452,10 @@ def test_padding_matrix_validates_hidden_attention_logits_and_argmax():
         OnnxPolicy(model),
         model.data_spec,
         CapacityContract(12),
+        state_layout=StateFeatureLayout(
+            make_state_groups({"player_state": ("request_state.time_seconds", "field_1", "field_2")}, model.data_spec.action_keys),
+            ("previous_action_after", "request_state"), model.data_spec.action_keys,
+        ),
         vocab_size=8,
         dtype=torch.float32,
         device=torch.device("cpu"),
@@ -512,10 +518,15 @@ class _PathSeparatedPolicy(torch.nn.Module):
 
 def test_padding_matrix_does_not_compare_trace_with_forward_argmax():
     policy = _PathSeparatedPolicy()
+    spec = _make_model().data_spec
     results = validate_pytorch_matrix(
         policy,
-        _make_model().data_spec,
+        spec,
         CapacityContract(4),
+        state_layout=StateFeatureLayout(
+            make_state_groups({"player_state": ("request_state.time_seconds", "field_1", "field_2")}, spec.action_keys),
+            ("previous_action_after", "request_state"), spec.action_keys,
+        ),
         vocab_size=8,
         dtype=torch.float32,
         device=torch.device("cpu"),

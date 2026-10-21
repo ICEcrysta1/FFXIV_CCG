@@ -26,6 +26,8 @@ class DataSpec:
             raise ValueError("base_state_dim must be positive and smaller than combined state_dim")
         if "time_seconds" in self.skill_feature_names:
             raise ValueError("removed skill time_seconds feature; rebuild model input")
+        if {"available_charges", "next_cooldown_seconds"}.intersection(self.skill_feature_names):
+            raise ValueError("removed historical skill charge features; rebuild model input")
         if self.skill_feature_dim != len(self.skill_feature_names):
             raise ValueError("skill feature order length differs from skill feature dimension")
         if self.num_actions < 1 or len(self.action_keys) != self.num_actions:

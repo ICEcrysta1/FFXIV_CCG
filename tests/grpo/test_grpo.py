@@ -111,7 +111,7 @@ def _decision(*, history_length: int, scene_length: int, action_index: int, dead
             dtype=torch.float32,
         ),
         "history_state_vectors": torch.zeros(
-            (1, history_length, 9),
+            (1, history_length, 21),
             dtype=torch.float32,
         ),
         "history_state_null_mask": torch.zeros(
@@ -121,7 +121,7 @@ def _decision(*, history_length: int, scene_length: int, action_index: int, dead
         "history_mask": torch.ones((1, history_length), dtype=torch.bool),
         "history_dead_positions": torch.tensor([dead_positions], dtype=torch.int64),
         "history_dead_mask": torch.ones((1, len(dead_positions)), dtype=torch.bool),
-        "current_state_vectors": torch.zeros((1, 9), dtype=torch.float32),
+        "current_state_vectors": torch.zeros((1, 21), dtype=torch.float32),
         "current_state_null_mask": torch.zeros((1, 3), dtype=torch.bool),
         "history_state_reset_mask": torch.zeros((1, history_length, 3), dtype=torch.bool),
         "current_state_reset_mask": torch.zeros((1, 3), dtype=torch.bool),
@@ -1109,14 +1109,18 @@ def test_grpo_store_validates_base_masks_and_binary_availability_before_write(tm
     contract = _rollout_contract()
     store = GrpoRolloutStore(tmp_path, iteration=1, input_contract=contract)
     decision = _decision(history_length=1, scene_length=1, action_index=0)
-    assert decision.batch["current_state_vectors"].shape[-1] == 9
+    assert decision.batch["current_state_vectors"].shape[-1] == 21
     assert decision.batch["current_state_null_mask"].shape[-1] == 3
-    decision.batch["current_state_vectors"][0, 3] = -1
-    with pytest.raises(ValueError, match="absolute binary"):
+    decision.batch["current_state_vectors"][0, 4:6] = torch.tensor([.5, .25])
+    decision.batch["current_state_vectors"][0, 3] = .5
+    with pytest.raises(ValueError, match="availability|binary"):
         store.write_trajectory(scene_json_path=tmp_path / "scene.json", decisions=(decision,),
                                ppg=1, greedy_ppg=0, reward=1)
     assert not store.entries
     decision.batch["current_state_vectors"][0, 3] = 1
+    store.write_trajectory(scene_json_path=tmp_path / "scene.json", decisions=(decision,),
+                           ppg=1, greedy_ppg=0, reward=1)
+    assert len(store.entries) == 1
     decision.batch["action_keys"][0].reverse()
     with pytest.raises(ValueError, match="action order"):
         store.write_trajectory(scene_json_path=tmp_path / "scene.json", decisions=(decision,),

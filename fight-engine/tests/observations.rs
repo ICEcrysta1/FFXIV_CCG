@@ -39,6 +39,7 @@ fn round_metrics(metrics: &mut Value) {
 
 // 只对旧实现明确舍入过的字段投影四位小数；生产输出与内部计算仍保持 F64。
 fn legacy_vector(mut output: Value, float_resources: &BTreeSet<String>) -> Value {
+    output = common::legacy_skill_state(output);
     for key in ["state_history_context", "current_state_context"] {
         let context = &mut output[key];
         let mut rounded_indices = BTreeMap::new();
@@ -178,6 +179,8 @@ fn snapshots_vectors_tensors_and_cache_restoration_match_baseline() {
                     .unwrap();
                 // 格式器实际使用完整 F64 canonical，在最后一步才按配置转换。
                 assert_eq!(tensor, pack_tensor_payload(&vector, &precision).unwrap());
+                let metadata =
+                    common::legacy_skill_state(output_schema_metadata(&vector, &schema).unwrap());
                 let vector = legacy_vector(vector, &floats);
                 let mut seconds = output.format(&state, "seconds").unwrap();
                 let mut gcd = output.format(&state, "gcd").unwrap();
@@ -211,12 +214,179 @@ fn snapshots_vectors_tensors_and_cache_restoration_match_baseline() {
                     .collect::<Vec<_>>();
                 assert_eq!(before, simulator.create_snapshot(), "输出改变了时间线");
                 json!({"seconds":seconds,"gcd":gcd,"tensor":pack_tensor_payload(&vector, &precision).unwrap(),
-                    "metadata":output_schema_metadata(&vector,&schema).unwrap(),"vector":vector,"retained":retained})
+                    "metadata":metadata,"vector":vector,"retained":retained})
             }
             op => panic!("输出基线含未知操作: {op}"),
         };
         common::assert_equivalent(&step["output"], &actual, &format!("steps[{index}]"));
     }
+}
+
+#[test]
+fn registered_skill_states_expand_automatically_and_keep_charges_when_unavailable() {
+    let mut baseline = fixture();
+    let mut added = baseline["project"]["job"]["skills"][0].clone();
+    added["key"] = json!("added_skill");
+    added["game_id"] = json!(7654321);
+    baseline["project"]["job"]["skills"]
+        .as_array_mut()
+        .unwrap()
+        .push(added);
+    let rules = probe::rules(&baseline, None);
+    let mut state = rules.initial_state(None, None, 0.0).unwrap();
+    for (moving, mp) in [(true, 10000), (false, 0)] {
+        state.is_moving = moving;
+        state.mp = mp;
+        let frame = rules.capture_model_frame(&state, false).unwrap();
+        let cast = &frame.skill_state["cast"];
+        assert!(!cast.available);
+        assert_eq!(cast.current_charges, 1);
+        assert_eq!(cast.next_cooldown_seconds, 0.0);
+    }
+    let current = rules.capture_model_state(&state, false).unwrap();
+    assert!(
+        current
+            .request_state
+            .skill_state
+            .contains_key("added_skill")
+    );
+    assert!(!current.request_state.skill_state.contains_key("disabled"));
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let schema = Arc::new(SchemaConfig::load(root).unwrap());
+    let output = OutputFormatter::new(
+        rules.project().clone(),
+        rules.system().clone(),
+        rules.job().clone(),
+        schema,
+        None,
+    )
+    .unwrap();
+    let vector = output
+        .format_vectors(
+            &state,
+            rules.action_keys(),
+            &rules.action_values(&state).unwrap(),
+            &current,
+            None,
+        )
+        .unwrap();
+    let fields = ["available", "current_charges", "next_cooldown_seconds"];
+    let expected: Vec<_> = ["previous_action_after", "request_state"]
+        .into_iter()
+        .flat_map(|snapshot| {
+            rules.action_keys().iter().flat_map(move |key| {
+                fields
+                    .into_iter()
+                    .map(move |field| format!("{snapshot}.{key}.{field}"))
+            })
+        })
+        .collect();
+    assert_eq!(
+        vector["current_state_context"]["skill_state_feature_keys"],
+        json!(expected)
+    );
+    assert_eq!(
+        vector["current_state_context"]["tokens"][0]["skill_state"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2 * rules.action_keys().len() * fields.len()
+    );
+}
+
+#[test]
+fn skill_states_freeze_each_snapshot_and_survive_charge_recovery_and_restore() {
+    let baseline = fixture();
+    let rules = probe::rules(&baseline, None);
+    let mut simulator = Simulator::new(rules, 0.0, None).unwrap();
+    let initial = simulator
+        .capture_model_state(&simulator.get_state())
+        .unwrap();
+    assert_eq!(
+        initial.request_state.skill_state["charge"].current_charges,
+        2
+    );
+    assert!(
+        simulator
+            .submit_action(
+                ActionRequest {
+                    timestamp: 0.0,
+                    skill_key: "charge".into(),
+                },
+                None
+            )
+            .unwrap()
+            .accepted
+    );
+    let saved = simulator.create_snapshot();
+    let mut depleted = simulator.fork();
+    assert!(
+        depleted
+            .submit_action(
+                ActionRequest {
+                    timestamp: 0.0,
+                    skill_key: "charge".into(),
+                },
+                None
+            )
+            .unwrap()
+            .accepted
+    );
+    let empty = depleted.capture_model_state(&depleted.get_state()).unwrap();
+    assert_eq!(empty.request_state.skill_state["charge"].current_charges, 0);
+    assert!(!empty.request_state.skill_state["charge"].available);
+    assert_eq!(
+        empty.request_state.skill_state["charge"].next_cooldown_seconds,
+        3.0
+    );
+    simulator.advance_to(1.234567891).unwrap();
+    let current = simulator
+        .capture_model_state(&simulator.get_state())
+        .unwrap();
+    let previous = &current.previous_action_after.skill_state["charge"];
+    let request = &current.request_state.skill_state["charge"];
+    assert_eq!(previous.current_charges, 1);
+    assert_eq!(previous.next_cooldown_seconds, 3.0);
+    assert_eq!(request.current_charges, 1);
+    assert_eq!(request.next_cooldown_seconds, 3.0 - 1.234567891);
+    simulator.advance_to(3.0).unwrap();
+    let recovered = simulator
+        .capture_model_state(&simulator.get_state())
+        .unwrap();
+    assert_eq!(
+        recovered.request_state.skill_state["charge"].current_charges,
+        2
+    );
+    assert_eq!(
+        recovered.request_state.skill_state["charge"].next_cooldown_seconds,
+        0.0
+    );
+    assert_eq!(
+        current.request_state.skill_state["charge"].current_charges,
+        1
+    );
+    assert_eq!(
+        current.request_state.skill_state["charge"].next_cooldown_seconds,
+        3.0 - 1.234567891
+    );
+    assert_eq!(
+        initial.request_state.skill_state["charge"].current_charges,
+        2
+    );
+    assert_eq!(
+        recovered.previous_action_after,
+        current.previous_action_after
+    );
+    simulator.restore_snapshot(&saved).unwrap();
+    let restored = simulator
+        .capture_model_state(&simulator.get_state())
+        .unwrap();
+    assert_eq!(restored.request_state.skill_state["charge"], *previous);
+    assert_eq!(
+        restored.previous_action_after,
+        current.previous_action_after
+    );
 }
 
 #[test]

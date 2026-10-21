@@ -41,7 +41,6 @@ FIELD_UNITS = {
     "current_potency": "potency",
     "current_gcd_dot_potency": "potency",
     "target_count": "target_count",
-    "available_charges": "charges",
     "max_charges": "charges",
 }
 
