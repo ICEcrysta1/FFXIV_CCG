@@ -14,7 +14,7 @@ from .context_fields import (
     RAW_ONLY_FIELD_NAMES,
     tensor_dimensions,
 )
-from .normalizer import Normalizer
+from .normalizer import Normalizer, _normalize_values
 from .schema import StateFeatureLayout, TrainingSchema
 from .state_features import assemble_state_inputs
 
@@ -189,12 +189,13 @@ class ContextEncoder(nn.Module):
         absolute = torch.where(self.state_time_mask, absolute - anchor, absolute)
         bounded = torch.minimum(torch.maximum(absolute, self.state_absolute_lower), self.state_absolute_upper)
         values = torch.where(reset, bounded, delta)
-        values = values / self.state_divisors
+        values = _normalize_values(values, self.state_divisors)
         return values.masked_fill(nulls, -1.0), reset
 
     def _encode_skill_state(self, values):
         """技能表逐快照保留绝对值，只应用注册字段的归一化尺度。"""
-        return torch.minimum(torch.maximum(values, self.skill_state_lower), self.skill_state_upper) / self.skill_state_divisors
+        return _normalize_values(values, self.skill_state_divisors,
+                                 lower=self.skill_state_lower, upper=self.skill_state_upper)
 
     def _encode_scene(self, batch, anchor):
         values, types, mask = batch["scene_abs_values"], batch["scene_types"], batch["scene_mask"]
@@ -219,12 +220,12 @@ class ContextEncoder(nn.Module):
         types, mask = types.gather(1, order), mask.gather(1, order)
         starts, ends = starts.gather(1, order) - anchor[:, None], ends.gather(1, order) - anchor[:, None]
         for indices, encoded in (
-            (self.scene_start_indices, torch.diff(starts, dim=1, prepend=torch.zeros_like(starts[:, :1])) / self.time_scale),
-            (self.scene_end_indices, torch.diff(ends, dim=1, prepend=torch.zeros_like(ends[:, :1])) / self.time_scale),
-            (self.scene_duration_indices, (ends - starts) / self.time_scale),
+            (self.scene_start_indices, torch.diff(starts, dim=1, prepend=torch.zeros_like(starts[:, :1]))),
+            (self.scene_end_indices, torch.diff(ends, dim=1, prepend=torch.zeros_like(ends[:, :1]))),
+            (self.scene_duration_indices, ends - starts),
         ):
-            values.scatter_(-1, indices[types][..., None], encoded[..., None])
-        counts = values.clamp(min=0.0, max=self.target_count_max) / self.target_count_max
+            values.scatter_(-1, indices[types][..., None], _normalize_values(encoded, self.time_scale)[..., None])
+        counts = _normalize_values(values, self.target_count_max, lower=0.0, upper=self.target_count_max)
         values = torch.where(self.scene_count_mask[types], counts, values)
         values = values.masked_fill(~self.scene_feature_mask[types] | ~mask[..., None], 0.0)
         types = types.masked_fill(~mask, 0)

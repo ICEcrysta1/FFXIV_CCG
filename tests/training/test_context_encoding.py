@@ -105,6 +105,26 @@ def test_first_anchor_and_current_delta_are_distinct():
         encoder.encode(output)
 
 
+def test_shared_normalization_stays_fp32_under_autocast():
+    """技能、基础状态、技能状态和场景共用 FP32 运算，外层 autocast 不改变结果。"""
+    encoder = _encoder()
+    batch = _raw_batch()
+    batch["history_state_skill_state"][..., 1::3] = 1
+    batch["current_state_skill_state"][..., 2::3] = 30.0625
+    raw_skills = torch.tensor([[1013.125], [1000.0625]], dtype=torch.float32)
+    normalizer = Normalizer()
+    expected_skills = normalizer.normalize_skill_features(raw_skills, ("potency",))
+    expected_context = encoder.encode(batch)
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        skills = normalizer.normalize_skill_features(raw_skills, ("potency",))
+        context = encoder.encode(batch)
+    assert skills.dtype == torch.float32
+    torch.testing.assert_close(skills, expected_skills, rtol=0, atol=0)
+    for key in ("history_state_vectors", "current_state_vectors", "scene_vectors"):
+        assert context[key].dtype == torch.float32
+        torch.testing.assert_close(context[key], expected_context[key], rtol=0, atol=0)
+
+
 def test_scene_encoding_separates_raw_and_model_fields_without_mutating_raw():
     encoder = _encoder()
     batch = _raw_batch()

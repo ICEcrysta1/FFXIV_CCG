@@ -7,10 +7,29 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
-from .normalization import FIELD_UNITS, NormalizerConfig, load_normalizer_config
+from common.pytorch.dependencies import import_torch
+
+from .normalization import (
+    FIELD_UNITS,
+    NormalizerConfig,
+    _fp32_limits,
+    load_normalizer_config,
+)
 
 # 4：字段单位统一声明，并冻结技能状态的注册充能上限。
 NORMALIZER_CONTRACT_VERSION = 4
+
+
+def _normalize_values(values, divisor, *, lower=None, upper=None):
+    """所有特征共用 FP32 截断与除法，不将已损失精度的原料静默转型。"""
+    torch = import_torch()
+    if values.dtype != torch.float32 or (
+        isinstance(divisor, torch.Tensor) and divisor.dtype != torch.float32
+    ):
+        raise ValueError("normalization values and divisors must be FP32")
+    if lower is not None or upper is not None:
+        values = values.clamp(min=lower, max=upper)
+    return values / divisor
 
 
 class Normalizer:
@@ -34,12 +53,13 @@ class Normalizer:
 
     def register_resource_limits(self, resource_limits: dict[str, float]) -> None:
         """注册职业量谱上限，供 state/skill 两条输入链路共同使用。"""
+        fp32 = _fp32_limits()
         normalized_limits: dict[str, float] = {}
         for key, raw_value in resource_limits.items():
             value = float(raw_value)
-            if not math.isfinite(value) or value <= 0.0:
+            if not fp32.tiny <= value <= fp32.max:
                 raise ValueError(
-                    f"resource {key!r}: normalization max must be positive and finite, got {raw_value!r}"
+                    f"resource {key!r}: normalization max must be within the FP32 normal positive range, got {raw_value!r}"
                 )
             normalized_limits[str(key)] = value
         self._resource_limits = normalized_limits
@@ -62,6 +82,7 @@ class Normalizer:
         from .policy_actions import load_policy_actions
 
         project_config = load_project_config(job_tag=normalized_job_tag)
+        fp32 = _fp32_limits()
         status_limits = {
             f"{source}.{status_key}": float(status.max_stacks)
             for source, statuses in (
@@ -70,8 +91,8 @@ class Normalizer:
             )
             for status_key, status in statuses.items()
         }
-        if any(not math.isfinite(value) or value <= 0.0 for value in status_limits.values()):
-            raise ValueError("status max_stacks must be positive and finite")
+        if any(not fp32.tiny <= value <= fp32.max for value in status_limits.values()):
+            raise ValueError("status max_stacks must be within the FP32 normal positive range")
 
         self._resource_time_fields = project_config.job.resource_time_fields
         self._status_limits = status_limits
@@ -81,9 +102,9 @@ class Normalizer:
             if skill.enabled
         }
         self._skill_charge_limits.update({action.key: 1.0 for action in load_policy_actions()})
-        if any(not math.isfinite(value) or value < 1 or not value.is_integer()
+        if any(not 1 <= value <= fp32.max or not value.is_integer()
                for value in self._skill_charge_limits.values()):
-            raise ValueError("skill charges must be positive integers")
+            raise ValueError("skill charges must be positive integers within the FP32 normal range")
         self.register_resource_limits(project_config.job.resource_limits)
         self._configured_job_tag = normalized_job_tag
 
@@ -277,14 +298,19 @@ class Normalizer:
             charge_limits = tensor[..., names.index("max_charges") : names.index("max_charges") + 1]
             if not bool((charge_limits.isfinite() & (charge_limits > 0)).all()):
                 raise ValueError("skill max_charges must be finite and positive")
+        if tensor.dtype != import_torch().float32:
+            raise ValueError("skill normalization values must be FP32")
         for index, feature_name in enumerate(feature_names):
             if feature_name == "max_charges":
-                result[..., index : index + 1].div_(charge_limits)
+                result[..., index : index + 1] = _normalize_values(
+                    tensor[..., index : index + 1], charge_limits,
+                )
                 continue
             rule = self._field_rule(str(feature_name))
-            result[..., index : index + 1].clamp_(
-                min=rule.absolute_lower, max=rule.absolute_upper,
-            ).div_(rule.divisor)
+            result[..., index : index + 1] = _normalize_values(
+                tensor[..., index : index + 1], rule.divisor,
+                lower=rule.absolute_lower, upper=rule.absolute_upper,
+            )
         result[result.isnan()] = 0.0
         return result
 
@@ -318,13 +344,14 @@ def _contract_limits(contract: Mapping[str, object], key: str) -> dict[str, floa
     payload = contract.get(key)
     if not isinstance(payload, Mapping):
         raise TypeError(f"normalizer contract {key} must be a mapping")
+    fp32 = _fp32_limits()
     limits: dict[str, float] = {}
     for raw_name, raw_value in payload.items():
         name = str(raw_name)
         value = float(raw_value)
-        if not name or not math.isfinite(value) or value <= 0.0:
+        if not name or not fp32.tiny <= value <= fp32.max:
             raise ValueError(
-                f"normalizer contract {key} contains invalid limit: {raw_name!r}={raw_value!r}"
+                f"normalizer contract {key} contains invalid FP32 limit: {raw_name!r}={raw_value!r}"
             )
         limits[name] = value
     return limits

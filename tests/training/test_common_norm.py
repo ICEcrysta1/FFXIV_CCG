@@ -266,10 +266,29 @@ def test_time_scale_comes_from_saved_public_normalization_config(monkeypatch):
 
 
 @pytest.mark.parametrize("field", ["mp_max", "time_scale", "target_count_max", "current_potency_max"])
-@pytest.mark.parametrize("value", [True, 0, -1, float("nan"), float("inf")])
+@pytest.mark.parametrize("value", [True, 0, -1, float("nan"), float("inf"),
+                                 1e-46, 1e-300, 1e-38, 1e39, 1e300])
 def test_public_normalization_scales_are_finite_positive_numbers(field, value):
     with pytest.raises(TypeError if value is True else ValueError, match=f"normalizer.{field}"):
         NormalizerConfig(**{field: value})
+
+
+@pytest.mark.parametrize("key", ["resource_limits", "status_limits", "skill_charge_limits"])
+@pytest.mark.parametrize("value", [1e-46, 1e39])
+def test_saved_normalization_limits_must_be_representable_in_fp32(key, value):
+    contract = Normalizer().normalization_contract
+    contract[key] = {"test": value}
+    with pytest.raises(ValueError, match="FP32"):
+        Normalizer.from_contract(contract)
+    if key == "resource_limits":
+        with pytest.raises(ValueError, match="FP32"):
+            Normalizer().register_resource_limits({"test": value})
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float64])
+def test_skill_normalization_requires_fp32_before_calculation(dtype):
+    with pytest.raises(ValueError, match="FP32"):
+        Normalizer().normalize_skill_features(torch.tensor([[1000.0]], dtype=dtype), ("potency",))
 
 
 def test_public_normalizer_yaml_preserves_only_active_scales():

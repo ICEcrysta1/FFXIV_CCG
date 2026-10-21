@@ -33,12 +33,12 @@ FFXIV_CCG/
     │   │   ├── __init__.py                           策略数据契约导出入口
     │   │   ├── action_space.py                       启用技能与 policy 动作的固定输出顺序、词表行映射和 GCD 类型元数据
     │   │   ├── compiled_cache.py                     raw FP32 ABS/DELTA 完整 bank 的只读 reader、签名与目录定位；统一比较缓存签名与生效配置依赖，拒绝旧平铺和归一化状态缓存
-    │   │   ├── context_encoding.py                   模型外共享 FP32 编码：窗口 gather、ABS 重锚、有符号 DELTA、字段恢复与场景裁剪差分
+    │   │   ├── context_encoding.py                   模型外共享 FP32 编码：窗口 gather、ABS 重锚、有符号 DELTA、字段恢复与场景裁剪差分；缩放统一委托 normalizer
     │   │   ├── context_fields.py                     上下文字段的阶段、dtype、逻辑轴/shape、padding 与 cache/raw 命名映射；数据读取、合批、编码及 ONNX 共用
     │   │   ├── history_window.py                     完整历史游标到分段窗口长度的纯函数；场景、状态／动作和死亡事件共享预算，超限保留最近 K 条动作后重新累积
     │   │   ├── input_contract.py                     checkpoint 输入契约、独立 token 编码描述、schema 与归一化规则的序列化/恢复
-    │   │   ├── normalization.py                      归一化配置数据类与 YAML 加载
-    │   │   ├── normalizer.py                         字段归一化规则与技能编码；保存公共时间尺度、职业单位及独立技能状态的注册充能上限
+    │   │   ├── normalization.py                      归一化配置数据类、FP32 有效尺度范围与 YAML 加载
+    │   │   ├── normalizer.py                         字段归一化规则与统一 FP32 截断/除法入口；保存公共时间尺度、职业单位及独立技能状态的注册充能上限
     │   │   ├── policy_actions.py                     独立 policy 控制动作配置加载器
     │   │   ├── prepared_sources.py                   BC 与 GRPO 共享的只读训练数据选择器，并按验证副本固定配额校验 VAL compiled cache；训练进程不编译
     │   │   ├── schema.py                             有序 StateFeatureGroup、快照顺序与 StateFeatureLayout；raw source、cache 和模型共用
@@ -122,7 +122,7 @@ FFXIV_CCG/
 │   ├── action_quality.yaml                           离线动作质量桥接运行配置，维护外部分析源码路径和单份分析超时；批量并发数读取根目录 `.env`，等级权重属于职业模型配置
 │   ├── default.yaml                                  项目总配置入口，只注册 `runtime.job_configs` 职业配置映射和系统配置路径；当前职业严格由根目录 `.env` 的 `FFXIV_JOB_TAG` 选择，不再声明 `active_job` 或单一 `job_config`
 │   ├── policy_actions.yaml                           独立 policy 控制动作配置；`ogcd_wait` 保留 raw id 0，但不进入 FightEngine SkillBook
-│   ├── precision.yaml                                tensor 精度配置入口；`int_dtype` 用于技能 ID 与质量等级，`index_dtype` 用于交叉熵标签和 gather 索引，`float_dtype` 用于数值特征；mask 固定为 bool
+│   ├── precision.yaml                                tensor 精度配置入口；`int_dtype` 用于技能 ID 与质量等级，`index_dtype` 用于交叉熵标签和 gather 索引，`float_dtype` 用于执行统计、监督值和权重；模型数值输入与归一化固定 FP32，mask 固定为 bool
 │   ├── schema.yaml                                   共享 schema 定义（Rust 与 Python 单一事实来源）：共享常量（滑步窗口/绝对时间模式/scene context keys）、scene context 窗口字段模板与 segment kinds、canonical 输出顶层 keys 与状态向量分组、状态向量字段模板；动态部分（职业量谱/Buff/DoT 列表）仍由运行时推导
 │   └── system.yaml                                   系统级共享配置，定义基础 GCD、技能表基准、战斗内自然回蓝 tick、目标威力倍率、爆发药及统一团辅窗口（含 `raid_buff_window.marker_skills` 与权威的 `duration_seconds`）
 ├── data/                                             原始训练数据目录，大文件不进版本控制

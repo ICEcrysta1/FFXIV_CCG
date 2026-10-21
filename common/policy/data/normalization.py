@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from pathlib import Path
 
 from common.configuration.yaml import load_yaml_mapping
+from common.pytorch.dependencies import import_torch
 
 DEFAULT_CONFIG_PATH = (
     Path(__file__).resolve().parents[3] / "config" / "policy" / "normalizer.yaml"
@@ -45,6 +45,12 @@ FIELD_UNITS = {
 }
 
 
+def _fp32_limits():
+    """直接读取计算 dtype 的范围，避免手写 IEEE 浮点边界。"""
+    torch = import_torch()
+    return torch.finfo(torch.float32)
+
+
 @dataclass(frozen=True)
 class NormalizerConfig:
     """策略输入的公共数值尺度；职业资源和层数上限由职业 YAML 提供。"""
@@ -55,6 +61,7 @@ class NormalizerConfig:
     current_potency_max: float = 2000.0
 
     def __post_init__(self) -> None:
+        fp32 = _fp32_limits()
         for name in self.__dataclass_fields__:
             raw = getattr(self, name)
             if isinstance(raw, bool):
@@ -63,8 +70,8 @@ class NormalizerConfig:
                 value = float(raw)
             except (TypeError, ValueError, OverflowError) as exc:
                 raise ValueError(f"normalizer.{name} must be a finite positive number") from exc
-            if not math.isfinite(value) or value <= 0:
-                raise ValueError(f"normalizer.{name} must be a finite positive number")
+            if not fp32.tiny <= value <= fp32.max:
+                raise ValueError(f"normalizer.{name} must be within the FP32 normal positive range")
             object.__setattr__(self, name, value)
 
 
