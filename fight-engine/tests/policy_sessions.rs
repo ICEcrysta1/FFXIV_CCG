@@ -164,6 +164,40 @@ fn policy_wait_history_delta_and_snapshot_match_baseline() {
 }
 
 #[test]
+fn policy_record_rejects_invalid_times_without_mutation() {
+    let baseline = fixture();
+    for limit in [None, Some(0), Some(1)] {
+        let rules = probe::rules(&baseline, limit);
+        let mut sim = Simulator::new(rules, -2.0, None).unwrap();
+        let mut policy = PolicySession::new(registry(&baseline, true), limit);
+        let first = policy.record(&mut sim, -2.0, "ogcd_wait", -1.0).unwrap();
+        let simulator_before = sim.create_snapshot();
+        let policy_before = policy.create_snapshot();
+        for (timestamp, next) in [
+            (f64::NAN, -1.0),
+            (f64::INFINITY, -1.0),
+            (f64::NEG_INFINITY, -1.0),
+            (-2.0, f64::NAN),
+            (-2.0, f64::INFINITY),
+            (-2.0, f64::NEG_INFINITY),
+            (-3.0, -1.0),
+            (-2.0, -3.0),
+        ] {
+            assert!(
+                policy
+                    .record(&mut sim, timestamp, "ogcd_wait", next)
+                    .is_err(),
+                "timestamp={timestamp}, next={next}, limit={limit:?}"
+            );
+            assert_eq!(simulator_before, sim.create_snapshot());
+            assert_eq!(policy_before, policy.create_snapshot());
+        }
+        let second = policy.record(&mut sim, -2.0, "ogcd_wait", -2.0).unwrap();
+        assert_eq!(first.history_sequence + 1, second.history_sequence);
+    }
+}
+
+#[test]
 fn policy_replay_preserves_external_batch_and_wait_order() {
     let baseline = fixture();
     for scene in baseline["replays"].as_array().unwrap() {

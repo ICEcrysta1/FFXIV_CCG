@@ -85,16 +85,18 @@ impl PolicySession {
         next_observation_timestamp: f64,
     ) -> Result<PolicyDecision, String> {
         let action = self.registry.get(action_key)?.clone();
-        if (simulator.time() - timestamp).abs() > TIME_EPSILON {
+        if !timestamp.is_finite() || (simulator.time() - timestamp).abs() > TIME_EPSILON {
             return Err(format!(
                 "policy decision timestamp must equal current observation time: {timestamp} != {}",
                 simulator.time()
             ));
         }
-        let before = simulator.get_state_without_history();
-        if next_observation_timestamp < timestamp {
-            return Err("next observation timestamp must be at or after the decision".into());
+        if !next_observation_timestamp.is_finite() || next_observation_timestamp < timestamp {
+            return Err(
+                "next observation timestamp must be finite and at or after the decision".into(),
+            );
         }
+        let before = simulator.get_state_without_history();
         let (model_state, history_sequence) =
             simulator.record_model_decision(reserve_decision_id()?, &before, true)?;
         let decision = PolicyDecision {
