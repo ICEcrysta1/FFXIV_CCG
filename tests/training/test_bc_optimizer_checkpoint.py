@@ -32,10 +32,13 @@ def resume_context(tmp_path):
     )
     normalizer = Normalizer()
     normalizer.configure_job_resources("black_mage")
+    normalizer = Normalizer.from_contract({
+        **normalizer.normalization_contract, "skill_charge_limits": {"a": 2, "b": 2},
+    })
     dataset = SimpleNamespace(
         job_tag="black_mage",
         num_actions=2,
-        base_state_dim=3, state_dim=(3) + 2 * (2),
+        base_state_dim=3, state_dim=schema.state_layout(("a", "b")).state_dim,
         scene_dim=0,
         num_scene_types=0,
         action_keys=("a", "b"),

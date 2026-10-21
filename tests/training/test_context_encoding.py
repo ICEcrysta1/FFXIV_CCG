@@ -1,4 +1,4 @@
-"""读侧重锚、状态差分和场景差分的共同数据边界。"""
+"""读侧绝对状态、时间重锚和场景差分的共同数据边界。"""
 
 from tests.training._causal_fixtures import make_state_groups
 
@@ -15,7 +15,7 @@ from common.policy.data.normalizer import NORMALIZER_CONTRACT_VERSION, Normalize
 from common.policy.data.schema import SceneWindowSchema, TrainingSchema
 
 
-def _encoder(model_config=None):
+def _encoder(normalizer_config=None):
     schema = TrainingSchema(
         serialization_format="test", sample_schema_version=11, context_schema_version=14,
         scene_context_mode="absolute", skill_history_fields=("kind",),
@@ -36,7 +36,9 @@ def _encoder(model_config=None):
             ),
         ),
     )
-    return ContextEncoder(Normalizer(NormalizerConfig()), schema, model_config or ModelConfig(), layout=schema.state_layout(("first", "second")))
+    normalizer = Normalizer(normalizer_config or NormalizerConfig())
+    normalizer = Normalizer.from_contract({**normalizer.normalization_contract, "skill_charge_limits": {"first": 2, "second": 2}})
+    return ContextEncoder(normalizer, schema, layout=schema.state_layout(("first", "second")))
 
 
 def _raw_batch():
@@ -52,8 +54,8 @@ def _raw_batch():
     current_null = torch.zeros_like(current, dtype=torch.bool)
     current_delta, current_reset = raw_state_delta(current, current_null, states[:, -1], nulls[:, -1])
     return {
-        "history_state_skill_availability": torch.zeros((*(states).shape[:-1], 4), dtype=torch.bool),
-        "current_state_skill_availability": torch.zeros((*(current).shape[:-1], 4), dtype=torch.bool),
+        "history_state_skill_state": torch.zeros((*(states).shape[:-1], 12), dtype=torch.float32),
+        "current_state_skill_state": torch.zeros((*(current).shape[:-1], 12), dtype=torch.float32),
         "history_skill_ids": torch.tensor([[4, 5]]),
         "history_skill_features": torch.tensor([[[0.25], [0.5]]]),
         "history_state_abs_values": states,
@@ -85,22 +87,44 @@ def test_state_delta_signed_values_and_field_reset():
     assert first_reset.tolist() == [[True, True, False, True]]
 
 
-def test_first_anchor_and_current_delta_are_distinct():
+def test_only_time_coordinates_use_first_anchor_and_current_delta():
     encoder = _encoder()
     output = encoder.encode(_raw_batch())
     expected = torch.tensor([[[0.8, 1, 0, 1000 / 2000, -2 / 270, 0.9],
-                              [-0.2, -1, 3 / 270, 100 / 2000, 3 / 270, -0.1]]])
+                              [0.6, 0, 3 / 270, 1100 / 2000, 3 / 270, 0.8]]])
     torch.testing.assert_close(output["history_state_vectors"][..., :6], expected)
     torch.testing.assert_close(output["current_state_vectors"][..., :6], torch.tensor([
-        [0.1, 1, 4 / 270, -50 / 2000, 4 / 270, -0.2],
+        [0.7, 1, 4 / 270, 1050 / 2000, 4 / 270, 0.6],
     ]))
-    assert output["history_state_reset_mask"].tolist() == [[[True] * 6, [False] * 6]]
+    assert output["history_state_reset_mask"].tolist() == [
+        [[False, False, True, False, True, False], [False] * 6],
+    ]
     assert not output["current_state_reset_mask"].any()
     assert all(value.dtype == torch.float32 for key, value in output.items() if key.endswith("vectors"))
     assert not any("abs_values" in key or "delta_values" in key for key in output)
     assert not list(encoder.parameters())
     with pytest.raises(ValueError, match="encoded twice"):
         encoder.encode(output)
+
+
+def test_shared_normalization_stays_fp32_under_autocast():
+    """技能、基础状态、技能状态和场景共用 FP32 运算，外层 autocast 不改变结果。"""
+    encoder = _encoder()
+    batch = _raw_batch()
+    batch["history_state_skill_state"][..., 1::3] = 1
+    batch["current_state_skill_state"][..., 2::3] = 30.0625
+    raw_skills = torch.tensor([[1013.125], [1000.0625]], dtype=torch.float32)
+    normalizer = Normalizer()
+    expected_skills = normalizer.normalize_skill_features(raw_skills, ("potency",))
+    expected_context = encoder.encode(batch)
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        skills = normalizer.normalize_skill_features(raw_skills, ("potency",))
+        context = encoder.encode(batch)
+    assert skills.dtype == torch.float32
+    torch.testing.assert_close(skills, expected_skills, rtol=0, atol=0)
+    for key in ("history_state_vectors", "current_state_vectors", "scene_vectors"):
+        assert context[key].dtype == torch.float32
+        torch.testing.assert_close(context[key], expected_context[key], rtol=0, atol=0)
 
 
 def test_scene_encoding_separates_raw_and_model_fields_without_mutating_raw():
@@ -116,8 +140,8 @@ def test_scene_encoding_separates_raw_and_model_fields_without_mutating_raw():
         encoder.encode(ambiguous)
 
 
-def test_resources_timers_and_buff_refresh_reconstruct_raw_and_keep_signed_scales():
-    """资源变化、timer 回绕与 Buff 过期/刷新先无损求差，再按各字段尺度编码。"""
+def test_resources_timers_and_buff_refresh_keep_absolute_states_and_separate_time_scales():
+    """raw 差分保持无损，模型只对时间坐标求差，资源和有界时长保留绝对状态。"""
     keys = (
         "request_state.time_seconds", "previous_action_after.time_seconds", "request_state.mp",
         "request_state.astral_fire", "request_state.polyglot", "request_state.polyglot_timer",
@@ -125,9 +149,10 @@ def test_resources_timers_and_buff_refresh_reconstruct_raw_and_keep_signed_scale
         "request_state.job.triplecast.stacks", "request_state.current_potency",
     )
     normalizer = Normalizer.from_contract({
-        "version": NORMALIZER_CONTRACT_VERSION, "config": asdict(NormalizerConfig(time_scale=60.0)),
+        "version": NORMALIZER_CONTRACT_VERSION, "config": asdict(NormalizerConfig(time_scale=60.0, duration_scale=30.0)),
         "resource_limits": {"astral_fire": 3.0, "polyglot": 3.0, "polyglot_timer": 30.0},
         "resource_time_fields": ("polyglot_timer",),
+        "skill_charge_limits": {"first": 2, "second": 2},
         "status_limits": {"job.triplecast": 3.0}, "job_tag": "black_mage",
     })
     schema = TrainingSchema(
@@ -158,9 +183,9 @@ def test_resources_timers_and_buff_refresh_reconstruct_raw_and_keep_signed_scale
         torch.testing.assert_close(reconstructed, values[:, index], rtol=0, atol=0, msg=key)
     assert reset[0].all()
     assert not reset[1:].any()
-    output = ContextEncoder(normalizer, schema, ModelConfig(time_delta_scale=60.0), layout=schema.state_layout(("first", "second"))).encode({
-        "history_state_skill_availability": torch.zeros((*(values[:3][None]).shape[:-1], 4), dtype=torch.bool),
-        "current_state_skill_availability": torch.zeros((*(values[3:]).shape[:-1], 4), dtype=torch.bool),
+    output = ContextEncoder(normalizer, schema, layout=schema.state_layout(("first", "second"))).encode({
+        "history_state_skill_state": torch.zeros((*(values[:3][None]).shape[:-1], 12), dtype=torch.float32),
+        "current_state_skill_state": torch.zeros((*(values[3:]).shape[:-1], 12), dtype=torch.float32),
         "history_skill_ids": torch.tensor([[1, 2, 3]]),
         "history_skill_features": torch.zeros((1, 3, 1)),
         "history_state_abs_values": values[:3][None],
@@ -177,10 +202,10 @@ def test_resources_timers_and_buff_refresh_reconstruct_raw_and_keep_signed_scale
         "scene_mask": torch.zeros((1, 0), dtype=torch.bool),
     })
     expected = torch.tensor([
-        [0, -2/60, 1, 1, 2/3, 29/60, 1, 12/60, 1, 1000/2000],
-        [3/60, 3/60, -.24, -1, 1/3, -27/60, 0, -3/60, -1/3, 700/2000],
-        [4/60, 4/60, .04, 1/3, -1, 4/60, -1, -9/60, -2/3, -50/2000],
-        [3/60, 3/60, .12, 2/3, 1/3, -5/60, 1, 15/60, 1, 650/2000],
+        [0, -2/60, 1, 1, 2/3, 29/30, 1, 12/30, 1, 1000/2000],
+        [3/60, 3/60, .76, 0, 1, 2/30, 1, 9/30, 2/3, 1700/2000],
+        [4/60, 4/60, .8, 1/3, 0, 6/30, 0, 0, 0, 1650/2000],
+        [3/60, 3/60, .92, 1, 1/3, 1/30, 1, 15/30, 1, 1],
     ])
     actual = torch.cat((output["history_state_vectors"][0], output["current_state_vectors"]))
     for index, key in enumerate(keys):
@@ -215,13 +240,17 @@ def test_scene_target_count_uses_default_five_target_limit(count, expected):
     assert batch["scene_abs_values"][0, 0, 0] == count
 
 
-def test_explicit_model_time_scale_applies_to_state_and_scene_without_clipping():
-    """模型读取尺度允许显式覆盖；状态和场景同时换算且保留超过一的值。"""
-    output = _encoder(ModelConfig(time_delta_scale=30.0)).encode(_raw_batch())
+def test_relative_and_duration_scales_apply_independently_to_state_skill_and_scene():
+    """时间坐标差分与绝对时长各用自己的尺度，场景长度仍允许超过一。"""
+    batch = _raw_batch()
+    batch["current_state_skill_state"][..., 2::3] = 30
+    output = _encoder(NormalizerConfig(time_scale=30.0, duration_scale=60.0)).encode(batch)
     torch.testing.assert_close(output["history_state_vectors"][0, :, 2], torch.tensor([0, 3 / 30]))
     assert output["history_state_vectors"][0, 0, 4] == pytest.approx(-2 / 30)
     assert output["current_state_vectors"][0, 2] == pytest.approx(4 / 30)
-    assert output["scene_vectors"][0, 1, 2] == pytest.approx(380 / 30)
+    torch.testing.assert_close(output["current_state_vectors"][..., 8::3], torch.full((1, 4), 30 / 60))
+    assert output["scene_vectors"][0, 1, 2] == pytest.approx(380 / 60)
+    assert output["scene_vectors"][0, 2, 1] == pytest.approx(10 / 60)
     assert output["scene_vectors"][0, 2, 2] == pytest.approx(-350 / 30)
 
 
@@ -259,7 +288,7 @@ def test_window_reanchors_from_selected_absolute_row_and_preserves_later_delta()
     torch.testing.assert_close(output["history_state_vectors"][0, 0, :6], torch.tensor(
         [0.6, 0, 0, 1100 / 2000, -2 / 270, 0.8],
     ))
-    assert output["history_state_reset_mask"].all()
+    assert output["history_state_reset_mask"].tolist() == [[[False, False, True, False, True, False]]]
     assert output["current_state_vectors"][0, 2] == pytest.approx(4 / 270)
     assert output["scene_vectors"][0, 0, 1] == pytest.approx(97 / 270)
 
@@ -275,8 +304,8 @@ def test_empty_history_anchors_current_state_and_deletes_invalid_scenes(scene_wi
     batch["scene_abs_values"][:, :, 1] = 0  # 所有 combat 窗口均已结束。
     batch["scene_mask"].fill_(False)
     output = _encoder().encode(batch)
-    assert output["history_state_vectors"].shape == (1, 0, 10)
-    assert output["current_state_reset_mask"].all()
+    assert output["history_state_vectors"].shape == (1, 0, 18)
+    assert output["current_state_reset_mask"].tolist() == [[False, False, True, False, True, False]]
     torch.testing.assert_close(output["current_state_vectors"][0, :6], torch.tensor(
         [0.7, 1, 0, 1050 / 2000, -2 / 270, 0.6],
     ))
@@ -312,7 +341,7 @@ def test_compact_gather_matches_dense_and_does_not_cross_bank_boundaries():
     dense = _raw_batch()
     compact = dict(dense)
     names = ("skill_ids", "skill_features", "state_abs_values", "state_delta_values",
-             "state_null_mask", "state_delta_reset_mask", "state_skill_availability")
+             "state_null_mask", "state_delta_reset_mask", "state_skill_state")
     for name in names:
         rows = compact.pop("history_" + name).squeeze(0)
         sentinel = torch.zeros_like(rows[:1])
@@ -327,23 +356,31 @@ def test_compact_gather_matches_dense_and_does_not_cross_bank_boundaries():
     assert not any(key.startswith("history_bank_") for key in actual)
 
 
-def test_availability_is_absolute_and_does_not_change_skill_or_scene_encoding():
-    """新增状态表不进入 DELTA，原基础段和非状态 token 使用原样编码。"""
+def test_skill_state_is_absolute_and_does_not_change_base_skill_or_scene_encoding():
+    """充能和恢复时间直接编码各快照绝对值，不进入基础状态 DELTA。"""
     batch = _raw_batch()
     encoder = _encoder()
     original = encoder.encode(batch)
-    batch["history_state_skill_availability"] = torch.tensor([[[1, 0, 0, 1], [0, 1, 1, 0]]], dtype=torch.bool)
-    batch["current_state_skill_availability"] = torch.tensor([[1, 1, 0, 0]], dtype=torch.bool)
+    batch["history_state_skill_state"] = torch.tensor([[
+        [1, 1, 30, 0, 0, 60, 0, 1, 15, 1, 2, 0],
+        [0, 0, 90, 1, 1, 60, 1, 2, 0, 0, 1, 30],
+    ]], dtype=torch.float32)
+    batch["current_state_skill_state"] = torch.tensor([[1, 2, 0, 1, 1, 30, 0, 0, 90, 0, 1, 15]], dtype=torch.float32)
     changed = encoder.encode(batch)
-    assert changed["history_state_vectors"][..., 6:].tolist() == [[[1, 0, 0, 1], [0, 1, 1, 0]]]
-    assert changed["current_state_vectors"][..., 6:].tolist() == [[1, 1, 0, 0]]
+    torch.testing.assert_close(changed["history_state_vectors"][..., 6:], torch.tensor([[
+        [1, .5, 30 / 270, 0, 0, 60 / 270, 0, .5, 15 / 270, 1, 1, 0],
+        [0, 0, 90 / 270, 1, .5, 60 / 270, 1, 1, 0, 0, .5, 30 / 270],
+    ]]))
+    torch.testing.assert_close(changed["current_state_vectors"][..., 6:], torch.tensor([
+        [1, 1, 0, 1, .5, 30 / 270, 0, 0, 90 / 270, 0, .5, 15 / 270],
+    ]))
     for key in ("history_state_vectors", "current_state_vectors"):
         torch.testing.assert_close(changed[key][..., :6], original[key][..., :6], rtol=0, atol=0)
     for key in ("history_skill_ids", "history_skill_features", "history_mask", "scene_vectors", "scene_types", "scene_mask"):
         torch.testing.assert_close(changed[key], original[key], rtol=0, atol=0)
 
 
-def test_null_to_known_time_reset_is_reanchored_and_padding_is_inert():
+def test_null_to_known_only_resets_time_and_padding_is_inert():
     batch = _raw_batch()
     batch["history_state_delta_reset_mask"][0, 1, 4] = True
     batch["history_state_delta_values"][0, 1, 4] = 1201
@@ -352,6 +389,12 @@ def test_null_to_known_time_reset_is_reanchored_and_padding_is_inert():
     assert output["history_state_vectors"][0, 1, 4] == pytest.approx(1 / 270)
     assert output["history_state_reset_mask"][0, 1, 4]
     assert output["history_state_vectors"][0, 1, 0] == -1
+    assert not output["history_state_reset_mask"][0, 1, 0]
+    batch["history_state_null_mask"][0, 1, 0] = False
+    batch["history_state_delta_reset_mask"][0, 1, 0] = True
+    batch["history_state_delta_values"][0, 1, 0] = 6000
+    output = _encoder().encode(batch)
+    assert output["history_state_vectors"][0, 1, 0] == pytest.approx(.6)
     assert not output["history_state_reset_mask"][0, 1, 0]
     batch["history_mask"][0, 1] = False
     output = _encoder().encode(batch)
@@ -557,17 +600,14 @@ def test_cpu_raw_entry_rejects_unknown_or_nonfinite_request_anchor(bad, has_hist
 
 @pytest.mark.parametrize("field,value", [("history_reset_keep", True), ("history_reset_keep", 8.5),
                                        ("history_reset_keep", "8"), ("history_reset_keep", 0),
-                                       ("history_capacity", 7), ("time_delta_scale", False),
-                                       ("time_delta_scale", 0), ("time_delta_scale", float("inf")),
-                                       ("time_delta_scale", float("nan")), ("time_delta_scale", 1e-50)])
+                                       ("history_capacity", 7), ("time_delta_scale", 270)])
 def test_model_context_config_is_strict(field, value):
-    with pytest.raises(ValueError, match="model\\."):
+    with pytest.raises(ValueError, match="model"):
         ModelConfig.from_mapping({field: value})
 
 
 def test_model_context_defaults_and_no_history_boundary():
     assert ModelConfig().history_reset_keep == 8
-    assert ModelConfig().time_delta_scale == 270
     assert ModelConfig().context_capacity == 1024
     with pytest.raises(ValueError, match="context_capacity"):
         ModelConfig(context_capacity=16)
@@ -586,7 +626,7 @@ def test_cuda_encoding_matches_cpu_without_explicit_device_scalar_reads(monkeypa
         batch["scene_mask"].fill_(False)
     if compact:
         for name in ("skill_ids", "skill_features", "state_abs_values", "state_delta_values",
-                     "state_null_mask", "state_delta_reset_mask", "state_skill_availability"):
+                     "state_null_mask", "state_delta_reset_mask", "state_skill_state"):
             values = batch.pop("history_" + name).squeeze(0)
             batch["history_bank_" + name] = torch.cat((values.new_zeros((2, *values.shape[1:])), values))
         batch["history_lengths"] = torch.tensor([2])

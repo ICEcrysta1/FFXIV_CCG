@@ -49,7 +49,8 @@ logger = logging.getLogger(__name__)
 # v24：基础状态删除累计直伤/DoT 维度；独立真实执行统计继续保留。
 #      同步黑魔绝望最低 MP 800 的执行边界，旧状态 bank 不得复用。
 # v25：独立保存死亡标记及其历史/样本边界，不占用技能或状态数值行。
-CACHE_FORMAT = "raw_json_compiled_samples_v25_death_markers"
+# v26：冻结技能表以 FP32 绝对三元组替代 bool 可用性表。
+CACHE_FORMAT = "raw_json_compiled_samples_v26_skill_state"
 # v11：C# 状态机把硬读条的服务器效果结算与完整读条锁结束拆开；转换请求时刻
 # 仍按统一滑步窗口恢复，日志抖动只由容量一动作队列吸收。旧缓存的效果状态时序不可复用。
 # v10：硬读条请求时刻改由 `cast − 实际读条时长 + 0.5 秒滑步窗口` 解析，
@@ -78,7 +79,9 @@ CACHE_FORMAT = "raw_json_compiled_samples_v25_death_markers"
 #      活动兜底严格晚于死亡，旧规则可能包含同刻伪造的复活，必须重编译。
 #      灵极魂不再限于 Boss 不可选中时使用，旧缓存中的冻结技能可用性需要重建。
 #      停机左界取 cast、右界优先配对 begincast，旧窗口对应的场景和冻结状态需要重建。
-DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v28_lb3_player_lifecycle_party_downtime_umbral_soul_party_cast_request_endpoints"
+# v29：独立技能状态注册表冻结当前层数及下一层恢复时间，历史技能数值列移除这两项；
+#      两段状态快照移除 mp_ratio，旧状态 bank 必须重建。
+DEFAULT_CONVERSION_VERSION = "raw_json_to_compiled_v29_skill_state_no_mp_ratio"
 # `weights_only=True` 的安全 unpickler 对 protocol 2 支持最稳定；compiled
 # cache 的样本数据只需要普通 mapping 和 tensor，不需要更高协议。
 CACHE_PICKLE_PROTOCOL = 2

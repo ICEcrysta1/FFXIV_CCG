@@ -30,7 +30,7 @@ from scripts.onnx_export import export as export_module
 from scripts.onnx_export.contracts.contract import make_inputs, slice_dynamic_inputs
 from scripts.onnx_export.contracts import contract as tensor_contract_module
 from common.policy.data.context_fields import MODEL_INPUT_FIELDS
-from tests.training._causal_fixtures import make_state_groups
+from tests.training._causal_fixtures import make_data_spec, make_input_contract, make_state_groups
 from scripts.onnx_export.contracts.deployment_profile import DeploymentProfile
 from scripts.onnx_export.contracts.deployment_contract import (
     DEPLOYMENT_CONTRACT_VERSION,
@@ -183,6 +183,12 @@ def test_manifest_schema_uses_authoritative_model_input_descriptor(manifest_sche
     input_schema = manifest_schema["$defs"]["contract"]["properties"]["model_input_contract"]
     assert input_schema["properties"]["version"]["const"] == INPUT_CONTRACT_VERSION
     assert input_schema["properties"]["token_encoding"]["const"] == TOKEN_ENCODING_CONTRACT
+    legacy = deepcopy(TOKEN_ENCODING_CONTRACT)
+    legacy["context_encoding"]["state"] = "first_visible_ABS_then_raw_numeric_DELTA"
+    jsonschema = pytest.importorskip("jsonschema")
+    validator = jsonschema.Draft202012Validator(input_schema["properties"]["token_encoding"])
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(legacy)
 
 
 def test_failed_export_keeps_previous_valid_directory(tmp_path, monkeypatch):
@@ -298,22 +304,26 @@ def test_low_precision_export_keeps_fp32_input_values_and_weights(tmp_path, prec
     )
 
 
-def test_zero_padding_fill_clears_all_padding_dtypes():
+@pytest.mark.parametrize("history_valid", [0, 2])
+def test_zero_padding_fill_clears_all_padding_dtypes(history_valid):
     data_spec = SimpleNamespace(
         scene_dim=2,
         num_scene_types=4,
         skill_feature_dim=3,
         base_state_dim=5,
-        state_dim=9,
+        state_dim=17,
         num_actions=2,
+        action_keys=("first", "second"),
     )
     contract = CapacityContract(12)
+    layout = make_input_contract(make_data_spec(base_state_dim=5)).schema.state_layout(("first", "second"))
     values = make_inputs(
         data_spec,
         contract,
+        state_layout=layout,
         vocab_size=8,
         scene_valid=1,
-        history_valid=2,
+        history_valid=history_valid,
         dtype=torch.float32,
         seed=17,
         padding_fill="zero",
@@ -321,26 +331,34 @@ def test_zero_padding_fill_clears_all_padding_dtypes():
 
     assert torch.count_nonzero(values[0][:, 1:]) == 0
     assert torch.count_nonzero(values[1][:, 1:]) == 0
-    assert torch.count_nonzero(values[3][:, 2:]) == 0
-    assert torch.count_nonzero(values[4][:, 2:]) == 0
-    assert torch.count_nonzero(values[5][:, 2:]) == 0
-    assert values[6][:, 2:].all()
-    assert not values[10][:, 2:].any()
+    assert torch.count_nonzero(values[3][:, history_valid:]) == 0
+    assert torch.count_nonzero(values[4][:, history_valid:]) == 0
+    assert torch.count_nonzero(values[5][:, history_valid:]) == 0
+    assert values[6][:, history_valid:].all()
+    assert not values[10][:, history_valid:].any()
     assert torch.count_nonzero(values[0][:, :1]) > 0
-    assert torch.count_nonzero(values[3][:, :2]) > 0
+    if history_valid:
+        assert torch.count_nonzero(values[3][:, :history_valid]) > 0
+    non_time = [index for index, key in enumerate(layout.base_feature_keys)
+                if key.rsplit(".", 1)[-1] != "time_seconds"]
+    assert not values[10][..., non_time].any()
+    assert not values[11][..., non_time].any()
 
     # 两个原始轴各自都未越界，也不能同时消耗超过统一预算的有效 token。
     with pytest.raises(ValueError, match="shared context_capacity"):
         make_inputs(
             data_spec, contract, vocab_size=8, scene_valid=contract.scene_capacity,
+            state_layout=make_input_contract(make_data_spec(base_state_dim=5)).schema.state_layout(("first", "second")),
             history_valid=1, dtype=torch.float32, seed=17,
         )
 
 
 def test_dynamic_slice_and_padding_follow_fields_when_input_order_changes(monkeypatch):
     """输入次序变化时，历史 reset 等序列字段仍按各自轴裁剪和补位。"""
-    spec = SimpleNamespace(scene_dim=2, num_scene_types=4, skill_feature_dim=3, base_state_dim=5, state_dim=9, num_actions=2)
+    spec = SimpleNamespace(scene_dim=2, num_scene_types=4, skill_feature_dim=3, base_state_dim=5, state_dim=17, num_actions=2,
+                           action_keys=("first", "second"))
     inputs = make_inputs(spec, CapacityContract(12), vocab_size=8,
+                         state_layout=make_input_contract(make_data_spec(base_state_dim=5)).schema.state_layout(("first", "second")),
                          scene_valid=1, history_valid=2, dead_valid=2, dtype=torch.float32, seed=17)
     fields = tuple(reversed(MODEL_INPUT_FIELDS))
     monkeypatch.setattr(tensor_contract_module, "MODEL_INPUT_FIELDS", fields)
@@ -349,9 +367,9 @@ def test_dynamic_slice_and_padding_follow_fields_when_input_order_changes(monkey
         inputs, scene_valid=1, history_valid=2, dead_valid=2,
     ), strict=True))
     assert sliced["scene_vectors"].shape == (1, 1, 2)
-    assert sliced["history_state_vectors"].shape == (1, 2, 9)
+    assert sliced["history_state_vectors"].shape == (1, 2, 17)
     assert sliced["history_state_reset_mask"].shape == (1, 2, 5)
-    assert sliced["current_state_vectors"].shape == (1, 9)
+    assert sliced["current_state_vectors"].shape == (1, 17)
     assert sliced["history_dead_positions"].shape == (1, 2)
     assert sliced["history_dead_mask"].tolist() == [[True, True]]
     padded = dict(zip((field.name for field in fields), tensor_contract_module.fill_padding_values(
@@ -670,6 +688,7 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
     fixed_inputs = make_inputs(
         data_spec,
         loaded.contract.capacity,
+        state_layout=loaded.contract.input_contract.schema.state_layout(data_spec.action_keys),
         vocab_size=8,
         scene_valid=2,
         history_valid=3,
@@ -1162,6 +1181,7 @@ def test_small_float16_model_exports_and_runs_on_strict_cuda(tmp_path, activatio
         torch.testing.assert_close(tensor, saved["model_state_dict"][f"input_encoder.{name}"], rtol=0, atol=0)
     inputs = make_inputs(
         data_spec, loaded.contract.capacity,
+        state_layout=loaded.contract.input_contract.schema.state_layout(data_spec.action_keys),
         vocab_size=vocab_size, scene_valid=2, history_valid=3,
         dtype=dtype, seed=73,
     )
@@ -1357,12 +1377,15 @@ def test_deployment_state_masks_use_base_width_and_outer_layout_cannot_override_
                                      precision="float32").deployment_contract
     fields = {field.name: field for field in contract.tensor_inputs()}
     assert len(fields) == 14
-    assert fields["current_state_vectors"].shape[-1] == spec.state_dim == 9
+    assert fields["current_state_vectors"].shape[-1] == spec.state_dim == 21
     assert fields["current_state_null_mask"].shape[-1] == spec.base_state_dim == 3
     assert fields["history_state_reset_mask"].shape[-1] == spec.base_state_dim
+    assert "time-anchor ABS reset" in fields["history_state_reset_mask"].semantic
+    assert "relative start/end and absolute duration" in fields["scene_vectors"].semantic
     assert fields["history_dead_positions"].shape == (1, contract.capacity.dead_capacity)
     assert fields["history_dead_mask"].dtype == "tensor(bool)"
     inputs = make_inputs(spec, contract.capacity, vocab_size=8, scene_valid=1, history_valid=1,
+                         state_layout=contract.input_contract.schema.state_layout(spec.action_keys),
                          dtype=torch.float32, seed=19)
     contract.validate_tensor_inputs(inputs)
     named = dict(zip(TENSOR_INPUT_NAMES, inputs, strict=True))
@@ -1371,8 +1394,10 @@ def test_deployment_state_masks_use_base_width_and_outer_layout_cannot_override_
     with pytest.raises(ValueError, match="shared context_capacity"):
         contract.validate_tensor_inputs(inputs)
     named["scene_mask"].copy_(original_scene_mask)
+    named["current_state_vectors"][0, spec.base_state_dim + 1:spec.base_state_dim + 3] = torch.tensor([.5, .25])
+    contract.validate_tensor_inputs(inputs)
     named["current_state_vectors"][0, spec.base_state_dim] = .5
-    with pytest.raises(ValueError, match="absolute binary"):
+    with pytest.raises(ValueError, match="availability|binary"):
         contract.validate_tensor_inputs(inputs)
     payload = contract.to_dict()
     payload["state_layout"][0]["feature_keys"].reverse()
@@ -1395,6 +1420,7 @@ def test_deployment_rejects_invalid_dead_event_boundaries(tmp_path, positions, m
     contract = load_policy_contracts(checkpoint_path=checkpoint, deployment_profile_path=profile,
                                      precision="float32").deployment_contract
     inputs = make_inputs(spec, contract.capacity, vocab_size=8, scene_valid=1, history_valid=2,
+                         state_layout=contract.input_contract.schema.state_layout(spec.action_keys),
                          dead_valid=2, dtype=torch.float32, seed=19)
     named = dict(zip(TENSOR_INPUT_NAMES, inputs, strict=True))
     # 同边界连续多个事件合法，mask=false 的补位数值不参与边界校验。
@@ -1690,7 +1716,7 @@ def _write_small_checkpoint(
         job_tag="black_mage",
         num_actions=3,
         base_state_dim=3,
-        state_dim=9,
+        state_dim=21,
         scene_dim=3,
         skill_feature_dim=2,
         num_scene_types=4,

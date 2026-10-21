@@ -273,7 +273,7 @@
       ],
       "properties": {
         "contract_version": {
-          "const": 28
+          "const": 29
         },
         "job_tag": {
           "type": "string",
@@ -322,13 +322,19 @@
           ],
           "properties": {
             "version": {
-              "const": 24
+              "const": 25
             },
             "token_encoding": {
               "const": {
-                "state_availability": {
-                  "encoding": "absolute_binary",
-                  "order": "snapshot_then_saved_action_keys",
+                "skill_state": {
+                  "encoding": "absolute_numeric",
+                  "order": "snapshot_then_saved_action_keys_then_registered_fields",
+                  "fields": ["available", "current_charges", "next_cooldown_seconds"],
+                  "scales": {
+                    "available": 1,
+                    "current_charges": "normalizer_contract.skill_charge_limits[action_key]",
+                    "next_cooldown_seconds": "normalizer_contract.config.duration_scale"
+                  },
                   "projection": "shared_state_content",
                   "auxiliary_masks": "base_state_only",
                   "scene_execution_time": "raw_fp32_endpoints_promoted_to_double",
@@ -410,16 +416,17 @@
                 "history_state_frozen_at": "request",
                 "context_encoding": {
                   "compute_dtype": "float32",
-                  "state": "first_visible_ABS_then_raw_numeric_DELTA",
+                  "state": "normalized_ABS_except_time_anchors",
+                  "state_time": "first_visible_anchor_offset_then_raw_DELTA",
                   "state_abs_time_origin": "first_visible_request_state.time_seconds",
-                  "boolean_delta": "minus_one_zero_plus_one",
-                  "delta_linear": "raw_delta / saved_field_divisor_without_clipping",
-                  "unknown_recovery": "per_field_ABS_reset_mask",
+                  "delta_linear": "raw_time_delta / saved_time_scale_without_clipping",
+                  "unknown_recovery": "time_anchor_ABS_reset_mask",
                   "reset_projection": "zero_initialized_input_encoder.state_reset_proj",
                   "scene": "clip_at_state_anchor_then_stable_start_end_type_order",
                   "scene_time": "first_anchor_offset_then_separate_start_end_DELTA",
-                  "scene_duration": "own_clipped_duration",
-                  "time_scale": "model_config.time_delta_scale",
+                  "scene_duration": "own_clipped_absolute_duration",
+                  "time_scale": "normalizer_contract.config.time_scale",
+                  "duration_scale": "normalizer_contract.config.duration_scale",
                   "history_window": "shared_context_token_budget_block_reset",
                   "overflow_keep": "model_config.history_reset_keep",
                   "time_clipping": false
@@ -465,8 +472,7 @@
             "qk_norm_scale",
             "logit_softcap",
             "context_capacity",
-            "history_reset_keep",
-            "time_delta_scale"
+            "history_reset_keep"
           ],
           "properties": {
             "residual_mix_r_start": {
@@ -500,10 +506,6 @@
             "history_reset_keep": {
               "type": "integer",
               "minimum": 0
-            },
-            "time_delta_scale": {
-              "type": "number",
-              "exclusiveMinimum": 0
             }
           }
         },
@@ -676,7 +678,7 @@
                 "minLength": 1
               },
               "encoding": {
-                "enum": ["anchored_delta", "absolute_binary"]
+                "enum": ["anchored_delta", "absolute_numeric"]
               }
             }
           }

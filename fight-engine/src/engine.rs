@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::{ActionKind, ProjectConfig, SchemaConfig, SkillBook, SkillDefinition};
 use crate::contracts::{JobRegistry, JobStateMachine};
 use crate::outputs::StateContextBuilder;
+use crate::state::skills::SkillStateRegistry;
 use crate::state::{
     ActionHistoryEntry, CombatState, ModelStateFrame, ModelStateSnapshot, ValidationResult,
 };
@@ -64,8 +65,7 @@ pub struct EngineRules {
     pub(crate) skills: SkillBook,
     pub(crate) schema: Arc<SchemaConfig>,
     pub(crate) max_history: Option<usize>,
-    action_keys: Vec<String>,
-    action_skills: Vec<SkillDefinition>,
+    skill_states: SkillStateRegistry,
     context_builder: StateContextBuilder,
 }
 
@@ -123,12 +123,7 @@ impl EngineRules {
                 ));
             }
         }
-        let mut action_skills: Vec<_> = skills.enabled_skills(None).into_iter().cloned().collect();
-        action_skills.sort_by(|left, right| left.key.cmp(&right.key));
-        let action_keys = action_skills
-            .iter()
-            .map(|skill| skill.key.clone())
-            .collect();
+        let skill_states = SkillStateRegistry::new(&skills);
         let context_builder =
             StateContextBuilder::new(project.clone(), system.clone(), job.clone());
         Ok(Self {
@@ -138,8 +133,7 @@ impl EngineRules {
             skills,
             schema,
             max_history,
-            action_keys,
-            action_skills,
+            skill_states,
             context_builder,
         })
     }
@@ -455,7 +449,7 @@ impl EngineRules {
     }
 
     pub fn action_keys(&self) -> &[String] {
-        &self.action_keys
+        self.skill_states.keys()
     }
 
     pub fn skill_availability(
@@ -463,7 +457,8 @@ impl EngineRules {
         state: &CombatState,
         queue_occupied: bool,
     ) -> Result<BTreeMap<String, bool>, String> {
-        self.action_skills
+        self.skill_states
+            .definitions()
             .iter()
             .map(|skill| {
                 Ok((
@@ -476,7 +471,8 @@ impl EngineRules {
     }
 
     pub fn action_values(&self, state: &CombatState) -> Result<Vec<f64>, String> {
-        self.action_skills
+        self.skill_states
+            .definitions()
             .iter()
             .map(|skill| self.job.resolve_action_value(state, skill, skill.value))
             .collect()
@@ -489,7 +485,11 @@ impl EngineRules {
     ) -> Result<Arc<ModelStateFrame>, String> {
         Ok(Arc::new(ModelStateFrame {
             state: self.context_builder.build(state)?,
-            skill_availability: self.skill_availability(state, queue_occupied)?,
+            skill_state: self.skill_states.snapshot(state, &self.system, |skill| {
+                Ok(self
+                    .evaluate_action_submission(state, skill, queue_occupied, None)?
+                    .accepted)
+            })?,
         }))
     }
 

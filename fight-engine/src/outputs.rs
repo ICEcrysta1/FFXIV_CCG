@@ -198,10 +198,10 @@ impl OutputContextBuilder {
             .map(|key| {
                 current
                     .request_state
-                    .skill_availability
+                    .skill_state
                     .get(key)
-                    .copied()
-                    .ok_or_else(|| format!("frozen skill availability is missing {key}"))
+                    .map(|skill| skill.available)
+                    .ok_or_else(|| format!("frozen skill state is missing {key}"))
             })
             .collect::<Result<Vec<_>, String>>()?;
         let context = json!({

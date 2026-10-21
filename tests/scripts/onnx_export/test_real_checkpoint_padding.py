@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from common.policy.data.input_contract import INPUT_CONTRACT_VERSION
+from common.policy.data.input_contract import INPUT_CONTRACT_VERSION, ModelInputContract
 from common.pytorch.serialization import safe_torch_load
 from scripts.onnx_export import CapacityContract, DeploymentManifest
 from scripts.onnx_export.contracts.deployment_profile import DeploymentProfile
@@ -80,6 +80,7 @@ def test_real_bf16_checkpoint_padding_matrix_cuda():
         policy,
         data_spec,
         contract,
+        state_layout=ModelInputContract.from_checkpoint(checkpoint).schema.state_layout(data_spec.action_keys),
         vocab_size=vocab_size,
         dtype=dtype,
         device=torch.device("cuda"),

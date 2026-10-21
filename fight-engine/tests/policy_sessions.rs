@@ -15,7 +15,9 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 fn fixture() -> Value {
-    serde_json::from_str(include_str!("fixtures/policy_sessions.json")).unwrap()
+    common::legacy_model_state(
+        serde_json::from_str(include_str!("fixtures/policy_sessions.json")).unwrap(),
+    )
 }
 fn registry(baseline: &Value, extended: bool) -> Arc<PolicyActionRegistry> {
     let project = serde_json::from_value(baseline["project"].clone()).unwrap();
@@ -151,8 +153,10 @@ fn policy_wait_history_delta_and_snapshot_match_baseline() {
         let mut saved = Vec::new();
         for (index, step) in scene["steps"].as_array().unwrap().iter().enumerate() {
             let path = format!("{}.steps[{index}]", scene["name"].as_str().unwrap());
-            let output = operation(&mut sim, &mut policy, &mut saved, &step["input"])
-                .unwrap_or_else(|_| json!({"error":true}));
+            let output = common::legacy_model_state(
+                operation(&mut sim, &mut policy, &mut saved, &step["input"])
+                    .unwrap_or_else(|_| json!({"error":true})),
+            );
             common::assert_equivalent(&step["output"], &output, &format!("{path}.output"));
             common::assert_equivalent(
                 &step["state"],
@@ -198,6 +202,60 @@ fn policy_record_rejects_invalid_times_without_mutation() {
 }
 
 #[test]
+fn policy_composition_preserves_frozen_skill_charges_and_adds_wait_state() {
+    let baseline = fixture();
+    let rules = probe::rules(&baseline, None);
+    let mut sim = Simulator::new(rules, 0.0, None).unwrap();
+    let mut policy = PolicySession::new(registry(&baseline, false), None);
+    assert!(
+        sim.submit_action(
+            ActionRequest {
+                timestamp: 0.0,
+                skill_key: "charge".into(),
+            },
+            None
+        )
+        .unwrap()
+        .accepted
+    );
+    policy.record(&mut sim, 0.0, "ogcd_wait", 1.0).unwrap();
+    sim.advance_to(3.0).unwrap();
+    let output = policy.build_vector_context(&sim, 3.0).unwrap();
+    let keys = output["state_history_context"]["skill_state_feature_keys"]
+        .as_array()
+        .unwrap();
+    let index = |key: &str| keys.iter().position(|field| field == key).unwrap();
+    let history = output["state_history_context"]["tokens"][1]["skill_state"]
+        .as_array()
+        .unwrap();
+    let current = output["current_state_context"]["tokens"][0]["skill_state"]
+        .as_array()
+        .unwrap();
+    assert_eq!(history[index("request_state.charge.current_charges")], 1.0);
+    assert_eq!(
+        history[index("request_state.charge.next_cooldown_seconds")],
+        3.0
+    );
+    assert_eq!(current[index("request_state.charge.current_charges")], 2.0);
+    for snapshot in ["previous_action_after", "request_state"] {
+        for values in [history, current] {
+            assert_eq!(
+                values[index(&format!("{snapshot}.ogcd_wait.available"))],
+                1.0
+            );
+            assert_eq!(
+                values[index(&format!("{snapshot}.ogcd_wait.current_charges"))],
+                1.0
+            );
+            assert_eq!(
+                values[index(&format!("{snapshot}.ogcd_wait.next_cooldown_seconds"))],
+                0.0
+            );
+        }
+    }
+}
+
+#[test]
 fn policy_replay_preserves_external_batch_and_wait_order() {
     let baseline = fixture();
     for scene in baseline["replays"].as_array().unwrap() {
@@ -218,7 +276,7 @@ fn policy_replay_preserves_external_batch_and_wait_order() {
         )
         .unwrap();
         let path = scene["name"].as_str().unwrap();
-        common::assert_equivalent(&scene["output"], &output, path);
+        common::assert_equivalent(&scene["output"], &common::legacy_model_state(output), path);
         common::assert_equivalent(
             &scene["state"],
             &summary(&sim, &policy),
@@ -325,7 +383,7 @@ fn independent_sessions_reset_close_and_parallel_execution_match_baseline() {
     let delta = a.observe_vector_delta_at(10.0, 12.25, 0).unwrap();
     common::assert_equivalent(
         &expected["initial_delta"],
-        &serde_json::to_value(delta).unwrap(),
+        &common::legacy_model_state(serde_json::to_value(delta).unwrap()),
         "sessions.initial_delta",
     );
     let workers = expected["parallel_inputs"]

@@ -780,11 +780,10 @@ def test_real_process_cache_compile_matches_serial_and_keeps_full_history(tmp_pa
                 assert_equal(shards[0], shard_payload)
 
 
-def test_real_raw_cache_reused_across_windows_scales_and_random_crops(tmp_path, monkeypatch, cs_backend):
+def test_real_raw_cache_reused_across_windows_and_random_crops(tmp_path, monkeypatch, cs_backend):
     """同一真实 raw source 只编译一次，读取参数变化仅改变视窗与重锚编码。"""
     from random import Random
 
-    from common.policy.config import ModelConfig
     from common.policy.data.context_encoding import ContextEncoder
     from common.policy.data.history_window import history_window_length, scene_window_end_times
     from training import TrainingCollator, TrainingDataset
@@ -815,8 +814,7 @@ def test_real_raw_cache_reused_across_windows_scales_and_random_crops(tmp_path, 
     monkeypatch.setattr(cache_compile_module, "InProcessEngine", lambda *_a, **_kw: pytest.fail("有效缓存不应创建转换引擎"))
     signatures = []
     window_lengths = []
-    for capacity, keep, time_scale, crop in ((3, 1, 120.0, False), (5, 2, 60.0, False),
-                                            (5, 3, 240.0, True), (300, 8, 120.0, True)):
+    for capacity, keep, crop in ((3, 1, False), (5, 2, False), (5, 3, True), (300, 8, True)):
         assert precompile_raw_training_caches([source], **compile_args) == [source]
         dataset = TrainingDataset(
             [source], expected_action_space=actions, normalizer=normalizer, job_tag="black_mage",
@@ -856,13 +854,11 @@ def test_real_raw_cache_reused_across_windows_scales_and_random_crops(tmp_path, 
         layout = dataset.schema.state_layout(actions.action_keys)
         keys = layout.base_feature_keys
         time_index = keys.index("request_state.time_seconds")
-        encoded = ContextEncoder(normalizer, dataset.schema, ModelConfig(
-            context_capacity=2 * capacity + 6, history_reset_keep=keep, time_delta_scale=time_scale,
-        ), layout=layout).encode(batch)
+        encoded = ContextEncoder(normalizer, dataset.schema, layout=layout).encode(batch)
         assert encoded["history_state_vectors"][0, 0, time_index].item() == 0.0
         assert encoded["history_state_reset_mask"][0, 0, time_index]
         torch.testing.assert_close(encoded["current_state_vectors"][0, time_index],
-                                   sample["current_state_delta_values"][time_index] / time_scale)
+                                   sample["current_state_delta_values"][time_index] / normalizer.time_scale)
     assert all(signature == signatures[0] for signature in signatures)
     assert len(set(window_lengths)) > 1
     assert {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in cache_dir.rglob("*.pt")} == saved_bytes
@@ -922,7 +918,7 @@ def test_scene_execution_view_survives_real_compiled_cache_roundtrip(tmp_path, m
 
 
 def test_non_state_tokens_match_frozen_pre_refactor_baseline():
-    """保留旧基线，仅允许本次明确修改的威力、场景时间和目标数尺度变化。"""
+    """保留旧基线，迁移技能状态两列后继续逐项验收其余非状态输入。"""
     from copy import deepcopy
 
     import torch
@@ -938,10 +934,12 @@ def test_non_state_tokens_match_frozen_pre_refactor_baseline():
     expected = deepcopy(baseline["cases"])
 
     def check_scaled_values(current, saved, *, scene_types=None):
-        assert current["shape"] == saved["shape"]
         assert current["dtype"] == saved["dtype"]
         values = torch.tensor(saved["values"], dtype=torch.float32).reshape(saved["shape"])
         if scene_types is None:
+            # 旧 18 列中的 available_charges/next_cooldown_seconds 已移入状态。
+            values = values[..., [index for index in range(values.shape[-1]) if index not in (1, 16)]]
+            saved["shape"] = list(values.shape)
             # 固定技能字段按名称排序，末列为 potency；旧基线技能的充能上限均为 1。
             values[..., -1] = (values[..., -1] * (2500 / 2000)).clamp(max=1)
         else:
@@ -949,6 +947,7 @@ def test_non_state_tokens_match_frozen_pre_refactor_baseline():
             values[..., :3] *= 120 / 270
             types = torch.tensor(scene_types["values"], dtype=torch.long).reshape(scene_types["shape"])
             values[..., 3] = torch.where(types == 3, values[..., 3] * (3 / 5), values[..., 3])
+        assert current["shape"] == saved["shape"]
         new_values = torch.tensor(current["values"], dtype=torch.float32).reshape(current["shape"])
         torch.testing.assert_close(new_values, values, rtol=1e-6, atol=1e-7)
         # 浮点重新除法允许末位舍入差异，其余结构与原始记录仍逐项精确比较。

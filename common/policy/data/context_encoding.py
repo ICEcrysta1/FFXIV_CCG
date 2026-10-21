@@ -1,4 +1,4 @@
-"""神经模型外的 FP32 上下文重锚与 ABS/DELTA 输入编码。"""
+"""神经模型外的 FP32 绝对状态与相对时间编码。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from collections.abc import Mapping
 import torch
 from torch import nn
 
-from ..config import ModelConfig
 from .context_fields import (
     CURRENT_STATE_RAW_FIELDS,
     ENCODING_BANK_FIELDS,
@@ -15,7 +14,7 @@ from .context_fields import (
     RAW_ONLY_FIELD_NAMES,
     tensor_dimensions,
 )
-from .normalizer import Normalizer
+from .normalizer import Normalizer, _normalize_values
 from .schema import StateFeatureLayout, TrainingSchema
 from .state_features import assemble_state_inputs
 
@@ -51,7 +50,7 @@ def _validate_raw_state(values: torch.Tensor, nulls: torch.Tensor) -> None:
 class ContextEncoder(nn.Module):
     """共享读侧编码：完整 raw bank 的窗口 gather、重锚和有符号归一化。"""
 
-    def __init__(self, normalizer: Normalizer, schema: TrainingSchema, config: ModelConfig, *, layout: StateFeatureLayout):
+    def __init__(self, normalizer: Normalizer, schema: TrainingSchema, *, layout: StateFeatureLayout):
         super().__init__()
         metadata = normalizer.state_encoding_metadata(schema)
         if layout.groups != schema.state_groups or layout.snapshots != schema.state_snapshots:
@@ -60,24 +59,28 @@ class ContextEncoder(nn.Module):
         self.base_state_dim = layout.base_state_dim
         self.state_dim = layout.state_dim
         self.scene_dim = schema.scene_feature_dim()
-        self.time_delta_scale = config.time_delta_scale
+        self.time_scale = normalizer.time_scale
+        self.duration_scale = normalizer.duration_scale
         if metadata.feature_keys != layout.base_feature_keys:
             raise ValueError("normalizer base field order must match the state layout")
         self.request_time_index = layout.request_time_index
-        time_mask = [key.rsplit(".", 1)[-1] == "time_seconds" for key in metadata.feature_keys]
-        divisors = [self.time_delta_scale if is_time else divisor
-                    for is_time, divisor in zip(time_mask, metadata.divisors, strict=True)]
-        lower = [-float("inf") if is_time else bound
-                 for is_time, bound in zip(time_mask, metadata.absolute_lower_bounds, strict=True)]
-        upper = [float("inf") if is_time else bound
-                 for is_time, bound in zip(time_mask, metadata.absolute_upper_bounds, strict=True)]
         for name, values, dtype in (
-            ("state_divisors", divisors, torch.float32),
-            ("state_absolute_lower", lower, torch.float32),
-            ("state_absolute_upper", upper, torch.float32),
-            ("state_time_mask", time_mask, torch.bool),
+            ("state_divisors", metadata.divisors, torch.float32),
+            ("state_absolute_lower", metadata.absolute_lower_bounds, torch.float32),
+            ("state_absolute_upper", metadata.absolute_upper_bounds, torch.float32),
+            ("state_time_mask", metadata.time_anchors, torch.bool),
         ):
             self.register_buffer(name, torch.tensor(values, dtype=dtype), persistent=False)
+
+        skill_metadata = normalizer.skill_state_encoding_metadata(layout)
+        if skill_metadata.feature_keys != layout.skill_state_feature_keys:
+            raise ValueError("normalizer skill field order must match the state layout")
+        for name, values in (
+            ("skill_state_divisors", skill_metadata.divisors),
+            ("skill_state_lower", skill_metadata.absolute_lower_bounds),
+            ("skill_state_upper", skill_metadata.absolute_upper_bounds),
+        ):
+            self.register_buffer(name, torch.tensor(values, dtype=torch.float32), persistent=False)
 
         windows = sorted(schema.scene_windows, key=lambda window: window.scene_type_id)
         if not windows or [window.scene_type_id for window in windows] != list(range(len(windows))):
@@ -155,10 +158,10 @@ class ContextEncoder(nn.Module):
         prepared.update(
             history_skill_ids=dense["history_skill_ids"].masked_fill(~history_mask, 0),
             history_skill_features=dense["history_skill_features"].masked_fill(~history_mask[..., None], 0),
-            history_state_vectors=assemble_state_inputs(history_vectors, dense["history_state_skill_availability"], history_mask, self.layout),
+            history_state_vectors=assemble_state_inputs(history_vectors, self._encode_skill_state(dense["history_state_skill_state"]), history_mask, self.layout),
             history_state_null_mask=history_null | ~history_mask[..., None],
             history_state_reset_mask=history_reset & history_mask[..., None],
-            current_state_vectors=assemble_state_inputs(current_vectors, batch["current_state_skill_availability"], None, self.layout),
+            current_state_vectors=assemble_state_inputs(current_vectors, self._encode_skill_state(batch["current_state_skill_state"]), None, self.layout),
             current_state_null_mask=current_null,
             current_state_reset_mask=current_reset,
         )
@@ -183,12 +186,17 @@ class ContextEncoder(nn.Module):
         _validate_raw_state(delta, nulls)
         if reset.dtype != torch.bool or reset.shape != absolute.shape or reset.device != absolute.device:
             raise ValueError("state reset masks must be boolean with matching shape and device")
-        reset = reset & ~nulls
+        reset = reset & self.state_time_mask & ~nulls
         absolute = torch.where(self.state_time_mask, absolute - anchor, absolute)
         bounded = torch.minimum(torch.maximum(absolute, self.state_absolute_lower), self.state_absolute_upper)
-        values = torch.where(reset, bounded, delta)
-        values = values / self.state_divisors
+        values = torch.where(self.state_time_mask & ~reset, delta, bounded)
+        values = _normalize_values(values, self.state_divisors)
         return values.masked_fill(nulls, -1.0), reset
+
+    def _encode_skill_state(self, values):
+        """技能表逐快照保留绝对值，只应用注册字段的归一化尺度。"""
+        return _normalize_values(values, self.skill_state_divisors,
+                                 lower=self.skill_state_lower, upper=self.skill_state_upper)
 
     def _encode_scene(self, batch, anchor):
         values, types, mask = batch["scene_abs_values"], batch["scene_types"], batch["scene_mask"]
@@ -212,13 +220,13 @@ class ContextEncoder(nn.Module):
         values = values.gather(1, order[..., None].expand(-1, -1, self.scene_dim)).clone()
         types, mask = types.gather(1, order), mask.gather(1, order)
         starts, ends = starts.gather(1, order) - anchor[:, None], ends.gather(1, order) - anchor[:, None]
-        for indices, encoded in (
-            (self.scene_start_indices, torch.diff(starts, dim=1, prepend=torch.zeros_like(starts[:, :1])) / self.time_delta_scale),
-            (self.scene_end_indices, torch.diff(ends, dim=1, prepend=torch.zeros_like(ends[:, :1])) / self.time_delta_scale),
-            (self.scene_duration_indices, (ends - starts) / self.time_delta_scale),
+        for indices, encoded, scale in (
+            (self.scene_start_indices, torch.diff(starts, dim=1, prepend=torch.zeros_like(starts[:, :1])), self.time_scale),
+            (self.scene_end_indices, torch.diff(ends, dim=1, prepend=torch.zeros_like(ends[:, :1])), self.time_scale),
+            (self.scene_duration_indices, ends - starts, self.duration_scale),
         ):
-            values.scatter_(-1, indices[types][..., None], encoded[..., None])
-        counts = values.clamp(min=0.0, max=self.target_count_max) / self.target_count_max
+            values.scatter_(-1, indices[types][..., None], _normalize_values(encoded, scale)[..., None])
+        counts = _normalize_values(values, self.target_count_max, lower=0.0, upper=self.target_count_max)
         values = torch.where(self.scene_count_mask[types], counts, values)
         values = values.masked_fill(~self.scene_feature_mask[types] | ~mask[..., None], 0.0)
         types = types.masked_fill(~mask, 0)

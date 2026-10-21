@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 TEXT_SKILL_FIELDS = frozenset({"skill_key", "skill_name", "invalid_reason"})
 SKILL_ID_FIELD = "skill_id"
-TRAINING_ONLY_SKILL_FIELDS = frozenset({"value"})
+NON_MODEL_SKILL_FIELDS = frozenset({"value", "available_charges", "next_cooldown_seconds"})
 SKILL_HISTORY_FIELDS = tuple(sorted((
     "skill_id", "skill_key", "skill_name", "potency", "value", "kind",
     "actual_mp_cost", "cast_time", "gcd_window", "is_legal", "invalid_reason",
@@ -21,8 +21,8 @@ SKILL_HISTORY_FIELDS = tuple(sorted((
     "job_resources_consumed",
 )))
 SKILL_NUMERIC_FEATURES = (
-    "actual_mp_cost", "available_charges", "cast_time.seconds", "gcd_window.seconds",
-    "is_legal", "kind", "max_charges", "next_cooldown_seconds", "potency",
+    "actual_mp_cost", "cast_time.seconds", "gcd_window.seconds",
+    "is_legal", "kind", "max_charges", "potency",
 )
 
 
@@ -91,7 +91,7 @@ def flatten_skill_numeric_features(row: dict[str, object]) -> dict[str, float]:
         raise ValueError("skill token must not include time_seconds; recompile raw source")
     flattened = flatten_numeric_mapping(row, ignored_keys=TEXT_SKILL_FIELDS)
     flattened.pop(SKILL_ID_FIELD, None)
-    for field_name in TRAINING_ONLY_SKILL_FIELDS:
+    for field_name in NON_MODEL_SKILL_FIELDS:
         flattened.pop(field_name, None)
     return flattened
 

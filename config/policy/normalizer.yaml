@@ -2,6 +2,9 @@
 # 职业资源/层数/充能上限继续来自职业定义和冻结技能记录，不在这里重复声明。
 normalizer:
   mp_max: 10000
+  # 战斗时刻与场景端点使用相对时间，保留有符号偏移和差分。
   time_scale: 270
+  # GCD、冷却、Buff/DoT 剩余时间等使用绝对时长；场景 duration 也使用此尺度。
+  duration_scale: 270
   target_count_max: 5
   current_potency_max: 2000

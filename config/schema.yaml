@@ -26,7 +26,8 @@ contracts:
   # 17：冻结技能可用性、同刻场景批次和统一提交能力查询。
   # 18：模型状态移除累计威力；真实累计统计由独立执行 metadata 输出；绝望最低 MP 改为 800。
   # 19：外部事实新增死亡、普通/LB3 复活及 MP 覆盖，结果新增死亡 token 与历史游标。
-  sidecar_contract_version: 19
+  # 20：独立技能状态注册表自动展开可用性、当前充能数与下一层恢复时间；模型状态移除 mp_ratio。
+  sidecar_contract_version: 20
   scene_context_absolute_mode: "absolute_from_fight_scene_context"
   scene_context_keys:
     targetable: "targetable_window_context"
@@ -55,7 +56,7 @@ scene_context:
       - "target_count"
 
 canonical_output:
-  schema_version: 16
+  schema_version: 17
   state_snapshots:
     - "previous_action_after"
     - "request_state"
@@ -90,16 +91,19 @@ canonical_output:
       encoding: "anchored_delta"
       feature_keys_field: "resource_state_feature_keys"
       context_key: "resources"
-    skill_availability:
-      encoding: "absolute_binary"
-      feature_keys_field: "skill_availability_feature_keys"
+    skill_state:
+      encoding: "absolute_numeric"
+      feature_keys_field: "skill_state_feature_keys"
       context_key: null
 
 state_vector_fields:
+  skill_state:
+    - "available"
+    - "current_charges"
+    - "next_cooldown_seconds"
   player_state:
     - "mp"
     - "max_mp"
-    - "mp_ratio"
     - "time_seconds"
     - "current_gcd_seconds"
     - "boss_targetable"

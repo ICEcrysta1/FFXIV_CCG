@@ -134,7 +134,7 @@ def test_training_dataset_requires_existing_compiled_cache(tmp_path):
 
 def test_compiled_history_and_current_state_use_compact_state_contract(tmp_path):
     """真实 Rust 转换生成的当前请求与完整历史 bank 必须同时采用新输入维度。"""
-    pytest.importorskip("torch")
+    torch = pytest.importorskip("torch")
     source_path = make_demo_pt(tmp_path, ["fire_iii", "fire_iv"], fight_id="seconds_contract")
     dataset = make_dataset([source_path])
     sample = dataset[1]
@@ -143,18 +143,27 @@ def test_compiled_history_and_current_state_use_compact_state_contract(tmp_path)
         "weave_window_gcds", "ogcd_window_gcds", "downtime_remaining_gcds",
         "gcd_remaining_seconds", "weave_window_seconds", "ogcd_window_seconds",
         "next_untargetable_in_gcds", "remaining_gcds",
-        "ogcds_weaved", "max_ogcd_per_window",
+        "ogcds_weaved", "max_ogcd_per_window", "mp_ratio",
     }
 
     assert "gcd_index" not in dataset.skill_feature_names
-    assert len(dataset.skill_feature_names) == 18
+    assert len(dataset.skill_feature_names) == 16
     assert "time_seconds" not in dataset.skill_feature_names
+    assert "available_charges" not in dataset.skill_feature_names
+    assert "next_cooldown_seconds" not in dataset.skill_feature_names
+    assert "max_charges" in dataset.skill_feature_names
     assert "job_resources_consumed.polyglot" in dataset.skill_feature_names
-    assert dataset.base_state_dim == 82
-    assert dataset.state_dim == 132
+    assert dataset.base_state_dim == 80
+    assert dataset.state_dim == 230
     groups = {group.group_key: group.feature_keys for group in dataset.schema.state_groups}
+    assert groups["skill_state"] == tuple(
+        f"{snapshot}.{key}.{field}"
+        for snapshot in ("previous_action_after", "request_state")
+        for key in dataset.action_keys
+        for field in ("available", "current_charges", "next_cooldown_seconds")
+    )
     player_keys = groups["player_state"]
-    assert len(player_keys) == 18
+    assert len(player_keys) == 16
     assert "previous_action_after.current_gcd_seconds" in player_keys
     assert "request_state.downtime_remaining_seconds" in player_keys
     assert len(groups["buff_state"]) == 40
@@ -169,14 +178,15 @@ def test_compiled_history_and_current_state_use_compact_state_contract(tmp_path)
         for group in dataset.state_layout.base_groups
         for key in group.feature_keys
     )
-    assert sample["history_bank_skill_features"].shape[-1] == 18
+    assert sample["history_bank_skill_features"].shape[-1] == 16
     for prefix in ("history_bank", "current"):
-        assert sample[f"{prefix}_state_abs_values"].shape[-1] == 82
-        assert sample[f"{prefix}_state_skill_availability"].shape[-1] == 50
+        assert sample[f"{prefix}_state_abs_values"].shape[-1] == 80
+        assert sample[f"{prefix}_state_skill_state"].shape[-1] == 150
+        assert sample[f"{prefix}_state_skill_state"].dtype == torch.float32
         assert sample[f"{prefix}_state_null_mask"].shape == sample[f"{prefix}_state_abs_values"].shape
 
 
-@pytest.mark.parametrize("old_contract", ["cache_format", "conversion_version", "unstable_history_order", "movement_windows", "cumulative_state_format", "cumulative_state_conversion", "same_timestamp_revival", "ordinary_revival_only", "umbral_soul_downtime_only", "party_damage_only_downtime", "party_cast_only_recovery", "skill_time"])
+@pytest.mark.parametrize("old_contract", ["cache_format", "conversion_version", "unstable_history_order", "movement_windows", "cumulative_state_format", "cumulative_state_conversion", "same_timestamp_revival", "ordinary_revival_only", "umbral_soul_downtime_only", "party_damage_only_downtime", "party_cast_only_recovery", "skill_time", "mp_ratio"])
 def test_previous_state_layout_cache_is_rejected(tmp_path, old_contract):
     """旧输入字段缓存不可复用，即使 raw 文件身份和其余编译参数一致。"""
     torch = pytest.importorskip("torch")
@@ -217,6 +227,13 @@ def test_previous_state_layout_cache_is_rejected(tmp_path, old_contract):
     elif old_contract == "party_cast_only_recovery":
         # 旧恢复边界只取 cast，会把真实起读请求圈进停机窗口。
         payload["cache_signature"]["conversion_version"] = "raw_json_to_compiled_v28_lb3_player_lifecycle_party_downtime_umbral_soul_party_cast_endpoints"
+    elif old_contract == "mp_ratio":
+        # 模拟旧 pickle 恢复 dataclass，恢复过程不会调用 __post_init__；保持宽度和签名不变。
+        group = payload["schema"].state_groups[0]
+        object.__setattr__(group, "feature_keys", tuple(
+            "request_state.mp_ratio" if key == "request_state.mp" else key
+            for key in group.feature_keys
+        ))
     else:
         # 即使格式和签名冒用新版，旧技能时间列仍必须明确拒绝。
         payload["skill_feature_names"] = (*payload["skill_feature_names"], "time_seconds")
@@ -328,7 +345,7 @@ def test_corrupt_history_bank_manifest_falls_back_to_recompile(
         "state_delta_values": torch.zeros((2, state_dim)),
         "state_delta_reset_mask": torch.tensor([[False] * state_dim, [True] * state_dim]),
         "state_null_mask": torch.zeros((2, state_dim), dtype=torch.bool),
-        "state_skill_availability": torch.zeros((2, 2 * len(space.action_keys)), dtype=torch.bool),
+        "state_skill_state": torch.zeros((2, 6 * len(space.action_keys)), dtype=torch.float32),
         "action_keys": ("", "fire_iii"),
         "skill_potencies": torch.zeros((2,)),
         "cumulative_dot_potencies": torch.zeros((2,)),
@@ -480,7 +497,7 @@ def test_empty_compiled_cache_accepts_sentinel_history_bank(tmp_path, monkeypatc
             "state_delta_values": torch.zeros((1, state_dim)),
             "state_delta_reset_mask": torch.zeros((1, state_dim), dtype=torch.bool),
             "state_null_mask": torch.zeros((1, state_dim), dtype=torch.bool),
-            "state_skill_availability": torch.zeros((1, 2 * len(space.action_keys)), dtype=torch.bool),
+            "state_skill_state": torch.zeros((1, 6 * len(space.action_keys)), dtype=torch.float32),
             "action_keys": ("",),
             "skill_potencies": torch.zeros((1,)),
             "cumulative_dot_potencies": torch.zeros((1,)),

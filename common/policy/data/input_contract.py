@@ -44,7 +44,10 @@ from .spec import DataSpec
 #     黑魔绝望最低 MP 修正为 800；旧 checkpoint 的输入与执行语义均不可复用。
 #     同版本统一输入数值投影、token 合成和输入归一化为 FP32。
 # 24：独立死亡事件 embedding 按已落实历史边界插入，死亡 token 纳入共享上下文预算。
-INPUT_CONTRACT_VERSION = 24
+# 25：统一归一化入口；独立注册的技能状态按绝对三元组进入状态向量；
+#     两段状态快照移除与 MP 重复的 mp_ratio；仅时间坐标使用 DELTA，
+#     其余字段使用归一化绝对值，时间坐标与绝对时长分别保存缩放尺度。
+INPUT_CONTRACT_VERSION = 25
 
 RESIDUAL_MIX_CONFIG_FIELDS = (
     "residual_mix_r_start", "residual_mix_r_end",
@@ -103,9 +106,15 @@ def residual_composition_contract(model_config: Mapping[str, object]) -> dict[st
 # 描述固定的输入结构，不作为可调运行参数；d_model 仍由保存的 model_config 提供。
 # 数据 bank 的字段与时间语义由 schema 与转换版本负责，不把读取窗口加入 cache 身份。
 TOKEN_ENCODING_CONTRACT = {
-    "state_availability": {
-        "encoding": "absolute_binary",
-        "order": "snapshot_then_saved_action_keys",
+    "skill_state": {
+        "encoding": "absolute_numeric",
+        "order": "snapshot_then_saved_action_keys_then_registered_fields",
+        "fields": ["available", "current_charges", "next_cooldown_seconds"],
+        "scales": {
+            "available": 1,
+            "current_charges": "normalizer_contract.skill_charge_limits[action_key]",
+            "next_cooldown_seconds": "normalizer_contract.config.duration_scale",
+        },
         "projection": "shared_state_content",
         "auxiliary_masks": "base_state_only",
         "scene_execution_time": "raw_fp32_endpoints_promoted_to_double",
@@ -155,16 +164,17 @@ TOKEN_ENCODING_CONTRACT = {
     "history_state_frozen_at": "request",
     "context_encoding": {
         "compute_dtype": "float32",
-        "state": "first_visible_ABS_then_raw_numeric_DELTA",
+        "state": "normalized_ABS_except_time_anchors",
+        "state_time": "first_visible_anchor_offset_then_raw_DELTA",
         "state_abs_time_origin": "first_visible_request_state.time_seconds",
-        "boolean_delta": "minus_one_zero_plus_one",
-        "unknown_recovery": "per_field_ABS_reset_mask",
-        "delta_linear": "raw_delta / saved_field_divisor_without_clipping",
+        "unknown_recovery": "time_anchor_ABS_reset_mask",
+        "delta_linear": "raw_time_delta / saved_time_scale_without_clipping",
         "reset_projection": "zero_initialized_input_encoder.state_reset_proj",
         "scene": "clip_at_state_anchor_then_stable_start_end_type_order",
         "scene_time": "first_anchor_offset_then_separate_start_end_DELTA",
-        "scene_duration": "own_clipped_duration",
-        "time_scale": "model_config.time_delta_scale",
+        "scene_duration": "own_clipped_absolute_duration",
+        "time_scale": "normalizer_contract.config.time_scale",
+        "duration_scale": "normalizer_contract.config.duration_scale",
         "history_window": "shared_context_token_budget_block_reset",
         "overflow_keep": "model_config.history_reset_keep",
         "time_clipping": False,
@@ -210,7 +220,9 @@ class ModelInputContract:
 
     def __post_init__(self) -> None:
         data_spec = DataSpec.from_dict(self.data_spec)
-        self.schema.state_layout(data_spec.action_keys).assert_matches_data_spec(data_spec)
+        layout = self.schema.state_layout(data_spec.action_keys)
+        layout.assert_matches_data_spec(data_spec)
+        Normalizer.from_contract(self.normalizer_contract).skill_state_encoding_metadata(layout)
         vocab = self.create_skill_vocab()
         if any(row >= vocab.size() for row in data_spec.action_to_vocab_id):
             raise ValueError("input contract output actions exceed the saved skill vocab")

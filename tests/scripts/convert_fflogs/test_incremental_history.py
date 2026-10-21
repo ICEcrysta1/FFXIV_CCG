@@ -394,9 +394,10 @@ def _batch_source():
             "request_state.target.current_gcd_dot_potency",
         ],
         "resource_state_feature_keys": [],
-        "skill_availability_feature_keys": [
-            f"{snapshot}.{key}"
+        "skill_state_feature_keys": [
+            f"{snapshot}.{key}.{field}"
             for snapshot in ("previous_action_after", "request_state") for key in space.action_keys
+            for field in ("available", "current_charges", "next_cooldown_seconds")
         ],
     }
 
@@ -404,7 +405,8 @@ def _batch_source():
         return {
             "player_state": list(player), "buff_state": [], "target_buff_state": list(dot),
             "resource_state": [],
-            "skill_availability": [(position + index) % 2 for position in range(2 * len(space.action_keys))],
+            "skill_state": [value for position in range(2 * len(space.action_keys))
+                            for value in ((position + index) % 2, 1, 15.0 * index)],
         }
 
     history_tokens = [
@@ -683,7 +685,6 @@ def test_history_skill_features_keep_fp32_through_collation_and_context_encoding
     """低精度缓存也必须保留技能数值差异，并能直接进入正式上下文编码。"""
     import torch
 
-    from common.policy.config import ModelConfig
     from common.policy.data import Normalizer, SkillVocab
     from common.policy.data.context_encoding import ContextEncoder
     from common.policy.data.context_fields import ENCODING_BANK_FIELDS
@@ -705,6 +706,7 @@ def test_history_skill_features_keep_fp32_through_collation_and_context_encoding
     float_dtype = getattr(torch, float_dtype_name)
     normalizer_config = NormalizerConfig()
     normalizer = Normalizer(normalizer_config)
+    normalizer.ensure_job_resources(reader.job_tag)
     bank = build_history_bank(
         reader, torch=torch, normalizer=normalizer if normalize else None,
         skill_vocab=SkillVocab.build_from_job_tag(reader.job_tag),
@@ -727,7 +729,7 @@ def test_history_skill_features_keep_fp32_through_collation_and_context_encoding
         int_dtype=torch.int32, index_dtype=torch.int64, float_dtype=float_dtype,
     )(samples)
     encoded = ContextEncoder(
-        normalizer, reader.schema, ModelConfig(), layout=reader.schema.state_layout(reader.action_keys),
+        normalizer, reader.schema, layout=reader.schema.state_layout(reader.action_keys),
     ).encode(batch)
     assert encoded["history_skill_features"].dtype == torch.float32
     assert torch.count_nonzero(encoded["history_skill_features"][0]) == 0
@@ -797,7 +799,7 @@ def test_batch_compiled_tensor_mutation_keeps_other_samples_reader_source_and_ba
     assert payload == unchanged_payload
     _assert_compiled_equal(bank, unchanged_bank)
     current_after = reader.current_state_matrix(1, dtype=torch.float32)
-    for field in ("base_values", "base_null_mask", "availability"):
+    for field in ("base_values", "base_null_mask", "skill_state"):
         _assert_compiled_equal(getattr(current_before, field), getattr(current_after, field))
     _assert_compiled_equal(scene_before, reader.scene_tokens(
         1, float_dtype=torch.float32, int_dtype=getattr(torch, int_dtype_name),
@@ -811,10 +813,10 @@ def test_cached_current_batch_returns_fresh_tensors_and_public_reader_still_read
     expected = [reader.current_state_matrix(index, dtype=torch.float32) for index in range(3)]
     first.base_values[0, 1] = -123.0
     first.base_null_mask[0, 1] = True
-    first.availability[0, 0] = ~first.availability[0, 0]
+    first.skill_state[0, 0] = 1 - first.skill_state[0, 0]
     repeated = reader.current_state_batch(0, 3, dtype=torch.float32)
 
-    for field in ("base_values", "base_null_mask", "availability"):
+    for field in ("base_values", "base_null_mask", "skill_state"):
         _assert_compiled_equal(getattr(repeated, field), torch.cat([getattr(item, field) for item in expected]))
     payload["samples"][0]["context"]["current_state_context"]["tokens"][0]["player_state"][1] = 9123.0
     assert reader.current_state_matrix(0, dtype=torch.float32).base_values[0, 1].item() == 9123.0

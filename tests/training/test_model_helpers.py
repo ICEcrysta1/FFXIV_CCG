@@ -1116,7 +1116,7 @@ def test_training_helpers_and_epoch_metrics(tmp_path, monkeypatch):
     spec = DataSpec(
         job_tag="black_mage",
         num_actions=2,
-        base_state_dim=3, state_dim=(3) + 2 * (2),
+        base_state_dim=3, state_dim=make_data_spec(base_state_dim=3).state_dim,
         scene_dim=3,
         skill_feature_dim=1,
         num_scene_types=1,
@@ -1147,6 +1147,9 @@ def test_training_helpers_and_epoch_metrics(tmp_path, monkeypatch):
     )
     normalizer = Normalizer()
     normalizer.configure_job_resources("black_mage")
+    normalizer = Normalizer.from_contract({
+        **normalizer.normalization_contract, "skill_charge_limits": {"a": 2, "b": 2},
+    })
     input_contract = ModelInputContract.from_training(
         data_spec=spec,
         skill_vocab=SkillVocab.from_entries([(1001, 1), (1002, 2), (1003, 3)]),
@@ -1568,10 +1571,13 @@ def test_run_training_orchestrates_checkpoint_saving(
     )
     normalizer = Normalizer()
     normalizer.configure_job_resources("black_mage")
+    normalizer = Normalizer.from_contract({
+        **normalizer.normalization_contract, "skill_charge_limits": {"a": 2, "b": 2},
+    })
     dataset = SimpleNamespace(
         job_tag="black_mage",
         num_actions=2,
-        base_state_dim=3, state_dim=(3) + 2 * (2),
+        base_state_dim=3, state_dim=make_data_spec(base_state_dim=3).state_dim,
         scene_dim=3,
         num_scene_types=1,
         action_keys=("a", "b"),
@@ -1897,10 +1903,13 @@ def test_run_training_closes_tensorboard_writer_when_monitoring_or_validation_ra
     )
     normalizer = Normalizer()
     normalizer.configure_job_resources("black_mage")
+    normalizer = Normalizer.from_contract({
+        **normalizer.normalization_contract, "skill_charge_limits": {"a": 2, "b": 2},
+    })
     dataset = SimpleNamespace(
         job_tag="black_mage",
         num_actions=2,
-        base_state_dim=3, state_dim=(3) + 2 * (2),
+        base_state_dim=3, state_dim=make_data_spec(base_state_dim=3).state_dim,
         scene_dim=3,
         num_scene_types=1,
         action_keys=("a", "b"),
@@ -2041,10 +2050,13 @@ def _resume_validation_context(tmp_path: Path, *, max_epochs: int = 3):
     )
     normalizer = Normalizer()
     normalizer.configure_job_resources("black_mage")
+    normalizer = Normalizer.from_contract({
+        **normalizer.normalization_contract, "skill_charge_limits": {"a": 2, "b": 2},
+    })
     dataset = SimpleNamespace(
         job_tag="black_mage",
         num_actions=2,
-        base_state_dim=3, state_dim=(3) + 2 * (2),
+        base_state_dim=3, state_dim=make_data_spec(base_state_dim=3).state_dim,
         scene_dim=0,
         num_scene_types=0,
         action_keys=("a", "b"),

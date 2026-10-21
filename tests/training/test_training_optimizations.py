@@ -254,7 +254,7 @@ def _sample(history_length, scene_length):
         ("skill_features", torch.zeros(history_length, spec.skill_feature_dim)),
         ("state_abs_values", states), ("state_delta_values", deltas),
         ("state_null_mask", nulls), ("state_delta_reset_mask", resets),
-        ("state_skill_availability", torch.zeros((history_length, 2 * spec.num_actions), dtype=torch.bool)),
+        ("state_skill_state", torch.zeros((history_length, spec.state_dim - spec.base_state_dim), dtype=torch.float32)),
     ):
         sample["history_bank_" + name] = torch.cat((value.new_zeros((1, *value.shape[1:])), value))
     sample.update(history_length=history_length, history_end=history_length + 1,
@@ -262,7 +262,7 @@ def _sample(history_length, scene_length):
                   history_bank_action_keys=("", *([spec.action_keys[0]] * history_length)))
     combined = sample.pop("current_state_vectors")
     sample["current_state_abs_values"] = combined[:spec.base_state_dim]
-    sample["current_state_skill_availability"] = combined[spec.base_state_dim:].bool()
+    sample["current_state_skill_state"] = combined[spec.base_state_dim:]
     sample.pop("current_state_reset_mask")
     sample["current_state_delta_values"] = torch.zeros(spec.base_state_dim)
     sample["current_state_delta_reset_mask"] = torch.zeros(spec.base_state_dim, dtype=torch.bool)
@@ -283,7 +283,7 @@ def test_native_padding_preserves_values_dtypes_empty_shapes_and_null_mask(lengt
     samples = [_sample(*length) for length in lengths]
     originals = deepcopy(samples)
     contract = make_input_contract(make_data_spec(base_state_dim=3, scene_dim=3))
-    encoder = ContextEncoder(contract.create_normalizer(), contract.schema, ModelConfig(), layout=contract.schema.state_layout(tuple(contract.data_spec["action_keys"])))
+    encoder = ContextEncoder(contract.create_normalizer(), contract.schema, layout=contract.schema.state_layout(tuple(contract.data_spec["action_keys"])))
     expected = [encoder.encode(TrainingCollator()([sample])) for sample in samples]
     batch = encoder.encode(TrainingCollator()(samples))
     for kind, key in (("history", "history_skill_ids"), ("scene", "scene_vectors")):

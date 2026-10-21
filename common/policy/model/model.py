@@ -248,7 +248,7 @@ class CausalPolicyModel(nn.Module):
         if not isinstance(payload, Mapping):
             raise TypeError("checkpoint missing model_config")
         for key in (
-            "context_capacity", "history_reset_keep", "time_delta_scale",
+            "context_capacity", "history_reset_keep",
             "qk_norm_scale", "logit_softcap", *RESIDUAL_MIX_CONFIG_FIELDS,
         ):
             if key not in payload:

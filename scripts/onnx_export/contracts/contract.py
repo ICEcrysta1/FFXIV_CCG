@@ -13,6 +13,7 @@ from common.policy.data.context_fields import (
     tensor_dimensions,
 )
 from common.policy.data.input_contract import TOKEN_ENCODING_CONTRACT
+from common.policy.data.schema import StateFeatureLayout
 
 TENSOR_INPUT_NAMES = MODEL_INPUT_NAMES
 OUTPUT_NAMES = ("raw_logits",)
@@ -128,6 +129,7 @@ def make_inputs(
     data_spec,
     contract: CapacityContract,
     *,
+    state_layout: StateFeatureLayout,
     vocab_size: int,
     scene_valid: int,
     history_valid: int,
@@ -201,10 +203,17 @@ def make_inputs(
     ) & ~current_state_null_mask
     if not history_valid:
         current_state_reset_mask = ~current_state_null_mask
-    # 有效状态的技能可用性为绝对布尔值；脏 padding 仍用于检验 mask。
+    state_layout.assert_matches_data_spec(data_spec)
+    time_fields = {f"{snapshot}.time_seconds" for snapshot in state_layout.snapshots}
+    time_mask = torch.tensor([key in time_fields for key in state_layout.base_feature_keys])
+    history_state_reset_mask &= time_mask
+    current_state_reset_mask &= time_mask
+    # 有效技能状态是归一化绝对值，可用性单独保持 0/1；脏 padding 继续检验 mask。
     for values in (history_state_vectors[:, :history_valid], current_state_vectors):
-        availability = values[..., data_spec.base_state_dim:]
-        availability.copy_(torch.randint(0, 2, availability.shape, generator=generator))
+        skills = values[..., data_spec.base_state_dim:]
+        skills.copy_(torch.rand(skills.shape, generator=generator))
+        indices = list(state_layout.availability_indices)
+        values[..., indices] = torch.randint(0, 2, values[..., indices].shape, generator=generator).float()
     named_inputs = {
         "scene_vectors": scene_vectors,
         "scene_types": scene_types,

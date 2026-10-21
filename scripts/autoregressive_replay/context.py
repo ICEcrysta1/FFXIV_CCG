@@ -104,7 +104,7 @@ class _CachedHistoryFeatureRow:
     skill_features: torch.Tensor
     state_vector: torch.Tensor
     state_null_mask: torch.Tensor
-    state_skill_availability: torch.Tensor
+    state_skill_state: torch.Tensor
     action_key: str
 
 
@@ -154,7 +154,7 @@ class LiveBatchBuilder:
         self._action_kinds = dict(zip(self._action_keys, kinds, strict=True))
         self._layout = schema.state_layout(self._action_keys)
         self._context_encoder = ContextEncoder(
-            normalizer, schema, model_config, layout=self._layout,
+            normalizer, schema, layout=self._layout,
         ).to(device=device)
         self._state_dim = self._layout.base_state_dim
         player_group = next(group for group in self._layout.base_groups if group.group_key == "player_state")
@@ -276,7 +276,7 @@ class LiveBatchBuilder:
             history_skill_features,
             history_state_vectors,
             history_state_null_mask,
-            history_state_skill_availability,
+            history_state_skill_state,
             history_action_keys,
         ) = self._build_history_batch(
             skill_history,
@@ -317,7 +317,7 @@ class LiveBatchBuilder:
             "history_state_delta_values": state_deltas.unsqueeze(0),
             "history_state_null_mask": history_state_null_mask.unsqueeze(0),
             "history_state_delta_reset_mask": state_resets.unsqueeze(0),
-            "history_state_skill_availability": history_state_skill_availability.unsqueeze(0),
+            "history_state_skill_state": history_state_skill_state.unsqueeze(0),
             "history_mask": torch.ones(
                 (1, history_length),
                 dtype=torch.bool,
@@ -329,7 +329,7 @@ class LiveBatchBuilder:
             "current_state_delta_values": current_deltas,
             "current_state_null_mask": current_state_null_mask,
             "current_state_delta_reset_mask": current_resets,
-            "current_state_skill_availability": current_state.availability,
+            "current_state_skill_state": current_state.skill_state,
             "action_legal_mask": action_legal_mask.unsqueeze(0),
             "history_action_keys": [history_action_keys],
             "action_keys": [list(action_keys)],
@@ -462,7 +462,7 @@ class LiveBatchBuilder:
                 ),
                 torch.empty((0, self._state_dim), dtype=torch.float32, device=self._device),
                 torch.empty((0, self._state_dim), dtype=torch.bool, device=self._device),
-                torch.empty((0, self._layout.availability_dim), dtype=torch.bool, device=self._device),
+                torch.empty((0, self._layout.skill_state_dim), dtype=torch.float32, device=self._device),
             )
         return (
             torch.tensor(
@@ -473,7 +473,7 @@ class LiveBatchBuilder:
             torch.stack([row.skill_features for row in rows]).to(self._device),
             torch.stack([row.state_vector for row in rows]).to(self._device),
             torch.stack([row.state_null_mask for row in rows]).to(self._device),
-            torch.stack([row.state_skill_availability for row in rows]).to(self._device),
+            torch.stack([row.state_skill_state for row in rows]).to(self._device),
         )
 
     @staticmethod
@@ -550,7 +550,7 @@ class LiveBatchBuilder:
             skill_features=skill_features.detach().cpu(),
             state_vector=parsed.base_values[0],
             state_null_mask=parsed.base_null_mask[0],
-            state_skill_availability=parsed.availability[0],
+            state_skill_state=parsed.skill_state[0],
             action_key=str(skill_token.get("skill_key", "")),
         )
 

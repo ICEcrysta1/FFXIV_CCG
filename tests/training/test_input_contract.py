@@ -7,7 +7,7 @@ from tests.training._causal_fixtures import make_state_groups
 import pytest
 
 from common.policy.data import ModelInputContract, Normalizer, SkillVocab
-from common.policy.data.schema import SceneWindowSchema, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
+from common.policy.data.schema import SceneWindowSchema, StateFeatureLayout, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
 from common.policy.data.spec import DataSpec
 from common.policy.data.input_contract import (
     INPUT_CONTRACT_VERSION, TOKEN_ENCODING_CONTRACT, RESIDUAL_MIX_CONFIG_FIELDS,
@@ -20,7 +20,7 @@ def _build_contract() -> ModelInputContract:
     data_spec = DataSpec(
         job_tag="black_mage",
         num_actions=1,
-        base_state_dim=1, state_dim=(1) + 2 * (1),
+        base_state_dim=1, state_dim=(1) + 6 * (1),
         scene_dim=3,
         skill_feature_dim=1,
         num_scene_types=1,
@@ -58,7 +58,8 @@ def _build_contract() -> ModelInputContract:
     )
 
 
-def test_model_input_contract_round_trips_without_project_yaml(monkeypatch):
+@pytest.mark.parametrize("invalid_charge_limit", [None, "missing", "missing_action", 0, .5])
+def test_model_input_contract_round_trips_without_project_yaml(monkeypatch, invalid_charge_limit):
     contract = _build_contract()
     import common.game.config as config_module
 
@@ -67,7 +68,18 @@ def test_model_input_contract_round_trips_without_project_yaml(monkeypatch):
         "load_project_config",
         lambda **_kwargs: pytest.fail("checkpoint contract must not load project YAML"),
     )
-    restored = ModelInputContract.from_dict(contract.to_dict())
+    payload = contract.to_dict()
+    if invalid_charge_limit is not None:
+        if invalid_charge_limit == "missing":
+            payload["normalizer"].pop("skill_charge_limits")
+        elif invalid_charge_limit == "missing_action":
+            payload["normalizer"]["skill_charge_limits"].pop("fire_iii")
+        else:
+            payload["normalizer"]["skill_charge_limits"]["fire_iii"] = invalid_charge_limit
+        with pytest.raises((TypeError, ValueError), match="skill_charge_limits|charge limit"):
+            ModelInputContract.from_dict(payload)
+        return
+    restored = ModelInputContract.from_dict(payload)
 
     assert restored.job_tag == "black_mage"
     assert restored.data_spec == contract.data_spec
@@ -81,6 +93,12 @@ def test_model_input_contract_round_trips_without_project_yaml(monkeypatch):
     metadata = normalizer.state_encoding_metadata(restored.schema)
     assert metadata.feature_keys == ("request_state.time_seconds",)
     assert normalizer.normalization_contract == restored.normalizer_contract
+    assert restored.normalizer_contract["skill_charge_limits"]["ley_lines"] == 2
+    skill_layout = StateFeatureLayout(
+        make_state_groups({"player_state": ("request_state.time_seconds",)}, ("ley_lines",)),
+        ("previous_action_after", "request_state"), ("ley_lines",),
+    )
+    assert normalizer.skill_state_encoding_metadata(skill_layout).divisors == (1, 2, 270) * 2
 
 
 def test_model_input_contract_rejects_checkpoint_without_contract():
@@ -276,7 +294,7 @@ def test_model_input_contract_rejects_previous_skill_first_contract():
         ModelInputContract.from_dict(payload)
 
 
-@pytest.mark.parametrize("change", ["missing", "role", "token_order", "dead", "death_markers", "output_projection", "logit_softcap", "state_encoder", "state_snapshots", "history_state_frozen_at", "token_normalization", "backbone_normalization", "backbone_residual", "attention_qk_normalization"])
+@pytest.mark.parametrize("change", ["missing", "role", "token_order", "dead", "death_markers", "output_projection", "logit_softcap", "state_encoder", "state_snapshots", "history_state_frozen_at", "token_normalization", "backbone_normalization", "backbone_residual", "attention_qk_normalization", "legacy_state_delta", "missing_duration_scale"])
 def test_model_input_contract_requires_exact_independent_token_descriptor(change):
     payload = _build_contract().to_dict()
     assert payload["version"] == INPUT_CONTRACT_VERSION
@@ -289,6 +307,10 @@ def test_model_input_contract_requires_exact_independent_token_descriptor(change
         payload["token_encoding"]["current_state_encoder"] = "separate_current_state_encoder"
     elif change == "token_order":
         payload["token_encoding"][change] = "scene, (skill_i, state_i)*H, current_state"
+    elif change == "legacy_state_delta":
+        payload["token_encoding"]["context_encoding"]["state"] = "first_visible_ABS_then_raw_numeric_DELTA"
+    elif change == "missing_duration_scale":
+        payload["token_encoding"]["context_encoding"].pop("duration_scale")
     else:
         payload["token_encoding"][change] = "legacy_fused_tokens"
     with pytest.raises(ValueError, match="token_encoding"):
@@ -307,7 +329,14 @@ def test_input_contract_requires_shared_context_token_budget():
     encoding = payload["token_encoding"]
     assert encoding["context_capacity_unit"] == "tokens"
     assert encoding["history_reset_keep_unit"] == "complete_actions"
-    assert encoding["context_encoding"]["history_window"] == "shared_context_token_budget_block_reset"
+    context = encoding["context_encoding"]
+    assert context["history_window"] == "shared_context_token_budget_block_reset"
+    assert context["state"] == "normalized_ABS_except_time_anchors"
+    assert context["state_time"] == "first_visible_anchor_offset_then_raw_DELTA"
+    assert context["unknown_recovery"] == "time_anchor_ABS_reset_mask"
+    assert context["time_scale"] == "normalizer_contract.config.time_scale"
+    assert context["duration_scale"] == "normalizer_contract.config.duration_scale"
+    assert encoding["skill_state"]["scales"]["next_cooldown_seconds"] == context["duration_scale"]
     encoding.pop("context_capacity_unit")
     encoding["history_capacity_unit"] = "actions"
     with pytest.raises(ValueError, match="token_encoding"):
@@ -391,6 +420,18 @@ def test_current_input_contract_rejects_previous_cumulative_input_version():
     payload = _build_contract().to_dict()
     payload["version"] = 22
     with pytest.raises(ValueError, match="unsupported input contract version"):
+        ModelInputContract.from_dict(payload)
+
+
+@pytest.mark.parametrize("snapshot", ["previous_action_after", "request_state"])
+def test_current_input_contract_rejects_removed_mp_ratio(snapshot):
+    """同版本旧契约也不能把已删除的 MP 比例重新送进模型。"""
+    payload = _build_contract().to_dict()
+    group = payload["schema"]["state_groups"][0]
+    group["feature_keys"] = (*group["feature_keys"], f"{snapshot}.mp_ratio")
+    payload["data_spec"]["base_state_dim"] += 1
+    payload["data_spec"]["state_dim"] += 1
+    with pytest.raises(ValueError, match="removed state mp_ratio"):
         ModelInputContract.from_dict(payload)
 
 

@@ -181,7 +181,7 @@ def test_checkpoint_exposes_job_tag_at_top_level(tmp_path: Path):
     data_spec = DataSpec(
         job_tag="black_mage",
         num_actions=1,
-        state_dim=3,
+        state_dim=7,
         base_state_dim=1,
         scene_dim=0,
         skill_feature_dim=1,
@@ -193,6 +193,9 @@ def test_checkpoint_exposes_job_tag_at_top_level(tmp_path: Path):
     )
     normalizer = Normalizer()
     normalizer.configure_job_resources("black_mage")
+    normalizer = Normalizer.from_contract({
+        **normalizer.normalization_contract, "skill_charge_limits": {"fire": 2},
+    })
     input_contract = ModelInputContract.from_training(
         skill_vocab=SkillVocab.from_entries([(1001, 1)]),
         data_spec=data_spec,
@@ -555,7 +558,7 @@ def test_analysis_restores_saved_input_contract_without_current_yaml(
     normalizer = seen["dataset"]["normalizer"]
     assert normalizer.normalization_contract == saved.normalizer_contract
     time_index = saved.schema.state_layout(spec.action_keys).base_feature_keys.index("previous_action_after.time_seconds")
-    assert context.context_encoder.state_divisors[time_index] == pytest.approx(context.model.config.time_delta_scale)
+    assert context.context_encoder.state_divisors[time_index] == pytest.approx(normalizer.time_scale)
     assert seen["source"]["normalizer"] is normalizer
     assert seen["source"]["expected_skill_vocab"] is seen["dataset"]["skill_vocab"]
     assert context.model.input_encoder.skill_embed.weight.shape[0] == 8
@@ -566,6 +569,7 @@ def test_analysis_restores_saved_input_contract_without_current_yaml(
         torch.testing.assert_close(parameter, payload["model_state_dict"][name].to(parameter_dtype), rtol=0, atol=0)
     inputs = make_inputs(
         spec, CapacityContract(context_capacity=12), vocab_size=8, scene_valid=1, history_valid=1,
+        state_layout=saved.schema.state_layout(spec.action_keys),
         dtype=torch.float32, seed=7,
     )
     forward_dtypes = []
@@ -788,7 +792,7 @@ def test_compact_causal_analysis_preserves_gathered_skill_ids_and_absolute_state
         vocab_size=SkillVocab.build_from_job_tag(data_spec.job_tag).size(),
     ).eval()
     layout = dataset.schema.state_layout(data_spec.action_keys)
-    encoder = ContextEncoder(dataset.normalizer, dataset.schema, model.config, layout=layout)
+    encoder = ContextEncoder(dataset.normalizer, dataset.schema, layout=layout)
     runtime = SimpleNamespace(
         model=model, dataset=dataset, data_spec=data_spec, device=torch.device("cpu"),
         checkpoint_path=tmp_path / "checkpoint.pt", source_path=source,
@@ -1272,7 +1276,7 @@ def test_model_analysis_attention_output_and_main(monkeypatch, tmp_path):
         data_spec=SimpleNamespace(
             job_tag="black_mage",
             num_actions=2,
-            state_dim=7,
+            state_dim=15,
             base_state_dim=3,
             scene_dim=1,
             skill_feature_dim=1,

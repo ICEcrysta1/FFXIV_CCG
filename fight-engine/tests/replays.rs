@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 type Snapshot = SimulationSnapshot<EnginePayload>;
 
 fn fixture() -> Value {
-    serde_json::from_str(include_str!("fixtures/replays.json")).unwrap()
+    common::legacy_model_state(serde_json::from_str(include_str!("fixtures/replays.json")).unwrap())
 }
 
 fn state(state: &CombatState) -> Value {
@@ -146,7 +146,7 @@ fn normalize_sequence(mut output: Value) -> Value {
         }
     }
     output["action_ids_unique"] = json!(true);
-    output
+    common::legacy_model_state(output)
 }
 
 #[test]
