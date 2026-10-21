@@ -307,7 +307,6 @@ fn player_value(player: &PlayerContext, field: &str) -> Result<f64, String> {
     Ok(match field {
         "mp" => f64::from(player.mp),
         "max_mp" => f64::from(player.max_mp),
-        "mp_ratio" => player.mp_ratio,
         "time_seconds" => player.time_seconds,
         "current_gcd_seconds" => player.current_gcd_seconds,
         "boss_targetable" => f64::from(player.boss_targetable),

@@ -21,7 +21,6 @@ FIELD_UNITS = {
     "boss_targetable": "binary",
     "is_moving": "binary",
     "kind": "identity",
-    "mp_ratio": "identity",
     "mp": "mp",
     "max_mp": "mp",
     "actual_mp_cost": "mp_cost",

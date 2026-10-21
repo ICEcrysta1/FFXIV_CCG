@@ -143,7 +143,7 @@ def test_compiled_history_and_current_state_use_compact_state_contract(tmp_path)
         "weave_window_gcds", "ogcd_window_gcds", "downtime_remaining_gcds",
         "gcd_remaining_seconds", "weave_window_seconds", "ogcd_window_seconds",
         "next_untargetable_in_gcds", "remaining_gcds",
-        "ogcds_weaved", "max_ogcd_per_window",
+        "ogcds_weaved", "max_ogcd_per_window", "mp_ratio",
     }
 
     assert "gcd_index" not in dataset.skill_feature_names
@@ -153,8 +153,8 @@ def test_compiled_history_and_current_state_use_compact_state_contract(tmp_path)
     assert "next_cooldown_seconds" not in dataset.skill_feature_names
     assert "max_charges" in dataset.skill_feature_names
     assert "job_resources_consumed.polyglot" in dataset.skill_feature_names
-    assert dataset.base_state_dim == 82
-    assert dataset.state_dim == 232
+    assert dataset.base_state_dim == 80
+    assert dataset.state_dim == 230
     groups = {group.group_key: group.feature_keys for group in dataset.schema.state_groups}
     assert groups["skill_state"] == tuple(
         f"{snapshot}.{key}.{field}"
@@ -163,7 +163,7 @@ def test_compiled_history_and_current_state_use_compact_state_contract(tmp_path)
         for field in ("available", "current_charges", "next_cooldown_seconds")
     )
     player_keys = groups["player_state"]
-    assert len(player_keys) == 18
+    assert len(player_keys) == 16
     assert "previous_action_after.current_gcd_seconds" in player_keys
     assert "request_state.downtime_remaining_seconds" in player_keys
     assert len(groups["buff_state"]) == 40
@@ -180,13 +180,13 @@ def test_compiled_history_and_current_state_use_compact_state_contract(tmp_path)
     )
     assert sample["history_bank_skill_features"].shape[-1] == 16
     for prefix in ("history_bank", "current"):
-        assert sample[f"{prefix}_state_abs_values"].shape[-1] == 82
+        assert sample[f"{prefix}_state_abs_values"].shape[-1] == 80
         assert sample[f"{prefix}_state_skill_state"].shape[-1] == 150
         assert sample[f"{prefix}_state_skill_state"].dtype == torch.float32
         assert sample[f"{prefix}_state_null_mask"].shape == sample[f"{prefix}_state_abs_values"].shape
 
 
-@pytest.mark.parametrize("old_contract", ["cache_format", "conversion_version", "unstable_history_order", "movement_windows", "cumulative_state_format", "cumulative_state_conversion", "same_timestamp_revival", "ordinary_revival_only", "umbral_soul_downtime_only", "party_damage_only_downtime", "party_cast_only_recovery", "skill_time"])
+@pytest.mark.parametrize("old_contract", ["cache_format", "conversion_version", "unstable_history_order", "movement_windows", "cumulative_state_format", "cumulative_state_conversion", "same_timestamp_revival", "ordinary_revival_only", "umbral_soul_downtime_only", "party_damage_only_downtime", "party_cast_only_recovery", "skill_time", "mp_ratio"])
 def test_previous_state_layout_cache_is_rejected(tmp_path, old_contract):
     """旧输入字段缓存不可复用，即使 raw 文件身份和其余编译参数一致。"""
     torch = pytest.importorskip("torch")
@@ -227,6 +227,13 @@ def test_previous_state_layout_cache_is_rejected(tmp_path, old_contract):
     elif old_contract == "party_cast_only_recovery":
         # 旧恢复边界只取 cast，会把真实起读请求圈进停机窗口。
         payload["cache_signature"]["conversion_version"] = "raw_json_to_compiled_v28_lb3_player_lifecycle_party_downtime_umbral_soul_party_cast_endpoints"
+    elif old_contract == "mp_ratio":
+        # 模拟旧 pickle 恢复 dataclass，恢复过程不会调用 __post_init__；保持宽度和签名不变。
+        group = payload["schema"].state_groups[0]
+        object.__setattr__(group, "feature_keys", tuple(
+            "request_state.mp_ratio" if key == "request_state.mp" else key
+            for key in group.feature_keys
+        ))
     else:
         # 即使格式和签名冒用新版，旧技能时间列仍必须明确拒绝。
         payload["skill_feature_names"] = (*payload["skill_feature_names"], "time_seconds")

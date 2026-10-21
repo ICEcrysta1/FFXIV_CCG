@@ -122,7 +122,7 @@ def test_saved_schema_survives_json_key_sorting_and_rejects_spec_drift():
 
 
 def test_model_fields_share_combined_values_and_base_mask_dimensions():
-    spec = make_data_spec(base_state_dim=82, num_actions=25,
+    spec = make_data_spec(base_state_dim=80, num_actions=25,
                           action_keys=tuple(f"action_{i}" for i in range(25)),
                           action_to_vocab_id=tuple(range(1, 26)), action_is_gcd=(True,) * 25)
     dimensions = tensor_dimensions(spec, batch=2, history=3, scene=4)
@@ -132,6 +132,6 @@ def test_model_fields_share_combined_values_and_base_mask_dimensions():
     assert fields["history_dead_positions"].dtype == "index"
     assert fields["history_dead_mask"].axes == ("batch", "dead")
     assert fields["history_dead_mask"].dtype == "bool"
-    assert fields["history_state_vectors"].resolve_shape(dimensions) == (2, 3, 232)
-    assert fields["history_state_null_mask"].resolve_shape(dimensions) == (2, 3, 82)
-    assert fields["current_state_reset_mask"].resolve_shape(dimensions) == (2, 82)
+    assert fields["history_state_vectors"].resolve_shape(dimensions) == (2, 3, 230)
+    assert fields["history_state_null_mask"].resolve_shape(dimensions) == (2, 3, 80)
+    assert fields["current_state_reset_mask"].resolve_shape(dimensions) == (2, 80)

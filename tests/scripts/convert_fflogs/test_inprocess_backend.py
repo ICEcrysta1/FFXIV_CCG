@@ -141,11 +141,11 @@ def test_model_vectors_exclude_scheduling_and_weave_fields(job_tag, action_key):
         "weave_window_gcds", "ogcd_window_gcds", "downtime_remaining_gcds",
         "gcd_remaining_seconds", "weave_window_seconds", "ogcd_window_seconds",
         "next_untargetable_in_gcds", "remaining_gcds",
-        "ogcds_weaved", "max_ogcd_per_window",
+        "ogcds_weaved", "max_ogcd_per_window", "mp_ratio",
     }
     for context_key in ("state_history_context", "current_state_context"):
         keys = canonical[context_key]["player_state_feature_keys"]
-        assert len(keys) == 18
+        assert len(keys) == 16
         all_keys = [
             feature_key
             for group_key, feature_keys in canonical[context_key].items()

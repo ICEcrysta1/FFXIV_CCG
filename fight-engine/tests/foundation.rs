@@ -62,7 +62,11 @@ fn configuration_and_skill_lookup_match_csharp() {
             group["feature_keys_field"] = json!("skill_availability_feature_keys");
         }
     }
-    assert_equivalent(&baseline["schema"], &schema, "schema");
+    assert_equivalent(
+        &common::legacy_model_state(baseline["schema"].clone()),
+        &schema,
+        "schema",
+    );
     assert_equivalent(
         &baseline["precision"],
         &serde_json::to_value(PrecisionConfig::load(&root).unwrap()).unwrap(),

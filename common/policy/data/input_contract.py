@@ -44,7 +44,8 @@ from .spec import DataSpec
 #     黑魔绝望最低 MP 修正为 800；旧 checkpoint 的输入与执行语义均不可复用。
 #     同版本统一输入数值投影、token 合成和输入归一化为 FP32。
 # 24：独立死亡事件 embedding 按已落实历史边界插入，死亡 token 纳入共享上下文预算。
-# 25：统一归一化入口；独立注册的技能状态按绝对三元组进入状态向量。
+# 25：统一归一化入口；独立注册的技能状态按绝对三元组进入状态向量；
+#     两段状态快照移除与 MP 重复的 mp_ratio。
 INPUT_CONTRACT_VERSION = 25
 
 RESIDUAL_MIX_CONFIG_FIELDS = (

@@ -92,6 +92,8 @@ class StateFeatureGroup:
             raise ValueError(f"unknown state encoding: {self.encoding!r}")
         if any(not isinstance(key, str) or not key for key in self.feature_keys):
             raise ValueError("state feature keys must be nonempty strings")
+        if any(key.rsplit(".", 1)[-1] == "mp_ratio" for key in self.feature_keys):
+            raise ValueError("removed state mp_ratio field; rebuild model input")
         if len(set(self.feature_keys)) != len(self.feature_keys):
             raise ValueError("state feature keys must be unique within each group")
 

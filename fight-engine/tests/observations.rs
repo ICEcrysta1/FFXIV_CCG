@@ -22,7 +22,9 @@ use fight_engine::system::timeline::SimulationSnapshot;
 use serde_json::{Value, json};
 
 fn fixture() -> Value {
-    serde_json::from_str(include_str!("fixtures/observations.json")).unwrap()
+    common::legacy_model_state(
+        serde_json::from_str(include_str!("fixtures/observations.json")).unwrap(),
+    )
 }
 
 fn round_legacy(value: &mut Value) {
@@ -39,7 +41,7 @@ fn round_metrics(metrics: &mut Value) {
 
 // 只对旧实现明确舍入过的字段投影四位小数；生产输出与内部计算仍保持 F64。
 fn legacy_vector(mut output: Value, float_resources: &BTreeSet<String>) -> Value {
-    output = common::legacy_skill_state(output);
+    output = common::legacy_model_state(output);
     for key in ["state_history_context", "current_state_context"] {
         let context = &mut output[key];
         let mut rounded_indices = BTreeMap::new();
@@ -174,13 +176,22 @@ fn snapshots_vectors_tensors_and_cache_restoration_match_baseline() {
                 let vector = output
                     .format_vectors(&state, keys, &values, &current, None)
                     .unwrap();
+                let player_keys = vector["current_state_context"]["player_state_feature_keys"]
+                    .as_array()
+                    .unwrap();
+                assert_eq!(player_keys.len(), 16);
+                assert!(
+                    player_keys
+                        .iter()
+                        .all(|key| !key.as_str().unwrap().ends_with(".mp_ratio"))
+                );
                 let tensor = output
                     .format_tensors(&state, keys, &values, &current, None, &precision)
                     .unwrap();
                 // 格式器实际使用完整 F64 canonical，在最后一步才按配置转换。
                 assert_eq!(tensor, pack_tensor_payload(&vector, &precision).unwrap());
                 let metadata =
-                    common::legacy_skill_state(output_schema_metadata(&vector, &schema).unwrap());
+                    common::legacy_model_state(output_schema_metadata(&vector, &schema).unwrap());
                 let vector = legacy_vector(vector, &floats);
                 let mut seconds = output.format(&state, "seconds").unwrap();
                 let mut gcd = output.format(&state, "gcd").unwrap();

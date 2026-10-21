@@ -3,9 +3,9 @@
 
 use serde_json::{Value, json};
 
-/// 新技能列单独验收；旧基线继续比较可用性与所有未变字段，不重写历史 fixture。
+/// 新技能列单独验收，旧基线移除 MP 比例列；继续比较所有未变字段，不重写历史 fixture。
 #[allow(dead_code)] // 各集成测试独立编译此共享模块，仅输出测试使用该投影。
-pub fn legacy_skill_state(mut output: Value) -> Value {
+pub fn legacy_model_state(mut output: Value) -> Value {
     fn column(values: Value) -> Value {
         let values = values.as_array().expect("技能状态必须是向量");
         assert_eq!(values.len() % 3, 0);
@@ -35,6 +35,39 @@ pub fn legacy_skill_state(mut output: Value) -> Value {
     }
     match &mut output {
         Value::Object(object) => {
+            if let Some(keys) = object.get("player_state_feature_keys") {
+                let removed = keys
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, key)| {
+                        key.as_str()
+                            .unwrap()
+                            .ends_with(".mp_ratio")
+                            .then_some(index)
+                    })
+                    .collect::<Vec<_>>();
+                let remove_columns = |values: &mut Value| {
+                    let values = values.as_array_mut().unwrap();
+                    for &index in removed.iter().rev() {
+                        values.remove(index);
+                    }
+                };
+                if let Some(tokens) = object.get_mut("tokens") {
+                    if let Some(tokens) = tokens.as_array_mut() {
+                        for token in tokens {
+                            remove_columns(&mut token["player_state"]);
+                        }
+                    } else {
+                        for field in ["values", "is_null"] {
+                            for row in tokens["player_state"][field].as_array_mut().unwrap() {
+                                remove_columns(row);
+                            }
+                        }
+                    }
+                }
+            }
             if let Some(fields) = object.remove("skill_state_feature_keys") {
                 object.insert("skill_availability_feature_keys".into(), column(fields));
             }
@@ -59,13 +92,18 @@ pub fn legacy_skill_state(mut output: Value) -> Value {
                         }
                     }
                 } else {
-                    *value = legacy_skill_state(std::mem::take(value));
+                    *value = legacy_model_state(std::mem::take(value));
                 }
             }
         }
         Value::Array(values) => {
+            values.retain(|value| {
+                !value
+                    .as_str()
+                    .is_some_and(|key| key == "mp_ratio" || key.ends_with(".mp_ratio"))
+            });
             for value in values {
-                *value = legacy_skill_state(std::mem::take(value));
+                *value = legacy_model_state(std::mem::take(value));
             }
         }
         _ => {}

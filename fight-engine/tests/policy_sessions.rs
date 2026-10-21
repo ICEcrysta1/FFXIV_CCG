@@ -15,7 +15,9 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 fn fixture() -> Value {
-    serde_json::from_str(include_str!("fixtures/policy_sessions.json")).unwrap()
+    common::legacy_model_state(
+        serde_json::from_str(include_str!("fixtures/policy_sessions.json")).unwrap(),
+    )
 }
 fn registry(baseline: &Value, extended: bool) -> Arc<PolicyActionRegistry> {
     let project = serde_json::from_value(baseline["project"].clone()).unwrap();
@@ -151,7 +153,7 @@ fn policy_wait_history_delta_and_snapshot_match_baseline() {
         let mut saved = Vec::new();
         for (index, step) in scene["steps"].as_array().unwrap().iter().enumerate() {
             let path = format!("{}.steps[{index}]", scene["name"].as_str().unwrap());
-            let output = common::legacy_skill_state(
+            let output = common::legacy_model_state(
                 operation(&mut sim, &mut policy, &mut saved, &step["input"])
                     .unwrap_or_else(|_| json!({"error":true})),
             );
@@ -274,7 +276,7 @@ fn policy_replay_preserves_external_batch_and_wait_order() {
         )
         .unwrap();
         let path = scene["name"].as_str().unwrap();
-        common::assert_equivalent(&scene["output"], &common::legacy_skill_state(output), path);
+        common::assert_equivalent(&scene["output"], &common::legacy_model_state(output), path);
         common::assert_equivalent(
             &scene["state"],
             &summary(&sim, &policy),
@@ -381,7 +383,7 @@ fn independent_sessions_reset_close_and_parallel_execution_match_baseline() {
     let delta = a.observe_vector_delta_at(10.0, 12.25, 0).unwrap();
     common::assert_equivalent(
         &expected["initial_delta"],
-        &common::legacy_skill_state(serde_json::to_value(delta).unwrap()),
+        &common::legacy_model_state(serde_json::to_value(delta).unwrap()),
         "sessions.initial_delta",
     );
     let workers = expected["parallel_inputs"]

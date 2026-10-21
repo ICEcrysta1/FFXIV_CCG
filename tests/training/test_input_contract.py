@@ -412,6 +412,18 @@ def test_current_input_contract_rejects_previous_cumulative_input_version():
         ModelInputContract.from_dict(payload)
 
 
+@pytest.mark.parametrize("snapshot", ["previous_action_after", "request_state"])
+def test_current_input_contract_rejects_removed_mp_ratio(snapshot):
+    """同版本旧契约也不能把已删除的 MP 比例重新送进模型。"""
+    payload = _build_contract().to_dict()
+    group = payload["schema"]["state_groups"][0]
+    group["feature_keys"] = (*group["feature_keys"], f"{snapshot}.mp_ratio")
+    payload["data_spec"]["base_state_dim"] += 1
+    payload["data_spec"]["state_dim"] += 1
+    with pytest.raises(ValueError, match="removed state mp_ratio"):
+        ModelInputContract.from_dict(payload)
+
+
 @pytest.mark.parametrize("field", ["cumulative_potency", "cumulative_dot_potency"])
 @pytest.mark.parametrize("location", ["state", "skill_features", "skill_fields"])
 def test_current_input_contract_rejects_cumulative_potency_in_model_fields(field, location):
