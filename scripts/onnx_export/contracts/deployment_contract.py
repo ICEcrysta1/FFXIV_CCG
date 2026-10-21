@@ -48,7 +48,8 @@ from .deployment_profile import stable_sha256
 #     同版本统一数值入口与输入投影为 FP32，主干及输出沿用部署精度。
 # 27：将场景、历史和当前状态收敛为统一 token 预算，拒绝旧容量结构。
 # 28：增加独立死亡事件输入与 embedding，所有事件纳入共用 token 预算。
-# 29：统一归一化入口，独立注册的技能绝对三元组替代可用性尾表。
+# 29：统一归一化入口，独立注册的技能绝对三元组替代可用性尾表；
+#     仅战斗与场景时间坐标使用相对编码，其余状态及绝对时长使用 ABS。
 DEPLOYMENT_CONTRACT_VERSION = 29
 DEPLOYMENT_MANIFEST_VERSION = 17
 MANIFEST_SCHEMA_FILENAME = "manifest.schema.json"
@@ -296,18 +297,18 @@ class DeploymentContract:
                                        scene=self.capacity.scene_capacity, history=self.capacity.history_capacity,
                                        dead=self.capacity.dead_capacity)
         semantics = {
-            "scene_vectors": "host FP32 anchor-clipped then time-differenced scene vectors; FP32 projection",
+            "scene_vectors": "host FP32 anchor-clipped scene vectors with relative start/end and absolute duration; FP32 projection",
             "scene_types": "scene type ids",
             "scene_mask": "true for valid scene tokens",
             "history_skill_ids": "right-padded vocab ids",
             "history_skill_features": "ordered skill features",
-            "history_state_vectors": "base first-visible ABS then numeric DELTA; absolute normalized skill triples",
+            "history_state_vectors": "normalized absolute state except first-visible anchor offset then time DELTA; absolute normalized skill triples",
             "history_state_null_mask": "base state null flags; right-padded positions are true",
             "history_mask": "true for valid actions; shared by independent skill and state tokens",
-            "current_state_vectors": "base current DELTA or ABS without history; absolute normalized skill triples",
+            "current_state_vectors": "normalized absolute state except time DELTA or anchor offset without history; absolute normalized skill triples",
             "current_state_null_mask": "current base state null flags",
-            "history_state_reset_mask": "base per-field ABS reset markers; first visible state is absolute",
-            "current_state_reset_mask": "current base per-field ABS reset markers",
+            "history_state_reset_mask": "base-width time-anchor ABS reset markers; false for other fields",
+            "current_state_reset_mask": "current base-width time-anchor ABS reset markers; false for other fields",
             "history_dead_positions": "nondecreasing visible action boundaries in [0, history_valid]; equal boundaries retain event order",
             "history_dead_mask": "true for valid death events; right-padded false",
         }

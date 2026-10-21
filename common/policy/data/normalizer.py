@@ -16,7 +16,7 @@ from .normalization import (
     load_normalizer_config,
 )
 
-# 4：字段单位统一声明，并冻结技能状态的注册充能上限。
+# 4：字段单位统一声明，分别保存相对时间与绝对时长尺度，并冻结技能状态的注册充能上限。
 NORMALIZER_CONTRACT_VERSION = 4
 
 
@@ -219,7 +219,7 @@ class Normalizer:
         divisor = {
             "mp": self._config.mp_max,
             "mp_cost": self._config.mp_max,
-            "seconds": self._config.time_scale,
+            "seconds": self._config.duration_scale,
             "time_anchor": self._config.time_scale,
             "potency": self._config.current_potency_max,
             "target_count": self._config.target_count_max,
@@ -239,7 +239,7 @@ class Normalizer:
                 self.register_feature_keys(group.group_key, list(group.feature_keys))
 
     def state_encoding_metadata(self, schema) -> StateEncodingMetadata:
-        """从已注册规则生成向量化 ABS/有符号 DELTA 元数据，不重复推断字段。"""
+        """从已注册规则生成绝对状态与相对时间元数据，不重复推断字段。"""
         self.register_schema(schema)
         rules = [rule for group in schema.state_groups if group.encoding == "anchored_delta"
                  for rule in self._rules[group.group_key]]
@@ -263,7 +263,7 @@ class Normalizer:
             elif field == "available":
                 divisor = 1.0
             elif field == "next_cooldown_seconds":
-                divisor = self.time_scale
+                divisor = self.duration_scale
             else:
                 raise ValueError(f"unknown registered skill state field: {field}")
             divisors.append(divisor)
@@ -276,8 +276,13 @@ class Normalizer:
 
     @property
     def time_scale(self) -> float:
-        """返回普通时间字段使用的公共秒数尺度。"""
+        """返回战斗时间与场景端点使用的相对时间尺度。"""
         return float(self._config.time_scale)
+
+    @property
+    def duration_scale(self) -> float:
+        """返回冷却、剩余时间和场景持续时长使用的绝对时长尺度。"""
+        return float(self._config.duration_scale)
 
     @property
     def target_count_max(self) -> float:

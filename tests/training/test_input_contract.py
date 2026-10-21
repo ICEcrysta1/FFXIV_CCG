@@ -294,7 +294,7 @@ def test_model_input_contract_rejects_previous_skill_first_contract():
         ModelInputContract.from_dict(payload)
 
 
-@pytest.mark.parametrize("change", ["missing", "role", "token_order", "dead", "death_markers", "output_projection", "logit_softcap", "state_encoder", "state_snapshots", "history_state_frozen_at", "token_normalization", "backbone_normalization", "backbone_residual", "attention_qk_normalization"])
+@pytest.mark.parametrize("change", ["missing", "role", "token_order", "dead", "death_markers", "output_projection", "logit_softcap", "state_encoder", "state_snapshots", "history_state_frozen_at", "token_normalization", "backbone_normalization", "backbone_residual", "attention_qk_normalization", "legacy_state_delta", "missing_duration_scale"])
 def test_model_input_contract_requires_exact_independent_token_descriptor(change):
     payload = _build_contract().to_dict()
     assert payload["version"] == INPUT_CONTRACT_VERSION
@@ -307,6 +307,10 @@ def test_model_input_contract_requires_exact_independent_token_descriptor(change
         payload["token_encoding"]["current_state_encoder"] = "separate_current_state_encoder"
     elif change == "token_order":
         payload["token_encoding"][change] = "scene, (skill_i, state_i)*H, current_state"
+    elif change == "legacy_state_delta":
+        payload["token_encoding"]["context_encoding"]["state"] = "first_visible_ABS_then_raw_numeric_DELTA"
+    elif change == "missing_duration_scale":
+        payload["token_encoding"]["context_encoding"].pop("duration_scale")
     else:
         payload["token_encoding"][change] = "legacy_fused_tokens"
     with pytest.raises(ValueError, match="token_encoding"):
@@ -325,7 +329,14 @@ def test_input_contract_requires_shared_context_token_budget():
     encoding = payload["token_encoding"]
     assert encoding["context_capacity_unit"] == "tokens"
     assert encoding["history_reset_keep_unit"] == "complete_actions"
-    assert encoding["context_encoding"]["history_window"] == "shared_context_token_budget_block_reset"
+    context = encoding["context_encoding"]
+    assert context["history_window"] == "shared_context_token_budget_block_reset"
+    assert context["state"] == "normalized_ABS_except_time_anchors"
+    assert context["state_time"] == "first_visible_anchor_offset_then_raw_DELTA"
+    assert context["unknown_recovery"] == "time_anchor_ABS_reset_mask"
+    assert context["time_scale"] == "normalizer_contract.config.time_scale"
+    assert context["duration_scale"] == "normalizer_contract.config.duration_scale"
+    assert encoding["skill_state"]["scales"]["next_cooldown_seconds"] == context["duration_scale"]
     encoding.pop("context_capacity_unit")
     encoding["history_capacity_unit"] = "actions"
     with pytest.raises(ValueError, match="token_encoding"):

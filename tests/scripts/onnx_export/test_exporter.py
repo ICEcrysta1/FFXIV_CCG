@@ -183,6 +183,12 @@ def test_manifest_schema_uses_authoritative_model_input_descriptor(manifest_sche
     input_schema = manifest_schema["$defs"]["contract"]["properties"]["model_input_contract"]
     assert input_schema["properties"]["version"]["const"] == INPUT_CONTRACT_VERSION
     assert input_schema["properties"]["token_encoding"]["const"] == TOKEN_ENCODING_CONTRACT
+    legacy = deepcopy(TOKEN_ENCODING_CONTRACT)
+    legacy["context_encoding"]["state"] = "first_visible_ABS_then_raw_numeric_DELTA"
+    jsonschema = pytest.importorskip("jsonschema")
+    validator = jsonschema.Draft202012Validator(input_schema["properties"]["token_encoding"])
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(legacy)
 
 
 def test_failed_export_keeps_previous_valid_directory(tmp_path, monkeypatch):
@@ -298,7 +304,8 @@ def test_low_precision_export_keeps_fp32_input_values_and_weights(tmp_path, prec
     )
 
 
-def test_zero_padding_fill_clears_all_padding_dtypes():
+@pytest.mark.parametrize("history_valid", [0, 2])
+def test_zero_padding_fill_clears_all_padding_dtypes(history_valid):
     data_spec = SimpleNamespace(
         scene_dim=2,
         num_scene_types=4,
@@ -309,13 +316,14 @@ def test_zero_padding_fill_clears_all_padding_dtypes():
         action_keys=("first", "second"),
     )
     contract = CapacityContract(12)
+    layout = make_input_contract(make_data_spec(base_state_dim=5)).schema.state_layout(("first", "second"))
     values = make_inputs(
         data_spec,
         contract,
-        state_layout=make_input_contract(make_data_spec(base_state_dim=5)).schema.state_layout(("first", "second")),
+        state_layout=layout,
         vocab_size=8,
         scene_valid=1,
-        history_valid=2,
+        history_valid=history_valid,
         dtype=torch.float32,
         seed=17,
         padding_fill="zero",
@@ -323,13 +331,18 @@ def test_zero_padding_fill_clears_all_padding_dtypes():
 
     assert torch.count_nonzero(values[0][:, 1:]) == 0
     assert torch.count_nonzero(values[1][:, 1:]) == 0
-    assert torch.count_nonzero(values[3][:, 2:]) == 0
-    assert torch.count_nonzero(values[4][:, 2:]) == 0
-    assert torch.count_nonzero(values[5][:, 2:]) == 0
-    assert values[6][:, 2:].all()
-    assert not values[10][:, 2:].any()
+    assert torch.count_nonzero(values[3][:, history_valid:]) == 0
+    assert torch.count_nonzero(values[4][:, history_valid:]) == 0
+    assert torch.count_nonzero(values[5][:, history_valid:]) == 0
+    assert values[6][:, history_valid:].all()
+    assert not values[10][:, history_valid:].any()
     assert torch.count_nonzero(values[0][:, :1]) > 0
-    assert torch.count_nonzero(values[3][:, :2]) > 0
+    if history_valid:
+        assert torch.count_nonzero(values[3][:, :history_valid]) > 0
+    non_time = [index for index, key in enumerate(layout.base_feature_keys)
+                if key.rsplit(".", 1)[-1] != "time_seconds"]
+    assert not values[10][..., non_time].any()
+    assert not values[11][..., non_time].any()
 
     # 两个原始轴各自都未越界，也不能同时消耗超过统一预算的有效 token。
     with pytest.raises(ValueError, match="shared context_capacity"):
@@ -1367,6 +1380,8 @@ def test_deployment_state_masks_use_base_width_and_outer_layout_cannot_override_
     assert fields["current_state_vectors"].shape[-1] == spec.state_dim == 21
     assert fields["current_state_null_mask"].shape[-1] == spec.base_state_dim == 3
     assert fields["history_state_reset_mask"].shape[-1] == spec.base_state_dim
+    assert "time-anchor ABS reset" in fields["history_state_reset_mask"].semantic
+    assert "relative start/end and absolute duration" in fields["scene_vectors"].semantic
     assert fields["history_dead_positions"].shape == (1, contract.capacity.dead_capacity)
     assert fields["history_dead_mask"].dtype == "tensor(bool)"
     inputs = make_inputs(spec, contract.capacity, vocab_size=8, scene_valid=1, history_valid=1,

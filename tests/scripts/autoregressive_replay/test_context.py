@@ -490,7 +490,7 @@ def test_live_current_state_is_independent_of_action_legality_and_preserves_phas
     assert batch["current_state_vectors"].shape == (1, 20)
     torch.testing.assert_close(batch["current_state_vectors"][..., :4], torch.tensor([[0.0, 0.02, 0.0, 0.02]]))
     assert batch["current_state_vectors"][..., -12:].tolist() == [[1.0, 0.5, 0.0, 1.0, 1.0, 0.0] * 2]
-    assert batch["current_state_reset_mask"].all()
+    assert batch["current_state_reset_mask"].tolist() == [[True, False, True, False, False, False, False, False]]
     assert batch["current_state_null_mask"].tolist() == [[False] * 8]
     assert batch["history_skill_ids"].shape == (1, 0)
     assert batch["action_legal_mask"].tolist() == [expected]
@@ -541,8 +541,8 @@ def test_live_history_window_keeps_matching_skill_and_state_rows():
         _append_live_history(canonical, index, after=float(index))
     batch, _ = builder.build(SimpleNamespace(time=4.0, gcd_remaining=0.0))
     assert batch["history_skill_ids"].tolist() == [[2, 3]]
-    torch.testing.assert_close(batch["history_state_vectors"][..., :4], torch.tensor([[[-1/270, .02, 0, .0002], [1/270, 0, 1/270, .0001]]]))
-    assert batch["history_state_reset_mask"][0, 0].all()
+    torch.testing.assert_close(batch["history_state_vectors"][..., :4], torch.tensor([[[-1/270, .02, 0, .0002], [1/270, .02, 1/270, .0003]]]))
+    assert batch["history_state_reset_mask"][0, 0].tolist() == [True, False, True, False, False, False, False, False]
     assert not batch["history_state_reset_mask"][0, 1].any()
     assert batch["history_skill_features"][0, :, 0].tolist() == [1.0, 1.0]
     torch.testing.assert_close(batch["history_skill_features"][0, :, 1], torch.full((2,), 50 / 2000))
@@ -640,7 +640,7 @@ def test_live_history_cache_reuses_unchanged_rows_and_refreshes_mutated_rows(mon
     canonical["current_state_context"]["tokens"][0]["player_state"] = [0.0, 150.0, 0.0, 150.0, 0.0, 0.0, 0.0, 0.0]
     refreshed, _ = builder.build(state)
     assert calls == [1, 2]
-    torch.testing.assert_close(refreshed["current_state_vectors"][..., :4], torch.tensor([[-1/270, -.005, -2/270, .005]]))
+    torch.testing.assert_close(refreshed["current_state_vectors"][..., :4], torch.tensor([[-1/270, .015, -2/270, .015]]))
     _append_live_history(canonical, 3)
     builder.build(state)
     assert calls == [1, 2, 3]
@@ -691,7 +691,7 @@ def test_live_default_uses_shared_budget_and_keeps_cache_when_explicit_limit_cha
     empty, _ = builder.build_from_canonical(canonical, gcd_phase=True, max_history=0)
     assert empty["history_skill_ids"].shape == (1, 0)
     assert builder._cached_history_rows == []
-    assert empty["current_state_reset_mask"].all()
+    assert empty["current_state_reset_mask"].tolist() == [[True, False, True, False, False, False, False, False]]
     assert calls == [3, 4]
 
 
@@ -755,7 +755,7 @@ def test_live_history_cache_preserves_same_skill_same_time_rows_and_sliding_wind
     assert slid["history_skill_ids"].tolist() == [[7, 7]]
     first_mp = 100.0 if identical_snapshots else 120.0
     torch.testing.assert_close(slid["history_state_vectors"][0, :, mp_index],
-                               torch.tensor([first_mp / 10000, (140.0 - first_mp) / 10000]))
+                               torch.tensor([first_mp / 10000, 140.0 / 10000]))
     assert calls == [7, 7, 7]
 
     canonical["skill_history_context"][-1]["potency"] = 99.0
@@ -801,7 +801,7 @@ def test_live_window_reconstructs_resets_from_complete_history():
         assert int(actual["history_mask"].sum()) == expected_length
         assert not {"history_cursor", "history_window_start", "history_window_length"} & actual.keys()
         assert actual["history_skill_ids"][0, 0].item() == index - expected_length + 1
-        assert actual["history_state_reset_mask"][0, 0].all()
+        assert actual["history_state_reset_mask"][0, 0].tolist() == [True, False, True, False, False, False, False, False]
         repeated, _ = builder.build_from_canonical(canonical, gcd_phase=True)
         torch.testing.assert_close(repeated["history_state_vectors"], actual["history_state_vectors"])
         assert canonical["history_cursor"] == index
@@ -858,7 +858,7 @@ def test_live_history_limit_can_be_smaller_than_saved_reset_keep():
     limited, _ = builder.build_from_canonical(canonical, gcd_phase=True, max_history=4)
     assert limited["history_skill_ids"].tolist() == [[6, 7, 8, 9]]
     no_history, _ = builder.build_from_canonical(canonical, gcd_phase=True, max_history=0)
-    assert no_history["current_state_reset_mask"].all()
+    assert no_history["current_state_reset_mask"].tolist() == [[True, False, True, False, False, False, False, False]]
     assert builder.context_metadata == {"history_cursor": 9}
 
 
@@ -879,9 +879,9 @@ def test_live_history_limit_does_not_change_model_reset_cycle(capacity, total, l
     assert limited["history_skill_ids"].tolist() == [list(range(total - expected + 1, total + 1))]
     assert builder.context_metadata == {"history_cursor": total}
     if expected:
-        assert limited["history_state_reset_mask"][0, 0].all()
+        assert limited["history_state_reset_mask"][0, 0].tolist() == [True, False, True, False, False, False, False, False]
     else:
-        assert limited["current_state_reset_mask"].all()
+        assert limited["current_state_reset_mask"].tolist() == [[True, False, True, False, False, False, False, False]]
     metadata = builder.context_metadata
     metadata["history_cursor"] = -1
     assert builder.context_metadata == {"history_cursor": total}
@@ -894,7 +894,7 @@ def test_live_rejects_invalid_history_limit(limit):
         builder.build_from_canonical(canonical, gcd_phase=True, max_history=limit)
 
 
-def test_live_unknown_recovery_marks_absolute_fields_and_checks_current_time():
+def test_live_unknown_recovery_preserves_absolute_mp_and_checks_current_time():
     builder, canonical = _live_builder_fixture()
     _append_live_history(canonical, 1, after=None)
     _append_live_history(canonical, 2, after=150.0)
@@ -902,7 +902,7 @@ def test_live_unknown_recovery_marks_absolute_fields_and_checks_current_time():
     assert actual["history_state_null_mask"][0, 0, 3]
     assert not actual["history_state_reset_mask"][0, 0, 3]
     assert actual["history_state_vectors"][0, 0, 3].item() == -1.0
-    assert actual["history_state_reset_mask"][0, 1, 3]
+    assert not actual["history_state_reset_mask"][0, 1, 3]
     assert actual["history_state_vectors"][0, 1, 3].item() == pytest.approx(.015)
     canonical["current_state_context"]["tokens"][0]["player_state"][2] = None
     with pytest.raises(ValueError, match="request_state.time_seconds.*finite"):
@@ -929,8 +929,8 @@ def test_live_scene_eta_is_shared_by_both_build_entries_and_preserves_other_toke
     for key in live:
         if isinstance(live[key], torch.Tensor):
             torch.testing.assert_close(live[key], cached[key])
-    # ETA/剩余沿用 Normalizer 的统一时间尺度，两段使用各自冻结时间。
-    expected_seconds = 5 / builder._normalizer.time_scale
+    # ETA/剩余使用绝对时长尺度，两段使用各自冻结时间。
+    expected_seconds = 5 / builder._normalizer.duration_scale
     assert live["current_state_vectors"][0, keys.index("previous_action_after.next_untargetable_in_seconds")] == pytest.approx(expected_seconds)
     assert live["current_state_vectors"][0, keys.index("request_state.downtime_remaining_seconds")] == pytest.approx(expected_seconds)
     before_non_state = {key: value.clone() for key, value in live.items()

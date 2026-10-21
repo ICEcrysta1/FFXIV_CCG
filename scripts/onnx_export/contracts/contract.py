@@ -204,6 +204,10 @@ def make_inputs(
     if not history_valid:
         current_state_reset_mask = ~current_state_null_mask
     state_layout.assert_matches_data_spec(data_spec)
+    time_fields = {f"{snapshot}.time_seconds" for snapshot in state_layout.snapshots}
+    time_mask = torch.tensor([key in time_fields for key in state_layout.base_feature_keys])
+    history_state_reset_mask &= time_mask
+    current_state_reset_mask &= time_mask
     # 有效技能状态是归一化绝对值，可用性单独保持 0/1；脏 padding 继续检验 mask。
     for values in (history_state_vectors[:, :history_valid], current_state_vectors):
         skills = values[..., data_spec.base_state_dim:]

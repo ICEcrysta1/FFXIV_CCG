@@ -33,8 +33,8 @@ FIELD_UNITS = {
     "next_cooldown_seconds": "seconds",
     "cast_time.seconds": "seconds",
     "gcd_window.seconds": "seconds",
-    "start_offset_seconds": "seconds",
-    "end_offset_seconds": "seconds",
+    "start_offset_seconds": "time_anchor",
+    "end_offset_seconds": "time_anchor",
     "duration_seconds": "seconds",
     "potency": "potency",
     "current_potency": "potency",
@@ -56,6 +56,7 @@ class NormalizerConfig:
 
     mp_max: float = 10000.0
     time_scale: float = 270.0
+    duration_scale: float = 270.0
     target_count_max: float = 5.0
     current_potency_max: float = 2000.0
 

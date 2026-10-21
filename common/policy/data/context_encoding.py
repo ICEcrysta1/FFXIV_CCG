@@ -1,4 +1,4 @@
-"""神经模型外的 FP32 上下文重锚与 ABS/DELTA 输入编码。"""
+"""神经模型外的 FP32 绝对状态与相对时间编码。"""
 
 from __future__ import annotations
 
@@ -60,6 +60,7 @@ class ContextEncoder(nn.Module):
         self.state_dim = layout.state_dim
         self.scene_dim = schema.scene_feature_dim()
         self.time_scale = normalizer.time_scale
+        self.duration_scale = normalizer.duration_scale
         if metadata.feature_keys != layout.base_feature_keys:
             raise ValueError("normalizer base field order must match the state layout")
         self.request_time_index = layout.request_time_index
@@ -185,10 +186,10 @@ class ContextEncoder(nn.Module):
         _validate_raw_state(delta, nulls)
         if reset.dtype != torch.bool or reset.shape != absolute.shape or reset.device != absolute.device:
             raise ValueError("state reset masks must be boolean with matching shape and device")
-        reset = reset & ~nulls
+        reset = reset & self.state_time_mask & ~nulls
         absolute = torch.where(self.state_time_mask, absolute - anchor, absolute)
         bounded = torch.minimum(torch.maximum(absolute, self.state_absolute_lower), self.state_absolute_upper)
-        values = torch.where(reset, bounded, delta)
+        values = torch.where(self.state_time_mask & ~reset, delta, bounded)
         values = _normalize_values(values, self.state_divisors)
         return values.masked_fill(nulls, -1.0), reset
 
@@ -219,12 +220,12 @@ class ContextEncoder(nn.Module):
         values = values.gather(1, order[..., None].expand(-1, -1, self.scene_dim)).clone()
         types, mask = types.gather(1, order), mask.gather(1, order)
         starts, ends = starts.gather(1, order) - anchor[:, None], ends.gather(1, order) - anchor[:, None]
-        for indices, encoded in (
-            (self.scene_start_indices, torch.diff(starts, dim=1, prepend=torch.zeros_like(starts[:, :1]))),
-            (self.scene_end_indices, torch.diff(ends, dim=1, prepend=torch.zeros_like(ends[:, :1]))),
-            (self.scene_duration_indices, ends - starts),
+        for indices, encoded, scale in (
+            (self.scene_start_indices, torch.diff(starts, dim=1, prepend=torch.zeros_like(starts[:, :1])), self.time_scale),
+            (self.scene_end_indices, torch.diff(ends, dim=1, prepend=torch.zeros_like(ends[:, :1])), self.time_scale),
+            (self.scene_duration_indices, ends - starts, self.duration_scale),
         ):
-            values.scatter_(-1, indices[types][..., None], _normalize_values(encoded, self.time_scale)[..., None])
+            values.scatter_(-1, indices[types][..., None], _normalize_values(encoded, scale)[..., None])
         counts = _normalize_values(values, self.target_count_max, lower=0.0, upper=self.target_count_max)
         values = torch.where(self.scene_count_mask[types], counts, values)
         values = values.masked_fill(~self.scene_feature_mask[types] | ~mask[..., None], 0.0)

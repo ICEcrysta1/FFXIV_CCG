@@ -209,7 +209,7 @@ def test_shared_context_reanchor_and_scene_clip_rebuild_kv(full_attention_residu
                 assert cached._kv_cache is not previous_cache
                 assert cached._kv_cache.prefix_tokens.shape[1] == 6
                 torch.testing.assert_close(batch["history_state_vectors"][0, 0, 1], torch.tensor(0.0))
-                assert batch["history_state_reset_mask"][0, 0].all()
+                assert batch["history_state_reset_mask"][0, 0].tolist() == [True, True, False]
                 assert batch["scene_vectors"].shape == (1, 2, 3)
                 assert batch["scene_types"].shape == (1, 2)
                 assert batch["scene_mask"].tolist() == [[True, True]]
