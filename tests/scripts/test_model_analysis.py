@@ -311,12 +311,12 @@ def _analysis_context(tmp_path):
         dtype=np.float32,
     )
     features = {
-        "fight_id": np.array(["f"] * 8),
         "step_index": np.arange(8, dtype=float),
         "label_index": np.array([-1.0, -1.0, 0.0, 1.0, 2.0, 3.0, -1.0, -1.0]),
         "prediction_index": np.array([-1.0, -1.0, 1.0, 1.0, 0.0, 3.0, -1.0, -1.0]),
         "skill_id": np.array([-1.0, -1.0, 1.0, 2.0, 3.0, 4.0, -1.0, -1.0]),
-        "label_legal": np.array(["not_decision", "not_decision", "legal", "illegal", "legal", "legal", "not_decision", "not_decision"]),
+        "potency": np.array([np.nan, np.nan, 290.0, 310.0, 180.0, 0.0, np.nan, np.nan]),
+        "gcd_type": np.array(["not_decision", "not_decision", "GCD", "GCD", "GCD", "oGCD", "not_decision", "not_decision"]),
         "elemental_state": np.array(["unknown", "unknown", "UI3", "UI3", "AF1", "AF1", "unknown", "unknown"]),
         "mp_bucket": np.array([np.nan, np.nan, 0.0, 2500.0, 5000.0, 10000.0, np.nan, np.nan]),
         "label_rank": np.array([np.nan, np.nan, 1.0, 2.0, 3.0, 4.0, np.nan, np.nan]),
@@ -379,7 +379,8 @@ def _history_input_encoding(skill, state, history_mask, *, scene_length=2):
     }
 
 
-def test_model_analysis_metadata_and_black_mage_fallbacks():
+@pytest.mark.parametrize(("label_index", "potency", "gcd_type"), [(0, 290.0, "GCD"), (1, 0.0, "oGCD")])
+def test_model_analysis_metadata_and_black_mage_fallbacks(label_index, potency, gcd_type):
     layout = _analysis_schema().state_layout(("a", "b"))
     samples = [{"metadata": {"fight_id": "fight-1", "step": 7}}]
     batch = {
@@ -388,7 +389,7 @@ def test_model_analysis_metadata_and_black_mage_fallbacks():
         "action_legal_mask": torch.tensor([[True, False]]),
         "current_state_abs_values": torch.tensor([[0.0, 1.0, 5000.0, 0.0]]),
         "current_state_null_mask": torch.zeros((1, 4), dtype=torch.bool),
-        "label_index": torch.tensor([0]),
+        "label_index": torch.tensor([label_index]),
     }
     encoded = {
         "role_ids": torch.tensor([[ROLE_SCENE, ROLE_STATE, ROLE_SKILL, ROLE_STATE, ROLE_SKILL, ROLE_STATE]]),
@@ -398,14 +399,19 @@ def test_model_analysis_metadata_and_black_mage_fallbacks():
     metadata = build_token_metadata(
         samples, batch=batch, encoded=encoded, layout=layout,
         job_tag="black_mage", logits=np.array([[3.0, 1.0]]),
+        action_potencies=(290.0, 0.0), action_is_gcd=(True, False),
     )
-    assert metadata["fight_id"][0, 0] == "fight-1"
+    assert "fight_id" not in metadata
+    assert "label_legal" not in metadata
     assert metadata["skill_id"][0, 2] == 9
     assert metadata["skill_id"][0, 4] == -1
     assert metadata["skill_id"][0, 5] == -1
-    assert metadata["label_legal"][0, 5] == "legal"
-    assert metadata["label_rank"][0, 5] == 1.0
-    assert metadata["model_logit"][0, 5] == 3.0
+    assert metadata["potency"][0, 5] == potency
+    assert metadata["gcd_type"][0, 5] == gcd_type
+    assert np.isnan(metadata["potency"][0, :5]).all()
+    assert set(metadata["gcd_type"][0, :5]).isdisjoint({"GCD", "oGCD"})
+    assert metadata["label_rank"][0, 5] == 1.0 + label_index
+    assert metadata["model_logit"][0, 5] == (3.0, 1.0)[label_index]
     assert metadata["prediction_index"][0, 5] == 0
     assert np.isnan(metadata["label_rank"][0, 1])
     assert decision_state_labels("machinist", 0, batch=batch, layout=layout)[0] == "unknown"
@@ -730,6 +736,9 @@ def test_model_analysis_outputs_generate_pngs(monkeypatch, tmp_path):
     pca_paths = pca_output.plot_layer_pca(context)
     assert len(pca_paths) == 2 + len(analysis_common.ANALYSIS_FEATURES)
     assert all(path.is_file() for path in pca_paths)
+    pca_names = {path.name for path in pca_paths}
+    assert {"02_layers_pca_2d_potency.png", "02_layers_pca_2d_gcd_type.png"} <= pca_names
+    assert pca_names.isdisjoint({"02_layers_pca_2d_fight_id.png", "02_layers_pca_2d_label_legal.png"})
     assert pca_output._strongest_pca_axis(
         np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]]),
         np.array([1.0, 1.0, 1.0]),
@@ -911,10 +920,15 @@ def test_analysis_token_budget_covers_late_decisions_and_keeps_metadata_aligned(
     runtime = SimpleNamespace(
         checkpoint_path=tmp_path / "checkpoint.pt", source_path=tmp_path / "source.json",
         output_dir=tmp_path, model=model, dataset=[{"id": index} for index in range(4)],
-        data_spec=SimpleNamespace(job_tag="black_mage"), vocab=None, device=torch.device("cpu"),
+        data_spec=SimpleNamespace(job_tag="black_mage", action_keys=("a", "b"), action_is_gcd=(True, False)),
+        vocab=None, device=torch.device("cpu"),
         precision="float32", autocast=nullcontext,
         context_encoder=SimpleNamespace(encode=lambda batch: batch, layout=None),
     )
+    monkeypatch.setattr(analysis_common, "load_project_config", lambda **_kwargs: SimpleNamespace(
+        system=SimpleNamespace(skills=()),
+        job=SimpleNamespace(skills=(SimpleNamespace(key="a", potency=100), SimpleNamespace(key="b", potency=200))),
+    ))
     monkeypatch.setattr(analysis_common, "_load_model_analysis_context", lambda **_kwargs: runtime)
     monkeypatch.setattr(analysis_common, "TrainingCollator", lambda: collate)
     monkeypatch.setattr(analysis_common, "build_token_metadata", lambda _samples, *, batch, encoded, **_kwargs: {

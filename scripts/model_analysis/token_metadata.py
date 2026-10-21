@@ -9,11 +9,11 @@ from .job_labels import decision_state_labels
 ANALYSIS_MP_MAX = 10000.0
 
 ANALYSIS_FEATURES = (
-    "fight_id",
     "step_index",
     "label_index",
     "prediction_index",
-    "label_legal",
+    "potency",
+    "gcd_type",
     "elemental_state",
     "mp_bucket",
     "label_rank",
@@ -41,6 +41,8 @@ def build_token_metadata(
     encoded: dict[str, object],
     layout,
     job_tag: str,
+    action_potencies: tuple[float, ...],
+    action_is_gcd: tuple[bool, ...],
     logits: np.ndarray,
 ) -> dict[str, np.ndarray]:
     """决策变量仅关联最新状态 hidden，历史技能身份仍按真实历史位置记录。"""
@@ -53,11 +55,10 @@ def build_token_metadata(
     metadata = {
         key: np.full(shape, np.nan, dtype=np.float64)
         for key in ANALYSIS_FEATURES
-        if key not in {"fight_id", "label_legal", "elemental_state"}
+        if key not in {"gcd_type", "elemental_state"}
     }
     metadata.update({
-        "fight_id": np.full(shape, "unknown", dtype=object),
-        "label_legal": np.full(shape, "not_decision", dtype=object),
+        "gcd_type": np.full(shape, "not_decision", dtype=object),
         "elemental_state": np.full(shape, "unknown", dtype=object),
         "skill_id": np.full(shape, -1, dtype=np.float64),
     })
@@ -66,7 +67,6 @@ def build_token_metadata(
     for batch_index, sample in enumerate(samples):
         position = int(current_positions[batch_index])
         sample_metadata = sample["metadata"]
-        metadata["fight_id"][batch_index, :] = str(sample_metadata.get("fight_id", "unknown"))
         metadata["step_index"][batch_index, :] = float(sample_metadata.get("step", np.nan))
         elemental_state, mp_bucket = decision_state_labels(
             job_tag, batch_index, batch=batch, layout=layout,
@@ -77,9 +77,8 @@ def build_token_metadata(
         label_logit = float(logits[batch_index, label_index])
         metadata["label_index"][batch_index, position] = label_index
         metadata["prediction_index"][batch_index, position] = float(logits[batch_index].argmax())
-        metadata["label_legal"][batch_index, position] = (
-            "legal" if bool(batch["action_legal_mask"][batch_index, label_index].item()) else "illegal"
-        )
+        metadata["potency"][batch_index, position] = action_potencies[label_index]
+        metadata["gcd_type"][batch_index, position] = "GCD" if action_is_gcd[label_index] else "oGCD"
         metadata["label_rank"][batch_index, position] = 1.0 + float(
             np.count_nonzero(logits[batch_index] > label_logit)
         )

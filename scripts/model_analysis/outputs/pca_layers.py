@@ -26,18 +26,18 @@ from ..common import (
 from ..token_metadata import ANALYSIS_MP_MAX
 
 FEATURE_LABELS = {
-    "fight_id": "fight_id",
     "step_index": "step index",
     "label_index": "label action index",
     "prediction_index": "predicted action index",
-    "label_legal": "label legal / illegal",
+    "potency": "label skill base potency",
+    "gcd_type": "label skill GCD / oGCD",
     "elemental_state": "AF/UI",
     "mp_bucket": "MP",
     "label_rank": "label rank",
     "model_logit": "model logit",
 }
 NUMERIC_FEATURES = frozenset(
-    {"step_index", "label_index", "prediction_index", "mp_bucket", "label_rank", "model_logit"}
+    {"step_index", "label_index", "prediction_index", "potency", "mp_bucket", "label_rank", "model_logit"}
 )
 # 3D 子图需要额外高度容纳 z 轴标签与刻度，其余按统一网格基准。
 PCA_3D_CELL_SIZE = (5.6, 5.6)

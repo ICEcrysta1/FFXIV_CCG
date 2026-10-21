@@ -171,6 +171,13 @@ def load_analysis_context(
     dataset = runtime.dataset
     data_spec = runtime.data_spec
     device = runtime.device
+    project_config = load_project_config(job_tag=data_spec.job_tag)
+    action_potencies = {
+        skill.key: float(skill.potency)
+        for skill in (*project_config.system.skills, *project_config.job.skills)
+    }
+    action_potencies.update((action.key, 0.0) for action in load_policy_actions())
+    label_potencies = tuple(action_potencies[key] for key in data_spec.action_keys)
     if max_samples <= 0:
         max_samples = len(dataset)
     samples = [dataset[index] for index in range(min(max_samples, len(dataset)))]
@@ -214,6 +221,8 @@ def load_analysis_context(
                 encoded=encoded,
                 layout=runtime.context_encoder.layout,
                 job_tag=data_spec.job_tag,
+                action_potencies=label_potencies,
+                action_is_gcd=data_spec.action_is_gcd,
                 logits=logits.detach().float().cpu().numpy(),
             )
             # 按所选决策的处理进度释放预算，避免早期长前缀用完整份限额。

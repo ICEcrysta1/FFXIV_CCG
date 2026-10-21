@@ -144,7 +144,7 @@ FFXIV_CCG/
 │   │   ├── cache_compilation.py                      模型分析缺少 compiled cache 时，委托正式转换 API 补齐；保持源文件去重、并发和失败校验
 │   │   ├── common.py                                 checkpoint/cache 加载、统一 YAML precision 的模型 dtype/autocast、loss 轻量上下文、缺失 cache 时委托同包编译入口、逐批释放 trace 的 hidden 提取、DataSpec 对齐、低内存 CPU PCA、分析角色显示标签与 magma 统一取色和统一图表布局
 │   │   ├── main.py                                   分析中心编排入口；同一命令先输出基础图，释放重上下文后以相同 checkpoint/数据/精度追加 loss landscape
-│   │   └── token_metadata.py                         按实际历史/当前状态位置构造 step、label/prediction 索引、AF/UI、MP 和 label logit 元数据
+│   │   └── token_metadata.py                         按实际历史/当前状态位置构造 step、label/prediction 索引、标签技能基础威力与 GCD/oGCD 分类、AF/UI、MP 和 label logit 元数据
 │   ├── onnx_export/                                  checkpoint 后处理 ONNX 导出脚本包，与训练循环解耦；纯 Tensor policy 复用已有模型权重并输出策略后处理前 logits
 │   │   ├── io/                                       ONNX 部署产物公共 I/O
 │   │   │   ├── __init__.py                           产物处理子包入口
