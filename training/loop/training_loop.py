@@ -4,12 +4,8 @@ from __future__ import annotations
 
 import logging
 import math
-import multiprocessing
-import os
 import random
 import time
-from concurrent.futures import ProcessPoolExecutor
-from copy import deepcopy
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -441,64 +437,32 @@ def _warmup_compiled_training(model: CausalPolicyModel, config: RunConfig) -> No
     device = next(model.parameters()).device
     started = time.perf_counter()
     batch_sizes = (config.batch_size, 1) if config.batch_size > 1 else (1,)
-    logger.info("CUDA 编译预热开始：首次运行可能需要数分钟，完成后开始训练计时")
-    workers = min(2, len(batch_sizes), os.process_cpu_count() or 1) if device.type == "cuda" else 1
-    if workers > 1:
-        # Dynamo 的图编译锁属于进程；按 batch 特化分工，共享 AOT 与内核缓存。
-        compile_threads = max(1, (os.process_cpu_count() or 1) // workers)
-        logger.info("并行编译：%d 个进程，每进程最多 %d 个内核编译线程", workers, compile_threads)
-        encoder = deepcopy(model.encoder).cpu()
-        with ProcessPoolExecutor(
-            max_workers=workers, mp_context=multiprocessing.get_context("spawn"),
-        ) as pool:
-            futures = [
-                pool.submit(_compile_warmup_worker, encoder, config, device, batch, compile_threads)
-                for batch in batch_sizes
-            ]
-            for future in futures:
-                future.result()
-        del encoder
-        logger.info("并行编译完成，主进程接入编译缓存")
-    with torch.random.fork_rng(devices=[device.index] if device.type == "cuda" else []):
-        _warmup_encoder(model.encoder, config, device, batch_sizes)
-    logger.info("CUDA 编译预热完成，耗时 %.1f 秒", time.perf_counter() - started)
-
-
-def _compile_warmup_worker(encoder, config, device, batch_size, compile_threads):
-    """独立进程编译，避免争用主进程的 Dynamo 锁和随机数状态。"""
-    import torch._inductor.config as inductor_config
-
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-    torch.set_num_threads(1)
-    inductor_config.compile_threads = compile_threads
-    _warmup_encoder(encoder.to(device), config, device, (batch_size,))
-
-
-def _warmup_encoder(encoder, config, device, batch_sizes):
-    """用实际 batch 和接近容量的长度选核，并覆盖 batch/token 为 1 的特化。"""
     # 避开容量与 FFN 隐藏宽度相等的偶然绑定；小尺寸提示会影响正式 batch 的选核。
     lengths = tuple(dict.fromkeys((max(2, config.model.context_capacity - 1), 1)))
-    for batch_size in batch_sizes:
-        for length in lengths:
-            started = time.perf_counter()
-            logger.info("编译预热 [pid=%d]：batch=%d tokens=%d，执行前向和反向", os.getpid(), batch_size, length)
-            tokens = torch.randn(
-                batch_size, length, config.model.d_model,
-                device=device, dtype=torch.float32, requires_grad=True,
-            )
-            with autocast_context(device, config.precision):
-                hidden, _, _ = run_causal_encoder(encoder, {
-                    "tokens": tokens,
-                    "valid": torch.ones(batch_size, length, device=device, dtype=torch.bool),
-                })
-            # 只请求输入梯度，触发所有局部 AOT 反向但不写入 parameter.grad。
-            torch.autograd.grad(hidden.sum(), tokens)
-            if device.type == "cuda":
-                torch.cuda.synchronize(device)
-            logger.info(
-                "编译预热完成 [pid=%d]：batch=%d tokens=%d，耗时 %.1f 秒",
-                os.getpid(), batch_size, length, time.perf_counter() - started,
-            )
+    logger.info("CUDA 编译预热开始：串行复用当前模型，首次运行可能需要数分钟，完成后开始训练计时")
+    with torch.random.fork_rng(devices=[device.index] if device.type == "cuda" else []):
+        for batch_size in batch_sizes:
+            for length in lengths:
+                shape_started = time.perf_counter()
+                logger.info("编译预热：batch=%d tokens=%d，执行前向和反向", batch_size, length)
+                tokens = torch.randn(
+                    batch_size, length, config.model.d_model,
+                    device=device, dtype=torch.float32, requires_grad=True,
+                )
+                with autocast_context(device, config.precision):
+                    hidden, _, _ = run_causal_encoder(model.encoder, {
+                        "tokens": tokens,
+                        "valid": torch.ones(batch_size, length, device=device, dtype=torch.bool),
+                    })
+                # 只请求输入梯度，触发所有局部 AOT 反向但不写入 parameter.grad。
+                torch.autograd.grad(hidden.sum(), tokens)
+                if device.type == "cuda":
+                    torch.cuda.synchronize(device)
+                logger.info(
+                    "编译预热完成：batch=%d tokens=%d，耗时 %.1f 秒",
+                    batch_size, length, time.perf_counter() - shape_started,
+                )
+    logger.info("CUDA 编译预热完成，耗时 %.1f 秒", time.perf_counter() - started)
 
 
 def _seed_everything(seed: int) -> None:

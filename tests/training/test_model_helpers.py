@@ -115,6 +115,7 @@ def test_compile_warmup_preserves_rng_parameters_and_existing_gradients(tmp_path
     original = training_loop_impl.run_causal_encoder
 
     def record(encoder, encoded):
+        assert encoder is model.encoder
         calls.append(tuple(encoded["tokens"].shape[:2]))
         result = original(encoder, encoded)
         if fail:
@@ -127,7 +128,7 @@ def test_compile_warmup_preserves_rng_parameters_and_existing_gradients(tmp_path
             training_loop_impl._warmup_compiled_training(model, config)
     else:
         training_loop_impl._warmup_compiled_training(model, config)
-        assert set(calls) == {(3, 16), (3, 1), (1, 16), (1, 1)}
+        assert calls == [(3, 16), (3, 1), (1, 16), (1, 1)]
     assert torch.equal(torch.get_rng_state(), rng)
     for name, value in model.state_dict().items():
         torch.testing.assert_close(value, state[name], rtol=0, atol=0)
