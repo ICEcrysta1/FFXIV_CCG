@@ -7,18 +7,20 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from scripts.onnx_export import CapacityContract, OnnxPolicy
-from scripts.onnx_export.runtime.validation import _assert_padding_keys_blocked, validate_pytorch_matrix
 from common.policy.config import ModelConfig
 from common.policy.data import DataSpec
 from common.policy.data.schema import StateFeatureLayout
-from tests.training._causal_fixtures import make_state_groups
-from common.policy.model.attention.attention_variants import run_head_attention
 from common.policy.model import (
     CausalPolicyModel,
     RepetitionConfig,
 )
-
+from common.policy.model.attention.attention_variants import run_head_attention
+from scripts.onnx_export import CapacityContract, OnnxPolicy
+from scripts.onnx_export.runtime.validation import (
+    _assert_padding_keys_blocked,
+    validate_pytorch_matrix,
+)
+from tests.training._causal_fixtures import make_state_groups
 
 TENSOR_INPUT_KEYS = (
     "scene_vectors",
@@ -200,8 +202,8 @@ def test_forward_and_trace_delegate_action_readout_to_public_model_method(
     bf16_float_compute: bool,
 ):
     model = _make_model()
-    model.encoder.to(dtype=dtype)
-    model.output_head.to(dtype=dtype)
+    model.set_compute_dtype(dtype)
+    assert all(parameter.dtype == torch.float32 for parameter in model.encoder.residual_mix.parameters())
     # 非低精度格点的 FP32 分数同时验证最终输出的目标精度舍入。
     sentinel = torch.tensor([[7.0003, -3.0003, 2.0003]], dtype=torch.float32)
     calls = []
@@ -221,7 +223,8 @@ def test_forward_and_trace_delegate_action_readout_to_public_model_method(
     torch.testing.assert_close(traced.logits, sentinel.to(dtype=dtype), rtol=0, atol=0)
     assert len(calls) == 2
     assert calls[0].shape == calls[1].shape == (1, model.config.d_model)
-    assert calls[0].dtype == calls[1].dtype == torch.float32
+    assert calls[0].dtype == (torch.float32 if bf16_float_compute else dtype)
+    assert calls[1].dtype == dtype
     if bf16_float_compute:
         assert policy.model.output_head.weight.dtype == torch.bfloat16
         assert policy.compute_model.output_head.weight.dtype == torch.float32
@@ -238,8 +241,7 @@ def test_float16_policy_and_trace_cast_after_fp32_softcap(
         full_attention_residuals=full_attention_residuals,
         logit_softcap=2.5,
     )
-    model.encoder.half()
-    model.output_head.half()
+    model.set_compute_dtype(torch.float16)
     policy = OnnxPolicy(model)
     batch = _make_batch()
     with torch.no_grad():
@@ -277,13 +279,11 @@ def test_float16_softcap_boundaries_keep_saturated_outputs_finite(
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA is unavailable")
     model = _make_model(logit_softcap=logit_softcap).to(device=device)
-    model.encoder.half()
-    model.output_head.half()
+    model.set_compute_dtype(torch.float16)
     raw_logits = torch.tensor([[-float("inf"), 0.0, float("inf")]],
                               device=device, dtype=torch.float16)
 
     def saturated_output_head(current_hidden):
-        assert current_hidden.dtype == torch.float32
         assert current_hidden.device == raw_logits.device
         return raw_logits.expand(current_hidden.shape[0], -1)
 

@@ -142,10 +142,9 @@ def run_training(
         vocab_size=vocab.size(),
         repetition=config.repetition,
     ).to(device=device)
-    # 输入投影固定 FP32；主干与输出头沿用既有参数和梯度精度。
+    # 输入投影与 HC 保留 FP32；主干与输出头沿用既有参数和梯度精度。
     parameter_dtype = torch.float32 if config.fp32_gradients else model_dtype(config.precision)
-    model.encoder.to(dtype=parameter_dtype)
-    model.output_head.to(dtype=parameter_dtype)
+    model.set_compute_dtype(parameter_dtype)
     if config.activation_checkpoint_ffn:
         model.enable_activation_checkpoint_ffn()
     if config.activation_checkpoint_attention:

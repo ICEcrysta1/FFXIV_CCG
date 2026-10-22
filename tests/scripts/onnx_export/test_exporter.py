@@ -13,11 +13,19 @@ import numpy as np
 import pytest
 import torch
 
+from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
 from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, ModelInputContract, Normalizer, SkillVocab
-from common.policy.data.schema import SceneWindowSchema, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
-from common.policy.data.contracts.input_contract import INPUT_CONTRACT_VERSION, TOKEN_ENCODING_CONTRACT
-from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
+from common.policy.data.contracts.context_fields import MODEL_INPUT_FIELDS
+from common.policy.data.contracts.input_contract import (
+    INPUT_CONTRACT_VERSION,
+    TOKEN_ENCODING_CONTRACT,
+)
+from common.policy.data.schema import (
+    TRAINING_SAMPLE_SCHEMA_VERSION,
+    SceneWindowSchema,
+    TrainingSchema,
+)
 from common.policy.model import CausalPolicyModel
 from common.pytorch.serialization import safe_torch_load
 from scripts.autoregressive_replay.backends import (
@@ -27,16 +35,14 @@ from scripts.autoregressive_replay.backends import (
 )
 from scripts.onnx_export import TENSOR_INPUT_NAMES, CapacityContract, DeploymentManifest
 from scripts.onnx_export import export as export_module
-from scripts.onnx_export.contracts.contract import make_inputs, slice_dynamic_inputs
 from scripts.onnx_export.contracts import contract as tensor_contract_module
-from common.policy.data.contracts.context_fields import MODEL_INPUT_FIELDS
-from tests.training._causal_fixtures import make_data_spec, make_input_contract, make_state_groups
-from scripts.onnx_export.contracts.deployment_profile import DeploymentProfile
+from scripts.onnx_export.contracts.contract import make_inputs, slice_dynamic_inputs
 from scripts.onnx_export.contracts.deployment_contract import (
     DEPLOYMENT_CONTRACT_VERSION,
     DEPLOYMENT_MANIFEST_VERSION,
     DeploymentContract,
 )
+from scripts.onnx_export.contracts.deployment_profile import DeploymentProfile
 from scripts.onnx_export.export import environment as environment_module
 from scripts.onnx_export.export import export_package
 from scripts.onnx_export.export import publish as publish_module
@@ -74,6 +80,11 @@ from scripts.onnx_export.runtime.tensor_runtime import (
     GOLDEN_BF16_ENCODING,
     run_ort_tensors,
     tensor_to_golden_array,
+)
+from tests.training._causal_fixtures import (
+    make_data_spec,
+    make_input_contract,
+    make_state_groups,
 )
 
 
@@ -266,6 +277,7 @@ def test_low_precision_export_keeps_fp32_input_values_and_weights(tmp_path, prec
     onnx = pytest.importorskip("onnx")
     pytest.importorskip("onnxscript")
     from onnx import numpy_helper
+
     from scripts.onnx_export.export.checkpoint import load_policy_contracts
     from scripts.onnx_export.export.graph import export_and_stamp
 
@@ -630,11 +642,10 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
         TOKEN_ENCODING_CONTRACT["logit_softcap"]
     )
     residual = manifest["contract"]["residual_composition"]
-    assert residual["type"] == "learned_residual_mix"
-    assert residual["initialization"] == {
-        "method": "linspace", "r": {"start": 1.15, "end": 1.05},
-        "a": {"start": .20, "end": .05},
-    }
+    assert residual["type"] == "hyper_connections"
+    assert (residual["hc_mult"], residual["hc_sinkhorn_iters"], residual["hc_eps"]) == (4, 20, 1e-6)
+    assert residual["pre_handoff"] == "next_sublayer"
+    assert manifest["contract"]["model_config"]["swiglu_limit"] == 10.0
     assert manifest["model"]["external_data"] is False
     # 导出常量折叠可能合并初始化值，因此仍以保留绝大多数模型权重作为验收。
     assert manifest["model"]["retained_float_initializer_ratio"] >= 0.98
@@ -668,12 +679,12 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
         DeploymentManifest.load(invalid_path, verify_files=False)
 
     # 机制、初始化元数据及版本均由 checkpoint 权威配置决定。
-    for missing_field in ("residual_mix_r_start", "residual_mix_r_end", "residual_mix_a_start", "residual_mix_a_end"):
+    for missing_field in ("hc_mult", "hc_sinkhorn_iters", "hc_eps"):
         incomplete = deepcopy(manifest["contract"])
         incomplete["model_config"].pop(missing_field)
-        with pytest.raises(ValueError, match="missing residual mix initialization fields"):
+        with pytest.raises(ValueError, match="missing hyper-connection fields"):
             DeploymentContract.from_dict(incomplete)
-    for field in ("formula", "x0", "attention_and_skip_input", "initialization"):
+    for field in ("pre_handoff", "initial_pre_mix", "residual_mix", "compute_dtype"):
         forged = deepcopy(manifest["contract"])
         forged["residual_composition"][field] = "legacy"
         with pytest.raises(ValueError, match="authoritative layouts"):
@@ -734,16 +745,15 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
     assert (dead_logits - no_dead_logits).abs().max().item() > 1e-4
     assert compare_backend_logits(pytorch_backend, ort_backend, without_dead, data_spec.action_keys)["max_abs_diff"] <= 1e-4
 
-    # 已学习的 scalar 影响真实 logits；导出 parity 不能仅覆盖初始化 ramp。
+    # 已学习的四路混合影响真实 logits；导出 parity 不能仅覆盖默认初始化。
     mix = pytorch_backend.model.encoder.residual_mix
-    saved_r, saved_a = mix.r.detach().clone(), mix.a.detach().clone()
-    with torch.no_grad():
+    saved_mix = deepcopy(mix.state_dict())
+    with torch.no_grad(), torch.random.fork_rng(devices=[]):
         learned_logits = pytorch_backend.model(live_batch)["logits"]
-        mix.r.copy_(torch.linspace(1.15, 1.05, 2))
-        mix.a.copy_(torch.linspace(.20, .05, 2))
+        for module in mix:
+            module.reset_parameters()
         initialized_logits = pytorch_backend.model(live_batch)["logits"]
-        mix.r.copy_(saved_r)
-        mix.a.copy_(saved_a)
+        mix.load_state_dict(saved_mix)
     assert (learned_logits - initialized_logits).abs().max().item() > 1e-4
 
     tampered = deepcopy(manifest)
@@ -1228,7 +1238,7 @@ def test_small_bf16_model_exports_and_runs_on_strict_cuda(tmp_path, activation):
     assert manifest["contract"]["model_input_contract"] == json.loads(json.dumps(input_contract.to_dict()))
     assert manifest["contract"]["precision"] == "bf16"
     assert manifest["contract"]["model_config"]["logit_softcap"] == 15.0
-    assert manifest["contract"]["residual_composition"]["type"] == "learned_residual_mix"
+    assert manifest["contract"]["residual_composition"]["type"] == "hyper_connections"
     assert manifest["model"]["compute_precision"] == "float32"
     assert manifest["exporter"]["onnxscript"] == BF16_TARGET_ONNXSCRIPT_VERSION
     assert manifest["contract"]["tensor_outputs"][0]["dtype"] == (
@@ -1342,7 +1352,7 @@ def test_deployment_contract_preserves_actual_residual_path(tmp_path, manifest_s
     _write_small_profile(profile)
     contracts = load_policy_contracts(checkpoint_path=checkpoint, deployment_profile_path=profile, precision="float32")
     payload = contracts.deployment_contract.to_dict()
-    expected = "full_attention_residual" if full_attention_residuals else "learned_residual_mix"
+    expected = "full_attention_residual" if full_attention_residuals else "hyper_connections"
     assert payload["residual_composition"]["type"] == expected
     assert payload["model_config"]["qk_norm_scale"] == 1.7
     assert payload["model_config"]["logit_softcap"] == 7.5
@@ -1617,14 +1627,14 @@ def test_load_policy_rejects_unnormalized_qk_checkpoint(tmp_path, legacy):
         export_module.load_policy(checkpoint, precision="float32")
 
 
-@pytest.mark.parametrize("field", ["residual_mix_r_start", "residual_mix_r_end", "residual_mix_a_start", "residual_mix_a_end"])
-def test_load_policy_requires_all_saved_residual_initialization_fields(tmp_path, field):
+@pytest.mark.parametrize("field", ["hc_mult", "hc_sinkhorn_iters", "hc_eps", "swiglu_limit"])
+def test_load_policy_requires_all_saved_hyper_connection_and_swiglu_fields(tmp_path, field):
     checkpoint = tmp_path / "checkpoint.pt"
     _write_small_checkpoint(checkpoint)
     payload = safe_torch_load(checkpoint)
     payload["model_config"].pop(field)
     torch.save(payload, checkpoint)
-    with pytest.raises(ValueError, match="residual.*initialization|residual_mix"):
+    with pytest.raises(ValueError, match=field):
         export_module.load_policy(checkpoint, precision="float32")
 
 
@@ -1640,6 +1650,7 @@ def test_load_policy_rejects_experiment_guard_even_with_current_contract(tmp_pat
 
 def test_deployment_rejects_reassigned_vocab_rows_even_with_recomputed_signatures(tmp_path):
     from dataclasses import replace
+
     from scripts.onnx_export.export.checkpoint import load_policy_contracts
 
     checkpoint, profile = tmp_path / "checkpoint.pt", tmp_path / "profile.json"
@@ -1741,13 +1752,14 @@ def _write_small_checkpoint(
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(20260813)
         model = CausalPolicyModel(data_spec, config, vocab_size=8).eval()
-        # 模拟训练后的 scalar；真实导出必须使用权重，不能重建初始化 ramp。
+        # 模拟训练后的四路混合；真实导出必须使用 checkpoint 中的权重。
         with torch.no_grad():
             # 保存独立头训练后的值，恢复时不得重新拷贝输入 embedding。
             model.output_head.weight[0].add_(0.125)
             if not full_attention_residuals:
-                model.encoder.residual_mix.r.copy_(torch.tensor([.93, 1.27]))
-                model.encoder.residual_mix.a.copy_(torch.tensor([-.07, .13]))
+                for index, module in enumerate(model.encoder.residual_mix):
+                    module.scale.copy_(torch.tensor([.2, .4, .3]))
+                    module.base.add_(torch.linspace(-.6, .5, 24) * (index + 1))
     normalizer = Normalizer()
     normalizer.configure_job_resources("black_mage")
     scene_windows = tuple(

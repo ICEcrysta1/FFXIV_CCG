@@ -13,6 +13,7 @@
 
 ### Breaking Changes
 
+- 主干普通残差由逐层 `r*x+a*x0` 替换为四路 Hyper-Connections：attention／FFN 各自学习动态 pre、post 与 Sinkhorn 残差混合，pre 交给下一子层，末端按最后 pre 加权读出；移除四个 `residual_mix_*` 配置，保留与 Full AttnRes 的互斥选择，主干统一要求 PreNorm。SwiGLU 在 FP32 中将 up 裁剪至 `[-10, 10]`，gate 在 SiLU 前仅裁剪上界 `10`。checkpoint 输入契约一次由 `25` 升至 `26`，旧 checkpoint 需重新训练，部署包和 GRPO 轨迹需重新生成；本次不改变 raw bank、归一化或 compiled cache，可复用既有数据缓存。
 - 模型基础状态仅战斗时间保留重锚与 DELTA 编码，MP、布尔、层数、量谱及有上限的剩余时长均逐步使用归一化绝对值；场景起止时间继续相对编码，持续时长使用绝对值。相对时间与绝对时长分别保存 `time_scale`、`duration_scale`，默认均为 `270` 秒；旧归一化和输入描述不再兼容，缓存、checkpoint、GRPO 轨迹及部署包需重新生成，本分支契约版本不重复递增。
 - 模型状态移除可由 MP 与上限推导的 `mp_ratio`，黑魔基础状态及 null/reset mask 由 `82` 维缩减为 `80` 维，总状态由 `232` 维缩减为 `230` 维；旧缓存需从 raw 重建，checkpoint 需重新训练，部署包与 GRPO 轨迹需重新生成。通用 seconds/GCD 展示输出保留该比例；本分支已升级的契约版本不重复递增，需重装修改后的原生扩展。
 - 死亡历史新增 `history_dead_positions`／`history_dead_mask` 两项模型输入，checkpoint 输入契约由 `23` 升至 `24`，ONNX 部署契约由 `27` 升至 `28`，图输入由 `12` 项增至 `14` 项；旧 checkpoint 需重新训练，部署包需重新导出，旧 GRPO 轨迹需重新生成。本次独立技能状态表改造要求旧 compiled PT 从 raw 重新转换。
@@ -50,6 +51,7 @@
 
 ### Fixed
 
+- 修复 Hyper-Connections 与 SwiGLU 的训练显存和耗时开销：CUDA 训练将 Sinkhorn 行列归一化展开为可融合的逐元素计算，并将 HC 重算与反向一起编译，读流和残差合成融合 FP32 乘加与精度转换；SwiGLU 融合裁剪、SiLU、乘积及反向，只保存原始 up/gate，取消 CUDA 门控局部 checkpoint。CPU 保留局部重算，验证、推理和 ONNX 保留原计算；公式、dtype、参数、state_dict、YAML 与现有契约版本不变。安装入口提前检查编译所需的对应 Python 开发头文件。
 - 修复 compiled cache 反序列化吞掉 `MemoryError`、将内存不足误判为缓存未命中的问题；现在原样向调用方传播内存错误，其他损坏缓存继续回退，并为缓存读取与 TensorBoard 图诊断失败日志补全异常堆栈。
 - 归一化计算统一使用 FP32 入口，拒绝非 FP32 技能原料；公共尺度及保存的量谱、Buff、技能层数上限须处于 FP32 正常正数范围，提前拒绝转型后成为零或无穷大的分母，避免状态和场景编码产生 NaN/Inf。
 - 修复策略记录接受 `NaN/±Inf` 时间并写入历史的问题。

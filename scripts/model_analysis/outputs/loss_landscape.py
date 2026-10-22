@@ -15,7 +15,11 @@ from torch import nn
 from torch.nn import functional as F
 
 from common.policy.model import CausalPolicyModel
-from common.policy.model.execution.causal_encoder import run_causal_layer
+from common.policy.model.execution.causal_encoder import (
+    collapse_encoder_state,
+    initialize_encoder_state,
+    run_causal_layer,
+)
 from common.policy.model.repetition import build_repetition_penalty_mask
 from common.pytorch.runtime import model_dtype
 from training import TrainingCollator
@@ -325,22 +329,24 @@ class _LayerForward:
             with context.autocast():
                 encoded = context.model.input_encoder(batch)
                 self.encoded = encoded
-                hidden = encoded["tokens"]
+                hidden, pre_mix, _ = initialize_encoder_state(context.model.encoder, encoded["tokens"])
                 for index, layer in enumerate(context.model.encoder.layers[:layer_index]):
-                    hidden = self._step(layer, hidden, index)
+                    hidden, pre_mix = self._step(layer, hidden, pre_mix, index)
                 self.hidden = hidden
+                self.pre_mix = pre_mix
 
-    def _step(self, layer, hidden, layer_index):
+    def _step(self, layer, hidden, pre_mix, layer_index):
         encoded = self.encoded
-        return run_causal_layer(
+        result = run_causal_layer(
             layer, hidden,
             key_valid=encoded["valid"],
             position_ids=encoded["position_ids"],
             rotary_position_encoding=self.context.model.encoder.rotary_position_encoding,
             residual_mix=getattr(self.context.model.encoder, "residual_mix", None),
-            initial_tokens=encoded["tokens"],
+            pre_mix=pre_mix,
             layer_index=layer_index,
-        )[0]
+        )
+        return result[0], result[4]
 
     def logits(self):
         model = self.context.model
@@ -349,10 +355,12 @@ class _LayerForward:
                 # 不计算训练用 top-k 和重复的低精度交叉熵。
                 return model({k: v for k, v in self.batch.items() if k != "label_index"})["logits"]
             hidden = self.hidden
+            pre_mix = self.pre_mix
             for index, layer in enumerate(
                 model.encoder.layers[self.layer_index:], start=self.layer_index,
             ):
-                hidden = self._step(layer, hidden, index)
+                hidden, pre_mix = self._step(layer, hidden, pre_mix, index)
+            hidden = collapse_encoder_state(model.encoder, hidden, pre_mix)
             if model.encoder.norm is not None:
                 hidden = model.encoder.norm(hidden)
             return model.score_hidden(self.encoded, hidden, self.batch)

@@ -11,7 +11,10 @@ import torch
 
 from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, ModelInputContract, SkillVocab
-from common.policy.data.contracts.context_fields import MODEL_INPUT_FIELDS, tensor_dimensions
+from common.policy.data.contracts.context_fields import (
+    MODEL_INPUT_FIELDS,
+    tensor_dimensions,
+)
 from common.policy.data.contracts.input_contract import residual_composition_contract
 from common.policy.model.repetition import parse_repetition_config
 
@@ -213,6 +216,8 @@ class DeploymentContract:
             raise ValueError("deployment model_config missing qk_norm_scale; re-export the package")
         if "logit_softcap" not in self.model_config:
             raise ValueError("deployment model_config missing logit_softcap; re-export the package")
+        if "swiglu_limit" not in self.model_config:
+            raise ValueError("deployment model_config missing swiglu_limit; re-export the package")
         # 复用模型配置的数值校验，但禁止给旧部署元数据补默认尺度。
         parsed_model_config = ModelConfig.from_mapping(self.model_config)
         if self.precision not in SUPPORTED_PRECISIONS:

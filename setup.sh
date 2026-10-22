@@ -28,6 +28,10 @@ if [[ -x "$PROJECT_PYTHON" ]]; then
     # 修复时沿用原解释器，避免默认 python3 升级后混用不同版本的依赖。
     VENV_PYTHON="$("$PROJECT_PYTHON" -c 'import sys; print(sys._base_executable)')"
 fi
+"$VENV_PYTHON" -c 'import sys, sysconfig
+from pathlib import Path
+header = Path(sysconfig.get_path("include")) / "Python.h"
+sys.exit(0 if header.is_file() else f"缺少 Python 开发头文件：{header}，请先安装 python{sys.version_info.major}.{sys.version_info.minor}-dev 后重新运行。")'
 if [[ ! -x "$PROJECT_PYTHON" ]] || ! "$PROJECT_PYTHON" -m pip --version >/dev/null 2>&1; then
     if ! "$VENV_PYTHON" -c 'import venv, ensurepip' >/dev/null 2>&1; then
         VENV_PACKAGE="$("$VENV_PYTHON" -c 'import sys; print(f"python{sys.version_info.major}.{sys.version_info.minor}-venv")')"

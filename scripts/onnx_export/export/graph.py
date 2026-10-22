@@ -132,7 +132,7 @@ def export_and_stamp(
 
 
 def _store_float_compute_weights_as_bf16(model_proto, onnx, model) -> None:
-    """主干还原为 BF16 存储，输入编码器的原始 FP32 权重保持精度。"""
+    """主干还原为 BF16 存储，输入编码器与 HC 的 FP32 权重保持精度。"""
     from onnx import numpy_helper
 
     casts = []
@@ -140,6 +140,8 @@ def _store_float_compute_weights_as_bf16(model_proto, onnx, model) -> None:
         if initializer.data_type != onnx.TensorProto.FLOAT or math.prod(initializer.dims) <= 1:
             continue
         if _is_input_encoder_initializer(initializer, model, float_data_type=onnx.TensorProto.FLOAT):
+            continue
+        if _is_hyper_connection_initializer(initializer, model, float_data_type=onnx.TensorProto.FLOAT):
             continue
         values = torch.from_numpy(numpy_helper.to_array(initializer).copy())
         quantized = values.to(torch.bfloat16)
@@ -239,6 +241,9 @@ def model_alignment(
         and not _is_input_encoder_initializer(
             initializer, model, float_data_type=tensor_proto.FLOAT,
         )
+        and not _is_hyper_connection_initializer(
+            initializer, model, float_data_type=tensor_proto.FLOAT,
+        )
     ]
     other_float_initializer_max_elements = max(
         (
@@ -272,6 +277,33 @@ def model_alignment(
             float(onnx_float_initializer_count) / float(pt_parameter_count)
         ),
     }
+
+
+def _is_hyper_connection_initializer(initializer, model: torch.nn.Module, *, float_data_type: int) -> bool:
+    """只允许实际 HC 参数、投影转置和导出器折叠的 base 切片保留 FP32。"""
+    if initializer.data_type != float_data_type:
+        return False
+    residual_mix = getattr(model.encoder, "residual_mix", None)
+    if residual_mix is None:
+        return False
+    from onnx import numpy_helper
+
+    actual = torch.from_numpy(numpy_helper.to_array(initializer).copy())
+    for connection in residual_mix.children():
+        for name, parameter in connection.named_parameters(recurse=False):
+            if name not in {"fn", "base", "scale"} or parameter.dtype != torch.float32:
+                continue
+            expected = parameter.detach().cpu()
+            if actual.shape == expected.shape and torch.equal(actual, expected):
+                return True
+            if name == "fn" and actual.shape == expected.T.shape and torch.equal(actual, expected.T):
+                return True
+            if name == "base":
+                mult = connection.hc_mult
+                for part in (expected[:mult], expected[mult:2 * mult], expected[2 * mult:]):
+                    if actual.numel() == part.numel() and torch.equal(actual.reshape(-1), part):
+                        return True
+    return False
 
 
 def _is_input_encoder_initializer(initializer, model: torch.nn.Module, *, float_data_type: int) -> bool:

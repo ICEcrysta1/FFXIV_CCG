@@ -15,37 +15,49 @@ import torch
 from matplotlib.colors import Normalize
 from torch import nn
 
-import scripts.model_analysis.cache_compilation as cache_compilation
-from common.pytorch.serialization import safe_torch_load
-from common.pytorch.runtime import model_dtype
-from common.policy.model.layers.input_encoder import (
-    ROLE_SCENE, ROLE_STATE, ROLE_SKILL, build_position_ids, build_role_ids,
-)
-from scripts.model_analysis.common import pca_projection, skill_name_by_vocab_id
-from scripts.model_analysis import common as analysis_common
-from scripts.model_analysis.job_labels import decision_state_labels
-from scripts.model_analysis.job_labels.black_mage import decision_state_labels as black_mage_labels
-from scripts.model_analysis.outputs import attention as attention_output
-from scripts.model_analysis.outputs import hidden_statistics as hidden_output
-from scripts.model_analysis.outputs import loss_landscape as loss_output
-from scripts.model_analysis.outputs import history_embedding as history_output
-from scripts.model_analysis.outputs import pca_layers as pca_output
-from scripts.model_analysis.outputs import skill_embedding as skill_output
-from scripts.model_analysis.outputs.pca_layers import _strongest_pca_axis
-from scripts.model_analysis.outputs.skill_embedding import _skill_labels
-from scripts.model_analysis.token_metadata import build_token_metadata
+from common.configuration.environment import load_root_dotenv
+from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
 from common.policy.config import (
     resolve_policy_checkpoint_path,
     resolve_policy_device,
     resolve_policy_model_config_path,
     resolve_policy_model_job_tag,
 )
-from training.config import RunConfig
-from common.configuration.environment import load_root_dotenv
-from common.policy.data import ActionSpace, DataSpec, ModelInputContract, Normalizer, SkillVocab
-from common.policy.data.schema import TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
-from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
+from common.policy.data import (
+    ActionSpace,
+    DataSpec,
+    ModelInputContract,
+    Normalizer,
+    SkillVocab,
+)
+from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION, TrainingSchema
+from common.policy.model.layers.input_encoder import (
+    ROLE_SCENE,
+    ROLE_SKILL,
+    ROLE_STATE,
+    build_position_ids,
+    build_role_ids,
+)
+from common.pytorch.runtime import model_dtype
+from common.pytorch.serialization import safe_torch_load
+from scripts.model_analysis import cache_compilation
+from scripts.model_analysis import common as analysis_common
+from scripts.model_analysis.common import pca_projection, skill_name_by_vocab_id
+from scripts.model_analysis.job_labels import decision_state_labels
+from scripts.model_analysis.job_labels.black_mage import (
+    decision_state_labels as black_mage_labels,
+)
+from scripts.model_analysis.outputs import attention as attention_output
+from scripts.model_analysis.outputs import hidden_statistics as hidden_output
+from scripts.model_analysis.outputs import history_embedding as history_output
+from scripts.model_analysis.outputs import loss_landscape as loss_output
+from scripts.model_analysis.outputs import pca_layers as pca_output
+from scripts.model_analysis.outputs import skill_embedding as skill_output
+from scripts.model_analysis.outputs.pca_layers import _strongest_pca_axis
+from scripts.model_analysis.outputs.skill_embedding import _skill_labels
+from scripts.model_analysis.token_metadata import build_token_metadata
 from tests.training._causal_fixtures import make_state_groups
+from training.config import RunConfig
 from training.loop.checkpoint import _save_checkpoint
 
 
@@ -53,10 +65,10 @@ def test_analysis_scene_uses_independent_env_and_cli_override(monkeypatch, tmp_p
     monkeypatch.setattr(analysis_common, "PROJECT_ROOT", tmp_path)
     monkeypatch.setenv("MODEL_ANALYSIS_SCENE_JSON", "analysis.json.br")
     monkeypatch.setenv("AUTOREGRESSIVE_REPLAY_SCENE_JSON", "replay.json.br")
-    kwargs = dict(raw_root=tmp_path, cache_dir=tmp_path / ".cache",
-                  job_tag="black_mage", cache_shard_size=768,
-                  normalizer=object(), skill_vocab=object(),
-                  expected_action_space=ActionSpace(("a", "b"), (1, 2), (True, False)))
+    kwargs = {"raw_root": tmp_path, "cache_dir": tmp_path / ".cache",
+              "job_tag": "black_mage", "cache_shard_size": 768,
+              "normalizer": object(), "skill_vocab": object(),
+              "expected_action_space": ActionSpace(("a", "b"), (1, 2), (True, False))}
     assert analysis_common._resolve_analysis_source(None, **kwargs) == tmp_path / "analysis.json.br"
     assert analysis_common._resolve_analysis_source(Path("cli.json.br"), **kwargs) == tmp_path / "cli.json.br"
 
@@ -80,10 +92,10 @@ def test_analysis_scene_defaults_to_prepared_cache(monkeypatch, tmp_path):
         expected_action_space=action_space,
         normalizer=normalizer, skill_vocab=vocab,
     ) == expected
-    assert calls == [(tmp_path, dict(cache_dir=tmp_path / ".cache",
-                                   job_tag="black_mage", cache_shard_size=768,
-                                   expected_action_space=action_space,
-                                   normalizer=normalizer, expected_skill_vocab=vocab))]
+    assert calls == [(tmp_path, {"cache_dir": tmp_path / ".cache",
+                               "job_tag": "black_mage", "cache_shard_size": 768,
+                               "expected_action_space": action_space,
+                               "normalizer": normalizer, "expected_skill_vocab": vocab})]
 
 
 def test_pca_projection_returns_coordinates_and_explained_variance():
@@ -498,7 +510,12 @@ def test_analysis_restores_saved_input_contract_without_current_yaml(
     monkeypatch, tmp_path, reordered_schema, precision, metadata, expected_dtype,
 ):
     from dataclasses import asdict, replace
-    from scripts.onnx_export.contracts.contract import CapacityContract, TENSOR_INPUT_NAMES, make_inputs
+
+    from scripts.onnx_export.contracts.contract import (
+        TENSOR_INPUT_NAMES,
+        CapacityContract,
+        make_inputs,
+    )
     from tests.scripts.onnx_export.test_exporter import _write_small_checkpoint
 
     checkpoint = tmp_path / "model.pt"
@@ -552,9 +569,9 @@ def test_analysis_restores_saved_input_contract_without_current_yaml(
     monkeypatch.setattr(analysis_common, "find_prepared_scene_source", select)
     monkeypatch.setattr(analysis_common, "Normalizer", lambda: pytest.fail("分析不得从当前 YAML 重建归一化器"))
     monkeypatch.setattr(SkillVocab, "build_from_job_tag", lambda *_a, **_kw: pytest.fail("分析不得重建当前技能词表"))
-    kwargs = dict(checkpoint_path=checkpoint, source_path=None, raw_root=tmp_path,
-                  cache_dir=tmp_path / ".cache", max_history=4, cache_shard_size=512,
-                  cache_max_shards=2, output_dir=tmp_path / "analysis", device_name="cpu", precision=precision)
+    kwargs = {"checkpoint_path": checkpoint, "source_path": None, "raw_root": tmp_path,
+              "cache_dir": tmp_path / ".cache", "max_history": 4, "cache_shard_size": 512,
+              "cache_max_shards": 2, "output_dir": tmp_path / "analysis", "device_name": "cpu", "precision": precision}
     if reordered_schema:
         with pytest.raises(ValueError, match="training state feature keys mismatch"):
             analysis_common.load_loss_landscape_context(**kwargs)
@@ -570,7 +587,7 @@ def test_analysis_restores_saved_input_contract_without_current_yaml(
     assert context.model.input_encoder.skill_embed.weight.shape[0] == 8
     assert context.precision == precision
     for name, parameter in context.model.named_parameters():
-        parameter_dtype = torch.float32 if name.startswith('input_encoder.') else expected_dtype
+        parameter_dtype = torch.float32 if name.startswith(('input_encoder.', 'encoder.residual_mix.')) else expected_dtype
         assert parameter.dtype == parameter_dtype, name
         torch.testing.assert_close(parameter, payload["model_state_dict"][name].to(parameter_dtype), rtol=0, atol=0)
     inputs = make_inputs(
@@ -846,7 +863,7 @@ def test_compact_causal_analysis_preserves_gathered_skill_ids_and_absolute_state
 
 def test_real_causal_trace_loads_metadata_and_keeps_current_query_under_token_cap(monkeypatch, tmp_path):
     """完整分析入口必须兼容真实 trace 和附加历史身份元数据。"""
-    from tests.training.test_kv_cache import _make_model, _make_batch
+    from tests.training.test_kv_cache import _make_batch, _make_model
 
     model = _make_model()
     sample = {"metadata": {"fight_id": "real-trace", "step": 0}}
@@ -1409,20 +1426,18 @@ def test_model_analysis_rejects_old_checkpoint_contract_before_old_fields(monkey
 
 
 @pytest.mark.parametrize("full_attention_residuals", [False, True])
-@pytest.mark.parametrize("norm_first", [False, True])
-def test_loss_landscape_cached_grid_matches_full_forward(full_attention_residuals, norm_first):
+def test_loss_landscape_cached_grid_matches_full_forward(full_attention_residuals):
     from common.policy.model import RepetitionConfig
-    from tests.training.test_kv_cache import _make_model, _make_batch
+    from tests.training.test_kv_cache import _make_batch, _make_model
 
-    if full_attention_residuals and not norm_first:
-        pytest.skip("Full AttnRes requires Pre-LN")
     torch.manual_seed(19)
-    model = _make_model(norm_first=norm_first, full_attention_residuals=full_attention_residuals)
+    model = _make_model(full_attention_residuals=full_attention_residuals)
     if not full_attention_residuals:
-        # 使用差异明显的系数，确保缓存路径没有漏混合或错误复用第一层系数。
+        # 使用差异明显的四路系数，确保缓存路径没有丢失跨子层的 pre_mix。
         with torch.no_grad():
-            model.encoder.residual_mix.r.copy_(torch.tensor([0.8, 1.4]))
-            model.encoder.residual_mix.a.copy_(torch.tensor([0.35, -0.15]))
+            for index, module in enumerate(model.encoder.residual_mix):
+                module.scale.copy_(torch.tensor([0.3, -0.2, 0.4]))
+                module.base.add_(torch.linspace(-0.4, 0.5, 24) * (index + 1))
     model.repetition = RepetitionConfig(mode="blacklist", skills=("fire_iv",), penalty=2.0)
     first = {key: torch.cat((value, value), dim=0) for key, value in _make_batch(3).items()}
     batches = (first, _make_batch(1))
@@ -1456,7 +1471,7 @@ def test_loss_landscape_cached_grid_matches_full_forward(full_attention_residual
 
 
 def test_loss_landscape_restores_parameters_on_forward_failure(monkeypatch):
-    from tests.training.test_kv_cache import _make_model, _make_batch
+    from tests.training.test_kv_cache import _make_batch, _make_model
 
     model = _make_model()
     batch = _make_batch(2)

@@ -13,7 +13,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 # 在安装依赖时停止或使用替身，测试不执行联网、系统安装或 GPU 依赖下载。
 DEPENDENCY_INSTALL_REACHED = 73
 NODE_DEPENDENCY_INSTALL_REACHED = 74
@@ -53,15 +52,18 @@ elif command.name == "apt-get":
 elif command.name.startswith("python3"):
     environment = root / ".venv"
     in_environment = command.parent == environment / "bin"
+    version = "3.12" if command.name == "python3.12" else "3.14"
     if arguments[0] == "-c":
         code = arguments[1]
+        if "sysconfig.get_path" in code and (root / "python_headers_missing").exists():
+            print(f"缺少 Python 开发头文件：/usr/include/python{version}/Python.h，请先安装 python{version}-dev 后重新运行。", file=sys.stderr)
+            sys.exit(1)
         if "import venv, ensurepip" in code:
             sys.exit(0 if (root / "ensurepip_ready").exists() else 1)
         if "sys._base_executable" in code:
             version_file = environment / "base_python"
             print(root / "commands" / (version_file.read_text() if version_file.exists() else "python3"))
         elif "print(f" in code:
-            version = "3.12" if command.name == "python3.12" else "3.14"
             print(f"python{version}-venv")
         elif "sys.prefix" in code:
             if not in_environment or not (environment / "pyvenv.cfg").exists():
@@ -224,6 +226,22 @@ class SetupTests(unittest.TestCase):
         result, calls = self.run_setup()
         self.assert_ready(result, calls)
         self.assertFalse(any(Path(command).name == "apt-get" or arguments[:2] == ["-m", "venv"] for command, arguments in calls))
+
+    def test_missing_python_headers_report_selected_interpreter_before_installation(self):
+        (self.root / "python_headers_missing").touch()
+        for interpreter, version in (("python3", "3.14"), ("python3.12", "3.12")):
+            with self.subTest(interpreter=interpreter):
+                if interpreter == "python3.12":
+                    environment = self.prepare_environment(pip_ready=True)
+                    (environment / "base_python").write_text(interpreter)
+                (self.root / "calls.jsonl").unlink(missing_ok=True)
+                result, calls = self.run_setup()
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("Python.h", result.stderr)
+                self.assertIn(f"python{version}-dev", result.stderr)
+                self.assertEqual(Path(calls[-1][0]).name, interpreter)
+                self.assertFalse(any(Path(command).name == "apt-get" or arguments[:1] == ["-m"]
+                                     for command, arguments in calls))
 
     def test_missing_package_manager_reports_manual_install(self):
         (self.commands / "apt-get").unlink()

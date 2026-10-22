@@ -29,24 +29,27 @@ def run_causal_layer(
     existing_length: int = 0,
     attention_residual=None,
     residual_mix=None,
-    initial_tokens: torch.Tensor | None = None,
+    pre_mix: torch.Tensor | None = None,
     layer_index: int = 0,
     sources: list[torch.Tensor] | None = None,
     collect_attention: bool = False,
     force_explicit_mask: bool = False,
     segment_mask=None,
 ):
-    """编码完整序列或新增因果后缀，返回 hidden、本层新增 K/V 与注意力。
+    """编码完整序列或新增因果后缀，返回残差流、新 K/V、注意力和下个 pre。
 
     Full AttnRes 的 hidden 已由调用方或上一层聚合，本层追加两个子层源。
     """
     if residual_mix is not None:
         if attention_residual is not None:
-            raise ValueError("learned residual mixing and Full AttnRes are mutually exclusive")
-        if initial_tokens is None or initial_tokens.shape != hidden.shape:
-            raise ValueError("residual mixing requires initial tokens aligned with the encoded block")
-        # 混合后的 hidden 同时作为 attention 输入和该层 skip；FFN 不再次混合。
-        hidden = residual_mix(hidden, initial_tokens, layer_index)
+            raise ValueError("Hyper-Connections and Full AttnRes are mutually exclusive")
+        if not layer.norm_first or hidden.ndim != 4 or pre_mix is None:
+            raise ValueError("Hyper-Connections requires Pre-Norm residual streams and pre_mix")
+        attn_mix, ffn_mix = residual_mix[2 * layer_index:2 * layer_index + 2]
+        attn_pre, attn_post, attn_comb = attn_mix.mixes(hidden)
+        attention_hidden = attn_mix.collapse(hidden, pre_mix)
+    else:
+        attention_hidden = hidden
     if attention_residual is not None and (not layer.norm_first or sources is None):
         raise ValueError("Full AttnRes requires Pre-LN layers and a source list")
 
@@ -101,19 +104,41 @@ def run_causal_layer(
             finally:
                 layer._skip_activation_checkpoint = was_skipped
 
-        attended, key, value = checkpoint(attention_block, hidden, use_reentrant=False)
+        attended, key, value = checkpoint(attention_block, attention_hidden, use_reentrant=False)
         weights = None
     else:
-        attended, key, value, weights = attend(hidden)
+        attended, key, value, weights = attend(attention_hidden)
 
-    if attention_residual is not None:
+    if residual_mix is not None:
+        hidden = attn_mix.combine(layer.dropout1(attended), hidden, attn_post, attn_comb)
+        pre_mix, ffn_post, ffn_comb = ffn_mix.mixes(hidden)
+        ffn_input = layer.norm2(ffn_mix.collapse(hidden, attn_pre))
+        hidden = ffn_mix.combine(layer._ff_block(ffn_input), hidden, ffn_post, ffn_comb)
+    elif attention_residual is not None:
         sources.append(layer.dropout1(attended))
         sources.append(layer._ff_block(layer.norm2(attention_residual(sources, 2 * layer_index + 1))))
         # 此聚合同时是下一层 attention 的输入，层边界不再重复计算同一个 query。
         hidden = attention_residual(sources, 2 * layer_index + 2)
     else:
         hidden = finish_layer(layer, hidden, attended)
-    return hidden, key, value, weights
+    return hidden, key, value, weights, pre_mix
+
+
+def initialize_encoder_state(encoder, tokens: torch.Tensor):
+    """训练、增量缓存与分析共用初始残差布局。"""
+    residual_mix = getattr(encoder, "residual_mix", None)
+    if residual_mix is not None:
+        hidden, pre_mix = residual_mix[0].expand(tokens)
+        return hidden, pre_mix, None
+    residual = getattr(encoder, "attention_residual", None)
+    sources = [tokens] if residual is not None else None
+    return (residual(sources, 0) if residual is not None else tokens), None, sources
+
+
+def collapse_encoder_state(encoder, hidden: torch.Tensor, pre_mix: torch.Tensor | None):
+    """按最后一个子层的 pre 读取流，保持分析和最终读出为三维 token。"""
+    residual_mix = getattr(encoder, "residual_mix", None)
+    return residual_mix[0].collapse(hidden, pre_mix) if residual_mix is not None else hidden
 
 
 def run_causal_encoder(
@@ -147,11 +172,10 @@ def run_causal_encoder(
     residual = getattr(encoder, "attention_residual", None)
     residual_mix = getattr(encoder, "residual_mix", None)
 
-    sources = [tokens] if residual is not None else None
-    hidden = residual(sources, 0) if residual is not None else tokens
+    hidden, pre_mix, sources = initialize_encoder_state(encoder, tokens)
     layer_hidden, attentions = [], []
     for index, layer in enumerate(encoder.layers):
-        hidden, _, _, attention = run_causal_layer(
+        hidden, _, _, attention, pre_mix = run_causal_layer(
             layer,
             hidden,
             key_valid=valid,
@@ -159,7 +183,7 @@ def run_causal_encoder(
             rotary_position_encoding=rotary,
             attention_residual=residual,
             residual_mix=residual_mix,
-            initial_tokens=tokens,
+            pre_mix=pre_mix,
             layer_index=index,
             sources=sources,
             collect_attention=collect_attention,
@@ -167,8 +191,9 @@ def run_causal_encoder(
             segment_mask=mask,
         )
         if collect_attention:
-            layer_hidden.append(hidden)
+            layer_hidden.append(collapse_encoder_state(encoder, hidden, pre_mix))
             attentions.append(attention)
+    hidden = collapse_encoder_state(encoder, hidden, pre_mix)
     if encoder.norm is not None:
         hidden = encoder.norm(hidden)
     return hidden, tuple(layer_hidden), tuple(attentions)
