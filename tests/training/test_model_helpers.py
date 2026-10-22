@@ -94,6 +94,48 @@ def test_seed_everything_seeds_python_cpu_and_available_cuda(seed):
         random.setstate(python_state)
 
 
+@pytest.mark.parametrize("fail", (False, True))
+def test_compile_warmup_preserves_rng_parameters_and_existing_gradients(tmp_path, monkeypatch, fail):
+    from common.policy.model import CausalPolicyModel
+
+    config = RunConfig(
+        raw_data_dir=tmp_path, output_dir=tmp_path, job_tag="black_mage", precision="float32",
+        model=ModelConfig(
+            d_model=8, n_layers=1, n_heads=2, num_kv_heads=1, ff_dim=24,
+            dropout=0.2, transformer_activation="swiglu", hc_sinkhorn_iters=1,
+        ),
+    )
+    model = CausalPolicyModel(make_data_spec(), config.model, vocab_size=3)
+    for parameter in model.parameters():
+        parameter.grad = torch.randn_like(parameter)
+    state = {name: value.clone() for name, value in model.state_dict().items()}
+    gradients = [(parameter.grad, parameter.grad.clone()) for parameter in model.parameters()]
+    rng = torch.get_rng_state().clone()
+    calls = []
+    original = training_loop_impl.run_causal_encoder
+
+    def record(encoder, encoded):
+        calls.append(tuple(encoded["tokens"].shape[:2]))
+        result = original(encoder, encoded)
+        if fail:
+            raise RuntimeError("预热失败")
+        return result
+
+    monkeypatch.setattr(training_loop_impl, "run_causal_encoder", record)
+    if fail:
+        with pytest.raises(RuntimeError, match="预热失败"):
+            training_loop_impl._warmup_compiled_training(model, config)
+    else:
+        training_loop_impl._warmup_compiled_training(model, config)
+        assert set(calls) == {(2, 7), (2, 1), (1, 7), (1, 1)}
+    assert torch.equal(torch.get_rng_state(), rng)
+    for name, value in model.state_dict().items():
+        torch.testing.assert_close(value, state[name], rtol=0, atol=0)
+    for parameter, (gradient, saved) in zip(model.parameters(), gradients, strict=True):
+        assert parameter.grad is gradient
+        torch.testing.assert_close(parameter.grad, saved, rtol=0, atol=0)
+
+
 @pytest.mark.parametrize(
     ("payload", "message"),
     [

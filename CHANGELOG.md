@@ -51,7 +51,6 @@
 
 ### Fixed
 
-- 修复 Hyper-Connections 与 SwiGLU 的训练显存和耗时开销：CUDA 训练将 Sinkhorn 行列归一化展开为可融合的逐元素计算，并将 HC 重算与反向一起编译，读流和残差合成融合 FP32 乘加与精度转换；SwiGLU 融合裁剪、SiLU、乘积及反向，只保存原始 up/gate，取消 CUDA 门控局部 checkpoint。CPU 保留局部重算，验证、推理和 ONNX 保留原计算；公式、dtype、参数、state_dict、YAML 与现有契约版本不变。安装入口提前检查编译所需的对应 Python 开发头文件。
 - 修复 compiled cache 反序列化吞掉 `MemoryError`、将内存不足误判为缓存未命中的问题；现在原样向调用方传播内存错误，其他损坏缓存继续回退，并为缓存读取与 TensorBoard 图诊断失败日志补全异常堆栈。
 - 归一化计算统一使用 FP32 入口，拒绝非 FP32 技能原料；公共尺度及保存的量谱、Buff、技能层数上限须处于 FP32 正常正数范围，提前拒绝转型后成为零或无穷大的分母，避免状态和场景编码产生 NaN/Inf。
 - 修复策略记录接受 `NaN/±Inf` 时间并写入历史的问题。
