@@ -7,8 +7,8 @@ from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 
-from .normalizer import Normalizer
-from .schema import TrainingSchema
+from ..encoding.normalizer import Normalizer
+from ..schema import TrainingSchema
 from .skill_vocab import SkillVocab
 from .spec import DataSpec
 

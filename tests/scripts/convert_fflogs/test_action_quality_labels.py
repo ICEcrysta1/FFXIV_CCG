@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from common.policy.data.normalizer import Normalizer
-from common.policy.data.action_space import ActionSpace
+from common.policy.data.encoding.normalizer import Normalizer
+from common.policy.data.contracts.action_space import ActionSpace
 from scripts.convert_fflogs import (
     build_skill_book,
     build_training_samples,

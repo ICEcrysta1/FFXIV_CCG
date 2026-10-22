@@ -8,8 +8,8 @@ import torch
 
 from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, ModelInputContract, Normalizer, SkillVocab
-from common.policy.data.normalization import NormalizerConfig
-from common.policy.data.normalizer import NORMALIZER_CONTRACT_VERSION
+from common.policy.data.encoding.normalization import NormalizerConfig
+from common.policy.data.encoding.normalizer import NORMALIZER_CONTRACT_VERSION
 from common.policy.data.schema import SceneWindowSchema, StateFeatureGroup, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
 from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION, SKILL_STATE_FIELDS
 

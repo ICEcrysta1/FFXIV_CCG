@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 from common.game.config import load_project_config
 from common.game.skills import SkillBook
 from common.policy.data import ActionSpace, DataSpec, Normalizer
-from common.policy.data.policy_actions import load_policy_actions
+from common.policy.data.contracts.policy_actions import load_policy_actions
 from training.data import (
     ShardBatchSampler,
     TrainingCollator,

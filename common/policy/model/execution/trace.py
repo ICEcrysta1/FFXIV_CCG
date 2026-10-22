@@ -20,7 +20,7 @@ class ModelTrace:
 @torch.no_grad()
 def trace_encoder(encoder, encoded: dict[str, torch.Tensor]) -> ModelTrace:
     """运行因果编码器并保留每层 hidden 与完整 attention 矩阵。"""
-    from .attention_masks import build_causal_attention_mask
+    from ..attention.attention_masks import build_causal_attention_mask
     from .causal_encoder import run_causal_encoder
 
     hidden, layer_hidden, attentions = run_causal_encoder(

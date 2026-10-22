@@ -10,7 +10,7 @@ from threading import Condition
 import torch
 
 from common.configuration.environment import resolve_positive_worker_count
-from common.policy.data.context_fields import MODEL_INPUT_FIELDS_BY_NAME
+from common.policy.data.contracts.context_fields import MODEL_INPUT_FIELDS_BY_NAME
 from common.pytorch.runtime import autocast_context
 from scripts.common.inprocess_backend import InProcessEngine
 

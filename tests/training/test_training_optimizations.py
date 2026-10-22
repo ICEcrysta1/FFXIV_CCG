@@ -9,16 +9,16 @@ import torch
 from common.pytorch.runtime import move_batch
 from training.data.collator import TrainingCollator
 from common.policy.model import repetition as repetition_module
-from common.policy.model import attention_variants as attention_variants_module
-from common.policy.model.attention_residual import FullAttentionResidual
-from common.policy.model.position_encoding import RotaryPositionEncoding
-from common.policy.model import causal_encoder as causal
-from common.policy.model.transformer import TraceableTransformerEncoderLayer
+from common.policy.model.attention import attention_variants as attention_variants_module
+from common.policy.model.layers.attention_residual import FullAttentionResidual
+from common.policy.model.attention.position_encoding import RotaryPositionEncoding
+from common.policy.model.execution import causal_encoder as causal
+from common.policy.model.layers.transformer import TraceableTransformerEncoderLayer
 from common.training.metrics import MetricAccumulator
 from training.loop import epochs
 from tests.training._causal_fixtures import make_batch, make_data_spec, make_input_contract
 from common.policy.config import ModelConfig
-from common.policy.data.context_encoding import ContextEncoder, raw_state_delta
+from common.policy.data.encoding.context_encoding import ContextEncoder, raw_state_delta
 
 
 def _layer(*, norm_first=True, activation="swiglu", kv_heads=1, dropout=0.0):
@@ -41,7 +41,7 @@ def _encoded(tokens, prefix_length):
 
 def _reference_causal_layer(layer, encoded, rope):
     """用完整矩阵和显式 KV 扩展验证因果层的输出及梯度。"""
-    from common.policy.model.attention_masks import build_allowed_mask
+    from common.policy.model.attention.attention_masks import build_allowed_mask
     values = layer.norm1(encoded["tokens"]) if layer.norm_first else encoded["tokens"]
     query, key, value = causal.project_qkv(layer.self_attn, values)
     query, key = causal.rotate_qk(

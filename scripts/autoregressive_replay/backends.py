@@ -14,7 +14,7 @@ import torch
 
 from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, ModelInputContract, SkillVocab
-from common.policy.data.context_fields import MODEL_INPUT_FIELDS_BY_NAME
+from common.policy.data.contracts.context_fields import MODEL_INPUT_FIELDS_BY_NAME
 from common.policy.model import (
     CausalPolicyModel,
     RepetitionConfig,

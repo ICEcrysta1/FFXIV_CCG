@@ -124,10 +124,10 @@ def _make_batch(history_length: int, *, current_state_offset: float = 0.0, chang
 @pytest.mark.parametrize("full_attention_residuals", (False, True))
 def test_shared_context_reanchor_and_scene_clip_rebuild_kv(full_attention_residuals):
     """分块重置重新选择 ABS 锚点和 scene view，完整前向与 KV 前向保持一致。"""
-    from common.policy.data.context_encoding import ContextEncoder, raw_state_delta
-    from common.policy.data.history_window import history_window_length
-    from common.policy.data.normalization import NormalizerConfig
-    from common.policy.data.normalizer import Normalizer
+    from common.policy.data.encoding.context_encoding import ContextEncoder, raw_state_delta
+    from common.policy.data.encoding.history_window import history_window_length
+    from common.policy.data.encoding.normalization import NormalizerConfig
+    from common.policy.data.encoding.normalizer import Normalizer
     from common.policy.data.schema import SceneWindowSchema, TrainingSchema
 
     schema = TrainingSchema(
@@ -223,7 +223,7 @@ def test_qk_normalized_kv_reuses_old_keys_once_and_matches_dense_trace(
     monkeypatch, num_kv_heads, full_attention_residuals,
 ):
     """缓存保存已归一化 K，仅归一化新增块；非默认尺度下仍与 dense/trace 一致。"""
-    from common.policy.model import causal_encoder
+    from common.policy.model.execution import causal_encoder
 
     torch.manual_seed(823)
     scale = 1.73
@@ -626,7 +626,7 @@ def test_kv_cache_matches_under_explicit_sdpa_backends():
 
 def test_causal_attention_zeroes_fully_blocked_rows():
     """全屏蔽 query 行输出必须为 0，不能是 NaN。"""
-    from common.policy.model.causal_encoder import run_head_attention, split_heads
+    from common.policy.model.execution.causal_encoder import run_head_attention, split_heads
 
     model = _make_model()
     layer = model.encoder.layers[0]

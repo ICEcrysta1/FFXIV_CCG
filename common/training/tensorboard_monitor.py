@@ -170,7 +170,7 @@ class TensorBoardMonitor:
                     self.writer.add_graph(_GraphModel(self.model, tuple(inputs), metadata), tuple(inputs.values()))
         except Exception as exc:
             # 可视化失败不应终止一次训练，但必须向日志和面板报告。
-            logger.warning("TensorBoard 模型图写入失败：%s", exc)
+            logger.warning("TensorBoard 模型图写入失败：%s", exc, exc_info=True)
             if self._supports("add_text"):
                 self.writer.add_text(tensorboard_tag("diagnostics/graph_error"), str(exc), 0)
         finally:

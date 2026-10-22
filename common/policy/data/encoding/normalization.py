@@ -9,7 +9,7 @@ from common.configuration.yaml import load_yaml_mapping
 from common.pytorch.dependencies import import_torch
 
 DEFAULT_CONFIG_PATH = (
-    Path(__file__).resolve().parents[3] / "config" / "policy" / "normalizer.yaml"
+    Path(__file__).resolve().parents[4] / "config" / "policy" / "normalizer.yaml"
 )
 
 # 固定字段的单位由此声明；职业资源和 Buff 层数使用各自注册的单位与上限。

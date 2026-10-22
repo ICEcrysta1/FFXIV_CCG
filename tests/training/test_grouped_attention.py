@@ -6,17 +6,17 @@ import pytest
 import torch
 from torch import nn
 
-from common.policy.model.grouped_attention import (
+from common.policy.model.attention.grouped_attention import (
     GroupedQueryAttention,
     scaled_dot_product_attention,
 )
-from common.policy.model.attention_variants import manual_attention
-from common.policy.model.position_encoding import RotaryPositionEncoding
-from common.policy.model.causal_encoder import (
+from common.policy.model.attention.attention_variants import manual_attention
+from common.policy.model.attention.position_encoding import RotaryPositionEncoding
+from common.policy.model.execution.causal_encoder import (
     project_qkv,
     run_causal_encoder,
 )
-from common.policy.model.transformer import TraceableTransformerEncoderLayer
+from common.policy.model.layers.transformer import TraceableTransformerEncoderLayer
 
 
 def _make_encoder(

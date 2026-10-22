@@ -13,8 +13,8 @@ from common.pytorch.precision import load_precision_config
 from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
 from common.policy.data import DataSpec, ModelInputContract, Normalizer, SkillVocab
 from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION, TRAINING_SOURCE_FORMAT, TrainingSchema, StateFeatureGroup
-from common.policy.data.action_space import ActionSpace
-from common.policy.data.compiled_cache import (
+from common.policy.data.contracts.action_space import ActionSpace
+from common.policy.data.cache.compiled_cache import (
     CACHE_FORMAT,
     build_cache_signature,
     cache_path_for_source,
@@ -164,7 +164,7 @@ def test_readonly_cache_consumers_do_not_load_conversion_yaml(scene_cache, monke
     """转换 YAML 缺失或损坏时，已有缓存仍可供训练、VAL 和回放读取。"""
     import builtins
 
-    from common.policy.data.prepared_sources import select_prepared_training_sources, select_prepared_validation_sources
+    from common.policy.data.cache.prepared_sources import select_prepared_training_sources, select_prepared_validation_sources
     from scripts.convert_fflogs.cache.cache_load import load_raw_compiled_cache
     from scripts.convert_fflogs.config import CONVERT_DEFAULT_CONFIG_PATH
     from training import TrainingDataset
@@ -283,7 +283,7 @@ def test_scene_source_reports_no_usable_cache_when_all_shards_are_broken(scene_c
 
 
 def test_scene_source_does_not_hide_memory_error(scene_cache, monkeypatch):
-    from common.policy.data.compiled_cache import CompiledCacheReader
+    from common.policy.data.cache.compiled_cache import CompiledCacheReader
 
     root, cache_dir, create = scene_cache
     create("FRU/90-100/a.json.br")
@@ -379,7 +379,7 @@ def test_default_replay_uses_saved_contract_without_recompiling(
 def test_model_cache_prepare_reuses_saved_actions_and_training_rejects_drift(scene_cache, monkeypatch, drift):
     from scripts.autoregressive_replay.replay import ReplayCacheStore
     from scripts.convert_fflogs.cache import cache_compile
-    from common.policy.data.prepared_sources import select_prepared_training_sources
+    from common.policy.data.cache.prepared_sources import select_prepared_training_sources
     from training.loop.dataloaders import _build_dataset
     from training import TrainingDataset
 
@@ -523,7 +523,7 @@ def test_model_cache_reuses_complete_vocab_without_current_yaml(scene_cache, mon
 
 
 def test_model_cache_rejects_inactive_row_drift_before_recompiling(scene_cache, monkeypatch):
-    from common.policy.data.compiled_cache import CompiledShardCache, load_compiled_cache
+    from common.policy.data.cache.compiled_cache import CompiledShardCache, load_compiled_cache
     from scripts.convert_fflogs.cache import cache_compile
 
     source, cache_dir, saved_vocab = _cache_with_inactive_vocab(scene_cache)
@@ -552,7 +552,7 @@ def test_model_cache_rejects_inactive_row_drift_before_recompiling(scene_cache, 
 
 @pytest.mark.parametrize("saved", [None, {"movement": {"speed": 0.5}}])
 def test_compiled_cache_compares_caller_config_map_without_reading_yaml(scene_cache, saved):
-    from common.policy.data.compiled_cache import CompiledShardCache, load_compiled_cache
+    from common.policy.data.cache.compiled_cache import CompiledShardCache, load_compiled_cache
 
     _, cache_dir, create = scene_cache
     source = create("FRU/90-100/config.json.br")
@@ -573,7 +573,7 @@ def test_compiled_cache_compares_caller_config_map_without_reading_yaml(scene_ca
 
 
 def test_conversion_quota_rejects_stale_config_before_counting_cached_sources(scene_cache, monkeypatch):
-    from common.policy.data.source_selection import RawTrainingPathGroup
+    from common.policy.data.cache.source_selection import RawTrainingPathGroup
     from scripts.convert_fflogs.cache import cache_compile
 
     root, cache_dir, create = scene_cache

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from common.data.layout import PERCENTILE_BUCKETS, find_dataset_json_files
 from common.policy.data import ActionSpace, Normalizer, SkillVocab
-from common.policy.data.compiled_cache import (
+from common.policy.data.cache.compiled_cache import (
     CompiledShardCache,
     build_cache_signature,
     load_compiled_cache_for_source,

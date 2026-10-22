@@ -6,8 +6,8 @@ from dataclasses import dataclass
 
 import torch
 
-from .attention_masks import build_segment_mask
-from .attention_utils import kv_head_count
+from ..attention.attention_masks import build_segment_mask
+from ..attention.attention_utils import kv_head_count
 from .causal_encoder import run_causal_layer
 
 

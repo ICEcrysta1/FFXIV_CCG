@@ -168,7 +168,7 @@ def test_real_ppg_counts_queued_gcds_and_masks_policy_wait(cs_backend, monkeypat
     groups = {group: state_context[f"{group}_feature_keys"]
               for group in ("player_state", "buff_state", "target_buff_state", "resource_state")}
     keys = tuple(canonical["action_keys"])
-    from common.policy.data.action_space import ActionSpace
+    from common.policy.data.contracts.action_space import ActionSpace
     action_space = ActionSpace.from_job_tag("black_mage")
     schema = TrainingSchema(
         serialization_format="test", sample_schema_version=TRAINING_SAMPLE_SCHEMA_VERSION,

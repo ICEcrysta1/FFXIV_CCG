@@ -244,7 +244,7 @@ def test_history_bank_accepts_unchanged_history_between_multiple_settlements():
 
 
 def test_raw_state_bank_preserves_signed_mp_bool_and_damage_deltas_without_normalizing():
-    from common.policy.data.normalizer import Normalizer
+    from common.policy.data.encoding.normalizer import Normalizer
 
     payload = _source(history_length=3)
     keys = payload["samples"][0]["context"]["current_state_context"]["player_state_feature_keys"]

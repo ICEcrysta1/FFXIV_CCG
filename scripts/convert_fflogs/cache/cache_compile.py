@@ -11,18 +11,18 @@ from dataclasses import replace
 from itertools import islice
 from pathlib import Path
 
-from common.policy.data.action_space import ActionSpace
-from common.policy.data.compiled_cache import (
+from common.policy.data.contracts.action_space import ActionSpace
+from common.policy.data.cache.compiled_cache import (
     DEFAULT_CACHE_MAX_SHARDS,
     DEFAULT_CACHE_SHARD_SIZE,
     CompiledShardCache,
     build_cache_signature,
     cache_path_for_source,
 )
-from common.policy.data.normalizer import Normalizer
-from common.policy.data.prepared_sources import cached_candidates_for_group
-from common.policy.data.skill_vocab import SkillVocab
-from common.policy.data.source_selection import (
+from common.policy.data.encoding.normalizer import Normalizer
+from common.policy.data.cache.prepared_sources import cached_candidates_for_group
+from common.policy.data.contracts.skill_vocab import SkillVocab
+from common.policy.data.cache.source_selection import (
     RawTrainingPathGroup,
     select_training_raw_path_groups,
     select_validation_raw_path_groups,

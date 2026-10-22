@@ -29,7 +29,7 @@ from training.loop.losses.value_preference import (
 )
 from training.loop.dataloaders import _load_skill_values
 from training.loop.losses.primary import primary_loss
-from common.policy.model.input_encoder import build_position_ids
+from common.policy.model.layers.input_encoder import build_position_ids
 from tests.training._causal_fixtures import make_batch, make_data_spec
 
 
@@ -37,7 +37,7 @@ from tests.training._causal_fixtures import make_batch, make_data_spec
 def test_qk_rmsnorm_matches_independent_formula_and_gradients_at_small_norms(scale):
     """零向量、极小向量与不同 head 幅度都遵循 epsilon 公式，并保持有限梯度。"""
     torch = pytest.importorskip("torch")
-    from common.policy.model.attention_utils import normalize_qk
+    from common.policy.model.attention.attention_utils import normalize_qk
 
     torch.manual_seed(819)
     raw_query = torch.randn(1, 4, 3, 8, dtype=torch.float32)
@@ -76,7 +76,7 @@ def test_qk_head_rmsnorm_follows_rope_and_matches_trace_attention(
 ):
     """用实际 attention 边界与独立公式验证 head 范数、位置和 trace 权重。"""
     torch = pytest.importorskip("torch")
-    from common.policy.model import causal_encoder
+    from common.policy.model.execution import causal_encoder
 
     torch.manual_seed(820)
     spec = make_data_spec()
@@ -151,7 +151,7 @@ def test_qk_normalization_preserves_recomputed_forward_and_gradients(
 ):
     """非默认 Q/K 尺度下，SDPA/整块/Full AttnRes 重算保留输入和所有参数梯度。"""
     torch = pytest.importorskip("torch")
-    from common.policy.model.causal_encoder import run_causal_encoder
+    from common.policy.model.execution.causal_encoder import run_causal_encoder
 
     torch.manual_seed(821)
     spec = make_data_spec()
@@ -269,7 +269,7 @@ def test_common_model_uses_pt_dimensions_and_job_route(tmp_path):
         vocab_size=SkillVocab.build_from_job_tag(data_spec.job_tag).size(),
     ).eval()
     batch = TrainingCollator()([dataset[0], dataset[1]])
-    from common.policy.data.context_encoding import ContextEncoder
+    from common.policy.data.encoding.context_encoding import ContextEncoder
 
     batch = ContextEncoder(dataset.normalizer, dataset.schema, layout=dataset.state_layout).encode(batch)
 
@@ -309,7 +309,7 @@ def test_swiglu_training_updates_all_ffn_projections_with_checkpointing(tmp_path
     model.enable_activation_checkpoint_attention()
     model.enable_activation_checkpoint_ffn()
     batch = move_batch(TrainingCollator()([dataset[0], dataset[1]]), device)
-    from common.policy.data.context_encoding import ContextEncoder
+    from common.policy.data.encoding.context_encoding import ContextEncoder
 
     batch = ContextEncoder(dataset.normalizer, dataset.schema, layout=dataset.state_layout).to(device=device).encode(batch)
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.01)

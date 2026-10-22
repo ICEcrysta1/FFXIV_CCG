@@ -8,10 +8,10 @@ import pytest
 import torch
 
 from common.policy.data import Normalizer
-from common.policy.data.context_encoding import ContextEncoder, raw_state_delta
+from common.policy.data.encoding.context_encoding import ContextEncoder, raw_state_delta
 from common.policy.data.schema import SceneWindowSchema, TrainingSchema
-from common.policy.data.normalization import NormalizerConfig, load_normalizer_config
-from common.policy.data.normalizer import NORMALIZER_CONTRACT_VERSION
+from common.policy.data.encoding.normalization import NormalizerConfig, load_normalizer_config
+from common.policy.data.encoding.normalizer import NORMALIZER_CONTRACT_VERSION
 
 
 def _encode_states(normalizer, feature_keys, rows):
@@ -257,7 +257,7 @@ def test_time_resources_share_duration_scale_in_state_skill_and_saved_contract(j
 
 
 def test_time_scales_come_from_saved_public_normalization_config(monkeypatch):
-    import common.policy.data.normalizer as normalization_module
+    import common.policy.data.encoding.normalizer as normalization_module
     monkeypatch.setattr(normalization_module, "load_normalizer_config", lambda _path=None: NormalizerConfig(time_scale=180, duration_scale=60))
     normalizer = Normalizer()
     assert normalizer.time_scale == 180

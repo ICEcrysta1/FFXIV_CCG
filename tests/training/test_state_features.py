@@ -7,10 +7,10 @@ import json
 import pytest
 import torch
 
-from common.policy.data.context_fields import MODEL_INPUT_FIELDS, tensor_dimensions
-from common.policy.data.input_contract import ModelInputContract
+from common.policy.data.contracts.context_fields import MODEL_INPUT_FIELDS, tensor_dimensions
+from common.policy.data.contracts.input_contract import ModelInputContract
 from common.policy.data.schema import StateFeatureLayout, TrainingSchema
-from common.policy.data.state_features import assemble_state_inputs, read_state_tokens
+from common.policy.data.encoding.state_features import assemble_state_inputs, read_state_tokens
 from tests.training._causal_fixtures import make_data_spec, make_input_contract, make_state_groups
 
 

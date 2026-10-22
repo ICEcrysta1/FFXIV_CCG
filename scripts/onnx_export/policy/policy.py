@@ -8,9 +8,9 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
-from common.policy.data.context_fields import MODEL_INPUT_NAMES
-from common.policy.model.causal_encoder import run_causal_encoder
-from common.policy.model.trace import trace_encoder
+from common.policy.data.contracts.context_fields import MODEL_INPUT_NAMES
+from common.policy.model.execution.causal_encoder import run_causal_encoder
+from common.policy.model.execution.trace import trace_encoder
 
 
 class OnnxPolicy(nn.Module):

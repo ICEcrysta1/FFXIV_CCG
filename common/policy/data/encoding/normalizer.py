@@ -79,7 +79,7 @@ class Normalizer:
 
         from common.game.config import load_project_config
 
-        from .policy_actions import load_policy_actions
+        from ..contracts.policy_actions import load_policy_actions
 
         project_config = load_project_config(job_tag=normalized_job_tag)
         fp32 = _fp32_limits()

@@ -15,7 +15,7 @@ import torch
 from common.game.config import load_project_config
 from common.game.skills import SkillBook
 from common.policy.data import ActionSpace, Normalizer, SkillVocab
-from common.policy.data.compiled_cache import (
+from common.policy.data.cache.compiled_cache import (
     CompiledCacheReader,
     CompiledShardCache,
     cache_path_for_source,

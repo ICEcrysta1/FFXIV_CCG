@@ -28,22 +28,22 @@ from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, ModelInputContract, Normalizer, SkillVocab
 from common.policy.data.schema import SceneWindowSchema, TrainingSchema
 from common.policy.model import RepetitionConfig, build_causal_attention_mask
-from common.policy.model.attention_residual import FullAttentionResidual
-from common.policy.model.input_encoder import CausalInputEncoder
-from common.policy.model.position_encoding import RotaryPositionEncoding
+from common.policy.model.layers.attention_residual import FullAttentionResidual
+from common.policy.model.layers.input_encoder import CausalInputEncoder
+from common.policy.model.attention.position_encoding import RotaryPositionEncoding
 from common.policy.model.repetition import (
     apply_repetition_penalty,
     parse_repetition_config,
     repetition_config_from_checkpoint,
 )
-from common.policy.model.trace import trace_encoder
-from common.policy.model.transformer import TraceableTransformerEncoderLayer
+from common.policy.model.execution.trace import trace_encoder
+from common.policy.model.layers.transformer import TraceableTransformerEncoderLayer
 from common.pytorch.runtime import autocast_context, model_dtype, move_batch
 from common.pytorch.serialization import safe_torch_load
 from common.training.tensorboard import TensorBoardConfig
 from scripts.convert_fflogs import cache as cache_module
 from scripts.convert_fflogs.cache import cache_compile as cache_compile_module
-from common.policy.data import source_selection as cache_paths_module
+from common.policy.data.cache import source_selection as cache_paths_module
 from training.config import ActionQualityLossConfig, RunConfig, ValuePreferenceConfig
 from tests.training._causal_fixtures import make_batch, make_checkpoint, make_data_spec, make_input_contract
 
@@ -659,7 +659,7 @@ def test_ffn_activation_checkpoint_preserves_forward_and_gradients(activation):
 def test_split_finish_layer_applies_ffn_dropout_once(norm_first, activation):
     from unittest.mock import patch
 
-    from common.policy.model.causal_encoder import finish_layer
+    from common.policy.model.execution.causal_encoder import finish_layer
 
     layer = TraceableTransformerEncoderLayer(
         d_model=8,
@@ -697,7 +697,7 @@ def test_split_finish_layer_applies_ffn_dropout_once(norm_first, activation):
 
 def test_attention_block_checkpoint_matches_sdpa_checkpoint():
     """整块 attention checkpoint 与只重算 SDPA 的前向输出、梯度必须一致。"""
-    from common.policy.model.causal_encoder import run_causal_encoder
+    from common.policy.model.execution.causal_encoder import run_causal_encoder
 
     layer_kwargs = {
         "d_model": 8,
@@ -757,7 +757,7 @@ def test_attention_block_checkpoint_matches_sdpa_checkpoint():
 @pytest.mark.parametrize("num_kv_heads", (1, 2, 4))
 def test_attention_activation_checkpoint_preserves_forward_and_gradients(num_kv_heads):
     from unittest.mock import patch
-    from common.policy.model.causal_encoder import run_causal_encoder
+    from common.policy.model.execution.causal_encoder import run_causal_encoder
 
     torch.manual_seed(7)
     layer_kwargs = {
@@ -794,7 +794,7 @@ def test_attention_activation_checkpoint_preserves_forward_and_gradients(num_kv_
     }
     checkpointed_encoded = {**encoded, "tokens": checkpointed_input}
     with patch(
-        "common.policy.model.attention_variants.checkpoint",
+        "common.policy.model.attention.attention_variants.checkpoint",
         wraps=__import__("torch.utils.checkpoint", fromlist=["checkpoint"]).checkpoint,
     ) as attention_checkpoint, patch(
         "torch.nn.functional.scaled_dot_product_attention",
@@ -830,7 +830,7 @@ def test_full_attention_residual_preserves_independent_sublayer_checkpoints(
 ):
     """局部深度聚合重算不改变 FFN/attention 的独立开关或 dropout 梯度。"""
     from unittest.mock import patch
-    from common.policy.model.causal_encoder import run_causal_encoder
+    from common.policy.model.execution.causal_encoder import run_causal_encoder
 
     torch.manual_seed(7)
     layer_kwargs = {
@@ -875,20 +875,20 @@ def test_full_attention_residual_preserves_independent_sublayer_checkpoints(
 
     # 参考只关闭深度聚合的重算，保留相同训练模式与 dropout。
     with patch(
-        "common.policy.model.attention_residual.checkpoint",
+        "common.policy.model.layers.attention_residual.checkpoint",
         side_effect=lambda function, *args, **_kwargs: function(*args),
     ):
         torch.manual_seed(123)
         eager_output = run_causal_encoder(eager, encoded)
 
     with patch(
-        "common.policy.model.causal_encoder.checkpoint",
+        "common.policy.model.execution.causal_encoder.checkpoint",
         wraps=__import__("torch.utils.checkpoint", fromlist=["checkpoint"]).checkpoint,
     ) as block_checkpoint, patch(
-        "common.policy.model.transformer.checkpoint",
+        "common.policy.model.layers.transformer.checkpoint",
         wraps=__import__("torch.utils.checkpoint", fromlist=["checkpoint"]).checkpoint,
     ) as ffn_checkpoint, patch(
-        "common.policy.model.attention_variants.checkpoint",
+        "common.policy.model.attention.attention_variants.checkpoint",
         wraps=__import__("torch.utils.checkpoint", fromlist=["checkpoint"]).checkpoint,
     ) as attention_checkpoint:
         torch.manual_seed(123)
@@ -912,7 +912,7 @@ def test_full_attention_residual_checkpoint_preserves_partial_layer_granularity(
     """不同层分别启用 FFN 与整块 attention，仍与无重算参考一致。"""
     from copy import deepcopy
     from unittest.mock import patch
-    from common.policy.model.causal_encoder import run_causal_encoder
+    from common.policy.model.execution.causal_encoder import run_causal_encoder
 
     layer_kwargs = {
         "d_model": 8,
@@ -945,20 +945,20 @@ def test_full_attention_residual_checkpoint_preserves_partial_layer_granularity(
 
     }
     with patch(
-        "common.policy.model.attention_residual.checkpoint",
+        "common.policy.model.layers.attention_residual.checkpoint",
         side_effect=lambda function, *args, **_kwargs: function(*args),
     ):
         torch.manual_seed(29)
         expected = run_causal_encoder(reference, {**encoded, "tokens": reference_tokens})[0]
 
     with patch(
-        "common.policy.model.causal_encoder.checkpoint",
+        "common.policy.model.execution.causal_encoder.checkpoint",
         wraps=__import__("torch.utils.checkpoint", fromlist=["checkpoint"]).checkpoint,
     ) as block_checkpoint, patch(
-        "common.policy.model.transformer.checkpoint",
+        "common.policy.model.layers.transformer.checkpoint",
         wraps=__import__("torch.utils.checkpoint", fromlist=["checkpoint"]).checkpoint,
     ) as ffn_checkpoint, patch(
-        "common.policy.model.attention_variants.checkpoint",
+        "common.policy.model.attention.attention_variants.checkpoint",
         wraps=__import__("torch.utils.checkpoint", fromlist=["checkpoint"]).checkpoint,
     ) as attention_checkpoint:
         torch.manual_seed(29)

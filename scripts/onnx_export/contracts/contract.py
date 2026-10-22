@@ -6,13 +6,13 @@ from dataclasses import asdict, dataclass
 
 import torch
 
-from common.policy.data.context_fields import (
+from common.policy.data.contracts.context_fields import (
     MODEL_INPUT_FIELDS,
     MODEL_INPUT_FIELDS_BY_NAME,
     MODEL_INPUT_NAMES,
     tensor_dimensions,
 )
-from common.policy.data.input_contract import TOKEN_ENCODING_CONTRACT
+from common.policy.data.contracts.input_contract import TOKEN_ENCODING_CONTRACT
 from common.policy.data.schema import StateFeatureLayout
 
 TENSOR_INPUT_NAMES = MODEL_INPUT_NAMES

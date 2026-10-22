@@ -8,8 +8,8 @@ from torch import nn
 
 from common.policy.config import ModelConfig
 from common.policy.model import CausalPolicyModel
-from common.policy.model.causal_encoder import run_causal_encoder, run_causal_layer
-from common.policy.model.residual_mix import LearnedResidualMix
+from common.policy.model.execution.causal_encoder import run_causal_encoder, run_causal_layer
+from common.policy.model.layers.residual_mix import LearnedResidualMix
 from tests.training._causal_fixtures import make_batch, make_checkpoint, make_data_spec
 
 

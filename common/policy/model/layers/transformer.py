@@ -9,13 +9,13 @@ import torch
 from torch import nn
 from torch.utils.checkpoint import checkpoint
 
+from ..attention.grouped_attention import GroupedQueryAttention
 from .activation import (
     activation_hidden,
     gated_hidden_dim,
     resolve_pointwise_activation,
     uses_gate,
 )
-from .grouped_attention import GroupedQueryAttention
 
 
 class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):

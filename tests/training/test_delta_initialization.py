@@ -5,8 +5,8 @@ import torch
 from torch import nn
 
 from common.policy.config import ModelConfig
-from common.policy.data.spec import DataSpec
-from common.policy.model import input_encoder
+from common.policy.data.contracts.spec import DataSpec
+from common.policy.model.layers import input_encoder
 from common.policy.model.model import CausalPolicyModel
 
 

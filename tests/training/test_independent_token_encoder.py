@@ -7,7 +7,7 @@ import torch
 
 from common.policy.config import ModelConfig
 from common.policy.model import CausalPolicyModel
-from common.policy.model.input_encoder import ROLE_SCENE, ROLE_SKILL, ROLE_STATE, ROLE_DEAD
+from common.policy.model.layers.input_encoder import ROLE_SCENE, ROLE_SKILL, ROLE_STATE, ROLE_DEAD
 from tests.training._causal_fixtures import make_batch, make_data_spec
 
 

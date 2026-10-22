@@ -178,7 +178,7 @@ def test_checkpoint_restores_history_embedding_and_logits_after_yaml_vocab_drift
     from common.game.config import load_project_config
     from common.policy.config import ModelConfig
     from common.policy.data import ActionSpace, DataSpec, ModelInputContract, Normalizer
-    from common.policy.data import skill_vocab as vocab_module
+    from common.policy.data.contracts import skill_vocab as vocab_module
     from common.policy.data.schema import SceneWindowSchema, StateFeatureGroup, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
     from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
     from common.policy.model import CausalPolicyModel

@@ -8,10 +8,10 @@ import pytest
 import torch
 
 from common.policy.config import ModelConfig
-from common.policy.data.context_encoding import ContextEncoder, raw_state_delta
-from common.policy.data.history_window import fit_history_suffix_length, history_window_length
-from common.policy.data.normalization import NormalizerConfig
-from common.policy.data.normalizer import NORMALIZER_CONTRACT_VERSION, Normalizer
+from common.policy.data.encoding.context_encoding import ContextEncoder, raw_state_delta
+from common.policy.data.encoding.history_window import fit_history_suffix_length, history_window_length
+from common.policy.data.encoding.normalization import NormalizerConfig
+from common.policy.data.encoding.normalizer import NORMALIZER_CONTRACT_VERSION, Normalizer
 from common.policy.data.schema import SceneWindowSchema, TrainingSchema
 
 

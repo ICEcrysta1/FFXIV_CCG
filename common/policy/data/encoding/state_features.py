@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from common.context.output import SKILL_STATE_FIELDS
 from common.pytorch.dependencies import import_torch
 
-from .schema import StateFeatureLayout
+from ..schema import StateFeatureLayout
 
 
 @dataclass(frozen=True)

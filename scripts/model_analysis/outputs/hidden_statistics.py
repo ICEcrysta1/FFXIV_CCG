@@ -7,7 +7,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-from common.policy.model.input_encoder import ROLE_STATE
+from common.policy.model.layers.input_encoder import ROLE_STATE
 
 from ..common import (
     ATTENTION_CMAP_NAME,

@@ -11,8 +11,8 @@ except ModuleNotFoundError:  # pragma: no cover
     class Dataset:  # type: ignore[no-redef]
         pass
 
-from common.policy.data.action_space import ActionSpace
-from common.policy.data.compiled_cache import (
+from common.policy.data.contracts.action_space import ActionSpace
+from common.policy.data.cache.compiled_cache import (
     DEFAULT_CACHE_MAX_SHARDS,
     DEFAULT_CACHE_SHARD_SIZE,
     CompiledCacheReader,
@@ -20,17 +20,17 @@ from common.policy.data.compiled_cache import (
     build_cache_signature,
     load_compiled_cache_for_source,
 )
-from common.policy.data.context_fields import (
+from common.policy.data.contracts.context_fields import (
     HISTORY_BANK_FIELDS,
     HISTORY_BANK_METADATA_NAMES,
     RAW_SCENE_FIELDS,
 )
-from common.policy.data.history_window import (
+from common.policy.data.encoding.history_window import (
     history_window_length,
     scene_window_end_times,
 )
-from common.policy.data.normalizer import Normalizer
-from common.policy.data.skill_vocab import SkillVocab
+from common.policy.data.encoding.normalizer import Normalizer
+from common.policy.data.contracts.skill_vocab import SkillVocab
 
 
 class TrainingDataset(Dataset):

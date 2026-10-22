@@ -10,7 +10,10 @@ from pathlib import Path
 
 from common.pytorch.serialization import safe_torch_load
 
-from .action_space import ActionSpace
+from ..contracts.action_space import ActionSpace
+from ..contracts.skill_vocab import SkillVocab
+from ..encoding.normalizer import Normalizer
+from ..schema import SceneWindowSchema, StateFeatureGroup, TrainingSchema
 from .compiled_cache import (
     CACHE_FORMAT,
     DEFAULT_CACHE_MAX_SHARDS,
@@ -21,9 +24,6 @@ from .compiled_cache import (
     cache_path_for_source,
     load_compiled_cache_for_source,
 )
-from .normalizer import Normalizer
-from .schema import SceneWindowSchema, StateFeatureGroup, TrainingSchema
-from .skill_vocab import SkillVocab
 from .source_selection import (
     RawTrainingPathGroup,
     select_training_raw_path_groups,

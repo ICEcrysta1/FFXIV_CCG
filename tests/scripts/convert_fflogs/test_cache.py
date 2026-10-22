@@ -10,9 +10,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from common.policy.data import ActionSpace, Normalizer, prepared_sources
-from common.policy.data.compiled_cache import CACHE_FORMAT, build_cache_signature, cache_path_for_source
-from common.policy.data.prepared_sources import select_prepared_training_sources
+from common.policy.data import ActionSpace, Normalizer
+from common.policy.data.cache import prepared_sources
+from common.policy.data.cache.compiled_cache import CACHE_FORMAT, build_cache_signature, cache_path_for_source
+from common.policy.data.cache.prepared_sources import select_prepared_training_sources
 from scripts.common.json_io import atomic_write_json, read_json
 from scripts.convert_fflogs import build_training_samples
 from scripts.convert_fflogs import cli as convert_cli
@@ -784,8 +785,8 @@ def test_real_raw_cache_reused_across_windows_and_random_crops(tmp_path, monkeyp
     """同一真实 raw source 只编译一次，读取参数变化仅改变视窗与重锚编码。"""
     from random import Random
 
-    from common.policy.data.context_encoding import ContextEncoder
-    from common.policy.data.history_window import history_window_length, scene_window_end_times
+    from common.policy.data.encoding.context_encoding import ContextEncoder
+    from common.policy.data.encoding.history_window import history_window_length, scene_window_end_times
     from training import TrainingCollator, TrainingDataset
 
     torch = pytest.importorskip("torch")

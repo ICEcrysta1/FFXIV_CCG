@@ -134,8 +134,8 @@ def main():
         "fight-engine/src/outputs/tokens.rs",
         "scripts/convert_fflogs/training/training.py",
         "scripts/autoregressive_replay/context.py",
-        "common/policy/data/context_encoding.py",
-        "common/policy/data/normalizer.py",
+        "common/policy/data/encoding/context_encoding.py",
+        "common/policy/data/encoding/normalizer.py",
     )
     artifact = {
         "origin_commit": args.origin_commit,

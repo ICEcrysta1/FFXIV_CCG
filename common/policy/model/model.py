@@ -9,17 +9,20 @@ import torch
 from torch import nn
 
 from ..config import ModelConfig
-from ..data.input_contract import RESIDUAL_MIX_CONFIG_FIELDS, ModelInputContract
-from ..data.spec import DataSpec
-from .attention_residual import FullAttentionResidual
-from .causal_encoder import run_causal_encoder
-from .input_encoder import CausalInputEncoder
-from .kv_cache import TransformerKVCache, encode_with_kv_cache
-from .position_encoding import RotaryPositionEncoding
+from ..data.contracts.input_contract import (
+    RESIDUAL_MIX_CONFIG_FIELDS,
+    ModelInputContract,
+)
+from ..data.contracts.spec import DataSpec
+from .attention.position_encoding import RotaryPositionEncoding
+from .execution.causal_encoder import run_causal_encoder
+from .execution.kv_cache import TransformerKVCache, encode_with_kv_cache
+from .execution.trace import ModelTrace, trace_encoder
+from .layers.attention_residual import FullAttentionResidual
+from .layers.input_encoder import CausalInputEncoder
+from .layers.residual_mix import LearnedResidualMix
+from .layers.transformer import TraceableTransformerEncoderLayer
 from .repetition import RepetitionConfig, apply_repetition_penalty
-from .residual_mix import LearnedResidualMix
-from .trace import ModelTrace, trace_encoder
-from .transformer import TraceableTransformerEncoderLayer
 
 
 class CausalPolicyModel(nn.Module):

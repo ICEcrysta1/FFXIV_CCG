@@ -5,12 +5,12 @@ from __future__ import annotations
 import random
 from collections.abc import Mapping
 
-from common.policy.data.context_fields import (
+from common.policy.data.contracts.context_fields import (
     CURRENT_STATE_RAW_FIELDS,
     ENCODING_BANK_FIELDS,
     RAW_SCENE_FIELDS,
 )
-from common.policy.data.history_window import fit_history_suffix_length
+from common.policy.data.encoding.history_window import fit_history_suffix_length
 from common.pytorch.dependencies import import_torch
 from common.pytorch.precision import load_precision_config
 

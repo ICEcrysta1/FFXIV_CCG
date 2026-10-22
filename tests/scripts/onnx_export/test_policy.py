@@ -13,7 +13,7 @@ from common.policy.config import ModelConfig
 from common.policy.data import DataSpec
 from common.policy.data.schema import StateFeatureLayout
 from tests.training._causal_fixtures import make_state_groups
-from common.policy.model.attention_variants import run_head_attention
+from common.policy.model.attention.attention_variants import run_head_attention
 from common.policy.model import (
     CausalPolicyModel,
     RepetitionConfig,

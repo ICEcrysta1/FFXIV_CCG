@@ -10,8 +10,8 @@ from training.runtime import (
     RuntimeDebugRecorder,
     aggregate_events,
 )
-from common.policy.model.transformer import TraceableTransformerEncoderLayer
-from common.policy.model.position_encoding import RotaryPositionEncoding
+from common.policy.model.layers.transformer import TraceableTransformerEncoderLayer
+from common.policy.model.attention.position_encoding import RotaryPositionEncoding
 
 
 def _read_report(path):
@@ -77,7 +77,7 @@ def test_runtime_debug_writes_batch_context_and_aggregates(tmp_path, compact_his
 
 
 def test_runtime_debug_records_transformer_attention_and_ffn(tmp_path):
-    from common.policy.model.causal_encoder import run_causal_encoder
+    from common.policy.model.execution.causal_encoder import run_causal_encoder
 
     output_path = tmp_path / "runtime_memory.jsonl"
     recorder = RuntimeDebugRecorder(

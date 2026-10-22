@@ -29,40 +29,52 @@ FFXIV_CCG/
     │   ├── models.py                                 静态技能、状态数据类与动作类型
     │   └── skills.py                                 按 key/game_id 查询技能，保留声明顺序和启用过滤
     ├── policy/                                       跨预训练、GRPO、回放和 ONNX 共用的策略模型、输入契约与数据组件
-    │   ├── data/                                     策略输入、compiled cache、归一化和固定动作词表契约
+    │   ├── data/                                     按输入契约、编码和缓存分类的策略数据组件
+    │   │   ├── contracts/                            固定动作词表、输入字段和 checkpoint 输入契约
+    │   │   │   ├── __init__.py                       轻量包入口
+    │   │   │   ├── action_space.py                   启用技能与 policy 动作的固定输出顺序、词表行映射和 GCD 类型元数据
+    │   │   │   ├── context_fields.py                 上下文字段的阶段、dtype、逻辑轴/shape、padding 与 cache/raw 命名映射；数据读取、合批、编码及 ONNX 共用
+    │   │   │   ├── input_contract.py                 checkpoint 输入契约、独立 token 编码描述、schema 与归一化规则的序列化/恢复
+    │   │   │   ├── policy_actions.py                 独立 policy 控制动作配置加载器
+    │   │   │   ├── skill_vocab.py                    正式技能与 policy 动作组成的模型技能词表
+    │   │   │   └── spec.py                           从保存的 StateFeatureLayout 推导并核验基础/合并宽度和动作规格
+    │   │   ├── encoding/                             模型外共享输入编码、归一化与历史窗口
+    │   │   │   ├── __init__.py                       轻量包入口
+    │   │   │   ├── context_encoding.py               模型外共享 FP32 编码：窗口 gather、绝对状态、时间重锚与有符号 DELTA、场景裁剪差分；缩放统一委托 normalizer
+    │   │   │   ├── history_window.py                 完整历史游标到分段窗口长度的纯函数；场景、状态／动作和死亡事件共享预算，超限保留最近 K 条动作后重新累积
+    │   │   │   ├── normalization.py                  归一化配置数据类、FP32 有效尺度范围与 YAML 加载
+    │   │   │   ├── normalizer.py                     字段归一化规则与统一 FP32 截断/除法入口；保存相对时间与绝对时长尺度、职业单位及独立技能状态的注册充能上限
+    │   │   │   └── state_features.py                 canonical 状态的唯一 reader 与编码后唯一拼接器；拒绝错序、非有限值和非二值可用性
+    │   │   ├── cache/                                compiled cache 读取与转换、训练共享的数据来源选择
+    │   │   │   ├── __init__.py                       轻量包入口
+    │   │   │   ├── compiled_cache.py                 raw FP32 ABS/DELTA 完整 bank 的只读 reader、签名与目录定位；统一比较缓存签名与生效配置依赖，拒绝旧平铺和归一化状态缓存
+    │   │   │   ├── prepared_sources.py               BC 与 GRPO 共享的只读训练数据选择器，并按验证副本固定配额校验 VAL compiled cache；训练进程不编译
+    │   │   │   └── source_selection.py               转换与训练共用的副本比例配额、区间均分和同区间失败补位候选顺序
     │   │   ├── __init__.py                           策略数据契约导出入口
-    │   │   ├── action_space.py                       启用技能与 policy 动作的固定输出顺序、词表行映射和 GCD 类型元数据
-    │   │   ├── compiled_cache.py                     raw FP32 ABS/DELTA 完整 bank 的只读 reader、签名与目录定位；统一比较缓存签名与生效配置依赖，拒绝旧平铺和归一化状态缓存
-    │   │   ├── context_encoding.py                   模型外共享 FP32 编码：窗口 gather、绝对状态、时间重锚与有符号 DELTA、场景裁剪差分；缩放统一委托 normalizer
-    │   │   ├── context_fields.py                     上下文字段的阶段、dtype、逻辑轴/shape、padding 与 cache/raw 命名映射；数据读取、合批、编码及 ONNX 共用
-    │   │   ├── history_window.py                     完整历史游标到分段窗口长度的纯函数；场景、状态／动作和死亡事件共享预算，超限保留最近 K 条动作后重新累积
-    │   │   ├── input_contract.py                     checkpoint 输入契约、独立 token 编码描述、schema 与归一化规则的序列化/恢复
-    │   │   ├── normalization.py                      归一化配置数据类、FP32 有效尺度范围与 YAML 加载
-    │   │   ├── normalizer.py                         字段归一化规则与统一 FP32 截断/除法入口；保存相对时间与绝对时长尺度、职业单位及独立技能状态的注册充能上限
-    │   │   ├── policy_actions.py                     独立 policy 控制动作配置加载器
-    │   │   ├── prepared_sources.py                   BC 与 GRPO 共享的只读训练数据选择器，并按验证副本固定配额校验 VAL compiled cache；训练进程不编译
-    │   │   ├── schema.py                             有序 StateFeatureGroup、快照顺序与 StateFeatureLayout；raw source、cache 和模型共用
-    │   │   ├── skill_vocab.py                        正式技能与 policy 动作组成的模型技能词表
-    │   │   ├── source_selection.py                   转换与训练共用的副本比例配额、区间均分和同区间失败补位候选顺序
-    │   │   ├── spec.py                               从保存的 StateFeatureLayout 推导并核验基础/合并宽度和动作规格
-    │   │   └── state_features.py                     canonical 状态的唯一 reader 与编码后唯一拼接器；拒绝错序、非有限值和非二值可用性
-    │   ├── model/                                    与职业无关的策略模型结构、输入编码和推理组件
+    │   │   └── schema.py                             稳定 schema 类型：有序 StateFeatureGroup、快照顺序与 StateFeatureLayout；raw source、cache 和模型共用，保留序列化模块路径
+    │   ├── model/                                    按注意力、网络层和执行路径分类的策略模型组件
+    │   │   ├── attention/                            注意力计算、可见性 mask 与位置编码
+    │   │   │   ├── __init__.py                       轻量包入口
+    │   │   │   ├── attention_masks.py                因果可见性、padding、cache 后缀 mask 与分析矩阵构建
+    │   │   │   ├── attention_utils.py                Q/K/V 投影、头维度整形与 Transformer 层收尾辅助
+    │   │   │   ├── attention_variants.py             统一因果 attention 的手工/SDPA 与重算执行路径
+    │   │   │   ├── grouped_attention.py              MQA/GQA 投影与按 KV 组 SDPA 适配
+    │   │   │   └── position_encoding.py              唯一 RoPE 实现
+    │   │   ├── layers/                               输入投影、Transformer 层、激活与残差结构
+    │   │   │   ├── __init__.py                       轻量包入口
+    │   │   │   ├── activation.py                     Transformer 主干 FFN 激活算法：选项校验、门控判定、隐层宽度折算与门控合成
+    │   │   │   ├── attention_residual.py             Full Attention Residual 深度聚合器
+    │   │   │   ├── input_encoder.py                  技能、状态与 scene 独立内容投影；死亡使用独立 FP32 embedding 并按动作边界插入，content 与 role 相加后统一无参数 RMSNorm，历史/当前状态共享参数，生成交错布局和逻辑位置
+    │   │   │   ├── residual_mix.py                   普通残差逐层可学习 r/a 系数和初始 token 重注入，端点按模型配置线性初始化
+    │   │   │   └── transformer.py                    无参数 RMSNorm Transformer 层、FFN 激活/门控、重算开关和逐层运行诊断，不依赖分析 trace
+    │   │   ├── execution/                            训练、KV-cache 与分析共用的模型执行组件
+    │   │   │   ├── __init__.py                       轻量包入口
+    │   │   │   ├── causal_encoder.py                 单一因果层/encoder 执行、逐层 r*x+a*x0 残差混合、激活重算与 Full AttnRes；训练、cache 与 trace 共用
+    │   │   │   ├── kv_cache.py                       推理专用 scene/history prefix 分层 KV-Cache，分别记录历史动作数与独立 token 数
+    │   │   │   └── trace.py                          hidden 与 attention head 分析 trace
     │   │   ├── __init__.py                           策略模型组件导出入口
-    │   │   ├── activation.py                         Transformer 主干 FFN 激活算法：选项校验、门控判定、隐层宽度折算与门控合成
-    │   │   ├── attention_masks.py                    因果可见性、padding、cache 后缀 mask 与分析矩阵构建
-    │   │   ├── attention_residual.py                 Full Attention Residual 深度聚合器
-    │   │   ├── attention_utils.py                    Q/K/V 投影、头维度整形与 Transformer 层收尾辅助
-    │   │   ├── attention_variants.py                 统一因果 attention 的手工/SDPA 与重算执行路径
-    │   │   ├── causal_encoder.py                     单一因果层/encoder 执行、逐层 r*x+a*x0 残差混合、激活重算与 Full AttnRes；训练、cache 与 trace 共用
-    │   │   ├── grouped_attention.py                  MQA/GQA 投影与按 KV 组 SDPA 适配
-    │   │   ├── input_encoder.py                      技能、状态与 scene 独立内容投影；死亡使用独立 FP32 embedding 并按动作边界插入，content 与 role 相加后统一无参数 RMSNorm，历史/当前状态共享参数，生成交错布局和逻辑位置
-    │   │   ├── kv_cache.py                           推理专用 scene/history prefix 分层 KV-Cache，分别记录历史动作数与独立 token 数
     │   │   ├── model.py                              固定动作因果策略模型；独立无 bias 动作头、FP32 softcap 与 checkpoint 架构校验，输入技能 embedding 和输出头分别训练
-    │   │   ├── position_encoding.py                  唯一 RoPE 实现
-    │   │   ├── repetition.py                         连续重复动作软惩罚策略
-    │   │   ├── residual_mix.py                       普通残差逐层可学习 r/a 系数和初始 token 重注入，端点按模型配置线性初始化
-    │   │   ├── trace.py                              hidden 与 attention head 分析 trace
-    │   │   └── transformer.py                        无参数 RMSNorm Transformer 层、FFN 激活/门控、重算开关和逐层运行诊断，不依赖分析 trace
+    │   │   └── repetition.py                         连续重复动作软惩罚策略
     │   ├── __init__.py                               策略共享层入口，不隐式导入可选依赖
     │   ├── config.py                                 策略模型配置与模型/设备/checkpoint/cache 路径解析；按 `.env` 的 `FFXIV_JOB_TAG` + `FFXIV_MODEL_VARIANT` 解析 config.yaml，并合并 model/training/optimizer/grpo/action_quality 子配置，不依赖 training
     │   └── replay.py                                 回放配置数据类；不包含回放执行实现

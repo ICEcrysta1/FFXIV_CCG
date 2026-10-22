@@ -8,7 +8,7 @@ import torch
 from common.policy.data import DataSpec, SkillVocab
 from common.policy.model import CausalPolicyModel
 from common.policy.config import ModelConfig
-from common.policy.data.context_encoding import ContextEncoder
+from common.policy.data.encoding.context_encoding import ContextEncoder
 from common.pytorch.runtime import move_batch
 from scripts.autoregressive_replay.parallel import ParallelRollouts, TrainingPolicyBackend
 from scripts.autoregressive_replay.ppg import evaluate_validation_ppg
@@ -169,7 +169,7 @@ def test_context_encoder_prunes_expired_scenes_before_onnx_padding(tmp_path):
     """读侧删除过期场景后进入八槽部署图；宿主只接收紧凑或右补齐输入。"""
     ort = pytest.importorskip("onnxruntime")
     pytest.importorskip("onnxscript")
-    from common.policy.data.context_fields import MODEL_INPUT_FIELDS_BY_NAME
+    from common.policy.data.contracts.context_fields import MODEL_INPUT_FIELDS_BY_NAME
     from scripts.autoregressive_replay.backends import build_fixed_ort_inputs, _to_fixed_capacity_batch
     from scripts.onnx_export import TENSOR_INPUT_NAMES
     from scripts.onnx_export.export.checkpoint import load_policy_contracts
