@@ -14,8 +14,8 @@ from ..contracts.context_fields import (
     RAW_ONLY_FIELD_NAMES,
     tensor_dimensions,
 )
-from .normalizer import Normalizer, _normalize_values
 from ..schema import StateFeatureLayout, TrainingSchema
+from .normalizer import Normalizer, _normalize_values
 from .state_features import assemble_state_inputs
 
 

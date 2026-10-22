@@ -555,8 +555,9 @@ def test_compiled_shard_requires_known_current_request_time(tmp_path, null_ancho
         assert not reader.sample(0)["current_state_null_mask"][request_time_index]
 
 
-def test_compiled_cache_reader_does_not_swallow_memory_error(tmp_path, monkeypatch):
-    """reader 自身的内存错误不能被误判为缓存损坏。"""
+@pytest.mark.parametrize("failure_stage", ["safe_torch_load", "CompiledCacheReader"])
+def test_compiled_cache_reader_does_not_swallow_memory_error(tmp_path, monkeypatch, failure_stage):
+    """反序列化和 reader 构造的内存错误都不能被误判为缓存损坏。"""
     pytest.importorskip("torch")
     import importlib
 
@@ -579,12 +580,14 @@ def test_compiled_cache_reader_does_not_swallow_memory_error(tmp_path, monkeypat
         lambda *args, **kwargs: payload,
     )
 
+    error = MemoryError("simulated cache allocation failure")
+
     def raise_memory_error(*args, **kwargs):
-        raise MemoryError("simulated reader allocation failure")
+        raise error
 
-    monkeypatch.setattr(compiled_cache_module, "CompiledCacheReader", raise_memory_error)
+    monkeypatch.setattr(compiled_cache_module, failure_stage, raise_memory_error)
 
-    with pytest.raises(MemoryError, match="simulated reader allocation failure"):
+    with pytest.raises(MemoryError, match="simulated cache allocation failure") as caught:
         load_compiled_cache(
             cache_path,
             tmp_path / "source.json",
@@ -592,6 +595,7 @@ def test_compiled_cache_reader_does_not_swallow_memory_error(tmp_path, monkeypat
             expected_action_space=ActionSpace.from_job_tag("black_mage"),
             shard_cache=CompiledShardCache(),
         )
+    assert caught.value is error
 
 
 def test_compact_collator_deduplicates_copied_bank_by_explicit_id(tmp_path):

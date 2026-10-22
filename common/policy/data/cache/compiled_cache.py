@@ -22,14 +22,14 @@ from ..contracts.context_fields import (
     STATE_BANK_FIELDS,
     tensor_dimensions,
 )
+from ..contracts.skill_vocab import SkillVocab
+from ..contracts.spec import DataSpec
 from ..schema import (
     TRAINING_SAMPLE_SCHEMA_VERSION,
     SceneWindowSchema,
     StateFeatureGroup,
     TrainingSchema,
 )
-from ..contracts.skill_vocab import SkillVocab
-from ..contracts.spec import DataSpec
 
 logger = logging.getLogger(__name__)
 
@@ -526,7 +526,12 @@ def load_compiled_cache(
             mmap=True,
             safe_globals=(SceneWindowSchema, StateFeatureGroup, TrainingSchema),
         )
+    except MemoryError:
+        # 内存不足不能触发缓存重建，必须交由调用方处理。
+        raise
     except Exception:
+        # 第三方反序列化的异常类型不固定；读取失败仍按缓存未命中处理。
+        logger.debug("缓存读取失败，视为未命中：%s", cache_path, exc_info=True)
         return None
     if not isinstance(payload, dict) or payload.get("cache_format") != CACHE_FORMAT:
         return None
