@@ -367,10 +367,8 @@ def run_training(
                 tensorboard_monitor.log_epoch(global_step=epoch_step)
             if config.ppg.enabled:
                 logger.info(
-                    "Epoch %d/%d | val %s",
-                    epoch,
-                    config.max_epochs,
-                    format_metrics(val_metrics),
+                    "\n%s",
+                    format_metrics(val_metrics, epoch=f"{epoch}/{config.max_epochs}"),
                 )
 
             current_key = _best_metric_key(val_metrics, ppg_enabled=config.ppg.enabled)

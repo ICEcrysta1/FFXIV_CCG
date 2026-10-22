@@ -6,6 +6,7 @@ import os
 import shutil
 import sys
 import time
+from collections import deque
 from collections.abc import Mapping
 
 import torch
@@ -17,12 +18,23 @@ _LABELS = {
     "value_preference_loss": "value_aux",
     "top1_accuracy": "top1",
     "top3_accuracy": "top3",
+    "val_ppg_normalized": "val_norm",
+    "none_ppg_normalized": "none_norm",
+    "top1_val_ppg_average": "score",
 }
 
 
-def format_metrics(metrics: Mapping[str, float]) -> str:
-    """按指标原有顺序汇报全部键值，无需单独维护格式串。"""
-    return " ".join(f"{name}={value:.4g}" for name, value in metrics.items())
+def _columns(values, widths) -> str:
+    return " ".join(f"{value:>{width}}" for width, value in zip(widths, values))
+
+
+def format_metrics(metrics: Mapping[str, float], *, epoch: str) -> str:
+    """验证附加指标沿用批次进度的列名、列宽和有效数字。"""
+    labels = ("Val", "GPU_mem", *(_LABELS.get(name, name) for name in metrics))
+    widths = tuple(max(8, len(label)) for label in labels)
+    widths = (max(widths[0], len(epoch)), *widths[1:])
+    values = (epoch, "-", *(f"{value:.4g}" for value in metrics.values()))
+    return _columns(labels, widths) + "\n" + _columns(values, widths)
 
 
 class EpochProgress:
@@ -47,9 +59,6 @@ class EpochProgress:
         self.interactive = self.stream.isatty()
         self.n = 0
 
-    def _columns(self, values) -> str:
-        return " ".join(f"{value:>{width}}" for width, value in zip(self.widths, values))
-
     def _terminal_width(self) -> int:
         try:
             columns = os.get_terminal_size(self.stream.fileno()).columns
@@ -59,7 +68,8 @@ class EpochProgress:
 
     def __enter__(self):
         self.started = self.last_display = time.monotonic()
-        header = self._columns(self.labels)
+        self.rate_samples = deque([(self.started, 0)])
+        header = _columns(self.labels, self.widths)
         self.display_width = self._terminal_width() if self.interactive else 0
         suffix = self._progress_suffix(0.0, len(header))
         column_width = max(0, self.display_width - len(suffix)) if self.interactive else len(header)
@@ -69,14 +79,28 @@ class EpochProgress:
 
     def update(self) -> None:
         self.n += 1
+        now = time.monotonic()
+        self.rate_samples.append((now, self.n))
+        # 保留跨越窗口起点的锚点，非交互输出也持续更新近期速度。
+        while len(self.rate_samples) > 1 and self.rate_samples[1][0] <= now - 5.0:
+            self.rate_samples.popleft()
         if not self.interactive:
             return
-        now = time.monotonic()
         if now - self.last_display >= 0.2:
             self._display()
 
     def _progress_suffix(self, elapsed: float, column_width: int) -> str:
-        rate = self.n / elapsed if elapsed else 0.0
+        now = self.started + elapsed
+        window_start = max(self.started, now - 5.0)
+        while len(self.rate_samples) > 1 and self.rate_samples[1][0] <= window_start:
+            self.rate_samples.popleft()
+        first_time, first_count = self.rate_samples[0]
+        if len(self.rate_samples) > 1 and first_time < window_start:
+            next_time, next_count = self.rate_samples[1]
+            # 按跨界批次的时间占比折算计数，避免长停顿继续污染整个恢复窗口。
+            first_count += (next_count - first_count) * (window_start - first_time) / (next_time - first_time)
+        window_elapsed = now - window_start
+        rate = (self.n - first_count) / window_elapsed if window_elapsed else 0.0
         speed = f"{1 / rate:.1f}s/it" if 0 < rate < 1 else f"{rate:.1f}it/s"
         fraction = min(1.0, self.n / self.total) if self.total else 0.0
         remaining = (self.total - self.n) / rate if rate and self.n < self.total else 0.0
@@ -97,10 +121,10 @@ class EpochProgress:
             f"{torch.cuda.memory_reserved(self.device) / 2**30:.3g}G"
             if self.device.type == "cuda" and not interrupted else "-"
         )
-        columns = self._columns((
+        columns = _columns((
             self.epoch, memory,
             *(f"{metrics[name]:.4g}" if name in metrics else "-" for name in self.totals.names),
-        ))
+        ), self.widths)
         now = time.monotonic()
         suffix = self._progress_suffix(max(0.0, now - self.started), len(columns))
         if self.interactive:
