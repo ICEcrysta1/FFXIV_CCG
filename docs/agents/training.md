@@ -32,7 +32,7 @@ FFXIV_CCG/
     │   ├── epochs.py                                 单轮训练与验证，负责批次编码、损失、梯度/参数更新及样本加权指标，保留训练诊断与 TensorBoard 批次监控
     │   ├── loss.py                                   统一装配主损失和可选辅助损失，提供权重、开关与分项指标
     │   ├── progress.py                               BC 训练/验证进度显示：累计指标表头与数值列、显存和批次，按最近 5 秒估算速度与剩余时间，验证附加指标沿用同宽表格
-    │   └── training_loop.py                          BC 训练编排：模型/optimizer/scheduler 初始化、续训恢复、CUDA 编译前后向预热、逐轮调用、PPG 回调、监控与 checkpoint 生命周期；续训步号沿用 scheduler
+    │   └── training_loop.py                          BC 训练编排：模型/optimizer/scheduler 初始化、续训恢复、CUDA 前后向按 batch 特化分进程编译并接入共享缓存、逐轮调用、PPG 回调、监控与 checkpoint 生命周期；续训步号沿用 scheduler
     ├── __init__.py                                   训练包导出入口，仅暴露预训练 dataset / collator / sampler / oversampling
     ├── runtime.py                                    batch、输入编码、Attention/FFN、反向和优化器阶段的显存/耗时诊断
     └── train.py                                      通用行为克隆训练入口，只读选择已编译数据；支持 `python3 training/train.py` 和 `python3 -m training.train`

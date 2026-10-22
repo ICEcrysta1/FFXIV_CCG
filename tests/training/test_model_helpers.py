@@ -99,10 +99,10 @@ def test_compile_warmup_preserves_rng_parameters_and_existing_gradients(tmp_path
     from common.policy.model import CausalPolicyModel
 
     config = RunConfig(
-        raw_data_dir=tmp_path, output_dir=tmp_path, job_tag="black_mage", precision="float32",
+        raw_data_dir=tmp_path, output_dir=tmp_path, job_tag="black_mage", precision="float32", batch_size=3,
         model=ModelConfig(
             d_model=8, n_layers=1, n_heads=2, num_kv_heads=1, ff_dim=24,
-            dropout=0.2, transformer_activation="swiglu", hc_sinkhorn_iters=1,
+            dropout=0.2, transformer_activation="swiglu", hc_sinkhorn_iters=1, context_capacity=17,
         ),
     )
     model = CausalPolicyModel(make_data_spec(), config.model, vocab_size=3)
@@ -127,7 +127,7 @@ def test_compile_warmup_preserves_rng_parameters_and_existing_gradients(tmp_path
             training_loop_impl._warmup_compiled_training(model, config)
     else:
         training_loop_impl._warmup_compiled_training(model, config)
-        assert set(calls) == {(2, 7), (2, 1), (1, 7), (1, 1)}
+        assert set(calls) == {(3, 16), (3, 1), (1, 16), (1, 1)}
     assert torch.equal(torch.get_rng_state(), rng)
     for name, value in model.state_dict().items():
         torch.testing.assert_close(value, state[name], rtol=0, atol=0)

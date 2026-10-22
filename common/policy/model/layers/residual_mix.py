@@ -12,7 +12,7 @@ from torch.utils.checkpoint import checkpoint
 
 
 def _sinkhorn_pointwise(logits: torch.Tensor, iterations: int, eps: float) -> torch.Tensor:
-    """把小矩阵展开为 token 向量，让融合核在片上完成全部行列归一化。"""
+    """把小矩阵展开为 token 向量，减少逐轮归约启动 GPU 核的开销。"""
     rows = []
     for row in logits.unbind(-2):
         values = row.unbind(-1)
@@ -91,7 +91,7 @@ class HyperConnections(nn.Module):
             return checkpoint(operation, *inputs, use_reentrant=False, preserve_rng_state=False)
         return operation(*inputs)
 
-    @torch.compile(fullgraph=True, dynamic=True, options={"max_fusion_size": 4096})
+    @torch.compile(fullgraph=True, dynamic=True)
     def _compiled_mixes(self, streams: torch.Tensor):
         # 编译范围包含重算，反向可将重算与求导融合，投影参数仍参与 autograd。
         return checkpoint(self._mixes, streams, True, use_reentrant=False, preserve_rng_state=False)
