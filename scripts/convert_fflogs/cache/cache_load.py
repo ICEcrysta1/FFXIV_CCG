@@ -6,8 +6,8 @@ import hashlib
 import json
 from pathlib import Path
 
-from common.policy.data.action_space import ActionSpace
-from common.policy.data.compiled_cache import (
+from common.policy.data.contracts.action_space import ActionSpace
+from common.policy.data.cache.compiled_cache import (
     CACHE_FORMAT,
     DEFAULT_CACHE_MAX_SHARDS,
     DEFAULT_CACHE_SHARD_SIZE,
@@ -17,8 +17,8 @@ from common.policy.data.compiled_cache import (
     cache_path_for_source,
     load_compiled_cache_for_source,
 )
-from common.policy.data.normalizer import Normalizer
-from common.policy.data.skill_vocab import SkillVocab
+from common.policy.data.encoding.normalizer import Normalizer
+from common.policy.data.contracts.skill_vocab import SkillVocab
 from scripts.common.file_inventory import FileInventory
 
 RAW_CONVERSION_VERSION = DEFAULT_CONVERSION_VERSION

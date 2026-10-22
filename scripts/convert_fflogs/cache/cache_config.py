@@ -12,7 +12,7 @@ from common.configuration.yaml import load_yaml_mapping
 from common.context.schema import SCHEMA_CONFIG_PATH
 from common.game.config import PROJECT_ROOT, load_project_config
 from common.game.models import SkillDefinition
-from common.policy.data.policy_actions import load_policy_actions
+from common.policy.data.contracts.policy_actions import load_policy_actions
 
 from ..config.config import (
     load_action_quality_skill_policy,

@@ -15,7 +15,7 @@ from scripts.convert_fflogs.utils import build_skill_book, load_job_project_conf
 from common.policy.data import ActionSpace, Normalizer, SkillVocab
 from common.policy.config import ModelConfig
 from training import TrainingDataset
-from common.policy.data.compiled_cache import build_cache_signature, cache_path_for_source
+from common.policy.data.cache.compiled_cache import build_cache_signature, cache_path_for_source
 
 
 _TEST_TRAINING_PAYLOADS: dict[Path, dict[str, object]] = {}

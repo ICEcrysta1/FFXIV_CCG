@@ -543,7 +543,7 @@ def test_source_reader_rejects_reordered_death_markers(field, value):
 
 
 def test_death_markers_roundtrip_pt_without_entering_numeric_history(tmp_path):
-    from common.policy.data.compiled_cache import CompiledCacheReader, CompiledShardCache
+    from common.policy.data.cache.compiled_cache import CompiledCacheReader, CompiledShardCache
     from scripts.convert_fflogs.cache.cache_writer import write_compiled_cache_stream
     from scripts.convert_fflogs.source.source_reader import TrainingSourceReader
 
@@ -686,9 +686,9 @@ def test_history_skill_features_keep_fp32_through_collation_and_context_encoding
     import torch
 
     from common.policy.data import Normalizer, SkillVocab
-    from common.policy.data.context_encoding import ContextEncoder
-    from common.policy.data.context_fields import ENCODING_BANK_FIELDS
-    from common.policy.data.normalization import NormalizerConfig
+    from common.policy.data.encoding.context_encoding import ContextEncoder
+    from common.policy.data.contracts.context_fields import ENCODING_BANK_FIELDS
+    from common.policy.data.encoding.normalization import NormalizerConfig
     from scripts.convert_fflogs.source.source_reader import TrainingSourceReader
     from scripts.convert_fflogs.training.history_bank import build_history_bank
     from scripts.convert_fflogs.training.sample_builder import TrainingSampleBuilder

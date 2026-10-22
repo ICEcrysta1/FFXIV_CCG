@@ -13,7 +13,7 @@ import torch
 from common.configuration.environment import resolve_registered_job_tags
 from common.policy.config import PROJECT_ROOT, resolve_policy_cache_dir
 from common.policy.data import DataSpec, ModelInputContract
-from common.policy.data.context_encoding import ContextEncoder
+from common.policy.data.encoding.context_encoding import ContextEncoder
 from common.policy.model import CausalPolicyModel
 from common.pytorch.precision import load_precision_config
 from common.pytorch.runtime import model_dtype

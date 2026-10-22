@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from common.policy.data.input_contract import INPUT_CONTRACT_VERSION, ModelInputContract
+from common.policy.data.contracts.input_contract import INPUT_CONTRACT_VERSION, ModelInputContract
 from common.pytorch.serialization import safe_torch_load
 from scripts.onnx_export import CapacityContract, DeploymentManifest
 from scripts.onnx_export.contracts.deployment_profile import DeploymentProfile

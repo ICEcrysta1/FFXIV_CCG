@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from common.policy.model.position_encoding import RotaryPositionEncoding
+from common.policy.model.attention.position_encoding import RotaryPositionEncoding
 
 
 def test_rope_zero_position_is_identity():

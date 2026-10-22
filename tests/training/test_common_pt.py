@@ -7,7 +7,7 @@ import pytest
 from common.pytorch.precision import load_precision_config
 from scripts.convert_fflogs.utils import build_skill_book, load_job_project_config
 from common.policy.data import ActionSpace, CompiledCacheReader, Normalizer, SkillVocab
-from common.policy.data.prepared_sources import select_prepared_validation_sources
+from common.policy.data.cache.prepared_sources import select_prepared_validation_sources
 from training import ShardBatchSampler, TrainingCollator, TrainingDataset, WeightedShardBatchSampler
 from training.config import RunConfig
 from tests.training._causal_fixtures import make_data_spec, make_input_contract, make_state_groups
@@ -20,7 +20,7 @@ from tests.training._common_fixtures import (
     make_illegal_action_pt,
     write_test_compiled_cache,
 )
-from common.policy.data.compiled_cache import (
+from common.policy.data.cache.compiled_cache import (
     CACHE_FORMAT,
     CompiledShardCache,
     build_cache_signature,
@@ -190,7 +190,7 @@ def test_compiled_history_and_current_state_use_compact_state_contract(tmp_path)
 def test_previous_state_layout_cache_is_rejected(tmp_path, old_contract):
     """旧输入字段缓存不可复用，即使 raw 文件身份和其余编译参数一致。"""
     torch = pytest.importorskip("torch")
-    from common.policy.data.compiled_cache import cache_path_for_source
+    from common.policy.data.cache.compiled_cache import cache_path_for_source
     from common.policy.data.schema import SceneWindowSchema, StateFeatureGroup, TrainingSchema
     from common.pytorch.serialization import safe_torch_load
 
@@ -280,7 +280,7 @@ def test_compiled_cache_manifest_uses_mmap_for_history_bank(tmp_path, monkeypatc
 
     import importlib
 
-    compiled_cache_module = importlib.import_module("common.policy.data.compiled_cache")
+    compiled_cache_module = importlib.import_module("common.policy.data.cache.compiled_cache")
     original_load = compiled_cache_module.safe_torch_load
     mmap_values = []
 
@@ -330,7 +330,7 @@ def test_corrupt_history_bank_manifest_falls_back_to_recompile(
     torch = pytest.importorskip("torch")
     import importlib
 
-    compiled_cache_module = importlib.import_module("common.policy.data.compiled_cache")
+    compiled_cache_module = importlib.import_module("common.policy.data.cache.compiled_cache")
     cache_path = tmp_path / "corrupt.compiled.pt"
     cache_path.write_bytes(b"corrupt manifest")
     payload_num_samples = 2
@@ -429,7 +429,7 @@ def test_compiled_scene_reader_keeps_empty_scenes_and_rejects_missing_fields(tmp
     """空场景保留宽度和请求 dtype；缺字段必须在读取 shard 时拒绝。"""
     torch = pytest.importorskip("torch")
     from common.pytorch.serialization import safe_torch_load
-    from common.policy.data.compiled_cache import CACHE_PICKLE_PROTOCOL
+    from common.policy.data.cache.compiled_cache import CACHE_PICKLE_PROTOCOL
 
     source_path = make_demo_pt(tmp_path, ["fire_iii"], fight_id="scene_reader_boundary")
     dataset = make_dataset([source_path])
@@ -461,7 +461,7 @@ def test_empty_compiled_cache_accepts_sentinel_history_bank(tmp_path, monkeypatc
     torch = pytest.importorskip("torch")
     import importlib
 
-    compiled_cache_module = importlib.import_module("common.policy.data.compiled_cache")
+    compiled_cache_module = importlib.import_module("common.policy.data.cache.compiled_cache")
     source_path = tmp_path / "source.json"
     source_path.write_text("{}", encoding="utf-8")
     cache_path = cache_path_for_source(tmp_path, source_path)
@@ -560,7 +560,7 @@ def test_compiled_cache_reader_does_not_swallow_memory_error(tmp_path, monkeypat
     pytest.importorskip("torch")
     import importlib
 
-    compiled_cache_module = importlib.import_module("common.policy.data.compiled_cache")
+    compiled_cache_module = importlib.import_module("common.policy.data.cache.compiled_cache")
     cache_path = tmp_path / "manifest.pt"
     cache_path.write_bytes(b"manifest")
     space = ActionSpace.from_job_tag("black_mage")

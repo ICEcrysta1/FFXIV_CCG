@@ -9,11 +9,11 @@ from torch import nn
 from torch.nn import functional as F
 
 from common.policy.config import TRANSFORMER_ACTIVATIONS, ModelConfig
-from common.policy.data.spec import DataSpec
+from common.policy.data.contracts.spec import DataSpec
 from training.config import load_run_config
-from common.policy.model.input_encoder import CausalInputEncoder
+from common.policy.model.layers.input_encoder import CausalInputEncoder
 from common.policy.model.model import CausalPolicyModel
-from common.policy.model.transformer import TraceableTransformerEncoderLayer
+from common.policy.model.layers.transformer import TraceableTransformerEncoderLayer
 from tests.training._causal_fixtures import make_checkpoint
 
 

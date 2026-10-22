@@ -30,13 +30,13 @@ from common.policy.data import (
     Normalizer,
     SkillVocab,
 )
-from common.policy.data.context_encoding import ContextEncoder
-from common.policy.data.policy_actions import load_policy_actions
+from common.policy.data.encoding.context_encoding import ContextEncoder
+from common.policy.data.contracts.policy_actions import load_policy_actions
 from common.policy.model import (
     CausalPolicyModel,
     repetition_config_from_checkpoint,
 )
-from common.policy.model.input_encoder import (
+from common.policy.model.layers.input_encoder import (
     ROLE_DEAD,
     ROLE_SCENE,
     ROLE_SKILL,

@@ -9,8 +9,8 @@ from common.data.layout import (
     percentile_bucket,
     percentile_directory,
 )
-from common.policy.data.compiled_cache import cache_path_for_source
-from common.policy.data.source_selection import select_training_raw_path_groups
+from common.policy.data.cache.compiled_cache import cache_path_for_source
+from common.policy.data.cache.source_selection import select_training_raw_path_groups
 from scripts.convert_fflogs.cli import _resolve_input_files
 
 
@@ -38,7 +38,7 @@ def test_validation_layout_is_identical_across_raw_annotated_and_cache(tmp_path)
 
 
 def test_validation_groups_are_fixed_per_encounter_without_cross_fill(tmp_path):
-    from common.policy.data.source_selection import select_validation_raw_path_groups
+    from common.policy.data.cache.source_selection import select_validation_raw_path_groups
 
     for encounter, count in (("FRU", 3), ("M5S", 8)):
         for index in range(count):
@@ -54,7 +54,7 @@ def test_validation_groups_are_fixed_per_encounter_without_cross_fill(tmp_path):
 
 
 def test_validation_groups_include_raw_encounter_missing_annotation(tmp_path):
-    from common.policy.data.source_selection import select_validation_raw_path_groups
+    from common.policy.data.cache.source_selection import select_validation_raw_path_groups
 
     raw = tmp_path / "raw" / "VAL" / "FRU" / "fight.json.br"
     raw.parent.mkdir(parents=True)
@@ -66,7 +66,7 @@ def test_validation_groups_include_raw_encounter_missing_annotation(tmp_path):
 
 
 def test_validation_hundred_files_uses_fixed_remainder_order(tmp_path):
-    from common.policy.data.source_selection import select_validation_raw_path_groups
+    from common.policy.data.cache.source_selection import select_validation_raw_path_groups
 
     for encounter in ("FRU", "M5S", "P12S"):
         (tmp_path / "raw" / "VAL" / encounter).mkdir(parents=True)

@@ -51,7 +51,7 @@ def test_bc_explicit_model_bypasses_default_normalizer(tmp_path, monkeypatch):
     model = ModelConfig(d_model=128)
     load_normalizer = Mock(side_effect=AssertionError("显式模型不应读取默认归一化配置"))
     monkeypatch.setattr(
-        "common.policy.data.normalization.load_normalizer_config", load_normalizer,
+        "common.policy.data.encoding.normalization.load_normalizer_config", load_normalizer,
     )
 
     config = RunConfig(
@@ -68,7 +68,7 @@ def test_bc_loader_preserves_parsed_model_without_default_factory(
 ):
     load_normalizer = Mock(side_effect=AssertionError("模型配置不应读取归一化配置"))
     monkeypatch.setattr(
-        "common.policy.data.normalization.load_normalizer_config", load_normalizer,
+        "common.policy.data.encoding.normalization.load_normalizer_config", load_normalizer,
     )
     monkeypatch.setattr("training.config.load_root_dotenv", lambda *_: None)
     monkeypatch.setattr(

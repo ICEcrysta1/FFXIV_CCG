@@ -16,7 +16,7 @@ import torch
 from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, ModelInputContract, Normalizer, SkillVocab
 from common.policy.data.schema import SceneWindowSchema, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
-from common.policy.data.input_contract import INPUT_CONTRACT_VERSION, TOKEN_ENCODING_CONTRACT
+from common.policy.data.contracts.input_contract import INPUT_CONTRACT_VERSION, TOKEN_ENCODING_CONTRACT
 from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
 from common.policy.model import CausalPolicyModel
 from common.pytorch.serialization import safe_torch_load
@@ -29,7 +29,7 @@ from scripts.onnx_export import TENSOR_INPUT_NAMES, CapacityContract, Deployment
 from scripts.onnx_export import export as export_module
 from scripts.onnx_export.contracts.contract import make_inputs, slice_dynamic_inputs
 from scripts.onnx_export.contracts import contract as tensor_contract_module
-from common.policy.data.context_fields import MODEL_INPUT_FIELDS
+from common.policy.data.contracts.context_fields import MODEL_INPUT_FIELDS
 from tests.training._causal_fixtures import make_data_spec, make_input_contract, make_state_groups
 from scripts.onnx_export.contracts.deployment_profile import DeploymentProfile
 from scripts.onnx_export.contracts.deployment_contract import (
@@ -1307,7 +1307,7 @@ def test_export_rejects_scene_without_room_for_saved_history_reset(tmp_path, con
 
 @pytest.mark.parametrize(("context_capacity", "history_reset_keep"), ((12, 4), (8, 2)))
 def test_export_accepts_exact_scene_and_saved_history_reset_budget(tmp_path, context_capacity, history_reset_keep):
-    from common.policy.data.history_window import history_window_length
+    from common.policy.data.encoding.history_window import history_window_length
     from scripts.onnx_export.export.checkpoint import load_policy_contracts
 
     checkpoint, profile = tmp_path / "checkpoint.pt", tmp_path / "profile.json"

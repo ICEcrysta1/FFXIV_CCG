@@ -9,12 +9,12 @@ from dataclasses import dataclass
 import torch
 
 from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
-from common.policy.data.context_encoding import ContextEncoder, raw_state_delta
-from common.policy.data.history_window import (
+from common.policy.data.encoding.context_encoding import ContextEncoder, raw_state_delta
+from common.policy.data.encoding.history_window import (
     history_window_length,
     scene_window_end_times,
 )
-from common.policy.data.state_features import (
+from common.policy.data.encoding.state_features import (
     read_state_tokens,
     validate_state_feature_keys,
 )

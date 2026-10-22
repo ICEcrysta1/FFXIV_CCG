@@ -5,8 +5,8 @@ from __future__ import annotations
 import torch
 from torch.utils.checkpoint import checkpoint
 
-from .attention_masks import build_segment_mask
-from .attention_utils import (
+from ..attention.attention_masks import build_segment_mask
+from ..attention.attention_utils import (
     finish_layer,
     kv_head_count,
     normalize_qk,
@@ -14,7 +14,7 @@ from .attention_utils import (
     rotate_qk,
     split_heads,
 )
-from .attention_variants import run_head_attention
+from ..attention.attention_variants import run_head_attention
 
 
 def run_causal_layer(

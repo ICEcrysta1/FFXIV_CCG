@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from matplotlib.colors import Normalize
 
-from common.policy.model.input_encoder import ROLE_SCENE
+from common.policy.model.layers.input_encoder import ROLE_SCENE
 from training import TrainingCollator
 
 from ..common import (

@@ -8,8 +8,8 @@ import pytest
 
 from common.policy.data import ModelInputContract, Normalizer, SkillVocab
 from common.policy.data.schema import SceneWindowSchema, StateFeatureLayout, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
-from common.policy.data.spec import DataSpec
-from common.policy.data.input_contract import (
+from common.policy.data.contracts.spec import DataSpec
+from common.policy.data.contracts.input_contract import (
     INPUT_CONTRACT_VERSION, TOKEN_ENCODING_CONTRACT, RESIDUAL_MIX_CONFIG_FIELDS,
     residual_composition_contract,
 )

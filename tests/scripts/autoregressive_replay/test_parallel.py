@@ -158,7 +158,7 @@ def test_shared_shard_cache_serializes_loading_and_survives_spawn_pickle():
     import pickle
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
-    from common.policy.data.compiled_cache import CompiledShardCache
+    from common.policy.data.cache.compiled_cache import CompiledShardCache
 
     cache = CompiledShardCache(max_shards=2)
     calls = []

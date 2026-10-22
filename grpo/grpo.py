@@ -25,7 +25,7 @@ from common.policy.config import (
     resolve_policy_model_job_tag,
     resolve_policy_model_variant,
 )
-from common.policy.data.prepared_sources import select_prepared_training_sources
+from common.policy.data.cache.prepared_sources import select_prepared_training_sources
 from common.pytorch.precision import load_precision_config
 from grpo.config import load_grpo_config, load_grpo_run_config
 from grpo.trainer import run_grpo_training

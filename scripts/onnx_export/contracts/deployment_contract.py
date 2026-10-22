@@ -11,8 +11,8 @@ import torch
 
 from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, ModelInputContract, SkillVocab
-from common.policy.data.context_fields import MODEL_INPUT_FIELDS, tensor_dimensions
-from common.policy.data.input_contract import residual_composition_contract
+from common.policy.data.contracts.context_fields import MODEL_INPUT_FIELDS, tensor_dimensions
+from common.policy.data.contracts.input_contract import residual_composition_contract
 from common.policy.model.repetition import parse_repetition_config
 
 from ..io.artifact_io import file_sha256

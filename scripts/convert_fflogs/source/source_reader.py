@@ -11,8 +11,8 @@ from common.context.output import (
     STATE_VECTOR_GROUP_SCHEMAS,
     build_output_context_schema_metadata,
 )
-from common.policy.data.action_space import ActionSpace
-from common.policy.data.compiled_cache import _read_history_marker_bank
+from common.policy.data.contracts.action_space import ActionSpace
+from common.policy.data.cache.compiled_cache import _read_history_marker_bank
 from common.policy.data.schema import (
     SCENE_WINDOW_ORDER,
     TRAINING_SAMPLE_SCHEMA_VERSION,
@@ -21,7 +21,7 @@ from common.policy.data.schema import (
     StateFeatureGroup,
     TrainingSchema,
 )
-from common.policy.data.state_features import (
+from common.policy.data.encoding.state_features import (
     StateTokenTensors,
     read_state_tokens,
     validate_state_feature_keys,

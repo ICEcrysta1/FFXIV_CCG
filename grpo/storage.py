@@ -12,7 +12,7 @@ from pathlib import Path
 import torch
 
 from common.policy.data import DataSpec, ModelInputContract
-from common.policy.data.context_fields import (
+from common.policy.data.contracts.context_fields import (
     MODEL_INPUT_FIELDS,
     RAW_ONLY_FIELD_NAMES,
     tensor_dimensions,

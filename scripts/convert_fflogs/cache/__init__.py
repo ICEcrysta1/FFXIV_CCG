@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from common.policy.data.source_selection import (
+from common.policy.data.cache.source_selection import (
     RawTrainingPathGroup,
     select_training_raw_path_groups,
     select_training_raw_paths,

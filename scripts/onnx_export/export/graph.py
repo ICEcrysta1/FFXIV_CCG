@@ -320,7 +320,7 @@ def _is_rope_frequency_initializer(
     """
     if initializer.data_type != float_data_type:
         return False
-    from common.policy.model.position_encoding import (
+    from common.policy.model.attention.position_encoding import (
         RotaryPositionEncoding,
     )
 

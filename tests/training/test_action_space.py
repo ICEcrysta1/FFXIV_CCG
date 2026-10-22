@@ -13,7 +13,7 @@ from common.game.config import load_project_config
 from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
 from common.policy.data import ActionSpace, DataSpec, SkillVocab
 from common.policy.data.schema import TRAINING_SAMPLE_SCHEMA_VERSION, TRAINING_SOURCE_FORMAT, TrainingSchema
-from common.policy.data.compiled_cache import CACHE_FORMAT, CompiledShardCache, load_compiled_cache
+from common.policy.data.cache.compiled_cache import CACHE_FORMAT, CompiledShardCache, load_compiled_cache
 from tests.training._common_fixtures import make_dataset, make_demo_pt
 
 
@@ -65,7 +65,7 @@ def test_data_spec_rejects_invalid_shared_vocabulary_mapping(rows):
 
 @pytest.mark.parametrize("drift", ["enabled", "kind", "order", "mapping"])
 def test_cache_uses_caller_action_contract_when_current_configuration_changes(tmp_path, monkeypatch, drift):
-    import common.policy.data.compiled_cache as cache_module
+    import common.policy.data.cache.compiled_cache as cache_module
 
     space = ActionSpace.from_job_tag("black_mage")
     path = tmp_path / "manifest.pt"

@@ -15,7 +15,7 @@ from .activation import (
     resolve_pointwise_activation,
     uses_gate,
 )
-from .grouped_attention import GroupedQueryAttention
+from ..attention.grouped_attention import GroupedQueryAttention
 
 
 class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):

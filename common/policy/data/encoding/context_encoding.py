@@ -7,7 +7,7 @@ from collections.abc import Mapping
 import torch
 from torch import nn
 
-from .context_fields import (
+from ..contracts.context_fields import (
     CURRENT_STATE_RAW_FIELDS,
     ENCODING_BANK_FIELDS,
     HISTORY_RAW_FIELDS,
@@ -15,7 +15,7 @@ from .context_fields import (
     tensor_dimensions,
 )
 from .normalizer import Normalizer, _normalize_values
-from .schema import StateFeatureLayout, TrainingSchema
+from ..schema import StateFeatureLayout, TrainingSchema
 from .state_features import assemble_state_inputs
 
 

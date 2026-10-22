@@ -6,7 +6,7 @@ from contextlib import nullcontext
 
 import torch
 
-from common.policy.data.context_encoding import ContextEncoder
+from common.policy.data.encoding.context_encoding import ContextEncoder
 from common.policy.model.repetition import RepetitionConfig, prepare_repetition_penalty
 from common.pytorch.runtime import autocast_context, move_batch
 from common.training.metrics import MetricAccumulator

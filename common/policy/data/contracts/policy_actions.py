@@ -27,7 +27,7 @@ def load_policy_actions(path: Path | None = None) -> tuple[PolicyActionDefinitio
     config_path = (
         Path(path).resolve()
         if path is not None
-        else Path(__file__).resolve().parents[3] / "config" / "policy_actions.yaml"
+        else Path(__file__).resolve().parents[4] / "config" / "policy_actions.yaml"
     )
     payload = load_yaml_mapping(config_path, description="policy action config")
     raw_actions = payload.get("policy_actions")

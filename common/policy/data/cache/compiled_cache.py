@@ -14,22 +14,22 @@ from common.data.layout import map_dataset_output_path
 from common.pytorch.dependencies import import_torch
 from common.pytorch.serialization import safe_torch_load
 
-from .action_space import ActionSpace
-from .context_fields import (
+from ..contracts.action_space import ActionSpace
+from ..contracts.context_fields import (
     CURRENT_STATE_RAW_FIELDS,
     HISTORY_BANK_FIELDS,
     HISTORY_BANK_METADATA_NAMES,
     STATE_BANK_FIELDS,
     tensor_dimensions,
 )
-from .schema import (
+from ..schema import (
     TRAINING_SAMPLE_SCHEMA_VERSION,
     SceneWindowSchema,
     StateFeatureGroup,
     TrainingSchema,
 )
-from .skill_vocab import SkillVocab
-from .spec import DataSpec
+from ..contracts.skill_vocab import SkillVocab
+from ..contracts.spec import DataSpec
 
 logger = logging.getLogger(__name__)
 

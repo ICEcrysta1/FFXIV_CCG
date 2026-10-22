@@ -6,7 +6,7 @@ import os
 from collections.abc import Iterable
 from pathlib import Path
 
-from common.policy.data.compiled_cache import (
+from common.policy.data.cache.compiled_cache import (
     CACHE_FORMAT,
     CACHE_PICKLE_PROTOCOL,
     CompiledCacheReader,

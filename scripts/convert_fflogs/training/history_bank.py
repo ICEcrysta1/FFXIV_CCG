@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from common.policy.data.context_encoding import raw_state_delta
+from common.policy.data.encoding.context_encoding import raw_state_delta
 
 from ..source.source_helpers import (
     SKILL_ID_FIELD,

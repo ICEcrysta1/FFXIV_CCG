@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import Normalize
 
-from common.policy.model.input_encoder import ROLE_STATE
+from common.policy.model.layers.input_encoder import ROLE_STATE
 
 from ..common import (
     ANALYSIS_FEATURES,

@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-import common.policy.model.attention_residual as attention_residual_module
-from common.policy.model.attention_residual import FullAttentionResidual
+import common.policy.model.layers.attention_residual as attention_residual_module
+from common.policy.model.layers.attention_residual import FullAttentionResidual
 
 
 def _stacked_reference(residual, sources, query_index):

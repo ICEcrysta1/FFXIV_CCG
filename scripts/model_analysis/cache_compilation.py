@@ -6,9 +6,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from common.policy.data.action_space import ActionSpace
-    from common.policy.data.normalizer import Normalizer
-    from common.policy.data.skill_vocab import SkillVocab
+    from common.policy.data.contracts.action_space import ActionSpace
+    from common.policy.data.encoding.normalizer import Normalizer
+    from common.policy.data.contracts.skill_vocab import SkillVocab
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]

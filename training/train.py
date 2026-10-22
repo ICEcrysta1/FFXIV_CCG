@@ -21,7 +21,7 @@ from common.policy.config import (
     resolve_policy_model_job_tag,
     resolve_policy_model_variant,
 )
-from common.policy.data.prepared_sources import (
+from common.policy.data.cache.prepared_sources import (
     select_prepared_training_sources,
     select_prepared_validation_sources,
 )

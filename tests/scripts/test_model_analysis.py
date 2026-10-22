@@ -18,7 +18,7 @@ from torch import nn
 import scripts.model_analysis.cache_compilation as cache_compilation
 from common.pytorch.serialization import safe_torch_load
 from common.pytorch.runtime import model_dtype
-from common.policy.model.input_encoder import (
+from common.policy.model.layers.input_encoder import (
     ROLE_SCENE, ROLE_STATE, ROLE_SKILL, build_position_ids, build_role_ids,
 )
 from scripts.model_analysis.common import pca_projection, skill_name_by_vocab_id
@@ -782,7 +782,7 @@ def test_model_analysis_outputs_generate_pngs(monkeypatch, tmp_path):
 def test_compact_causal_analysis_preserves_gathered_skill_ids_and_absolute_state_labels(monkeypatch, tmp_path):
     """正式 compact collator 分析必须同时读取已 gather 的历史身份和未归一化的当前状态。"""
     from common.policy.config import ModelConfig
-    from common.policy.data.context_encoding import ContextEncoder
+    from common.policy.data.encoding.context_encoding import ContextEncoder
     from common.policy.model import CausalPolicyModel
     from tests.training._common_fixtures import make_dataset, make_demo_pt
     from training import TrainingCollator
@@ -970,7 +970,7 @@ def test_history_embedding_views_exclude_padding_and_support_empty_history(monke
 def test_history_pca_uses_actual_normalized_input_encoder_output(monkeypatch, tmp_path):
     """用真实编码器核对 post-role 输入，不在分析或测试中复制 RMS 公式。"""
     from common.policy.config import ModelConfig
-    from common.policy.model.input_encoder import CausalInputEncoder
+    from common.policy.model.layers.input_encoder import CausalInputEncoder
     from tests.training._causal_fixtures import make_batch, make_data_spec
 
     torch.manual_seed(81)
