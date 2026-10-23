@@ -72,7 +72,7 @@ def encode_with_kv_cache(encoder, encoded, cache=None):
             position_ids=position_ids[:, prefix_length:],
             rotary_position_encoding=rotary,
             rotary_cosine_sine=current_cosine_sine,
-            existing_key=cache.key_cache[index], existing_value=cache.value_cache[index],
+            existing_key=cache.key_cache[index],
             existing_length=prefix_length,
             attention_residual=residual, sources=sources,
             residual_mix=residual_mix, pre_mix=pre_mix, layer_index=index,
@@ -124,8 +124,9 @@ def _build_prefix_cache(
             head_count = kv_head_count(layer.self_attn)
             head_dim = layer.self_attn.head_dim
             empty_shape = (hidden.shape[0], head_count, 0, head_dim)
-            key_cache.append(hidden.new_empty(empty_shape))
-            value_cache.append(hidden.new_empty(empty_shape))
+            empty_kv = hidden.new_empty(empty_shape)
+            key_cache.append(empty_kv)
+            value_cache.append(empty_kv)
             continue
 
         hidden, key, value, _, pre_mix = run_causal_layer(
@@ -174,7 +175,7 @@ def _append_prefix(
     value_cache = list(cache.value_cache)
 
     for layer_index, layer in enumerate(encoder.layers):
-        hidden, new_key, new_value, _, pre_mix = run_causal_layer(
+        hidden, new_key, _, _, pre_mix = run_causal_layer(
             layer,
             hidden,
             key_valid=prefix_valid,
@@ -182,7 +183,6 @@ def _append_prefix(
             rotary_position_encoding=rotary_position_encoding,
             rotary_cosine_sine=rotary_cosine_sine,
             existing_key=key_cache[layer_index],
-            existing_value=value_cache[layer_index],
             existing_length=cached_length,
             attention_residual=attention_residual,
             residual_mix=residual_mix,
@@ -194,10 +194,7 @@ def _append_prefix(
             (key_cache[layer_index], new_key),
             dim=2,
         )
-        value_cache[layer_index] = torch.cat(
-            (value_cache[layer_index], new_value),
-            dim=2,
-        )
+        value_cache[layer_index] = key_cache[layer_index]
 
     return TransformerKVCache(
         prefix_tokens=prefix_tokens.detach().clone(),

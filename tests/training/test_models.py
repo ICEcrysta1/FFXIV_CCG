@@ -2,79 +2,93 @@
 
 from __future__ import annotations
 
-from collections import Counter
 import random
+from collections import Counter
 from pathlib import Path
 
 import pytest
 
-from common.pytorch.runtime import autocast_context, model_dtype, move_batch
-from scripts.convert_fflogs.cache import select_training_raw_paths
-from tests.training._common_fixtures import make_dataset as _make_dataset
-from tests.training._common_fixtures import make_demo_pt as _make_demo_pt
-from common.policy.config import ModelConfig
+from common.policy.config import ModelConfig, resolve_policy_cache_dir
 from common.policy.data import DataSpec, SkillVocab
 from common.policy.model import (
     CausalPolicyModel,
     build_causal_attention_mask,
 )
+from common.policy.model.layers.input_encoder import build_position_ids
+from common.pytorch.runtime import autocast_context, model_dtype, move_batch
+from scripts.convert_fflogs.cache import select_training_raw_paths
+from tests.training._causal_fixtures import make_batch, make_data_spec
+from tests.training._common_fixtures import make_dataset as _make_dataset
+from tests.training._common_fixtures import make_demo_pt as _make_demo_pt
 from training import TrainingCollator
 from training.config import (
     ValuePreferenceConfig,
-)
-from common.policy.config import resolve_policy_cache_dir
-from training.config import load_run_config
-from training.loop.losses.value_preference import (
-    compute_value_preference_loss,
+    load_run_config,
 )
 from training.loop.dataloaders import _load_skill_values
 from training.loop.losses.primary import primary_loss
-from common.policy.model.layers.input_encoder import build_position_ids
-from tests.training._causal_fixtures import make_batch, make_data_spec
+from training.loop.losses.value_preference import (
+    compute_value_preference_loss,
+)
 
 
-@pytest.mark.parametrize("scale", (1.2, 0.9))
-def test_qk_rmsnorm_matches_independent_formula_and_gradients_at_small_norms(scale):
-    """零向量、极小向量与不同 head 幅度都遵循 epsilon 公式，并保持有限梯度。"""
+@pytest.mark.parametrize("num_kv_heads", (4, 2, 1))
+def test_latent_qkv_projection_matches_formula_and_learnable_gamma_gradients(num_kv_heads):
+    """独立公式锁定低秩 Q 与每头共享 KV 的归一化位置、FP32 统计及梯度。"""
     torch = pytest.importorskip("torch")
-    from common.policy.model.attention.attention_utils import normalize_qk
+    from copy import deepcopy
+
+    from common.policy.model.attention.grouped_attention import GroupedQueryAttention
 
     torch.manual_seed(819)
-    raw_query = torch.randn(1, 4, 3, 8, dtype=torch.float32)
-    raw_key = torch.randn(1, 2, 3, 8, dtype=torch.float32)
-    raw_query[:, 0] = 0
-    raw_query[:, 1] *= 1e-10
-    raw_query[:, 2] *= 1e4
-    raw_key[:, 0] *= 1e-10
-    actual_inputs = tuple(tensor.clone().requires_grad_(True) for tensor in (raw_query, raw_key))
-    reference_inputs = tuple(tensor.clone().requires_grad_(True) for tensor in (raw_query, raw_key))
-    actual = normalize_qk(*actual_inputs, scale=scale)
-    epsilon = torch.finfo(torch.float32).eps
-    reference = tuple(
-        tensor * scale / (tensor.square().mean(-1, keepdim=True) + epsilon).sqrt()
-        for tensor in reference_inputs
-    )
-    for left, right in zip(actual, reference):
-        assert torch.isfinite(left).all()
-        torch.testing.assert_close(left, right, rtol=2e-6, atol=2e-6)
-    assert torch.count_nonzero(actual[0][:, 0]) == 0
-    # epsilon 会衰减极小向量，不把所有 head 无条件顶到固定 RMS。
-    assert (actual[0][:, 1].square().mean(-1).sqrt() < scale / 10).all()
-    targets = tuple(torch.randn_like(tensor) for tensor in actual)
-    actual_grad = torch.autograd.grad(sum((value * target).sum() for value, target in zip(actual, targets)), actual_inputs)
-    reference_grad = torch.autograd.grad(sum((value * target).sum() for value, target in zip(reference, targets)), reference_inputs)
-    for left, right in zip(actual_grad, reference_grad):
-        assert torch.isfinite(left).all()
-        torch.testing.assert_close(left, right, rtol=2e-6, atol=2e-6)
+    attention = GroupedQueryAttention(32, 4, num_kv_heads, q_lora_rank=8, bias=False)
+    assert attention.q_norm.eps == attention.kv_norm.eps == 1e-20
+    torch.testing.assert_close(attention.q_norm.weight, torch.ones(8))
+    torch.testing.assert_close(attention.kv_norm.weight, torch.ones(8))
+    with torch.no_grad():
+        attention.q_norm.weight.copy_(torch.linspace(0.4, 1.7, 8))
+        attention.kv_norm.weight.copy_(torch.linspace(1.6, 0.3, 8))
+    reference = deepcopy(attention)
+    inputs = torch.randn(2, 4, 32)
+    inputs[:, 0] = 0
+    inputs[:, 1] *= 1e-12
+    inputs[:, 2] *= 1e4
+    actual_inputs = inputs.clone().requires_grad_()
+    reference_inputs = inputs.clone().requires_grad_()
+    actual = attention.project_qkv(actual_inputs)
+    assert actual[1] is actual[2]
+
+    def normalize(values, gamma):
+        normalized = values.float() * (values.float().square().mean(-1, keepdim=True) + 1e-20).rsqrt()
+        return (normalized * gamma).to(values.dtype)
+
+    q_latent = torch.nn.functional.linear(reference_inputs, reference.q_a.weight)
+    query = torch.nn.functional.linear(normalize(q_latent, reference.q_norm.weight), reference.q_b.weight)
+    kv_latent = torch.nn.functional.linear(reference_inputs, reference.kv_proj.weight)
+    kv = normalize(kv_latent.unflatten(-1, (num_kv_heads, 8)), reference.kv_norm.weight).flatten(-2)
+    expected = (query, kv, kv)
+    for output, target in zip(actual, expected):
+        assert torch.isfinite(output).all()
+        torch.testing.assert_close(output, target, rtol=2e-6, atol=2e-6)
+    probes = tuple(torch.randn_like(output) for output in actual)
+    sum((output * probe).sum() for output, probe in zip(actual, probes)).backward()
+    sum((output * probe).sum() for output, probe in zip(expected, probes)).backward()
+    torch.testing.assert_close(actual_inputs.grad, reference_inputs.grad, rtol=2e-6, atol=2e-6)
+    for (name, parameter), (_, expected_parameter) in zip(attention.named_parameters(), reference.named_parameters()):
+        if parameter.grad is not None:
+            assert torch.isfinite(parameter.grad).all()
+            torch.testing.assert_close(parameter.grad, expected_parameter.grad, rtol=2e-6, atol=2e-6)
+        if name in {"q_norm.weight", "kv_norm.weight"}:
+            assert torch.count_nonzero(parameter.grad) > 0
 
 
-@pytest.mark.parametrize("num_kv_heads,full_attention_residuals,scale", [
-    (4, False, 1.2), (2, False, 1.2), (1, False, 1.2), (1, True, 0.7),
+@pytest.mark.parametrize("num_kv_heads,full_attention_residuals", [
+    (4, False), (2, False), (1, False), (1, True),
 ])
-def test_qk_head_rmsnorm_follows_rope_and_matches_trace_attention(
-    monkeypatch, num_kv_heads, full_attention_residuals, scale,
+def test_shared_rotated_kv_and_inverse_rope_match_trace_attention(
+    monkeypatch, num_kv_heads, full_attention_residuals,
 ):
-    """用实际 attention 边界与独立公式验证 head 范数、位置和 trace 权重。"""
+    """非均匀 gamma 下验证共享旋转 KV、输出逆旋转及 trace 权重。"""
     torch = pytest.importorskip("torch")
     from common.policy.model.execution import causal_encoder
 
@@ -83,62 +97,51 @@ def test_qk_head_rmsnorm_follows_rope_and_matches_trace_attention(
     model = CausalPolicyModel(
         spec, ModelConfig(
             d_model=32, n_layers=2, n_heads=4, num_kv_heads=num_kv_heads,
-            ff_dim=48, dropout=0.0, transformer_activation="swiglu",
-            full_attention_residuals=full_attention_residuals, qk_norm_scale=scale,
+            q_lora_rank=8, ff_dim=48, dropout=0.0, transformer_activation="swiglu",
+            full_attention_residuals=full_attention_residuals,
         ), vocab_size=3,
     ).eval()
+    with torch.no_grad():
+        for layer in model.encoder.layers:
+            layer.self_attn.q_norm.weight.copy_(torch.linspace(0.4, 1.7, 8))
+            layer.self_attn.kv_norm.weight.copy_(torch.linspace(1.6, 0.3, 8))
     batch = make_batch(spec, batch_size=2, history_length=2, scene_length=2,
                        dtype=torch.float32)
     batch["scene_mask"][1, -1] = False
     batch["history_mask"][1, -1] = False
-    rotated, attention_calls = [], []
+    attention_calls = []
     original_attention = causal_encoder.run_head_attention
 
-    def perturb_rope_output(_module, _args, output):
-        # 正常 RoPE 与 RMS 在数学上可交换；非均匀 hook 才能锁定真实先后顺序。
-        query, key = output
-        channels = torch.arange(1, query.shape[-1] + 1, dtype=query.dtype)
-        changed = (query * channels, key * channels.flip(0))
-        rotated.append(tuple(value.detach().clone() for value in changed))
-        return changed
-
     def observe_attention(layer, query, key, value, **kwargs):
-        raw_query, raw_key = rotated[-1]
-        epsilon = torch.finfo(raw_query.dtype).eps
-        expected = tuple(
-            tensor * scale / (tensor.square().mean(-1, keepdim=True) + epsilon).sqrt()
-            for tensor in (raw_query, raw_key)
-        )
-        torch.testing.assert_close(query, expected[0], rtol=2e-6, atol=2e-6)
-        torch.testing.assert_close(key, expected[1], rtol=2e-6, atol=2e-6)
+        assert key is value
         assert query.shape[1] == 4
-        assert key.shape[1] == value.shape[1] == num_kv_heads
-        for tensor in (query, key):
-            head_rms = tensor.square().mean(-1).sqrt()
-            torch.testing.assert_close(head_rms, torch.full_like(head_rms, scale),
-                                       rtol=2e-6, atol=2e-6)
+        assert key.shape[1] == num_kv_heads
+        expanded_key = key.repeat_interleave(4 // num_kv_heads, dim=1)
+        scores = query @ expanded_key.transpose(-2, -1) / query.shape[-1] ** 0.5
+        count = query.shape[2]
+        causal = torch.arange(count).view(-1, 1) >= torch.arange(count).view(1, -1)
+        allowed = kwargs["key_valid"][:, None, None, :] & causal
+        expected_weights = scores.masked_fill(~allowed, -torch.inf).softmax(-1)
+        attended = expected_weights @ expanded_key
+        positions = kwargs["position_ids"].float()
+        frequencies = positions[..., None] / (10000 ** (torch.arange(0, 8, 2).float() / 8))
+        cosine, sine = frequencies.cos()[:, None], frequencies.sin()[:, None]
+        first, second = attended.chunk(2, dim=-1)
+        unrotated = torch.cat((first * cosine + second * sine,
+                              second * cosine - first * sine), dim=-1)
+        expected_output = layer.self_attn.out_proj(unrotated.transpose(1, 2).flatten(-2))
         output, weights = original_attention(layer, query, key, value, **kwargs)
+        torch.testing.assert_close(output, expected_output, rtol=3e-6, atol=3e-6)
         if kwargs["collect_attention"]:
-            # 独立展开 MQA/GQA，按合法 key 与严格因果 mask 计算完整逐 head 权重。
-            expanded_key = key.repeat_interleave(4 // num_kv_heads, dim=1)
-            scores = query @ expanded_key.transpose(-2, -1) / query.shape[-1] ** 0.5
-            count = query.shape[2]
-            causal = torch.arange(count).view(-1, 1) >= torch.arange(count).view(1, -1)
-            allowed = kwargs["key_valid"][:, None, None, :] & causal
-            expected_weights = scores.masked_fill(~allowed, -torch.inf).softmax(-1)
             torch.testing.assert_close(weights, expected_weights, rtol=2e-6, atol=2e-6)
         attention_calls.append(kwargs["collect_attention"])
         return output, weights
 
     monkeypatch.setattr(causal_encoder, "run_head_attention", observe_attention)
-    handle = model.encoder.rotary_position_encoding.register_forward_hook(perturb_rope_output)
-    try:
-        with torch.no_grad():
-            logits = model(batch)["logits"]
-            trace = model.trace(batch)
-            traced_logits = model.score_hidden(trace.encoded, trace.hidden, batch)
-    finally:
-        handle.remove()
+    with torch.no_grad():
+        logits = model(batch)["logits"]
+        trace = model.trace(batch)
+        traced_logits = model.score_hidden(trace.encoded, trace.hidden, batch)
     assert attention_calls == [False, False, True, True]
     torch.testing.assert_close(logits, traced_logits, rtol=2e-6, atol=2e-6)
 
@@ -149,7 +152,7 @@ def test_qk_head_rmsnorm_follows_rope_and_matches_trace_attention(
 def test_qk_normalization_preserves_recomputed_forward_and_gradients(
     num_kv_heads, full_attention_residuals, attention_block,
 ):
-    """非默认 Q/K 尺度下，SDPA/整块/Full AttnRes 重算保留输入和所有参数梯度。"""
+    """非均匀潜在表示尺度下，SDPA/整块/Full AttnRes 重算保留全部梯度。"""
     torch = pytest.importorskip("torch")
     from common.policy.model.execution.causal_encoder import run_causal_encoder
 
@@ -158,9 +161,13 @@ def test_qk_normalization_preserves_recomputed_forward_and_gradients(
     config = ModelConfig(
         d_model=16, n_layers=2, n_heads=4, num_kv_heads=num_kv_heads,
         ff_dim=32, dropout=0.1, transformer_activation="swiglu",
-        full_attention_residuals=full_attention_residuals, qk_norm_scale=0.85,
+        full_attention_residuals=full_attention_residuals, q_lora_rank=4,
     )
     eager = CausalPolicyModel(spec, config, vocab_size=3).float().train()
+    with torch.no_grad():
+        for layer in eager.encoder.layers:
+            layer.self_attn.q_norm.weight.copy_(torch.linspace(0.5, 1.5, 4))
+            layer.self_attn.kv_norm.weight.copy_(torch.linspace(1.5, 0.5, 4))
     recomputed = CausalPolicyModel(spec, config, vocab_size=3).float().train()
     recomputed.load_state_dict(eager.state_dict())
     recomputed.enable_activation_checkpoint_attention(True, block=attention_block)
@@ -192,13 +199,8 @@ def test_qk_normalization_preserves_recomputed_forward_and_gradients(
     for name, gradient in actual_grads.items():
         assert torch.isfinite(gradient).all()
         torch.testing.assert_close(gradient, expected_grads[name], rtol=2e-6, atol=2e-6)
-    # 标准 MHA 使用 packed 投影，GQA/MQA 使用独立投影；两种布局都要保留 Q/K 梯度。
-    if num_kv_heads == 4:
-        for gradient in actual_grads["layers.0.self_attn.in_proj_weight"].chunk(3, dim=0)[:2]:
-            assert torch.count_nonzero(gradient) > 0
-    else:
-        for name in ("q_proj", "k_proj"):
-            assert torch.count_nonzero(actual_grads[f"layers.0.self_attn.{name}.weight"]) > 0
+    for name in ("q_a.weight", "q_b.weight", "kv_proj.weight", "q_norm.weight", "kv_norm.weight"):
+        assert torch.count_nonzero(actual_grads[f"layers.0.self_attn.{name}"]) > 0
 
 
 def test_future_current_state_cannot_change_earlier_context_hidden():
@@ -258,7 +260,7 @@ def test_select_training_raw_paths_uses_directory_proportions(tmp_path):
 
 
 def test_common_model_uses_pt_dimensions_and_job_route(tmp_path):
-    torch = pytest.importorskip("torch")
+    pytest.importorskip("torch")
     pt_path = _make_demo_pt(tmp_path, ["fire_iii", "fire_iv"], fight_id="model_demo")
     dataset = _make_dataset([pt_path])
     data_spec = DataSpec.from_dataset(dataset)

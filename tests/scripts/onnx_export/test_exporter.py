@@ -593,7 +593,7 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
     data_spec, _input_contract = _write_small_checkpoint(
         checkpoint,
         activation=activation,
-        qk_norm_scale=1.7,
+        q_lora_rank=6,
         logit_softcap=7.5,
     )
     profile = tmp_path / "deployment-profile.json"
@@ -637,7 +637,7 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
     assert provenance["context_capacity_source"] == "checkpoint.model_config.context_capacity"
     assert manifest["contract"]["model_config"]["d_model"] == 16
     assert manifest["contract"]["model_config"]["transformer_activation"] == activation
-    assert manifest["contract"]["model_config"]["qk_norm_scale"] == 1.7
+    assert manifest["contract"]["model_config"]["q_lora_rank"] == 6
     assert manifest["contract"]["model_config"]["logit_softcap"] == 7.5
     assert manifest["contract"]["model_input_contract"]["token_encoding"]["output_projection"] == (
         TOKEN_ENCODING_CONTRACT["output_projection"]
@@ -1352,14 +1352,14 @@ def test_deployment_contract_preserves_actual_residual_path(tmp_path, manifest_s
     checkpoint, profile = tmp_path / "checkpoint.pt", tmp_path / "profile.json"
     _write_small_checkpoint(
         checkpoint, full_attention_residuals=full_attention_residuals,
-        qk_norm_scale=1.7, logit_softcap=7.5,
+        q_lora_rank=6, logit_softcap=7.5,
     )
     _write_small_profile(profile)
     contracts = load_policy_contracts(checkpoint_path=checkpoint, deployment_profile_path=profile, precision="float32")
     payload = contracts.deployment_contract.to_dict()
     expected = "full_attention_residual" if full_attention_residuals else "hyper_connections"
     assert payload["residual_composition"]["type"] == expected
-    assert payload["model_config"]["qk_norm_scale"] == 1.7
+    assert payload["model_config"]["q_lora_rank"] == 6
     assert payload["model_config"]["logit_softcap"] == 7.5
     assert payload["model_input_contract"]["token_encoding"]["attention_qk_normalization"] == (
         TOKEN_ENCODING_CONTRACT["attention_qk_normalization"]
@@ -1458,21 +1458,21 @@ def test_deployment_rejects_invalid_dead_event_boundaries(tmp_path, positions, m
 
 
 @pytest.mark.parametrize("full_attention_residuals", [False, True])
-def test_load_policy_preserves_saved_readout_and_qk_scale_without_project_yaml(tmp_path, monkeypatch, full_attention_residuals):
+def test_load_policy_preserves_saved_readout_and_query_rank_without_project_yaml(tmp_path, monkeypatch, full_attention_residuals):
     import common.game.config as config_module
 
     checkpoint = tmp_path / "checkpoint.pt"
     _write_small_checkpoint(
         checkpoint, full_attention_residuals=full_attention_residuals,
-        qk_norm_scale=1.7, logit_softcap=7.5,
+        q_lora_rank=6, logit_softcap=7.5,
     )
     monkeypatch.setattr(
         config_module, "load_project_config",
-        lambda **_kwargs: pytest.fail("checkpoint readout and QK scales must not load project YAML"),
+        lambda **_kwargs: pytest.fail("checkpoint 的输出尺度和查询秩不应读取项目 YAML"),
     )
     policy, _, _, _, payload = export_module.load_policy(checkpoint, precision="float32")
-    assert policy.model.config.qk_norm_scale == 1.7
-    assert all(layer.qk_norm_scale == 1.7 for layer in policy.model.encoder.layers)
+    assert policy.model.config.q_lora_rank == 6
+    assert all(layer.self_attn.q_norm.weight.shape == (6,) for layer in policy.model.encoder.layers)
     assert policy.model.config.logit_softcap == 7.5
     assert policy.model.output_head.bias is None
     assert policy.model.output_head.weight.shape == (3, 16)
@@ -1484,7 +1484,7 @@ def test_load_policy_preserves_saved_readout_and_qk_scale_without_project_yaml(t
         torch.testing.assert_close(tensor, payload["model_state_dict"][name], atol=0, rtol=0)
 
 
-@pytest.mark.parametrize("field", ["qk_norm_scale", "logit_softcap"])
+@pytest.mark.parametrize("field", ["q_lora_rank", "logit_softcap"])
 @pytest.mark.parametrize("value", ["missing", 0])
 def test_checkpoint_and_deployment_reject_missing_or_invalid_model_scale(tmp_path, field, value):
     from scripts.onnx_export.export.checkpoint import load_policy_contracts
@@ -1511,7 +1511,8 @@ def test_checkpoint_and_deployment_reject_missing_or_invalid_model_scale(tmp_pat
 @pytest.mark.parametrize(("field", "value"), [
     (field, value)
     for field, values in (
-        ("qk_norm_scale", [None, True, False, "1.2", 0, -1]),
+        ("q_lora_rank", [None, True, False, "4", 0, -1, 1.5]),
+        ("qk_norm_scale", [1.2]),
         ("logit_softcap", [None, True, False, "15.0", 0, -1, 1e-46, 1e39]),
     )
     for value in values
@@ -1530,7 +1531,7 @@ def test_manifest_schema_rejects_missing_or_invalid_model_scale(manifest_schema,
 
 
 @pytest.mark.parametrize(("field", "saved", "forged"), [
-    ("qk_norm_scale", 1.7, 1.2),
+    ("q_lora_rank", 6, 4),
     ("logit_softcap", 7.5, 15.0),
 ])
 def test_deployment_model_scale_is_bound_by_saved_config_signature(tmp_path, field, saved, forged):
@@ -1681,15 +1682,18 @@ def test_deployment_rejects_reassigned_vocab_rows_even_with_recomputed_signature
         DeploymentContract.from_dict(wrong.to_dict())
 
 
-def test_load_policy_rejects_removed_candidate_shared_semantics(tmp_path):
+@pytest.mark.parametrize(("field", "value"), (
+    ("position_id_semantics", "candidate_block_shared"), ("qk_norm_scale", 1.2),
+))
+def test_load_policy_rejects_removed_model_options(tmp_path, field, value):
     checkpoint = tmp_path / "checkpoint.pt"
     _write_small_checkpoint(checkpoint)
     payload = safe_torch_load(checkpoint)
     payload["model_config"] = dict(payload["model_config"])
-    payload["model_config"]["position_id_semantics"] = "candidate_block_shared"
+    payload["model_config"][field] = value
     torch.save(payload, checkpoint)
 
-    with pytest.raises(ValueError, match="removed model options"):
+    with pytest.raises(ValueError, match=field):
         export_module.load_policy(checkpoint, precision="float32")
 
 
@@ -1741,9 +1745,9 @@ def _assert_backbone_gamma_initializers(exported_model, checkpoint: Path, dtype:
     state = payload["model_state_dict"]
     gamma = {
         name: value for name, value in state.items()
-        if name == "encoder.norm.weight" or name.endswith((".norm1.weight", ".norm2.weight"))
+        if name == "encoder.norm.weight" or name.endswith((".norm1.weight", ".norm2.weight", ".q_norm.weight", ".kv_norm.weight"))
     }
-    assert len(gamma) == 2 * payload["model_config"]["n_layers"] + 1
+    assert len(gamma) == 4 * payload["model_config"]["n_layers"] + 1
     initializers = [numpy_helper.to_array(tensor).astype(np.float32) for tensor in exported_model.graph.initializer]
     for name, value in gamma.items():
         expected = value.to(dtype).float().numpy()
@@ -1755,7 +1759,7 @@ def _assert_backbone_gamma_initializers(exported_model, checkpoint: Path, dtype:
 
 def _write_small_checkpoint(
     path: Path, *, activation: str = "gelu", full_attention_residuals: bool = False,
-    qk_norm_scale: float = 1.2, logit_softcap: float = 15.0,
+    q_lora_rank: int = 4, logit_softcap: float = 15.0,
 ) -> tuple[DataSpec, ModelInputContract]:
     data_spec = DataSpec(
         job_tag="black_mage",
@@ -1780,7 +1784,7 @@ def _write_small_checkpoint(
         history_reset_keep=4,
         transformer_activation=activation,
         full_attention_residuals=full_attention_residuals,
-        qk_norm_scale=qk_norm_scale,
+        q_lora_rank=q_lora_rank,
         logit_softcap=logit_softcap,
     )
     with torch.random.fork_rng(devices=[]):
@@ -1790,9 +1794,9 @@ def _write_small_checkpoint(
         with torch.no_grad():
             # 保存独立头训练后的值，恢复时不得重新拷贝输入 embedding。
             model.output_head.weight[0].add_(0.125)
-            norms = [norm for layer in model.encoder.layers for norm in (layer.norm1, layer.norm2)]
+            norms = [norm for layer in model.encoder.layers for norm in (layer.norm1, layer.norm2, layer.self_attn.q_norm, layer.self_attn.kv_norm)]
             for index, norm in enumerate((*norms, model.encoder.norm)):
-                norm.weight.copy_(torch.linspace(0.8, 1.2, config.d_model) + index * 0.03)
+                norm.weight.copy_(torch.linspace(0.8, 1.2, norm.weight.numel()) + index * 0.03)
             if not full_attention_residuals:
                 for index, module in enumerate(model.encoder.residual_mix):
                     module.scale.copy_(torch.tensor([.2, .4, .3]))

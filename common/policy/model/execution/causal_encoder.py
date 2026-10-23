@@ -9,7 +9,6 @@ from ..attention.attention_masks import build_segment_mask
 from ..attention.attention_utils import (
     finish_layer,
     kv_head_count,
-    normalize_qk,
     project_qkv,
     rotate_qk,
     split_heads,
@@ -26,7 +25,6 @@ def run_causal_layer(
     rotary_position_encoding,
     rotary_cosine_sine: tuple[torch.Tensor, torch.Tensor] | None = None,
     existing_key: torch.Tensor | None = None,
-    existing_value: torch.Tensor | None = None,
     existing_length: int = 0,
     attention_residual=None,
     residual_mix=None,
@@ -56,7 +54,7 @@ def run_causal_layer(
 
     def attend(attention_hidden):
         attention_input = layer.norm1(attention_hidden) if layer.norm_first and residual_mix is None else attention_hidden
-        query, key, value = project_qkv(layer.self_attn, attention_input)
+        query, key, _ = project_qkv(layer.self_attn, attention_input)
         query_heads, key_heads = rotate_qk(
             rotary_position_encoding,
             split_heads(query, layer.self_attn.num_heads),
@@ -65,16 +63,13 @@ def run_causal_layer(
             position_ids,
             rotary_cosine_sine,
         )
-        # 只归一化本次投影的新 K；缓存已保存归一化后的 K，拼接时不再处理。
-        query_heads, key_heads = normalize_qk(
-            query_heads, key_heads, scale=layer.qk_norm_scale,
-        )
-        value_heads = split_heads(value, kv_head_count(layer.self_attn))
+        # KV 在投影时只归一化一次；旋转后的同一 latent 同时承担 K 和 V。
+        value_heads = key_heads
         if existing_key is None:
             all_key, all_value = key_heads, value_heads
         else:
             all_key = torch.cat((existing_key, key_heads), dim=2)
-            all_value = torch.cat((existing_value, value_heads), dim=2)
+            all_value = all_key
         attended, weights = run_head_attention(
             layer,
             query_heads,
@@ -86,6 +81,9 @@ def run_causal_layer(
             collect_attention=collect_attention,
             force_explicit_mask=force_explicit_mask,
             segment_mask=segment_mask,
+            rotary_position_encoding=rotary_position_encoding,
+            position_ids=position_ids,
+            rotary_cosine_sine=rotary_cosine_sine,
         )
         return attended, key_heads, value_heads, weights
 

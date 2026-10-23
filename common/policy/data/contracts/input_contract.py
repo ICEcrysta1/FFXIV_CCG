@@ -51,7 +51,9 @@ from .spec import DataSpec
 #     四路 Hyper-Connections，训练、trace、KV-cache 和部署共用跨子层 pre_mix。
 #     只改变模型执行语义，既有 raw bank 与 compiled cache 仍可复用。
 # 27：主干子层与最终 RMSNorm 使用初始化为 1 的可学习尺度及 1e-20 epsilon；
-#     FP32 归一化后乘尺度，再转回输入 dtype；输入 token 与 Q/K 归一化不变。
+#     FP32 归一化后乘尺度，再转回输入 dtype；输入 token 归一化不变。
+#     Q 使用低秩投影间的可学习 RMSNorm，KV 共用逐 head 归一化后的旋转张量；
+#     注意力输出逆旋转后再投影，不再使用固定 Q/K 尺度；原始数据缓存仍可复用。
 INPUT_CONTRACT_VERSION = 27
 
 HYPER_CONNECTION_CONFIG_FIELDS = ("hc_mult", "hc_sinkhorn_iters", "hc_eps")
@@ -159,13 +161,19 @@ TOKEN_ENCODING_CONTRACT = {
     },
     "attention_qk_normalization": {
         "type": "RMSNorm",
-        "position": "after_RoPE_before_attention",
-        "normalized_shape": "head_dim",
-        "eps": None,
-        "elementwise_affine": False,
-        "scale": "model_config.qk_norm_scale",
-        "applies_to": ["query", "key"],
-        "key_cache": "normalize_new_keys_once_before_append",
+        "query_position": "after_q_a_before_q_b_and_RoPE",
+        "query_normalized_shape": "model_config.q_lora_rank",
+        "key_value_position": "after_kv_proj_and_split_heads_before_RoPE",
+        "key_value_normalized_shape": "head_dim",
+        "eps": 1e-20,
+        "elementwise_affine": True,
+        "weight_initialization": 1.0,
+        "normalization_dtype": "float32",
+        "affine_position": "before_output_cast",
+        "output_dtype": "input_dtype",
+        "shared_key_value": "same_RoPE_tensor_for_key_and_value",
+        "attention_output": "inverse_RoPE_before_output_projection",
+        "key_cache": "normalize_and_rotate_new_shared_key_value_once_before_append",
     },
     "role_ids": {"scene": 0, "state": 1, "skill": 2, "dead": 3},
     "current_state_encoder": "shared_with_history_state",

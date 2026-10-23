@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import math
 from contextlib import nullcontext
 
 import torch
 from torch import nn
 from torch.utils.checkpoint import checkpoint
 
-from ..attention.grouped_attention import GroupedQueryAttention
 from .activation import (
     activation_hidden,
     gated_hidden_dim,
@@ -52,19 +50,11 @@ class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):
         dtype=None,
         *,
         num_kv_heads: int | None = None,
-        qk_norm_scale: float = 1.2,
+        q_lora_rank: int | None = None,
         swiglu_limit: float = 10.0,
     ):
         if dim_feedforward < 1:
             raise ValueError("dim_feedforward must be positive")
-        if (
-            isinstance(qk_norm_scale, bool)
-            or not isinstance(qk_norm_scale, (int, float))
-            or not math.isfinite(qk_norm_scale)
-            or qk_norm_scale <= 0
-        ):
-            raise ValueError("qk_norm_scale must be a finite positive number")
-        self.qk_norm_scale = float(qk_norm_scale)
         self.swiglu_limit = swiglu_limit
         use_swiglu = uses_gate(activation)
         # 三个投影取代两个投影；保持同一 ff_dim 配置下矩阵参数量近似相等。
@@ -107,18 +97,13 @@ class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):
         if self.self_attn.num_heads % num_kv_heads != 0:
             raise ValueError("nhead must be divisible by num_kv_heads")
         self.num_kv_heads = num_kv_heads
-        if num_kv_heads != self.self_attn.num_heads:
-            original_attention = self.self_attn
-            self.self_attn = GroupedQueryAttention(
-                embed_dim=original_attention.embed_dim,
-                num_heads=original_attention.num_heads,
-                num_kv_heads=num_kv_heads,
-                dropout=original_attention.dropout,
-                bias=original_attention.in_proj_bias is not None,
-                batch_first=original_attention.batch_first,
-                device=original_attention.out_proj.weight.device,
-                dtype=original_attention.out_proj.weight.dtype,
-            )
+        from ..attention.grouped_attention import GroupedQueryAttention
+
+        self.self_attn = GroupedQueryAttention(
+            embed_dim=d_model, num_heads=nhead, num_kv_heads=num_kv_heads,
+            q_lora_rank=q_lora_rank, dropout=dropout, bias=bias,
+            batch_first=batch_first, device=device, dtype=dtype,
+        )
         # GELU/ReLU 沿用原有 linear1/linear2 和 state_dict 键，不增加参数。
         self.gate_proj = (
             nn.Linear(d_model, hidden_dim, bias=bias, device=device, dtype=dtype)

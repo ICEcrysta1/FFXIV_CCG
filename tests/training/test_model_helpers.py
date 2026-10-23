@@ -648,17 +648,20 @@ def test_model_defaults_to_pre_norm_gelu_with_trainable_rms():
     assert layer.norm_first is True
     assert layer.activation is F.gelu
     norms = [module for module in model.encoder.modules() if isinstance(module, RMSNorm)]
-    assert len(norms) == 13
+    assert len(norms) == 4 * model.config.n_layers + 1
     for norm in norms:
         assert norm.eps == 1e-20
         assert norm.elementwise_affine is True
-        assert norm.weight.requires_grad and norm.weight.shape == (8,)
-        torch.testing.assert_close(norm.weight, torch.ones(8), rtol=0, atol=0)
+        assert norm.weight.requires_grad and norm.weight.shape == norm.normalized_shape
+        torch.testing.assert_close(norm.weight, torch.ones_like(norm.weight), rtol=0, atol=0)
     norm_keys = {f"encoder.layers.{index}.norm{number}.weight"
                  for index in range(6) for number in (1, 2)} | {"encoder.norm.weight"}
     checkpoint = make_checkpoint(model.data_spec, model.config, model_state_dict=model.state_dict())
     assert norm_keys <= checkpoint["model_state_dict"].keys()
     assert all(checkpoint["model_state_dict"][key].shape == (8,) for key in norm_keys)
+    for index in range(model.config.n_layers):
+        for name, width in (("q_norm", model.config.q_lora_rank), ("kv_norm", 4)):
+            assert checkpoint["model_state_dict"][f"encoder.layers.{index}.self_attn.{name}.weight"].shape == (width,)
     assert layer.activation_checkpoint_ffn is False
     assert layer.activation_checkpoint_attention is False
 

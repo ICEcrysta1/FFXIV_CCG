@@ -129,7 +129,7 @@ def test_cuda_warmed_model_keeps_default_compile_limit_across_shapes_and_gradien
     assert all(parameter.grad is None for parameter in model.parameters())
 
     norm_weights = [module.weight for module in model.modules() if isinstance(module, RMSNorm)]
-    assert len(norm_weights) == 13
+    assert len(norm_weights) == 4 * model.config.n_layers + 1
     checked_parameters = [*norm_weights, *model.encoder.residual_mix.parameters()]
     shapes = ((2, 0, 0), (1, 1, 1), (2, 3, 2), (1, 5, 1), (2, 2, 0), (2, 0, 1), (2, 0, 1))
     for index, (batch_size, history_length, scene_length) in enumerate(shapes):

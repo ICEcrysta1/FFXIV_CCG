@@ -25,7 +25,7 @@ def test_artzip_manifest_loads_action_quality_weights():
     assert {"model", "training", "grpo"} <= config.keys()
     assert "optimizer_config" not in config
     assert config["optimizers"]["bc"]["name"] == "muon"
-    assert config["optimizers"]["grpo"]["name"] == "adamw"
+    assert config["optimizers"]["grpo"]["name"] == "muon"
 
 
 def test_action_quality_reference_resolves_relative_to_manifest(tmp_path, monkeypatch):
@@ -111,12 +111,15 @@ def test_optimizer_reference_rejects_non_mapping_file(tmp_path):
         load_policy_config(manifest)
 
 
-def test_qk_norm_scale_defaults_and_artzip_architecture():
-    assert ModelConfig().qk_norm_scale == 1.2
-    assert ModelConfig.from_mapping({}).qk_norm_scale == 1.2
+def test_query_rank_defaults_and_artzip_architecture():
+    assert ModelConfig().q_lora_rank == 64
+    assert ModelConfig.from_mapping({}).q_lora_rank == 64
+    assert ModelConfig(d_model=16).q_lora_rank == 4
+    assert ModelConfig.from_mapping({"d_model": 16}).q_lora_rank == 4
+    assert ModelConfig(d_model=2).q_lora_rank == 1
     root = Path(__file__).resolve().parents[1]
     config = load_model_config(root / "config/models/black_mage/artzip/model.yaml")
-    assert config.qk_norm_scale == 1.2
+    assert config.q_lora_rank == 96
     assert config.logit_softcap == 15.0
     assert (config.swiglu_limit, config.hc_mult, config.hc_sinkhorn_iters, config.hc_eps) == (
         10.0, 4, 20, 1e-6,
@@ -124,32 +127,31 @@ def test_qk_norm_scale_defaults_and_artzip_architecture():
     assert (config.n_layers, config.d_model, config.n_heads, config.num_kv_heads, config.ff_dim) == (6, 384, 6, 1, 1536)
 
 
-@pytest.mark.parametrize("value", [0.25, 1, 1.2, 2.5, "1.75"])
-def test_qk_norm_scale_mapping_and_yaml_round_trip(value):
-    config = ModelConfig.from_mapping({"qk_norm_scale": value})
-    assert config.qk_norm_scale == float(value)
-    assert isinstance(config.qk_norm_scale, float)
+@pytest.mark.parametrize("value", [1, 8, 64, 256])
+def test_query_rank_mapping_and_yaml_round_trip(value):
+    config = ModelConfig.from_mapping({"q_lora_rank": value})
+    assert config.q_lora_rank == value
+    assert ModelConfig(q_lora_rank=value) == config
     restored = ModelConfig.from_mapping(yaml.safe_load(yaml.safe_dump(asdict(config))))
     assert restored == config
 
 
-def test_qk_norm_scale_direct_constructor_normalizes_numeric_string():
-    config = ModelConfig(qk_norm_scale="1.75")
-    assert config.qk_norm_scale == 1.75
-    assert isinstance(config.qk_norm_scale, float)
-    assert config == ModelConfig.from_mapping({"qk_norm_scale": "1.75"})
+@pytest.mark.parametrize("value", [True, False, 0, -1, 257, 1.5, "8", float("nan"),
+                                  float("inf"), [], {}])
+def test_query_rank_rejects_invalid_values(value):
+    with pytest.raises(ValueError, match="model.q_lora_rank"):
+        ModelConfig.from_mapping({"q_lora_rank": value})
+    with pytest.raises(ValueError, match="model.q_lora_rank"):
+        ModelConfig(q_lora_rank=value)
 
 
-@pytest.mark.parametrize("value", [True, False, 0, -1, float("nan"), float("inf"), -float("inf"),
-                                  "nan", "inf", "-inf", "0", "-0.5", "invalid", None, [], {}])
-def test_qk_norm_scale_rejects_invalid_mapping_values(value):
-    with pytest.raises(ValueError, match="qk_norm_scale must be finite and positive"):
-        ModelConfig.from_mapping({"qk_norm_scale": value})
-
-
-def test_qk_norm_scale_direct_constructor_rejects_boolean():
-    with pytest.raises(ValueError, match="qk_norm_scale must be finite and positive"):
-        ModelConfig(qk_norm_scale=True)
+def test_query_rank_rejects_explicit_null_and_removed_fixed_scale():
+    with pytest.raises(ValueError, match="model.q_lora_rank"):
+        ModelConfig.from_mapping({"q_lora_rank": None})
+    with pytest.raises(ValueError, match="qk_norm_scale"):
+        ModelConfig.from_mapping({"qk_norm_scale": 1.2})
+    with pytest.raises(TypeError, match="qk_norm_scale"):
+        ModelConfig(qk_norm_scale=1.2)
 
 
 @pytest.mark.parametrize("field", _REMOVED_RESIDUAL_MIX_FIELDS)

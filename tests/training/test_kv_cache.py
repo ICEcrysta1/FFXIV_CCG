@@ -18,7 +18,7 @@ def _make_model(
     activation: str = "gelu",
     n_heads: int = 2,
     num_kv_heads: int = 1,
-    qk_norm_scale: float = 1.2,
+    q_lora_rank: int = 4,
 ) -> CausalPolicyModel:
     data_spec = DataSpec(
         job_tag="black_mage",
@@ -38,7 +38,7 @@ def _make_model(
             n_layers=2,
             n_heads=n_heads,
             num_kv_heads=num_kv_heads,
-            qk_norm_scale=qk_norm_scale,
+            q_lora_rank=q_lora_rank,
             ff_dim=32,
             dropout=0.0,
             transformer_norm_first=norm_first,
@@ -57,19 +57,19 @@ def _make_model_pair(
     activation: str = "gelu",
     n_heads: int = 2,
     num_kv_heads: int = 1,
-    qk_norm_scale: float = 1.2,
+    q_lora_rank: int = 4,
 ):
     cached_model = _make_model(
         activation=activation,
         norm_first=norm_first,
         full_attention_residuals=full_attention_residuals,
-        n_heads=n_heads, num_kv_heads=num_kv_heads, qk_norm_scale=qk_norm_scale,
+        n_heads=n_heads, num_kv_heads=num_kv_heads, q_lora_rank=q_lora_rank,
     )
     full_model = _make_model(
         activation=activation,
         norm_first=norm_first,
         full_attention_residuals=full_attention_residuals,
-        n_heads=n_heads, num_kv_heads=num_kv_heads, qk_norm_scale=qk_norm_scale,
+        n_heads=n_heads, num_kv_heads=num_kv_heads, q_lora_rank=q_lora_rank,
     )
     if full_attention_residuals:
         # 模拟已训练的不同深度权重，避免零 query 的均匀平均掩盖缓存聚合错误。
@@ -224,55 +224,48 @@ def test_shared_context_reanchor_and_scene_clip_rebuild_kv(full_attention_residu
 def test_qk_normalized_kv_reuses_old_keys_once_and_matches_dense_trace(
     monkeypatch, num_kv_heads, full_attention_residuals,
 ):
-    """缓存保存已归一化 K，仅归一化新增块；非默认尺度下仍与 dense/trace 一致。"""
-    from common.policy.model.execution import causal_encoder
-
+    """仅归一化新增共享 KV；非均匀 gamma 下缓存、dense 与 trace 一致。"""
     torch.manual_seed(823)
-    scale = 1.73
     model, dense = _make_model_pair(
-        n_heads=4, num_kv_heads=num_kv_heads, qk_norm_scale=scale,
+        n_heads=4, num_kv_heads=num_kv_heads, q_lora_rank=4,
         full_attention_residuals=full_attention_residuals, activation="swiglu",
     )
+    with torch.no_grad():
+        for layer in model.encoder.layers:
+            layer.self_attn.q_norm.weight.copy_(torch.linspace(0.4, 1.7, 4))
+            layer.self_attn.kv_norm.weight.copy_(torch.linspace(1.6, 0.3, 4))
+    dense.load_state_dict(model.state_dict())
     model.enable_kv_cache(True)
     calls = []
-    original = causal_encoder.normalize_qk
-
-    def observe_normalization(query, key, *, scale):
-        calls.append((query.shape[2], key.shape[2]))
-        normalized = original(query, key, scale=scale)
-        epsilon = torch.finfo(query.dtype).eps
-        for raw, actual in zip((query, key), normalized):
-            expected = raw * scale / (raw.square().mean(-1, keepdim=True) + epsilon).sqrt()
-            torch.testing.assert_close(actual, expected, rtol=2e-6, atol=2e-6)
-        return normalized
-
-    monkeypatch.setattr(causal_encoder, "normalize_qk", observe_normalization)
+    handles = [layer.self_attn.kv_norm.register_forward_pre_hook(
+        lambda _module, args: calls.append(args[0].shape[1]),
+    ) for layer in model.encoder.layers]
     previous_keys = None
     requests = ((0, 0.0, (2, 1)), (1, 0.0, (2, 1)),
                 (1, 7.0, (1,)), (2, 0.0, (2, 1)))
-    with torch.no_grad():
-        for history_length, offset, blocks in requests:
-            batch = _make_batch(history_length, current_state_offset=offset)
-            calls.clear()
-            cached_logits = model(batch)["logits"]
-            assert calls == [(length, length) for length in blocks
-                             for _ in range(model.config.n_layers)]
-            keys = model._kv_cache.key_cache
-            for key in keys:
-                assert key.shape[1] == num_kv_heads
-                rms = key.square().mean(-1).sqrt()
-                torch.testing.assert_close(rms, torch.full_like(rms, scale),
+    try:
+        with torch.no_grad():
+            for history_length, offset, blocks in requests:
+                batch = _make_batch(history_length, current_state_offset=offset)
+                calls.clear()
+                cached_logits = model(batch)["logits"]
+                assert calls == [length for length in blocks for _ in range(model.config.n_layers)]
+                keys = model._kv_cache.key_cache
+                for key, value in zip(keys, model._kv_cache.value_cache):
+                    assert key is value
+                    assert key.shape[1] == num_kv_heads
+                if previous_keys is not None:
+                    for old, current in zip(previous_keys, keys):
+                        torch.testing.assert_close(current[:, :, :old.shape[2]], old, rtol=0, atol=0)
+                previous_keys = tuple(key.clone() for key in keys)
+                trace = dense.trace(batch)
+                torch.testing.assert_close(cached_logits, dense(batch)["logits"],
                                            rtol=2e-6, atol=2e-6)
-            if previous_keys is not None:
-                for old, current in zip(previous_keys, keys):
-                    # 旧 K 必须逐位复用；结合新增块调用统计，禁止再次归一化前缀。
-                    torch.testing.assert_close(current[:, :, :old.shape[2]], old, rtol=0, atol=0)
-            previous_keys = tuple(key.clone() for key in keys)
-            trace = dense.trace(batch)
-            torch.testing.assert_close(cached_logits, dense(batch)["logits"],
-                                       rtol=2e-6, atol=2e-6)
-            torch.testing.assert_close(cached_logits, dense.score_hidden(trace.encoded, trace.hidden, batch),
-                                       rtol=2e-6, atol=2e-6)
+                torch.testing.assert_close(cached_logits, dense.score_hidden(trace.encoded, trace.hidden, batch),
+                                           rtol=2e-6, atol=2e-6)
+    finally:
+        for handle in handles:
+            handle.remove()
 
 
 @pytest.mark.parametrize("activation", ("gelu", "swiglu"))
@@ -644,6 +637,8 @@ def test_causal_attention_zeroes_fully_blocked_rows():
         key_valid=torch.zeros((1, 5), dtype=torch.bool),
         causal=False,
         collect_attention=False,
+        rotary_position_encoding=model.encoder.rotary_position_encoding,
+        position_ids=torch.zeros((1, 3), dtype=torch.long),
     )
     assert torch.isfinite(fully_blocked_output).all()
     torch.testing.assert_close(
@@ -659,6 +654,8 @@ def test_causal_attention_zeroes_fully_blocked_rows():
         key_valid=torch.ones((1, 5), dtype=torch.bool),
         causal=False,
         collect_attention=False,
+        rotary_position_encoding=model.encoder.rotary_position_encoding,
+        position_ids=torch.zeros((1, 3), dtype=torch.long),
     )
     assert torch.isfinite(valid_output).all()
     assert bool((valid_output != 0.0).any())

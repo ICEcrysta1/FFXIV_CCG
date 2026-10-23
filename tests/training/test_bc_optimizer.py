@@ -160,15 +160,9 @@ def test_optimizer_groups_projection_matrices_and_weight_decay(num_kv_heads, ful
               for parameter_name in group["param_names"]}
     muon_names = {parameter_name for parameter_name, group in owners.items()
                   if group["optimizer_name"] == "muon"}
-    attention = (
-        {f"encoder.layers.0.self_attn.{name}.weight" for name in (
-            "q_proj", "k_proj", "v_proj", "out_proj",
-        )}
-        if num_kv_heads == 1 else {
-            "encoder.layers.0.self_attn.in_proj_weight",
-            "encoder.layers.0.self_attn.out_proj.weight",
-        }
-    )
+    attention = {f"encoder.layers.0.self_attn.{name}.weight" for name in (
+        "q_a", "q_b", "kv_proj", "out_proj",
+    )}
     matrix_names = attention | {
         f"encoder.layers.0.{name}.weight" for name in ("linear1", "linear2", "gate_proj")
     } | {
@@ -197,7 +191,8 @@ def test_optimizer_groups_projection_matrices_and_weight_decay(num_kv_heads, ful
             "sinkhorn" if name == "muon" and parameter_name in embedding_names else "adamw"
         )
     for parameter_name in ("encoder.layers.0.norm1.weight", "encoder.layers.0.norm2.weight",
-                           "encoder.norm.weight"):
+                           "encoder.norm.weight", "encoder.layers.0.self_attn.q_norm.weight",
+                           "encoder.layers.0.self_attn.kv_norm.weight"):
         assert owners[parameter_name]["optimizer_name"] == "adamw"
         assert owners[parameter_name]["weight_decay"] == 0.03
     before = {parameter_name: parameter.detach().clone() for parameter_name, parameter in model.named_parameters()}

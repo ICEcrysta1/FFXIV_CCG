@@ -6,19 +6,25 @@ from copy import deepcopy
 import pytest
 import torch
 
-from common.pytorch.runtime import move_batch
-from training.data.collator import TrainingCollator
-from common.policy.model import repetition as repetition_module
-from common.policy.model.attention import attention_variants as attention_variants_module
-from common.policy.model.layers.attention_residual import FullAttentionResidual
-from common.policy.model.attention.position_encoding import RotaryPositionEncoding
-from common.policy.model.execution import causal_encoder as causal
-from common.policy.model.layers.transformer import TraceableTransformerEncoderLayer
-from common.training.metrics import MetricAccumulator
-from training.loop import epochs
-from tests.training._causal_fixtures import make_batch, make_data_spec, make_input_contract
 from common.policy.config import ModelConfig
 from common.policy.data.encoding.context_encoding import ContextEncoder, raw_state_delta
+from common.policy.model import repetition as repetition_module
+from common.policy.model.attention import (
+    attention_variants as attention_variants_module,
+)
+from common.policy.model.attention.position_encoding import RotaryPositionEncoding
+from common.policy.model.execution import causal_encoder as causal
+from common.policy.model.layers.attention_residual import FullAttentionResidual
+from common.policy.model.layers.transformer import TraceableTransformerEncoderLayer
+from common.pytorch.runtime import move_batch
+from common.training.metrics import MetricAccumulator
+from tests.training._causal_fixtures import (
+    make_batch,
+    make_data_spec,
+    make_input_contract,
+)
+from training.data.collator import TrainingCollator
+from training.loop import epochs
 
 
 def _layer(*, norm_first=True, activation="swiglu", kv_heads=1, dropout=0.0):
@@ -43,18 +49,13 @@ def _reference_causal_layer(layer, encoded, rope):
     """用完整矩阵和显式 KV 扩展验证因果层的输出及梯度。"""
     from common.policy.model.attention.attention_masks import build_allowed_mask
     values = layer.norm1(encoded["tokens"]) if layer.norm_first else encoded["tokens"]
-    query, key, value = causal.project_qkv(layer.self_attn, values)
+    query, key, _ = causal.project_qkv(layer.self_attn, values)
     query, key = causal.rotate_qk(
         rope, causal.split_heads(query, 4),
         causal.split_heads(key, causal.kv_head_count(layer.self_attn)),
         encoded["position_ids"], encoded["position_ids"],
     )
-    # 独立公式覆盖投影和 RoPE 后的逐 head RMSNorm，不复用正式 helper。
-    query = query / (query.square().mean(-1, keepdim=True) + torch.finfo(query.dtype).eps).sqrt()
-    key = key / (key.square().mean(-1, keepdim=True) + torch.finfo(key.dtype).eps).sqrt()
-    query = query * layer.qk_norm_scale
-    key = key * layer.qk_norm_scale
-    value = causal.split_heads(value, causal.kv_head_count(layer.self_attn))
+    value = key
     factor = 4 // causal.kv_head_count(layer.self_attn)
     key = key.repeat_interleave(factor, dim=1)
     value = value.repeat_interleave(factor, dim=1)
@@ -65,6 +66,7 @@ def _reference_causal_layer(layer, encoded, rope):
     attended = torch.nn.functional.scaled_dot_product_attention(
         query, key, value, attn_mask=allowed, dropout_p=0.0,
     )
+    attended = rope.apply(attended, encoded["position_ids"], inverse=True)
     attended = layer.self_attn.out_proj(attended.transpose(1, 2).reshape_as(values))
     return causal.finish_layer(layer, encoded["tokens"], attended)
 
@@ -104,8 +106,9 @@ def test_shared_projections_and_single_causal_sdpa_run_once(monkeypatch):
     handles = []
     for name, module in (
         ("norm1", layer.norm1), ("norm2", layer.norm2),
-        ("q", layer.self_attn.q_proj), ("k", layer.self_attn.k_proj),
-        ("v", layer.self_attn.v_proj), ("out", layer.self_attn.out_proj),
+        ("q_a", layer.self_attn.q_a), ("q_norm", layer.self_attn.q_norm),
+        ("q_b", layer.self_attn.q_b), ("kv", layer.self_attn.kv_proj),
+        ("kv_norm", layer.self_attn.kv_norm), ("out", layer.self_attn.out_proj),
         ("ff_up", layer.linear1), ("ff_gate", layer.gate_proj), ("ff_down", layer.linear2),
     ):
         handles.append(module.register_forward_hook(lambda _m, _i, _o, name=name: counts.update([name])))
@@ -120,7 +123,7 @@ def test_shared_projections_and_single_causal_sdpa_run_once(monkeypatch):
     for handle in handles:
         handle.remove()
     assert counts.pop("sdpa") == 1
-    assert len(counts) == 9
+    assert len(counts) == 11
     assert set(counts.values()) == {1}
 
 
@@ -159,16 +162,17 @@ def test_full_attention_residual_aggregates_each_depth_once_and_preserves_trace(
         hidden = aggregate(sources, 0)
         expected_layers = []
         for index, layer in enumerate(reference.layers):
-            query, key, value = causal.project_qkv(layer.self_attn, layer.norm1(hidden))
+            query, key, _ = causal.project_qkv(layer.self_attn, layer.norm1(hidden))
             query, key = causal.rotate_qk(
                 reference.rotary_position_encoding,
                 causal.split_heads(query, layer.self_attn.num_heads),
                 causal.split_heads(key, causal.kv_head_count(layer.self_attn)),
                 encoded["position_ids"], encoded["position_ids"],
             )
-            query, key = causal.normalize_qk(query, key, scale=layer.qk_norm_scale)
             attended, _ = attention_variants_module.run_head_attention(
-                layer, query, key, causal.split_heads(value, causal.kv_head_count(layer.self_attn)),
+                layer, query, key, key,
+                rotary_position_encoding=reference.rotary_position_encoding,
+                position_ids=encoded["position_ids"],
                 key_valid=encoded["valid"], causal=True, collect_attention=False,
             )
             sources.append(layer.dropout1(attended))

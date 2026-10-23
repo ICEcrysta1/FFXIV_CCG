@@ -12,8 +12,8 @@ from common.policy.config import ModelConfig
 from common.policy.data import SkillVocab
 from common.policy.model import CausalPolicyModel
 from common.training.tensorboard import TensorBoardConfig, write_scalar_metrics
-from common.training.tensorboard_monitor import TensorBoardMonitor
 from common.training.tensorboard_labels import tensorboard_tag
+from common.training.tensorboard_monitor import TensorBoardMonitor
 from tests.training._causal_fixtures import make_batch, make_data_spec
 
 
@@ -223,10 +223,15 @@ def test_layer_labels_follow_actual_model_and_keep_unique_parameter_paths(tmp_pa
     gradients = tags["histograms"]
     assert len(gradients) == 2 * len(list(model.named_parameters()))
     for index in range(n_layers):
-        name = f"encoder.layers.{index}.self_attn.q_proj.weight"
-        suffix = f"编码器第{index + 1}层/自注意力/查询投影Q/权重（{name}）"
-        assert f"梯度/{suffix}" in gradients
-        assert f"参数/{suffix}" in gradients
+        for module, label in (
+            ("q_a", "查询低秩投影"), ("q_b", "查询展开投影"),
+            ("kv_proj", "共享键值投影"), ("q_norm", "查询低秩归一化"),
+            ("kv_norm", "共享键值归一化"),
+        ):
+            name = f"encoder.layers.{index}.self_attn.{module}.weight"
+            suffix = f"编码器第{index + 1}层/自注意力/{label}/权重（{name}）"
+            assert f"梯度/{suffix}" in gradients
+            assert f"参数/{suffix}" in gradients
     assert not any(f"编码器第{n_layers + 1}层/" in tag for tag in gradients)
 
 

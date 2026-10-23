@@ -21,12 +21,15 @@ def run_head_attention(
     key_heads: torch.Tensor,
     value_heads: torch.Tensor,
     *,
+    rotary_position_encoding,
+    position_ids: torch.Tensor,
     key_valid: torch.Tensor | None = None,
     causal: bool,
     causal_offset: int = 0,
     collect_attention: bool,
     force_explicit_mask: bool = False,
     segment_mask: SegmentAttentionMask | None = None,
+    rotary_cosine_sine: tuple[torch.Tensor, torch.Tensor] | None = None,
 ):
     """执行单段 attention 并投影，供 prefix/KV-cache 路径复用。"""
     if key_heads.shape[1] != value_heads.shape[1]:
@@ -101,6 +104,9 @@ def run_head_attention(
             attended = attended.masked_fill(fully_blocked.unsqueeze(-1), 0.0)
         weights = None
 
+    attended = rotary_position_encoding.apply(
+        attended, position_ids, rotary_cosine_sine, inverse=True,
+    )
     return layer.self_attn.out_proj(merge_heads(attended)), weights
 
 

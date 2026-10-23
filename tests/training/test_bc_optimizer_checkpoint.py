@@ -145,26 +145,26 @@ def test_resume_rejects_legacy_backbone_even_when_forcing_data_mismatch(
 
 
 @pytest.mark.parametrize("force", [False, True])
-@pytest.mark.parametrize("incompatible", ["version_18", "missing_scale", "scale_mismatch"])
+@pytest.mark.parametrize("incompatible", ["version_26", "missing_rank", "rank_mismatch"])
 def test_resume_cannot_bypass_qk_normalization_contract(resume_context, force, incompatible):
-    """数据规模豁免不能绕过 Q/K 算法版本、已保存尺度或架构一致性。"""
-    if incompatible == "version_18":
-        resume_context.checkpoint["input_contract"]["version"] = 18
+    """数据规模豁免不能绕过潜在 Q/KV 算法版本或低秩投影架构。"""
+    if incompatible == "version_26":
+        resume_context.checkpoint["input_contract"]["version"] = 26
         message = "unsupported input contract version"
-    elif incompatible == "missing_scale":
-        resume_context.checkpoint["model_config"].pop("qk_norm_scale")
-        message = "missing model.qk_norm_scale"
+    elif incompatible == "missing_rank":
+        resume_context.checkpoint["model_config"].pop("q_lora_rank")
+        message = "missing model.q_lora_rank"
     else:
-        resume_context.checkpoint["model_config"]["qk_norm_scale"] = 0.7
+        resume_context.checkpoint["model_config"]["q_lora_rank"] = 1
         message = "model config mismatch"
     resume_context.checkpoint["run_config"]["max_files"] = 10
     with pytest.raises(ValueError, match=message):
         _validate(resume_context, force=force)
 
 
-def test_resume_preserves_matching_nondefault_qk_scale(resume_context):
-    """合法续训沿用 checkpoint 尺度，不补回正式配置的默认 1.2。"""
-    model_config = replace(resume_context.config.model, qk_norm_scale=1.7)
+def test_resume_preserves_matching_nondefault_query_rank(resume_context):
+    """合法续训沿用 checkpoint 低秩宽度，不补回本机默认值。"""
+    model_config = replace(resume_context.config.model, q_lora_rank=7)
     resume_context.config = replace(resume_context.config, model=model_config)
     resume_context.checkpoint["model_config"] = asdict(model_config)
     assert _validate(resume_context) == 1

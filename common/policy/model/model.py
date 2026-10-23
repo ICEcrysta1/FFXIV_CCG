@@ -60,7 +60,7 @@ class CausalPolicyModel(nn.Module):
             d_model=config.d_model,
             nhead=config.n_heads,
             num_kv_heads=config.num_kv_heads,
-            qk_norm_scale=config.qk_norm_scale,
+            q_lora_rank=config.q_lora_rank,
             dim_feedforward=config.ff_dim,
             dropout=config.dropout,
             activation=config.transformer_activation,
@@ -260,7 +260,7 @@ class CausalPolicyModel(nn.Module):
             raise TypeError("checkpoint missing model_config")
         for key in (
             "context_capacity", "history_reset_keep",
-            "qk_norm_scale", "logit_softcap", "swiglu_limit", *HYPER_CONNECTION_CONFIG_FIELDS,
+            "q_lora_rank", "logit_softcap", "swiglu_limit", *HYPER_CONNECTION_CONFIG_FIELDS,
         ):
             if key not in payload:
                 raise ValueError(f"checkpoint missing model.{key}; retrain")

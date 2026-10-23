@@ -59,21 +59,6 @@ def _parse_strict_bool(value: object, *, field_name: str) -> bool:
     )
 
 
-def _parse_qk_norm_scale(value: object) -> float:
-    """解析 Q/K 共用的正有限尺度，避免布尔值被 float() 静默接受。"""
-    message = "model.qk_norm_scale must be finite and positive"
-    if isinstance(value, bool):
-        # 架构配置错误统一使用 ValueError，与 checkpoint/续训校验保持一致。
-        raise ValueError(message)  # noqa: TRY004
-    try:
-        scale = float(value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(message) from exc
-    if not math.isfinite(scale) or scale <= 0:
-        raise ValueError(message)
-    return scale
-
-
 def _parse_positive_fp32(value: object, *, field_name: str) -> float:
     """解析以 FP32 使用的正常正数，禁止布尔值和非有限数值。"""
     message = f"{field_name} must be finite and positive within the FP32 normal range"
@@ -110,6 +95,7 @@ class ModelConfig:
     n_layers: int = 4
     n_heads: int = 4
     num_kv_heads: int = 1
+    q_lora_rank: int | None = None
     ff_dim: int = 1024
     transformer_norm_first: bool = True
     transformer_activation: str = "gelu"
@@ -120,12 +106,16 @@ class ModelConfig:
     hc_eps: float = 1e-6
     dropout: float = 0.1
     rope_theta: float = 10_000.0
-    qk_norm_scale: float = 1.2
     logit_softcap: float = 15.0
     context_capacity: int = 1024
     history_reset_keep: int = 8
 
     def __post_init__(self) -> None:
+        rank = max(1, self.d_model // 4) if self.q_lora_rank is None else self.q_lora_rank
+        _parse_history_integer(rank, field_name="model.q_lora_rank")
+        if not 1 <= rank <= self.d_model:
+            raise ValueError("model.q_lora_rank must be between 1 and model.d_model")
+        object.__setattr__(self, "q_lora_rank", rank)
         if self.ff_dim < 1:
             raise ValueError("model.ff_dim must be positive")
         if self.transformer_activation not in TRANSFORMER_ACTIVATIONS:
@@ -144,7 +134,6 @@ class ModelConfig:
             raise ValueError("model.n_heads must be divisible by model.num_kv_heads")
         if self.rope_theta <= 1.0:
             raise ValueError("model.rope_theta must be greater than 1")
-        object.__setattr__(self, "qk_norm_scale", _parse_qk_norm_scale(self.qk_norm_scale))
         object.__setattr__(self, "logit_softcap", _parse_logit_softcap(self.logit_softcap))
         if not self.transformer_norm_first:
             raise ValueError("model requires transformer_norm_first=true")
@@ -190,6 +179,7 @@ class ModelConfig:
             "scorer_use_candidate_hidden", "position_id_semantics", "time_delta_scale",
             "residual_mix_r_start", "residual_mix_r_end",
             "residual_mix_a_start", "residual_mix_a_end",
+            "qk_norm_scale",
         }.intersection(values)
         if removed:
             raise ValueError("removed model options: " + ", ".join(sorted(removed)))
@@ -204,6 +194,10 @@ class ModelConfig:
             n_layers=int(values.get("n_layers", cls.n_layers)),
             n_heads=int(values.get("n_heads", cls.n_heads)),
             num_kv_heads=int(values.get("num_kv_heads", cls.num_kv_heads)),
+            q_lora_rank=(
+                _parse_history_integer(values["q_lora_rank"], field_name="model.q_lora_rank")
+                if "q_lora_rank" in values else cls.q_lora_rank
+            ),
             ff_dim=int(values.get("ff_dim", cls.ff_dim)),
             transformer_norm_first=_parse_strict_bool(
                 values.get("transformer_norm_first", cls.transformer_norm_first),
@@ -231,7 +225,6 @@ class ModelConfig:
             ),
             dropout=float(values.get("dropout", cls.dropout)),
             rope_theta=float(values.get("rope_theta", cls.rope_theta)),
-            qk_norm_scale=_parse_qk_norm_scale(values.get("qk_norm_scale", cls.qk_norm_scale)),
             logit_softcap=_parse_logit_softcap(values.get("logit_softcap", cls.logit_softcap)),
             context_capacity=_parse_history_integer(
                 values.get("context_capacity", cls.context_capacity),

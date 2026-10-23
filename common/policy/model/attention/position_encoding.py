@@ -63,8 +63,10 @@ class RotaryPositionEncoding(nn.Module):
         values: torch.Tensor,
         position_ids: torch.Tensor,
         cosine_sine: tuple[torch.Tensor, torch.Tensor] | None = None,
+        *,
+        inverse: bool = False,
     ) -> torch.Tensor:
-        """对 ``[batch, heads, tokens, head_dim]`` 张量应用 RoPE。"""
+        """对 head 张量应用 RoPE；输出聚合通过 inverse 恢复到 query 位置坐标。"""
         if values.ndim != 4:
             raise ValueError("RoPE values must have shape [batch, heads, tokens, head_dim]")
         if values.shape[-1] != self.head_dim:
@@ -85,6 +87,8 @@ class RotaryPositionEncoding(nn.Module):
         if cosine_sine is None:
             cosine_sine = self._cos_sin(position_ids)
         cosine, sine = (value.to(dtype=values.dtype) for value in cosine_sine)
+        if inverse:
+            sine = -sine
         half = self.head_dim // 2
         first, second = values[..., :half], values[..., half:]
         # 标准正旋转 R(+θ)：out_first = first*cos - second*sin，
