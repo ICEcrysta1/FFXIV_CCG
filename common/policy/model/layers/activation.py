@@ -57,6 +57,7 @@ def activation_hidden(
     up: torch.Tensor,
     *,
     gate: torch.Tensor | None = None,
+    limit: float = 10.0,
 ) -> torch.Tensor:
     """把上行投影合成为隐层激活：门控取值多乘一道非线性门控。
 
@@ -65,4 +66,10 @@ def activation_hidden(
     """
     if gate is None:
         return pointwise(up)
-    return pointwise(gate) * up
+    # 与低精度专家的数值边界一致：门控只截上界，up 对称截断，乘积保持 FP32。
+    dtype = up.dtype
+    with torch.autocast(device_type=up.device.type, enabled=False):
+        gate = gate.float().clamp(max=limit)
+        up = up.float().clamp(min=-limit, max=limit)
+        hidden = pointwise(gate) * up
+    return hidden.to(dtype)

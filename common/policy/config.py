@@ -74,21 +74,6 @@ def _parse_qk_norm_scale(value: object) -> float:
     return scale
 
 
-def _parse_residual_mix_endpoint(value: object, *, field_name: str) -> float:
-    """解析残差初始化端点，保留有限负值与零并拒绝布尔值。"""
-    message = f"{field_name} must be finite"
-    if isinstance(value, bool):
-        # 必须在 float() 前检查，避免 true/false 被静默转换为 1/0。
-        raise ValueError(f"{message}; boolean values are not allowed")  # noqa: TRY004
-    try:
-        endpoint = float(value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(message) from exc
-    if not math.isfinite(endpoint):
-        raise ValueError(message)
-    return endpoint
-
-
 def _parse_positive_fp32(value: object, *, field_name: str) -> float:
     """解析以 FP32 使用的正常正数，禁止布尔值和非有限数值。"""
     message = f"{field_name} must be finite and positive within the FP32 normal range"
@@ -111,7 +96,7 @@ def _parse_logit_softcap(value: object) -> float:
 
 
 def _parse_history_integer(value: object, *, field_name: str) -> int:
-    """窗口参数仅接受整数，禁止布尔值与浮点截断。"""
+    """架构与窗口计数仅接受整数，禁止布尔值与浮点截断。"""
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"{field_name} must be a non-negative integer")
     return value
@@ -128,11 +113,11 @@ class ModelConfig:
     ff_dim: int = 1024
     transformer_norm_first: bool = True
     transformer_activation: str = "gelu"
+    swiglu_limit: float = 10.0
     full_attention_residuals: bool = False
-    residual_mix_r_start: float = 1.15
-    residual_mix_r_end: float = 1.05
-    residual_mix_a_start: float = 0.20
-    residual_mix_a_end: float = 0.05
+    hc_mult: int = 4
+    hc_sinkhorn_iters: int = 20
+    hc_eps: float = 1e-6
     dropout: float = 0.1
     rope_theta: float = 10_000.0
     qk_norm_scale: float = 1.2
@@ -161,16 +146,18 @@ class ModelConfig:
             raise ValueError("model.rope_theta must be greater than 1")
         object.__setattr__(self, "qk_norm_scale", _parse_qk_norm_scale(self.qk_norm_scale))
         object.__setattr__(self, "logit_softcap", _parse_logit_softcap(self.logit_softcap))
-        if self.full_attention_residuals and not self.transformer_norm_first:
-            raise ValueError(
-                "model.full_attention_residuals requires transformer_norm_first=true"
-            )
-        for name in ("residual_mix_r_start", "residual_mix_r_end",
-                     "residual_mix_a_start", "residual_mix_a_end"):
+        if not self.transformer_norm_first:
+            raise ValueError("model requires transformer_norm_first=true")
+        for name in ("swiglu_limit", "hc_eps"):
             object.__setattr__(
                 self, name,
-                _parse_residual_mix_endpoint(getattr(self, name), field_name=f"model.{name}"),
+                _parse_positive_fp32(getattr(self, name), field_name=f"model.{name}"),
             )
+        for name in ("hc_mult", "hc_sinkhorn_iters"):
+            value = _parse_history_integer(getattr(self, name), field_name=f"model.{name}")
+            minimum = 2 if name == "hc_mult" else 1
+            if value < minimum:
+                raise ValueError(f"model.{name} must be >= {minimum}")
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, object] | None = None) -> ModelConfig:
@@ -201,6 +188,8 @@ class ModelConfig:
         removed = {
             "num_candidates", "scorer_use_raw_projection",
             "scorer_use_candidate_hidden", "position_id_semantics", "time_delta_scale",
+            "residual_mix_r_start", "residual_mix_r_end",
+            "residual_mix_a_start", "residual_mix_a_end",
         }.intersection(values)
         if removed:
             raise ValueError("removed model options: " + ", ".join(sorted(removed)))
@@ -223,25 +212,22 @@ class ModelConfig:
             transformer_activation=str(
                 values.get("transformer_activation", cls.transformer_activation)
             ).strip().lower(),
+            swiglu_limit=_parse_positive_fp32(
+                values.get("swiglu_limit", cls.swiglu_limit), field_name="model.swiglu_limit",
+            ),
             full_attention_residuals=_parse_strict_bool(
                 values.get("full_attention_residuals", cls.full_attention_residuals),
                 field_name="model.full_attention_residuals",
             ),
-            residual_mix_r_start=_parse_residual_mix_endpoint(
-                values.get("residual_mix_r_start", cls.residual_mix_r_start),
-                field_name="model.residual_mix_r_start",
+            hc_mult=_parse_history_integer(
+                values.get("hc_mult", cls.hc_mult), field_name="model.hc_mult",
             ),
-            residual_mix_r_end=_parse_residual_mix_endpoint(
-                values.get("residual_mix_r_end", cls.residual_mix_r_end),
-                field_name="model.residual_mix_r_end",
+            hc_sinkhorn_iters=_parse_history_integer(
+                values.get("hc_sinkhorn_iters", cls.hc_sinkhorn_iters),
+                field_name="model.hc_sinkhorn_iters",
             ),
-            residual_mix_a_start=_parse_residual_mix_endpoint(
-                values.get("residual_mix_a_start", cls.residual_mix_a_start),
-                field_name="model.residual_mix_a_start",
-            ),
-            residual_mix_a_end=_parse_residual_mix_endpoint(
-                values.get("residual_mix_a_end", cls.residual_mix_a_end),
-                field_name="model.residual_mix_a_end",
+            hc_eps=_parse_positive_fp32(
+                values.get("hc_eps", cls.hc_eps), field_name="model.hc_eps",
             ),
             dropout=float(values.get("dropout", cls.dropout)),
             rope_theta=float(values.get("rope_theta", cls.rope_theta)),

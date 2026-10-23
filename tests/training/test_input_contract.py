@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
-from tests.training._causal_fixtures import make_state_groups
-
 import pytest
 
+from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
 from common.policy.data import ModelInputContract, Normalizer, SkillVocab
-from common.policy.data.schema import SceneWindowSchema, StateFeatureLayout, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
-from common.policy.data.contracts.spec import DataSpec
 from common.policy.data.contracts.input_contract import (
-    INPUT_CONTRACT_VERSION, TOKEN_ENCODING_CONTRACT, RESIDUAL_MIX_CONFIG_FIELDS,
+    HYPER_CONNECTION_CONFIG_FIELDS,
+    INPUT_CONTRACT_VERSION,
+    TOKEN_ENCODING_CONTRACT,
     residual_composition_contract,
 )
-from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
+from common.policy.data.contracts.spec import DataSpec
+from common.policy.data.schema import (
+    TRAINING_SAMPLE_SCHEMA_VERSION,
+    SceneWindowSchema,
+    StateFeatureLayout,
+    TrainingSchema,
+)
+from tests.training._causal_fixtures import make_state_groups
 
 
 def _build_contract() -> ModelInputContract:
@@ -344,15 +350,16 @@ def test_input_contract_requires_shared_context_token_budget():
 
 
 def test_model_input_contract_describes_both_residual_paths():
-    """归一化后的初始 token 逐层注入，Full AttnRes 不叠加普通混合。"""
+    """HC 在两个子层间交接 pre；Full AttnRes 独立保留深度聚合。"""
     residual = _build_contract().to_dict()["token_encoding"]["backbone_residual"]
     assert residual["selection"] == "model_config.full_attention_residuals"
-    assert residual["ordinary"]["formula"] == "mixed = r[layer] * hidden + a[layer] * x0"
-    assert residual["ordinary"]["attention_and_skip_input"] == "mixed"
-    assert residual["ordinary"]["x0"] == "input_encoder.output_after_token_rmsnorm"
-    assert residual["ordinary"]["x0_detached"] is False
-    assert residual["ordinary"]["parameters"] == ["encoder.residual_mix.r", "encoder.residual_mix.a"]
-    assert residual["full_attention"]["learned_residual_mix"] is False
+    assert residual["ordinary"]["type"] == "hyper_connections"
+    assert residual["ordinary"]["position"] == "around_each_attention_and_ffn_sublayer"
+    assert residual["ordinary"]["pre_handoff"] == "next_sublayer"
+    assert residual["ordinary"]["initial_pre_mix"] == "first_stream"
+    assert residual["ordinary"]["final_collapse"] == "weighted_sum_last_ffn_pre_mix"
+    assert residual["ordinary"]["compute_dtype"] == "float32"
+    assert residual["full_attention"]["hyper_connections"] is False
 
 
 def test_model_input_contract_rejects_previous_ordinary_residual_version():
@@ -363,8 +370,8 @@ def test_model_input_contract_rejects_previous_ordinary_residual_version():
         ModelInputContract.from_dict(payload)
 
 
-@pytest.mark.parametrize("field", ["formula", "x0", "x0_detached", "attention_and_skip_input"])
-def test_model_input_contract_rejects_forged_residual_mix(field):
+@pytest.mark.parametrize("field", ["pre_handoff", "initial_pre_mix", "residual_mix", "compute_dtype"])
+def test_model_input_contract_rejects_forged_hyper_connections(field):
     payload = _build_contract().to_dict()
     payload["token_encoding"]["backbone_residual"]["ordinary"][field] = "legacy"
     with pytest.raises(ValueError, match="token_encoding"):
@@ -372,32 +379,31 @@ def test_model_input_contract_rejects_forged_residual_mix(field):
 
 
 def _residual_model_config():
-    return {"full_attention_residuals": False, "residual_mix_r_start": 1.15,
-            "residual_mix_r_end": 1.05, "residual_mix_a_start": .20, "residual_mix_a_end": .05}
+    return {"full_attention_residuals": False, "hc_mult": 4,
+            "hc_sinkhorn_iters": 20, "hc_eps": 1e-6, "swiglu_limit": 10.0}
 
 
-@pytest.mark.parametrize("field", RESIDUAL_MIX_CONFIG_FIELDS)
-def test_residual_composition_requires_saved_initialization_fields(field):
+@pytest.mark.parametrize("field", HYPER_CONNECTION_CONFIG_FIELDS)
+def test_residual_composition_requires_saved_hyper_connection_fields(field):
     config = _residual_model_config()
     config.pop(field)
-    with pytest.raises(ValueError, match="missing residual mix initialization fields"):
+    with pytest.raises(ValueError, match="missing hyper-connection fields"):
         residual_composition_contract(config)
 
 
-@pytest.mark.parametrize("value", [True, "1.15", float("nan"), float("inf")])
-def test_residual_composition_rejects_invalid_saved_initialization(value):
+@pytest.mark.parametrize("value", [True, 0, float("nan"), float("inf")])
+def test_residual_composition_rejects_invalid_saved_epsilon(value):
     config = _residual_model_config()
-    config["residual_mix_r_start"] = value
-    with pytest.raises(ValueError, match="must be a finite number"):
+    config["hc_eps"] = value
+    with pytest.raises(ValueError, match="hc_eps"):
         residual_composition_contract(config)
 
 
-def test_residual_composition_selects_full_attention_without_mix():
+def test_residual_composition_selects_full_attention_without_hyper_connections():
     config = _residual_model_config()
     descriptor = residual_composition_contract(config)
-    assert descriptor["initialization"] == {
-        "method": "linspace", "r": {"start": 1.15, "end": 1.05},
-        "a": {"start": .20, "end": .05},
+    assert {key: descriptor[key] for key in HYPER_CONNECTION_CONFIG_FIELDS} == {
+        "hc_mult": 4, "hc_sinkhorn_iters": 20, "hc_eps": 1e-6,
     }
     config["full_attention_residuals"] = True
     assert residual_composition_contract(config) == TOKEN_ENCODING_CONTRACT["backbone_residual"]["full_attention"]

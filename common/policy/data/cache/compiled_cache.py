@@ -265,11 +265,6 @@ class CompiledCacheReader:
         self._history_markers = _read_history_marker_bank(
             payload["history_markers"], num_samples=self._num_samples,
         )
-        for marker in self._history_markers:
-            sample = self.sample(marker["step"] - 1)
-            if (sample.get("metadata", {}).get("step") != marker["step"]
-                    or sample["history_end"] - 1 < marker["after_history_length"]):
-                raise ValueError("history marker must reference an existing sample history prefix")
 
     @property
     def schema(self):

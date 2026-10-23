@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import math
 from copy import deepcopy
 from io import BytesIO
-import math
 
 import pytest
 import torch
@@ -294,8 +294,7 @@ def test_train_epoch_updates_both_parameter_groups_with_real_gradients(
     dtype = torch.bfloat16 if precision == "bf16" and not fp32_gradients else torch.float32
     torch.manual_seed(73)
     model = _model(full_attention_residuals=full_attention_residuals).to(device)
-    model.encoder.to(dtype=dtype)
-    model.output_head.to(dtype=dtype)
+    model.set_compute_dtype(dtype)
     # 关闭衰减，确保检查到的权重变化确实来自前后向梯度。
     optimizer = _build_optimizer(model, _config(name), weight_decay=0.0)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda step: 0.8**step)
@@ -323,7 +322,7 @@ def test_train_epoch_updates_both_parameter_groups_with_real_gradients(
         model.output_head.weight,
     )
     if not full_attention_residuals:
-        matrices += (model.encoder.residual_mix.r, model.encoder.residual_mix.a)
+        matrices += tuple(parameter for module in model.encoder.residual_mix for parameter in (module.base, module.scale))
     before = [parameter.detach().clone() for parameter in matrices]
     forward_dtypes = []
     hook = model.encoder.layers[0].linear1.register_forward_hook(
@@ -361,7 +360,7 @@ def test_train_epoch_updates_both_parameter_groups_with_real_gradients(
     assert scheduler.get_last_lr() == [0.02 * 0.8] * (2 if name == "muon" else 1)
     if precision == "bf16" and not fp32_gradients:
         assert all(parameter.dtype == (
-            torch.float32 if parameter_name.startswith('input_encoder.') else torch.bfloat16
+            torch.float32 if parameter_name.startswith(('input_encoder.', 'encoder.residual_mix.')) else torch.bfloat16
         ) for parameter_name, parameter in model.named_parameters())
         assert optimizer.state_dict()["format"] == "fp32_master_v1"
     else:
@@ -373,37 +372,40 @@ def test_train_epoch_updates_both_parameter_groups_with_real_gradients(
 
 
 @pytest.mark.parametrize("name", ["adamw", "muon"])
-def test_residual_coefficients_accumulate_small_bf16_updates_across_resume(name):
-    model = _model(dtype=torch.bfloat16, full_attention_residuals=False)
+def test_hyper_connection_coefficients_keep_fp32_updates_across_bf16_resume(name):
+    model = _model(full_attention_residuals=False)
+    model.set_compute_dtype(torch.bfloat16)
     mix = model.encoder.residual_mix
     optimizer = build_optimizer(
         model, _config(name), learning_rate=1e-4, weight_decay=0.0,
     )
-    expected_names = {"encoder.residual_mix.r", "encoder.residual_mix.a"}
+    expected_names = {f"encoder.residual_mix.{index}.{field}"
+                      for index in range(2) for field in ("fn", "base", "scale")}
     scalar_groups = [group for group in optimizer.param_groups
                      if expected_names.intersection(group["param_names"])]
     assert len(scalar_groups) == 1
     assert scalar_groups[0]["optimizer_name"] == "adamw"
     assert expected_names <= set(scalar_groups[0]["param_names"])
     assert scalar_groups[0]["lr"] == 1e-4
-    original_r = mix.r.detach().clone()
+    assert all(parameter.dtype == torch.float32 for parameter in mix.parameters())
+    original_scale = mix[0].scale.detach().clone()
 
     def step(current_model, current_optimizer):
         current_optimizer.zero_grad(set_to_none=True)
-        current_model.encoder.residual_mix.r.grad = torch.ones_like(mix.r)
-        current_model.encoder.residual_mix.a.grad = torch.ones_like(mix.a)
+        for parameter in current_model.encoder.residual_mix.parameters():
+            parameter.grad = torch.ones_like(parameter)
         current_optimizer.step()
 
     for _ in range(4):
         step(model, optimizer)
-    # 小于 BF16 舍入阈值的更新仍保存在 FP32 主权重中。
-    torch.testing.assert_close(mix.r, original_r, rtol=0, atol=0)
-    master_r = next(master for parameter, master in optimizer._master_pairs
-                    if parameter is mix.r)
-    assert not torch.equal(master_r, original_r.float())
+    # HC 参数直接保留 FP32，低精度主干的 master pair 不应接管这些系数。
+    assert not torch.equal(mix[0].scale, original_scale)
+    hc_parameters = {id(parameter) for parameter in mix.parameters()}
+    assert all(id(parameter) not in hc_parameters for parameter, _ in optimizer._master_pairs)
     saved_model = deepcopy(model.state_dict())
     saved_optimizer = deepcopy(optimizer.state_dict())
-    restored = _model(dtype=torch.bfloat16, full_attention_residuals=False)
+    restored = _model(full_attention_residuals=False)
+    restored.set_compute_dtype(torch.bfloat16)
     restored.load_state_dict(saved_model)
     restored_optimizer = build_optimizer(
         restored, _config(name), learning_rate=1e-4, weight_decay=0.0,
@@ -412,10 +414,8 @@ def test_residual_coefficients_accumulate_small_bf16_updates_across_resume(name)
     for _ in range(50):
         step(model, optimizer)
         step(restored, restored_optimizer)
-    assert not torch.equal(mix.r, original_r)
-    for parameter, restored_parameter in (
-        (mix.r, restored.encoder.residual_mix.r),
-        (mix.a, restored.encoder.residual_mix.a),
+    for parameter, restored_parameter in zip(
+        mix.parameters(), restored.encoder.residual_mix.parameters(), strict=True,
     ):
         torch.testing.assert_close(parameter, restored_parameter, rtol=0, atol=0)
     for first, second in zip(

@@ -9,11 +9,12 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from common.pytorch.runtime import model_dtype
 from common.policy.data import SkillVocab
 from common.policy.model import RepetitionConfig
 from common.policy.replay import AutoregressiveReplayConfig
+from common.pytorch.runtime import model_dtype
 from scripts.autoregressive_replay import main as replay_main_module
+from scripts.autoregressive_replay import replay as replay_module
 from scripts.autoregressive_replay.outputs.markdown import SKILL_NAMES, write_markdown
 from scripts.autoregressive_replay.replay import (
     AutoregressiveReplay,
@@ -25,8 +26,6 @@ from scripts.autoregressive_replay.replay import (
     ReplaySnapshot,
     _resolve_device,
 )
-from scripts.autoregressive_replay import replay as replay_module
-
 
 _FAKE_GCD_SKILL = SimpleNamespace(key="fire", kind=SimpleNamespace(value="gcd"))
 _FAKE_OGCD_SKILL = SimpleNamespace(key="ogcd_wait", kind=SimpleNamespace(value="ogcd"))
@@ -42,7 +41,11 @@ def test_backend_restores_parameter_precision_without_changing_bf16_compute(
 ):
     """真实 CPU 前向覆盖训练精度恢复；仅将后端的 CUDA 设备要求替换为 CPU 执行。"""
     from scripts.autoregressive_replay import backends as backend_module
-    from scripts.onnx_export.contracts.contract import CapacityContract, TENSOR_INPUT_NAMES, make_inputs
+    from scripts.onnx_export.contracts.contract import (
+        TENSOR_INPUT_NAMES,
+        CapacityContract,
+        make_inputs,
+    )
     from tests.scripts.onnx_export.test_exporter import _write_small_checkpoint
 
     checkpoint = tmp_path / "model.pt"
@@ -72,7 +75,7 @@ def test_backend_restores_parameter_precision_without_changing_bf16_compute(
     )
     assert backend.precision == "bf16"
     for name, parameter in backend.model.named_parameters():
-        parameter_dtype = torch.float32 if name.startswith('input_encoder.') else expected_dtype
+        parameter_dtype = torch.float32 if name.startswith(('input_encoder.', 'encoder.residual_mix.')) else expected_dtype
         assert parameter.dtype == parameter_dtype, name
         torch.testing.assert_close(parameter, saved["model_state_dict"][name].to(parameter_dtype), rtol=0, atol=0)
     assert any(
@@ -175,12 +178,18 @@ def test_default_precast_replay_accepts_negative_scene_facts(tmp_path, scene_mod
 def test_checkpoint_restores_history_embedding_and_logits_after_yaml_vocab_drift(tmp_path, monkeypatch, drift, use_kv_cache):
     """真实模型、回放会话和 batcher 使用训练时词表，当前 YAML 改变不影响行身份。"""
     from dataclasses import asdict
+
+    from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
     from common.game.config import load_project_config
     from common.policy.config import ModelConfig
     from common.policy.data import ActionSpace, DataSpec, ModelInputContract, Normalizer
     from common.policy.data.contracts import skill_vocab as vocab_module
-    from common.policy.data.schema import SceneWindowSchema, StateFeatureGroup, TrainingSchema, TRAINING_SAMPLE_SCHEMA_VERSION
-    from common.context.output import CANONICAL_CONTEXT_SCHEMA_VERSION
+    from common.policy.data.schema import (
+        TRAINING_SAMPLE_SCHEMA_VERSION,
+        SceneWindowSchema,
+        StateFeatureGroup,
+        TrainingSchema,
+    )
     from common.policy.model import CausalPolicyModel
     from scripts.autoregressive_replay.backends import PyTorchPolicyBackend
     from scripts.autoregressive_replay.context import LiveBatchBuilder
@@ -439,8 +448,8 @@ def test_replay_cache_store_reuses_reader_for_unchanged_scene(monkeypatch, tmp_p
     engine = object()
     action_space = replay_module.ActionSpace.from_job_tag("black_mage")
     vocab = SkillVocab.build_from_job_tag("black_mage")
-    kwargs = dict(job_tag="black_mage", normalizer=normalizer, engine=engine,
-                  expected_action_space=action_space, expected_skill_vocab=vocab)
+    kwargs = {"job_tag": "black_mage", "normalizer": normalizer, "engine": engine,
+              "expected_action_space": action_space, "expected_skill_vocab": vocab}
     assert store.load(config, **kwargs) is reader
     assert store.load(config, **kwargs) is reader
     assert len(load_calls) == 1
@@ -686,7 +695,7 @@ def test_replay_prediction_modes_and_result_helpers(monkeypatch, tmp_path):
 
         @staticmethod
         def metrics():
-            return SimpleNamespace(to_dict=lambda: {})
+            return SimpleNamespace(to_dict=dict)
 
     replay.batcher = FakeBatcher()
     replay.backend = FakeBackend()

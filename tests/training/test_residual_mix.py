@@ -1,135 +1,328 @@
-"""可学习普通残差的初始化、共享路径、梯度与重算契约。"""
+"""四路 Hyper-Connections 的公式、残差方向、梯度与重算契约。"""
 
 from copy import deepcopy
 
 import pytest
 import torch
-from torch import nn
+from torch.nn import functional as F
 
 from common.policy.config import ModelConfig
 from common.policy.model import CausalPolicyModel
-from common.policy.model.execution.causal_encoder import run_causal_encoder, run_causal_layer
-from common.policy.model.layers.residual_mix import LearnedResidualMix
-from tests.training._causal_fixtures import make_batch, make_checkpoint, make_data_spec
-
-
-def _config(**overrides):
-    values = {"d_model": 16, "n_layers": 3, "n_heads": 4, "num_kv_heads": 1,
-              "ff_dim": 32, "dropout": 0.0, "transformer_activation": "swiglu"}
-    values.update(overrides)
-    return ModelConfig(**values)
+from common.policy.model.execution import causal_encoder
+from common.policy.model.layers import residual_mix
+from common.policy.model.layers.residual_mix import HyperConnections
+from tests.training._causal_fixtures import make_batch, make_data_spec
 
 
 def _model(**overrides):
+    values = {"d_model": 16, "n_layers": 3, "n_heads": 4, "num_kv_heads": 1,
+              "ff_dim": 32, "dropout": 0.0, "transformer_activation": "swiglu"}
+    values.update(overrides)
     torch.manual_seed(47)
-    return CausalPolicyModel(make_data_spec(), _config(**overrides), 3)
+    return CausalPolicyModel(make_data_spec(), ModelConfig(**values), 3)
 
 
-@pytest.mark.parametrize("n_layers", (1, 6))
-def test_residual_mix_initialization_is_linear_without_consuming_rng(n_layers):
-    state = torch.get_rng_state().clone()
-    mix = LearnedResidualMix(n_layers, r_start=1.15, r_end=1.05, a_start=0.20, a_end=0.05)
-    assert torch.equal(torch.get_rng_state(), state)
-    denominator = max(n_layers - 1, 1)
-    torch.testing.assert_close(mix.r, torch.tensor([1.15 - 0.10 * i / denominator for i in range(n_layers)]))
-    torch.testing.assert_close(mix.a, torch.tensor([0.20 - 0.15 * i / denominator for i in range(n_layers)]))
-    assert dict(mix.named_parameters()).keys() == {"r", "a"}
+def _reference_mixes(module, streams):
+    # 独立展开 flatten RMS、三组门控及源行/目标列 Sinkhorn。
+    flat = streams.float().flatten(-2)
+    values = F.linear(flat, module.fn.float()) / (
+        flat.square().mean(-1, keepdim=True) + 1e-20
+    ).sqrt()
+    count, eps = module.hc_mult, module.hc_eps
+    pre = (values[..., :count] * module.scale[0] + module.base[:count]).sigmoid() + eps
+    post = 2 * (values[..., count:2 * count] * module.scale[1]
+                + module.base[count:2 * count]).sigmoid()
+    comb = (values[..., 2 * count:] * module.scale[2]
+            + module.base[2 * count:]).unflatten(-1, (count, count)).softmax(-1) + eps
+    comb = comb / (comb.sum(-2, keepdim=True) + eps)
+    for _ in range(module.hc_sinkhorn_iters - 1):
+        comb = comb / (comb.sum(-1, keepdim=True) + eps)
+        comb = comb / (comb.sum(-2, keepdim=True) + eps)
+    return pre, post, comb
 
 
-def test_endpoint_config_roundtrip_and_custom_initialization():
-    values = {"residual_mix_r_start": 0.9, "residual_mix_r_end": 1.1,
-              "residual_mix_a_start": 0.3, "residual_mix_a_end": -0.1}
-    config = ModelConfig.from_mapping(values)
-    assert all(getattr(config, key) == value for key, value in values.items())
-    model = _model(**values)
-    torch.testing.assert_close(model.encoder.residual_mix.r, torch.tensor([0.9, 1.0, 1.1]))
-    torch.testing.assert_close(model.encoder.residual_mix.a, torch.tensor([0.3, 0.1, -0.1]))
-
-
-@pytest.mark.parametrize("key,value", [
-    ("residual_mix_r_start", float("nan")), ("residual_mix_r_end", float("inf")),
-    ("residual_mix_a_start", -float("inf")), ("residual_mix_a_end", float("nan")),
-])
-def test_endpoint_config_rejects_nonfinite_values(key, value):
-    with pytest.raises(ValueError, match=f"model.{key} must be finite"):
-        ModelConfig.from_mapping({key: value})
-
-
-@pytest.mark.parametrize("key,value,full_attention_residuals", [
-    ("residual_mix_r_start", True, False), ("residual_mix_r_end", False, True),
-    ("residual_mix_a_start", False, False), ("residual_mix_a_end", True, True),
-])
-def test_checkpoint_endpoint_config_rejects_boolean_values(key, value, full_attention_residuals):
-    """恢复 checkpoint 原始架构元数据时拒绝布尔端点，Full 路径也不补默认值。"""
-    checkpoint = make_checkpoint(config=_config(full_attention_residuals=full_attention_residuals))
-    checkpoint["model_config"][key] = value
-    with pytest.raises(ValueError, match=rf"model\.{key}"):
-        CausalPolicyModel.checkpoint_model_config(checkpoint)
-
-
-@pytest.mark.parametrize("norm_first", (True, False))
-def test_neutral_mixing_matches_ordinary_residual_forward_and_trace(norm_first):
-    model = _model(transformer_norm_first=norm_first, residual_mix_r_start=1.0,
-                   residual_mix_r_end=1.0, residual_mix_a_start=0.0, residual_mix_a_end=0.0).eval()
-    reference = deepcopy(model)
-    del reference.encoder.residual_mix
-    batch = make_batch(batch_size=2)
-    batch["history_mask"][0, -1] = False
-    actual, expected = model(batch), reference(batch)
-    for key in actual:
-        torch.testing.assert_close(actual[key], expected[key], rtol=0, atol=0)
-    actual_trace, expected_trace = model.trace(batch), reference.trace(batch)
-    torch.testing.assert_close(actual_trace.hidden, expected_trace.hidden, rtol=0, atol=0)
-    for values, expected_values in ((actual_trace.layer_hidden, expected_trace.layer_hidden),
-                                    (actual_trace.attentions, expected_trace.attentions)):
-        for value, expected_value in zip(values, expected_values, strict=True):
-            torch.testing.assert_close(value, expected_value, rtol=0, atol=0)
-
-
-def test_real_mix_changes_skip_once_per_layer_and_keeps_original_x0():
-    model = _model().eval()
-    for layer in model.encoder.layers:
-        for projection in (layer.self_attn.out_proj, layer.linear2):
-            nn.init.zeros_(projection.weight)
-            nn.init.zeros_(projection.bias)
-    captured, calls = {}, []
-    input_hook = model.input_encoder.register_forward_hook(
-        lambda module, args, output: captured.update(encoded=output))
-    mix_hook = model.encoder.residual_mix.register_forward_hook(
-        lambda module, args, output: calls.append((args, output)))
-    trace = model.trace(make_batch())
-    input_hook.remove()
-    mix_hook.remove()
-    x0 = captured["encoded"]["tokens"]
-    expected = x0
-    assert len(calls) == model.config.n_layers
-    for index, (args, mixed) in enumerate(calls):
-        assert args[1] is x0 and args[2] == index
-        expected = model.encoder.residual_mix.r[index] * expected + model.encoder.residual_mix.a[index] * x0
-        torch.testing.assert_close(mixed, expected, rtol=0, atol=0)
-        torch.testing.assert_close(trace.layer_hidden[index], expected, rtol=0, atol=0)
-
-
-def test_x0_injection_keeps_gradients_when_previous_hidden_scale_is_zero():
-    model = _model()
+@pytest.mark.parametrize("dtype,amp", ((torch.float32, False), (torch.float32, True),
+                                      (torch.bfloat16, True), (torch.bfloat16, False)))
+def test_cuda_compiled_hyper_connections_preserve_public_outputs_gradients_and_state(dtype, amp):
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA compilation requires a CUDA device")
+    if amp and not torch.cuda.is_bf16_supported():
+        pytest.skip("CUDA BF16 autocast requires BF16 support")
+    # 每组精度独立验证，避免跨用例的形状/归一化组合占满编译缓存上限。
+    torch._dynamo.reset()
+    torch.manual_seed(52)
+    module = HyperConnections(8, hc_sinkhorn_iters=3).cuda().train()
     with torch.no_grad():
-        model.encoder.residual_mix.r.zero_()
-        model.encoder.residual_mix.a.fill_(1.0)
-        for layer in model.encoder.layers:
-            for projection in (layer.self_attn.out_proj, layer.linear2):
-                projection.weight.zero_()
-                projection.bias.zero_()
-    tokens = torch.randn(1, 3, 16, requires_grad=True)
-    hidden, _, _ = run_causal_encoder(model.encoder, {
-        "tokens": tokens, "valid": torch.ones((1, 3), dtype=torch.bool),
-        "position_ids": torch.arange(3).unsqueeze(0),
-    })
-    (hidden * torch.arange(16, dtype=torch.float32)).sum().backward()
-    assert tokens.grad is not None and torch.isfinite(tokens.grad).all()
-    assert torch.count_nonzero(tokens.grad) == tokens.numel()
+        module.scale.copy_(torch.tensor([0.7, -0.4, 0.6], device="cuda"))
+        module.base.copy_(torch.linspace(-0.4, 0.7, 24, device="cuda"))
+    reference = deepcopy(module).eval()
+    norm = torch.nn.RMSNorm(8).cuda()
+    reference_norm = deepcopy(norm)
+    saved_state = {name: value.detach().clone() for name, value in module.state_dict().items()}
+    # 首个布局保留 expand 的零 stride，随后改变 batch/长度并使用普通残差流。
+    for batch_size, length, expanded in ((2, 5, True), (1, 9, False)):
+        module.zero_grad(set_to_none=True)
+        reference.zero_grad(set_to_none=True)
+        norm.zero_grad(set_to_none=True)
+        reference_norm.zero_grad(set_to_none=True)
+        shape = (batch_size, length, 8) if expanded else (batch_size, length, 4, 8)
+        source = torch.randn(shape, device="cuda", dtype=dtype, requires_grad=True)
+        reference_source = source.detach().clone().requires_grad_()
+        streams = source.unsqueeze(-2).expand(-1, -1, 4, -1) if expanded else source
+        reference_streams = reference_source.unsqueeze(-2).expand(-1, -1, 4, -1) if expanded else reference_source
+        if expanded:
+            assert streams.stride(-2) == 0
+        output = torch.randn(batch_size, length, 8, device="cuda", dtype=dtype, requires_grad=True)
+        reference_output = output.detach().clone().requires_grad_()
+        results = []
+        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=amp):
+            for current, values, sublayer_output, current_norm in (
+                (module, streams, output, norm), (reference, reference_streams, reference_output, reference_norm),
+            ):
+                pre, post, comb = current.mixes(values)
+                collapsed = current.collapse(values, pre)
+                normalized = current.collapse(values, pre, current_norm) if current is module else current_norm(collapsed)
+                combined = current.combine(sublayer_output, values, post, comb)
+                assert all(value.dtype == torch.float32 for value in (pre, post, comb))
+                assert collapsed.dtype == combined.dtype == dtype
+                results.append((pre, post, comb, collapsed, normalized, combined))
+        for actual, expected in zip(*results, strict=True):
+            tolerance = 0.016 if actual.dtype == torch.bfloat16 else 2e-5
+            torch.testing.assert_close(actual, expected, rtol=tolerance, atol=tolerance)
+        upstream = tuple(torch.randn_like(value) for value in results[0])
+        for values in results:
+            sum((value.float() * gradient.float()).sum()
+                for value, gradient in zip(values, upstream, strict=True)).backward()
+        for actual, expected in ((source, reference_source), (output, reference_output),
+                                 *zip(module.parameters(), reference.parameters(), strict=True),
+                                 *zip(norm.parameters(), reference_norm.parameters(), strict=True)):
+            assert actual.grad is not None and torch.isfinite(actual.grad).all()
+            tolerance = 0.016 if dtype == torch.bfloat16 else 3e-5
+            torch.testing.assert_close(actual.grad, expected.grad, rtol=tolerance, atol=tolerance)
+        assert module.state_dict().keys() == saved_state.keys()
+        for name, value in module.state_dict().items():
+            assert value.dtype == saved_state[name].dtype == torch.float32
+            torch.testing.assert_close(value, saved_state[name], rtol=0, atol=0)
 
 
-def test_full_attention_residual_has_no_unused_mix_parameters():
+@pytest.mark.parametrize("mult,iterations,eps,uniform", (
+    (2, 1, 1e-6, False), (3, 20, 1e-6, False), (4, 20, 1e-6, True), (4, 20, 1e-30, False),
+))
+def test_cuda_coefficients_kernel_preserves_tied_max_and_small_eps_gradients(mult, iterations, eps, uniform):
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA compilation requires a CUDA device")
+    from common.policy.model.layers.hyper_connections_cuda import hc_coefficients
+
+    torch.manual_seed(107)
+    size = mult * (mult + 2)
+    mixes = torch.randn(2, 3, size, device="cuda", requires_grad=True)
+    scale = torch.tensor([0.7, -0.4, 3.5], device="cuda", requires_grad=True)
+    base = torch.linspace(-0.4, 0.7, size, device="cuda", requires_grad=True)
+    with torch.no_grad():
+        if uniform:
+            mixes[..., 2 * mult:] = 1.25
+            base[2 * mult:] = 0
+        elif eps < 1e-20:
+            # 制造接近零的列；合法小 eps 的反向不能引入倒数平方溢出。
+            mixes[..., 2 * mult:] = torch.arange(mult, device="cuda").repeat(mult) * -100.0
+    references = tuple(value.detach().clone().requires_grad_() for value in (mixes, scale, base))
+    actual = torch.compile(hc_coefficients, fullgraph=True, dynamic=True)(mixes, scale, base, mult, iterations, eps)
+    values, reference_scale, reference_base = references
+    pre = (values[..., :mult] * reference_scale[0] + reference_base[:mult]).sigmoid() + eps
+    post = 2 * (values[..., mult:2 * mult] * reference_scale[1] + reference_base[mult:2 * mult]).sigmoid()
+    comb = (values[..., 2 * mult:] * reference_scale[2]
+            + reference_base[2 * mult:]).unflatten(-1, (mult, mult)).softmax(-1) + eps
+    comb = comb / (comb.sum(-2, keepdim=True) + eps)
+    for _ in range(iterations - 1):
+        comb = comb / (comb.sum(-1, keepdim=True) + eps)
+        comb = comb / (comb.sum(-2, keepdim=True) + eps)
+    expected = (pre, post, comb)
+    for value, target in zip(actual, expected, strict=True):
+        torch.testing.assert_close(value, target, rtol=2e-6, atol=2e-6)
+    upstream = tuple(torch.randn_like(value) for value in actual)
+    for result in (actual, expected):
+        sum((value * gradient).sum() for value, gradient in zip(result, upstream, strict=True)).backward()
+    for value, target in zip((mixes, scale, base), references, strict=True):
+        assert value.grad is not None and torch.isfinite(value.grad).all()
+        torch.testing.assert_close(value.grad, target.grad, rtol=3e-5, atol=3e-6)
+
+
+def test_hyper_connections_match_explicit_formula_and_all_gradients():
+    torch.manual_seed(48)
+    module = HyperConnections(8)
+    reference = deepcopy(module)
+    with torch.no_grad():
+        module.scale.copy_(torch.tensor([0.7, -0.4, 0.6]))
+        module.base.copy_(torch.linspace(-0.4, 0.7, 24))
+        reference.load_state_dict(module.state_dict())
+    streams = torch.randn(2, 3, 4, 8, requires_grad=True)
+    reference_streams = streams.detach().clone().requires_grad_()
+    actual = module.mixes(streams)
+    expected = _reference_mixes(reference, reference_streams)
+    for value, target in zip(actual, expected, strict=True):
+        assert value.dtype == torch.float32
+        torch.testing.assert_close(value, target, rtol=2e-6, atol=2e-6)
+    pre, post, comb = actual
+    assert torch.all(pre > 0) and torch.all((post > 0) & (post < 2))
+    torch.testing.assert_close(comb.sum(-1), torch.ones_like(pre), rtol=0, atol=4e-6)
+    torch.testing.assert_close(comb.sum(-2), torch.ones_like(pre), rtol=0, atol=4e-6)
+    upstream = [torch.randn_like(value) for value in actual]
+    sum((value * gradient).sum() for value, gradient in zip(actual, upstream)).backward()
+    sum((value * gradient).sum() for value, gradient in zip(expected, upstream)).backward()
+    torch.testing.assert_close(streams.grad, reference_streams.grad, rtol=3e-6, atol=3e-6)
+    for parameter, target in zip(module.parameters(), reference.parameters(), strict=True):
+        assert parameter.grad is not None and torch.isfinite(parameter.grad).all()
+        torch.testing.assert_close(parameter.grad, target.grad, rtol=3e-6, atol=3e-6)
+
+
+def test_expand_collapse_and_combine_use_source_to_target_axis():
+    module = HyperConnections(3)
+    tokens = torch.arange(6, dtype=torch.float32).reshape(1, 2, 3)
+    streams, pre = module.expand(tokens)
+    assert streams.shape == (1, 2, 4, 3)
+    torch.testing.assert_close(pre, torch.tensor([1., 0., 0., 0.]).expand(1, 2, 4))
+    torch.testing.assert_close(module.collapse(streams, pre), tokens, rtol=0, atol=0)
+    residual = torch.arange(24, dtype=torch.float32).reshape(1, 2, 4, 3)
+    # 非对称置换锁定源/目标轴，四流相同时无法发现转置错误。
+    comb = F.one_hot(torch.tensor([1, 2, 3, 0]), 4).float().expand(1, 2, 4, 4)
+    post = torch.tensor([0.2, 0.4, 0.6, 0.8]).expand(1, 2, 4)
+    actual = module.combine(tokens, residual, post, comb)
+    expected = residual[..., [3, 0, 1, 2], :] + tokens.unsqueeze(-2) * post.unsqueeze(-1)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+def test_hyper_connection_mixes_keep_fp32_under_cpu_bfloat16_autocast():
+    torch.manual_seed(49)
+    module = HyperConnections(8)
+    streams = torch.randn(2, 3, 4, 8, dtype=torch.bfloat16)
+    expected = module.mixes(streams)
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        actual = module.mixes(streams)
+    for value, target in zip(actual, expected, strict=True):
+        assert value.dtype == torch.float32
+        torch.testing.assert_close(value, target, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("operation", ("mixes", "collapse", "collapse_norm", "combine"))
+def test_hyper_connection_recompute_saves_original_storage_and_preserves_gradients(operation):
+    torch.manual_seed(50)
+    module = HyperConnections(8).train()
+    reference = deepcopy(module).eval()
+    norm = torch.nn.RMSNorm(8)
+    streams = torch.randn(2, 8, 4, 8, dtype=torch.bfloat16, requires_grad=True)
+    pre = torch.randn(2, 8, 4, requires_grad=True)
+    output = torch.randn(2, 8, 8, dtype=torch.bfloat16, requires_grad=True)
+    comb = torch.randn(2, 8, 4, 4, requires_grad=True)
+    inputs = {"mixes": (streams,), "collapse": (streams, pre), "collapse_norm": (streams, pre),
+              "combine": (output, streams, pre, comb)}[operation]
+    reference_inputs = tuple(value.detach().clone().requires_grad_() for value in inputs)
+    results, storage_bytes = [], []
+    for current, values in ((module, inputs), (reference, reference_inputs)):
+        saved = {}
+
+        def pack(value, saved=saved):
+            storage = value.untyped_storage()
+            saved[storage.data_ptr()] = storage.nbytes()
+            return value
+
+        with torch.autograd.graph.saved_tensors_hooks(pack, lambda value: value):
+            result = current.collapse(*values, norm) if operation == "collapse_norm" else getattr(current, operation)(*values)
+        results.append(result if isinstance(result, tuple) else (result,))
+        storage_bytes.append(sum(saved.values()))
+    assert storage_bytes[0] < storage_bytes[1]
+    for actual, expected in zip(*results, strict=True):
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    upstream = tuple(torch.randn_like(value) for value in results[0])
+    for values in results:
+        sum((value * gradient).float().sum() for value, gradient in zip(values, upstream, strict=True)).backward()
+    for actual, expected in zip(inputs, reference_inputs, strict=True):
+        assert actual.grad is not None and torch.isfinite(actual.grad).all()
+        torch.testing.assert_close(actual.grad, expected.grad, rtol=1e-6, atol=1e-6)
+    if operation == "mixes":
+        for actual, expected in zip(module.parameters(), reference.parameters(), strict=True):
+            assert actual.grad is not None and torch.isfinite(actual.grad).all()
+            torch.testing.assert_close(actual.grad, expected.grad, rtol=1e-6, atol=1e-6)
+
+
+@pytest.mark.parametrize("mode", ("eval", "no_grad", "onnx"))
+def test_hyper_connection_recompute_bypasses_inference_and_export(monkeypatch, mode):
+    module = HyperConnections(8).train(mode != "eval")
+
+    def unexpected_checkpoint(*args, **kwargs):
+        pytest.fail("HC inference or export must bypass activation recomputation")
+
+    monkeypatch.setattr(residual_mix, "checkpoint", unexpected_checkpoint)
+    for operation in ("mixes", "collapse", "combine"):
+        monkeypatch.setattr(module, f"_compiled_{operation}", unexpected_checkpoint)
+    if mode == "onnx":
+        monkeypatch.setattr(torch.onnx, "is_in_onnx_export", lambda: True)
+    streams = torch.randn(1, 2, 4, 8, requires_grad=True)
+    with torch.set_grad_enabled(mode != "no_grad"):
+        pre, post, comb = module.mixes(streams)
+        module.combine(module.collapse(streams, pre), streams, post, comb)
+
+
+def test_layer_uses_previous_pre_for_attention_then_attention_pre_for_ffn(monkeypatch):
+    model = _model().eval()
+    layer = model.encoder.layers[0]
+    attn_mix, ffn_mix = model.encoder.residual_mix[:2]
+    with torch.no_grad():
+        for module in (attn_mix, ffn_mix):
+            module.scale.fill_(0.7)
+            module.base.add_(torch.linspace(-0.5, 0.6, 24))
+    streams = torch.randn(1, 2, 4, 16)
+    previous_pre = torch.tensor([0.1, 0.2, 0.3, 0.4]).expand(1, 2, 4)
+    attended = torch.randn(1, 2, 16)
+    attn_pre, attn_post, attn_comb = _reference_mixes(attn_mix, streams)
+    after_attention = torch.einsum("bsij,bsid->bsjd", attn_comb, streams)
+    after_attention = after_attention + attn_post.unsqueeze(-1) * attended.unsqueeze(-2)
+    expected_pre, ffn_post, ffn_comb = _reference_mixes(ffn_mix, after_attention)
+    attention_input = (streams * previous_pre.unsqueeze(-1)).sum(-2)
+    ffn_input = (after_attention * attn_pre.unsqueeze(-1)).sum(-2)
+    ffn_output = layer._ff_block(layer.norm2(ffn_input))
+    expected = torch.einsum("bsij,bsid->bsjd", ffn_comb, after_attention)
+    expected = expected + ffn_post.unsqueeze(-1) * ffn_output.unsqueeze(-2)
+    captured = {}
+    hooks = [
+        layer.norm1.register_forward_pre_hook(lambda module, args: captured.update(attention=args[0])),
+        layer.norm2.register_forward_pre_hook(lambda module, args: captured.update(ffn=args[0])),
+    ]
+    monkeypatch.setattr(causal_encoder, "run_head_attention", lambda *args, **kwargs: (attended, None))
+    try:
+        hidden, _, _, _, next_pre = causal_encoder.run_causal_layer(
+            layer, streams, pre_mix=previous_pre, residual_mix=model.encoder.residual_mix,
+            key_valid=torch.ones((1, 2), dtype=torch.bool),
+            position_ids=torch.arange(2).unsqueeze(0),
+            rotary_position_encoding=model.encoder.rotary_position_encoding,
+        )
+    finally:
+        for hook in hooks:
+            hook.remove()
+    for value, target in ((captured["attention"], attention_input), (captured["ffn"], ffn_input),
+                          (next_pre, expected_pre), (hidden, expected)):
+        torch.testing.assert_close(value, target, rtol=2e-6, atol=2e-6)
+
+
+def test_model_initialization_breaks_hyper_connection_symmetry_and_keeps_trace_3d():
+    model = _model().eval()
+    modules = model.encoder.residual_mix
+    assert len(modules) == 2 * model.config.n_layers
+    for module in modules:
+        assert module.fn.shape == (24, 64)
+        assert torch.count_nonzero(module.fn) > 0
+        torch.testing.assert_close(module.scale, torch.full((3,), 0.01))
+    batch = make_batch()
+    output = model(batch)["logits"]
+    trace = model.trace(batch)
+    assert trace.hidden.ndim == 3 and all(hidden.ndim == 3 for hidden in trace.layer_hidden)
+    torch.testing.assert_close(output, model.score_hidden(trace.encoded, trace.hidden, batch),
+                               rtol=2e-6, atol=2e-6)
+    output.square().mean().backward()
+    for module in modules:
+        assert module.fn.grad is not None and torch.count_nonzero(module.fn.grad) > 0
+
+
+def test_full_attention_residual_has_no_unused_hyper_connection_parameters():
     model = _model(full_attention_residuals=True)
     assert not hasattr(model.encoder, "residual_mix")
     assert not any("residual_mix" in name for name, _ in model.named_parameters())
@@ -137,35 +330,21 @@ def test_full_attention_residual_has_no_unused_mix_parameters():
 
 
 @pytest.mark.parametrize("attention_block", (False, True))
-def test_activation_checkpoint_keeps_mix_output_and_all_parameter_gradients(attention_block):
+@pytest.mark.parametrize("precision", ("float32", "bf16"))
+def test_activation_checkpoint_keeps_hyper_connection_output_and_all_gradients(attention_block, precision):
     model = _model().train()
     checkpointed = deepcopy(model)
     checkpointed.enable_activation_checkpoint_attention(True, block=attention_block)
     checkpointed.enable_activation_checkpoint_ffn(True)
     batch = make_batch()
-    output, expected = checkpointed(batch)["logits"], model(batch)["logits"]
+    with torch.autocast("cpu", dtype=torch.bfloat16, enabled=precision == "bf16"):
+        output, expected = checkpointed(batch)["logits"], model(batch)["logits"]
     torch.testing.assert_close(output, expected, rtol=0, atol=0)
-    output.square().mean().backward()
-    expected.square().mean().backward()
+    output.float().square().mean().backward()
+    expected.float().square().mean().backward()
     for (name, parameter), (expected_name, reference) in zip(
         checkpointed.named_parameters(), model.named_parameters(), strict=True,
     ):
         assert name == expected_name and parameter.grad is not None
         assert torch.isfinite(parameter.grad).all()
         torch.testing.assert_close(parameter.grad, reference.grad, rtol=1e-6, atol=1e-6)
-        if name.startswith("encoder.residual_mix."):
-            assert torch.count_nonzero(parameter.grad) == parameter.numel()
-
-
-def test_mixed_layer_requires_aligned_initial_tokens_and_excludes_full_attnres():
-    model = _model()
-    layer = model.encoder.layers[0]
-    hidden = torch.randn(1, 2, 16)
-    common = {"key_valid": torch.ones((1, 2), dtype=torch.bool),
-              "position_ids": torch.arange(2).unsqueeze(0),
-              "rotary_position_encoding": model.encoder.rotary_position_encoding,
-              "residual_mix": model.encoder.residual_mix}
-    with pytest.raises(ValueError, match="initial tokens aligned"):
-        run_causal_layer(layer, hidden, **common)
-    with pytest.raises(ValueError, match="mutually exclusive"):
-        run_causal_layer(layer, hidden, initial_tokens=hidden, attention_residual=object(), **common)

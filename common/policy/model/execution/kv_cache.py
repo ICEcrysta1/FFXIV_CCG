@@ -8,7 +8,11 @@ import torch
 
 from ..attention.attention_masks import build_segment_mask
 from ..attention.attention_utils import kv_head_count
-from .causal_encoder import run_causal_layer
+from .causal_encoder import (
+    collapse_encoder_state,
+    initialize_encoder_state,
+    run_causal_layer,
+)
 
 
 @dataclass
@@ -37,39 +41,44 @@ def encode_with_kv_cache(encoder, encoded, cache=None):
     rotary = getattr(encoder, "rotary_position_encoding", None)
     if rotary is None:
         raise ValueError("encoder is missing the required RotaryPositionEncoding module")
-    if not _cache_matches(cache, prefix_tokens, prefix_valid, prefix_positions, scene_length):
+    cache_matches = _cache_matches(cache, prefix_tokens, prefix_valid, prefix_positions, scene_length)
+    cached_length = cache.prefix_tokens.shape[1] if cache_matches else 0
+    # 只计算本次新增位置，前缀和当前状态按 token 维切片后跨层复用。
+    cosine_sine = rotary._cos_sin(position_ids[:, cached_length:])
+    new_prefix_length = prefix_length - cached_length
+    prefix_cosine_sine = tuple(value[:, :, :new_prefix_length] for value in cosine_sine)
+    current_cosine_sine = tuple(value[:, :, new_prefix_length:] for value in cosine_sine)
+    if not cache_matches:
         cache = _build_prefix_cache(
             encoder, prefix_tokens, prefix_valid, prefix_positions, scene_length,
             attention_residual=residual, rotary_position_encoding=rotary,
+            rotary_cosine_sine=prefix_cosine_sine,
         )
     elif prefix_length > cache.prefix_tokens.shape[1]:
         cache = _append_prefix(
             encoder, cache, prefix_tokens, prefix_valid, prefix_positions,
             attention_residual=residual, rotary_position_encoding=rotary,
+            rotary_cosine_sine=prefix_cosine_sine,
         )
-    hidden = tokens[:, prefix_length:]
-    initial_tokens = hidden
-    sources = [hidden] if residual is not None else None
-    if residual is not None:
-        hidden = residual(sources, 0)
+    hidden, pre_mix, sources = initialize_encoder_state(encoder, tokens[:, prefix_length:])
     valid = encoded["valid"]
     mask = build_segment_mask(
         valid, query_count=1, key_count=valid.shape[1],
         causal=True, causal_offset=prefix_length,
     )
     for index, layer in enumerate(encoder.layers):
-        hidden, _, _, _ = run_causal_layer(
+        hidden, _, _, _, pre_mix = run_causal_layer(
             layer, hidden, key_valid=valid,
             position_ids=position_ids[:, prefix_length:],
             rotary_position_encoding=rotary,
+            rotary_cosine_sine=current_cosine_sine,
             existing_key=cache.key_cache[index], existing_value=cache.value_cache[index],
             existing_length=prefix_length,
             attention_residual=residual, sources=sources,
-            residual_mix=residual_mix, initial_tokens=initial_tokens, layer_index=index,
+            residual_mix=residual_mix, pre_mix=pre_mix, layer_index=index,
             segment_mask=mask,
         )
-    if encoder.norm is not None:
-        hidden = encoder.norm(hidden)
+    hidden = collapse_encoder_state(encoder, hidden, pre_mix, encoder.norm)
     return hidden, cache
 
 
@@ -103,12 +112,10 @@ def _build_prefix_cache(
     *,
     attention_residual=None,
     rotary_position_encoding,
+    rotary_cosine_sine: tuple[torch.Tensor, torch.Tensor],
 ) -> TransformerKVCache:
-    hidden = prefix_tokens
+    hidden, pre_mix, sources = initialize_encoder_state(encoder, prefix_tokens)
     residual_mix = getattr(encoder, "residual_mix", None)
-    sources = [prefix_tokens] if attention_residual is not None else None
-    if attention_residual is not None and hidden.shape[1] > 0:
-        hidden = attention_residual(sources, 0)
     key_cache: list[torch.Tensor] = []
     value_cache: list[torch.Tensor] = []
 
@@ -121,15 +128,16 @@ def _build_prefix_cache(
             value_cache.append(hidden.new_empty(empty_shape))
             continue
 
-        hidden, key, value, _ = run_causal_layer(
+        hidden, key, value, _, pre_mix = run_causal_layer(
             layer,
             hidden,
             key_valid=prefix_valid,
             position_ids=prefix_position_ids,
             rotary_position_encoding=rotary_position_encoding,
+            rotary_cosine_sine=rotary_cosine_sine,
             attention_residual=attention_residual,
             residual_mix=residual_mix,
-            initial_tokens=prefix_tokens,
+            pre_mix=pre_mix,
             layer_index=layer_index,
             sources=sources,
         )
@@ -155,31 +163,30 @@ def _append_prefix(
     *,
     attention_residual=None,
     rotary_position_encoding,
+    rotary_cosine_sine: tuple[torch.Tensor, torch.Tensor],
 ) -> TransformerKVCache:
     cached_length = cache.prefix_tokens.shape[1]
     new_tokens = prefix_tokens[:, cached_length:]
     new_position_ids = prefix_position_ids[:, cached_length:]
-    hidden = new_tokens
+    hidden, pre_mix, sources = initialize_encoder_state(encoder, new_tokens)
     residual_mix = getattr(encoder, "residual_mix", None)
-    sources = [new_tokens] if attention_residual is not None else None
-    if attention_residual is not None:
-        hidden = attention_residual(sources, 0)
     key_cache = list(cache.key_cache)
     value_cache = list(cache.value_cache)
 
     for layer_index, layer in enumerate(encoder.layers):
-        hidden, new_key, new_value, _ = run_causal_layer(
+        hidden, new_key, new_value, _, pre_mix = run_causal_layer(
             layer,
             hidden,
             key_valid=prefix_valid,
             position_ids=new_position_ids,
             rotary_position_encoding=rotary_position_encoding,
+            rotary_cosine_sine=rotary_cosine_sine,
             existing_key=key_cache[layer_index],
             existing_value=value_cache[layer_index],
             existing_length=cached_length,
             attention_residual=attention_residual,
             residual_mix=residual_mix,
-            initial_tokens=new_tokens,
+            pre_mix=pre_mix,
             layer_index=layer_index,
             sources=sources,
         )

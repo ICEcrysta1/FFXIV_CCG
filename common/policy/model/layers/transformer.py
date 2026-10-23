@@ -17,6 +17,8 @@ from .activation import (
     uses_gate,
 )
 
+_compiled_activation_hidden = torch.compile(activation_hidden, fullgraph=True, dynamic=True)
+
 
 class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):
     """使用无参数 RMSNorm 的 Transformer 层，同时提供逐 head attention。"""
@@ -37,6 +39,7 @@ class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):
         *,
         num_kv_heads: int | None = None,
         qk_norm_scale: float = 1.2,
+        swiglu_limit: float = 10.0,
     ):
         if dim_feedforward < 1:
             raise ValueError("dim_feedforward must be positive")
@@ -48,6 +51,7 @@ class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):
         ):
             raise ValueError("qk_norm_scale must be a finite positive number")
         self.qk_norm_scale = float(qk_norm_scale)
+        self.swiglu_limit = swiglu_limit
         use_swiglu = uses_gate(activation)
         # 三个投影取代两个投影；保持同一 ff_dim 配置下矩阵参数量近似相等。
         hidden_dim = gated_hidden_dim(
@@ -152,11 +156,29 @@ class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):
         """共用 FFN 入口；SwiGLU 为 down(SiLU(gate(x)) * up(x))。"""
         with self._debug_stage("ffn"):
             if self.gate_proj is not None:
-                hidden = activation_hidden(
-                    self.activation,
-                    self.linear1(x),
-                    gate=self.gate_proj(x),
-                )
+                def activate(up, gate):
+                    return activation_hidden(
+                        self.activation, up, gate=gate, limit=self.swiglu_limit,
+                    )
+
+                up, gate = self.linear1(x), self.gate_proj(x)
+                if (
+                    self.training
+                    and torch.is_grad_enabled()
+                    and not self._skip_activation_checkpoint
+                    and not torch.onnx.is_in_onnx_export()
+                ):
+                    if up.is_cuda:
+                        # 融合前后向只保存原始 up/gate；CPU 使用局部重算，dropout 均在外部。
+                        hidden = _compiled_activation_hidden(
+                            self.activation, up, gate=gate, limit=self.swiglu_limit,
+                        )
+                    elif not self.activation_checkpoint_ffn:
+                        hidden = checkpoint(activate, up, gate, use_reentrant=False, preserve_rng_state=False)
+                    else:
+                        hidden = activate(up, gate)
+                else:
+                    hidden = activate(up, gate)
                 # 中间 dropout 放在乘积之后；残差分支 dropout 仍只执行一次。
                 return self.dropout2(self.linear2(self.dropout(hidden)))
             return super()._ff_block(x)

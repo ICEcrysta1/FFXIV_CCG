@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import math
 import random
+import time
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -15,8 +16,9 @@ from common.policy.config import PROJECT_ROOT, resolve_policy_cache_dir
 from common.policy.data import DataSpec, ModelInputContract
 from common.policy.data.encoding.context_encoding import ContextEncoder
 from common.policy.model import CausalPolicyModel
+from common.policy.model.execution.causal_encoder import run_causal_encoder
 from common.pytorch.precision import load_precision_config
-from common.pytorch.runtime import model_dtype
+from common.pytorch.runtime import autocast_context, model_dtype
 from common.training.optimizer import build_optimizer
 from common.training.tensorboard import (
     close_tensorboard_writer,
@@ -142,10 +144,9 @@ def run_training(
         vocab_size=vocab.size(),
         repetition=config.repetition,
     ).to(device=device)
-    # 输入投影固定 FP32；主干与输出头沿用既有参数和梯度精度。
+    # 输入投影与 HC 保留 FP32；主干与输出头沿用既有参数和梯度精度。
     parameter_dtype = torch.float32 if config.fp32_gradients else model_dtype(config.precision)
-    model.encoder.to(dtype=parameter_dtype)
-    model.output_head.to(dtype=parameter_dtype)
+    model.set_compute_dtype(parameter_dtype)
     if config.activation_checkpoint_ffn:
         model.enable_activation_checkpoint_ffn()
     if config.activation_checkpoint_attention:
@@ -250,6 +251,9 @@ def run_training(
                 resume_epoch,
                 start_epoch,
             )
+
+        if device.type == "cuda":
+            _warmup_compiled_training(model, config)
 
         # 调度器保存真实累计更新数；强制调整数据量续训时不能按新 loader 长度重算历史步号。
         global_step = max(0, int(scheduler.last_epoch))
@@ -363,10 +367,8 @@ def run_training(
                 tensorboard_monitor.log_epoch(global_step=epoch_step)
             if config.ppg.enabled:
                 logger.info(
-                    "Epoch %d/%d | val %s",
-                    epoch,
-                    config.max_epochs,
-                    format_metrics(val_metrics),
+                    "\n%s",
+                    format_metrics(val_metrics, epoch=f"{epoch}/{config.max_epochs}"),
                 )
 
             current_key = _best_metric_key(val_metrics, ppg_enabled=config.ppg.enabled)
@@ -426,6 +428,41 @@ def run_training(
                 )
         finally:
             close_tensorboard_writer(tensorboard_writer)
+
+
+def _warmup_compiled_training(model: CausalPolicyModel, config: RunConfig) -> None:
+    """正式计时前预热真实 encoder 的前后向，不读取数据或改写参数梯度。"""
+    if config.model.full_attention_residuals and config.model.transformer_activation != "swiglu":
+        return
+    device = next(model.parameters()).device
+    started = time.perf_counter()
+    batch_sizes = (config.batch_size, 1) if config.batch_size > 1 else (1,)
+    # 避开容量与 FFN 隐藏宽度相等的偶然绑定；小尺寸提示会影响正式 batch 的选核。
+    lengths = tuple(dict.fromkeys((max(2, config.model.context_capacity - 1), 1)))
+    logger.info("CUDA 编译预热开始：串行复用当前模型，首次运行可能需要数分钟，完成后开始训练计时")
+    with torch.random.fork_rng(devices=[device.index] if device.type == "cuda" else []):
+        for batch_size in batch_sizes:
+            for length in lengths:
+                shape_started = time.perf_counter()
+                logger.info("编译预热：batch=%d tokens=%d，执行前向和反向", batch_size, length)
+                tokens = torch.randn(
+                    batch_size, length, config.model.d_model,
+                    device=device, dtype=torch.float32, requires_grad=True,
+                )
+                with autocast_context(device, config.precision):
+                    hidden, _, _ = run_causal_encoder(model.encoder, {
+                        "tokens": tokens,
+                        "valid": torch.ones(batch_size, length, device=device, dtype=torch.bool),
+                    })
+                # 只请求输入梯度，触发所有局部 AOT 反向但不写入 parameter.grad。
+                torch.autograd.grad(hidden.sum(), tokens)
+                if device.type == "cuda":
+                    torch.cuda.synchronize(device)
+                logger.info(
+                    "编译预热完成：batch=%d tokens=%d，耗时 %.1f 秒",
+                    batch_size, length, time.perf_counter() - shape_started,
+                )
+    logger.info("CUDA 编译预热完成，耗时 %.1f 秒", time.perf_counter() - started)
 
 
 def _seed_everything(seed: int) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from itertools import pairwise
 
 import pytest
 
@@ -294,7 +295,7 @@ def test_real_incremental_replay_matches_full_context_and_transfers_each_history
     contexts = [sample["context"] for sample in incremental["samples"]]
     assert len(transported) == len(contexts)
     assert transported[0][0] == 0
-    assert all(left[1] == right[0] for left, right in zip(transported, transported[1:]))
+    assert all(left[1] == right[0] for left, right in pairwise(transported))
     final_rows = len(contexts[-1]["skill_history_context"])
     assert sum(count for _start, _end, count in transported) == final_rows
     assert transported[-1][1] == final_rows
@@ -304,7 +305,7 @@ def test_real_incremental_replay_matches_full_context_and_transfers_each_history
         metric["cumulative_dot_potency"] > 0
         for context in contexts for metric in context["state_history_context"]["execution_metrics"]
     )
-    for old, new in zip(contexts, contexts[1:]):
+    for old, new in pairwise(contexts):
         for old_rows, new_rows in zip(_channels(old), _channels(new), strict=True):
             assert old_rows is not new_rows
             assert all(old_row is new_row for old_row, new_row in zip(old_rows, new_rows))
@@ -543,7 +544,10 @@ def test_source_reader_rejects_reordered_death_markers(field, value):
 
 
 def test_death_markers_roundtrip_pt_without_entering_numeric_history(tmp_path):
-    from common.policy.data.cache.compiled_cache import CompiledCacheReader, CompiledShardCache
+    from common.policy.data.cache.compiled_cache import (
+        CompiledCacheReader,
+        CompiledShardCache,
+    )
     from scripts.convert_fflogs.cache.cache_writer import write_compiled_cache_stream
     from scripts.convert_fflogs.source.source_reader import TrainingSourceReader
 
@@ -556,16 +560,21 @@ def test_death_markers_roundtrip_pt_without_entering_numeric_history(tmp_path):
     source = tmp_path / "source.json"
     source.write_text("{}", encoding="utf-8")
     cache = tmp_path / "markers.compiled.pt"
+    shard_cache = CompiledShardCache()
     written = write_compiled_cache_stream(
         cache, source, signature={}, config_dependencies={}, reader=source_reader,
         sample_batches=(builder.build_batch(source_reader, start, min(start + 2, source_reader.num_samples))
                         for start in range(0, source_reader.num_samples, 2)),
         num_samples=source_reader.num_samples, vocab_signature=(), shard_size=2, history_bank=bank,
+        shard_cache=shard_cache,
     )
+    assert len(shard_cache) == 0
     stored = torch.load(cache, weights_only=False)
     assert stored["history_markers"] == tuple(payload["history_markers"])
     assert set(stored["history_bank"]) == set(bank)
-    restored = CompiledCacheReader(stored, cache_path=cache, shard_cache=CompiledShardCache())
+    restored_cache = CompiledShardCache()
+    restored = CompiledCacheReader(stored, cache_path=cache, shard_cache=restored_cache)
+    assert len(restored_cache) == 0
     for index in range(source_reader.num_samples):
         expected = source_reader.history_markers(index)
         assert written.history_markers(index) == restored.history_markers(index) == expected
@@ -576,10 +585,12 @@ def test_death_markers_roundtrip_pt_without_entering_numeric_history(tmp_path):
     restored.history_markers(4)[0]["token"] = "changed"
     assert restored.history_markers(4) == tuple(payload["history_markers"])
 
-    for invalid in (None, ({**payload["history_markers"][0], "after_history_length": 2},)):
-        corrupted = dict(stored, history_markers=invalid)
-        with pytest.raises(TypeError if invalid is None else ValueError, match="history marker"):
-            CompiledCacheReader(corrupted, cache_path=cache, shard_cache=CompiledShardCache())
+    with pytest.raises(TypeError, match="history marker"):
+        CompiledCacheReader(dict(stored, history_markers=None), cache_path=cache, shard_cache=CompiledShardCache())
+    corrupted = dict(stored, history_markers=({**payload["history_markers"][0], "after_history_length": 2},))
+    reader = CompiledCacheReader(corrupted, cache_path=cache, shard_cache=CompiledShardCache())
+    with pytest.raises(ValueError, match="history marker"):
+        reader.history_markers(2)
     corrupted = dict(stored)
     corrupted.pop("history_markers")
     with pytest.raises(KeyError, match="history_markers"):
@@ -608,7 +619,7 @@ def test_training_reads_visible_death_tokens_and_relocates_random_history_crops(
     source = tmp_path / "source.json"
     source.write_text("{}", encoding="utf-8")
     normalizer = Normalizer()
-    options = dict(normalizer=normalizer, int_dtype=torch.int32, float_dtype=torch.float32)
+    options = {"normalizer": normalizer, "int_dtype": torch.int32, "float_dtype": torch.float32}
     write_test_compiled_cache(source, payload, tmp_path / "cache", options)
     options.update(cache_dir=tmp_path / "cache", expected_action_space=ActionSpace.from_job_tag("black_mage"))
     dataset = TrainingDataset([source], context_capacity=32, history_reset_keep=1, **options)
@@ -686,8 +697,8 @@ def test_history_skill_features_keep_fp32_through_collation_and_context_encoding
     import torch
 
     from common.policy.data import Normalizer, SkillVocab
-    from common.policy.data.encoding.context_encoding import ContextEncoder
     from common.policy.data.contracts.context_fields import ENCODING_BANK_FIELDS
+    from common.policy.data.encoding.context_encoding import ContextEncoder
     from common.policy.data.encoding.normalization import NormalizerConfig
     from scripts.convert_fflogs.source.source_reader import TrainingSourceReader
     from scripts.convert_fflogs.training.history_bank import build_history_bank

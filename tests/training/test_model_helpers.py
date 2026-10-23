@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from tests.training._causal_fixtures import make_state_groups
-
 import logging
 import random
 from contextlib import nullcontext
@@ -22,30 +20,37 @@ import training.loop as training_module
 import training.loop.checkpoint as checkpoint_module
 import training.loop.dataloaders as dataloaders_module
 import training.loop.training_loop as training_loop_impl
-from training.loop.loss import compose_training_loss, configured_auxiliary_losses
 from common.policy import config as policy_config_module
 from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, ModelInputContract, Normalizer, SkillVocab
+from common.policy.data.cache import source_selection as cache_paths_module
 from common.policy.data.schema import SceneWindowSchema, TrainingSchema
 from common.policy.model import RepetitionConfig, build_causal_attention_mask
+from common.policy.model.attention.position_encoding import RotaryPositionEncoding
+from common.policy.model.execution.trace import trace_encoder
+from common.policy.model.layers.activation import activation_hidden
 from common.policy.model.layers.attention_residual import FullAttentionResidual
 from common.policy.model.layers.input_encoder import CausalInputEncoder
-from common.policy.model.attention.position_encoding import RotaryPositionEncoding
+from common.policy.model.layers.transformer import TraceableTransformerEncoderLayer
 from common.policy.model.repetition import (
     apply_repetition_penalty,
     parse_repetition_config,
     repetition_config_from_checkpoint,
 )
-from common.policy.model.execution.trace import trace_encoder
-from common.policy.model.layers.transformer import TraceableTransformerEncoderLayer
 from common.pytorch.runtime import autocast_context, model_dtype, move_batch
 from common.pytorch.serialization import safe_torch_load
 from common.training.tensorboard import TensorBoardConfig
 from scripts.convert_fflogs import cache as cache_module
 from scripts.convert_fflogs.cache import cache_compile as cache_compile_module
-from common.policy.data.cache import source_selection as cache_paths_module
+from tests.training._causal_fixtures import (
+    make_batch,
+    make_checkpoint,
+    make_data_spec,
+    make_input_contract,
+    make_state_groups,
+)
 from training.config import ActionQualityLossConfig, RunConfig, ValuePreferenceConfig
-from tests.training._causal_fixtures import make_batch, make_checkpoint, make_data_spec, make_input_contract
+from training.loop.loss import compose_training_loss, configured_auxiliary_losses
 
 
 def _attach_rope(encoder):
@@ -89,6 +94,49 @@ def test_seed_everything_seeds_python_cpu_and_available_cuda(seed):
         random.setstate(python_state)
 
 
+@pytest.mark.parametrize("fail", (False, True))
+def test_compile_warmup_preserves_rng_parameters_and_existing_gradients(tmp_path, monkeypatch, fail):
+    from common.policy.model import CausalPolicyModel
+
+    config = RunConfig(
+        raw_data_dir=tmp_path, output_dir=tmp_path, job_tag="black_mage", precision="float32", batch_size=3,
+        model=ModelConfig(
+            d_model=8, n_layers=1, n_heads=2, num_kv_heads=1, ff_dim=24,
+            dropout=0.2, transformer_activation="swiglu", hc_sinkhorn_iters=1, context_capacity=17,
+        ),
+    )
+    model = CausalPolicyModel(make_data_spec(), config.model, vocab_size=3)
+    for parameter in model.parameters():
+        parameter.grad = torch.randn_like(parameter)
+    state = {name: value.clone() for name, value in model.state_dict().items()}
+    gradients = [(parameter.grad, parameter.grad.clone()) for parameter in model.parameters()]
+    rng = torch.get_rng_state().clone()
+    calls = []
+    original = training_loop_impl.run_causal_encoder
+
+    def record(encoder, encoded):
+        assert encoder is model.encoder
+        calls.append(tuple(encoded["tokens"].shape[:2]))
+        result = original(encoder, encoded)
+        if fail:
+            raise RuntimeError("预热失败")
+        return result
+
+    monkeypatch.setattr(training_loop_impl, "run_causal_encoder", record)
+    if fail:
+        with pytest.raises(RuntimeError, match="预热失败"):
+            training_loop_impl._warmup_compiled_training(model, config)
+    else:
+        training_loop_impl._warmup_compiled_training(model, config)
+        assert calls == [(3, 16), (3, 1), (1, 16), (1, 1)]
+    assert torch.equal(torch.get_rng_state(), rng)
+    for name, value in model.state_dict().items():
+        torch.testing.assert_close(value, state[name], rtol=0, atol=0)
+    for parameter, (gradient, saved) in zip(model.parameters(), gradients, strict=True):
+        assert parameter.grad is gradient
+        torch.testing.assert_close(parameter.grad, saved, rtol=0, atol=0)
+
+
 @pytest.mark.parametrize(
     ("payload", "message"),
     [
@@ -111,7 +159,7 @@ def test_seed_everything_seeds_python_cpu_and_available_cuda(seed):
                     "transformer_norm_first": False,
                 }
             },
-            "full_attention_residuals requires transformer_norm_first=true",
+            "requires transformer_norm_first=true",
         ),
         (
             {"model": {"full_attention_residuals": "maybe"}},
@@ -605,6 +653,24 @@ def test_model_defaults_to_pre_norm_gelu_with_parameterless_rms():
     assert layer.activation_checkpoint_attention is False
 
 
+@pytest.mark.parametrize("dtype", (torch.float32, torch.bfloat16))
+def test_swiglu_limit_clamps_up_both_sides_and_gate_only_above_in_fp32(dtype):
+    from torch.nn import functional as F
+
+    gate = torch.tensor([-12., -2., 2., 12.], dtype=dtype, requires_grad=True)
+    up = torch.tensor([-12., 12., -12., 12.], dtype=dtype, requires_grad=True)
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        actual = activation_hidden(F.silu, up, gate=gate, limit=3.0)
+    expected_gate = torch.tensor([-12., -2., 2., 3.])
+    expected = (F.silu(expected_gate) * torch.tensor([-3., 3., -3., 3.])).to(dtype)
+    assert actual.dtype == dtype
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    actual.float().sum().backward()
+    assert torch.equal(up.grad, torch.zeros_like(up))
+    assert gate.grad[0] != 0 and gate.grad[-1] == 0
+    assert torch.isfinite(gate.grad).all()
+
+
 @pytest.mark.parametrize("activation", ("gelu", "swiglu"))
 def test_ffn_activation_checkpoint_preserves_forward_and_gradients(activation):
     from unittest.mock import patch
@@ -757,6 +823,7 @@ def test_attention_block_checkpoint_matches_sdpa_checkpoint():
 @pytest.mark.parametrize("num_kv_heads", (1, 2, 4))
 def test_attention_activation_checkpoint_preserves_forward_and_gradients(num_kv_heads):
     from unittest.mock import patch
+
     from common.policy.model.execution.causal_encoder import run_causal_encoder
 
     torch.manual_seed(7)
@@ -830,6 +897,7 @@ def test_full_attention_residual_preserves_independent_sublayer_checkpoints(
 ):
     """局部深度聚合重算不改变 FFN/attention 的独立开关或 dropout 梯度。"""
     from unittest.mock import patch
+
     from common.policy.model.execution.causal_encoder import run_causal_encoder
 
     torch.manual_seed(7)
@@ -898,7 +966,8 @@ def test_full_attention_residual_preserves_independent_sublayer_checkpoints(
         (checkpointed_output[0] * probe).sum().backward()
 
     assert block_checkpoint.call_count == 0
-    assert ffn_checkpoint.call_count == 2 * checkpoint_ffn
+    assert sum(call.args[0].__name__ == "_ff_block_without_checkpoint"
+               for call in ffn_checkpoint.call_args_list) == 2 * checkpoint_ffn
     assert attention_checkpoint.call_count == 2 * checkpoint_attention
     torch.testing.assert_close(eager_output[0], checkpointed_output[0])
     torch.testing.assert_close(eager_input.grad, checkpointed_input.grad)
@@ -912,6 +981,7 @@ def test_full_attention_residual_checkpoint_preserves_partial_layer_granularity(
     """不同层分别启用 FFN 与整块 attention，仍与无重算参考一致。"""
     from copy import deepcopy
     from unittest.mock import patch
+
     from common.policy.model.execution.causal_encoder import run_causal_encoder
 
     layer_kwargs = {
@@ -980,6 +1050,10 @@ class _TinyModel(nn.Module):
     def __init__(self):
         super().__init__()
         self.bias = nn.Parameter(torch.tensor(1.0))
+
+    def set_compute_dtype(self, dtype):
+        self.encoder.to(dtype=dtype)
+        self.output_head.to(dtype=dtype)
 
     def forward(self, batch):
         count = batch["label_index"].shape[0]

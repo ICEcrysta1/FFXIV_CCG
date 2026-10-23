@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from tests.training._causal_fixtures import make_state_groups
-
 import pytest
 import torch
 
 from common.policy.config import ModelConfig
 from common.policy.data import DataSpec
 from common.policy.model import CausalPolicyModel
+from tests.training._causal_fixtures import make_state_groups
 
 
 def _make_model(
@@ -124,7 +123,10 @@ def _make_batch(history_length: int, *, current_state_offset: float = 0.0, chang
 @pytest.mark.parametrize("full_attention_residuals", (False, True))
 def test_shared_context_reanchor_and_scene_clip_rebuild_kv(full_attention_residuals):
     """分块重置重新选择 ABS 锚点和 scene view，完整前向与 KV 前向保持一致。"""
-    from common.policy.data.encoding.context_encoding import ContextEncoder, raw_state_delta
+    from common.policy.data.encoding.context_encoding import (
+        ContextEncoder,
+        raw_state_delta,
+    )
     from common.policy.data.encoding.history_window import history_window_length
     from common.policy.data.encoding.normalization import NormalizerConfig
     from common.policy.data.encoding.normalizer import Normalizer
@@ -273,10 +275,9 @@ def test_qk_normalized_kv_reuses_old_keys_once_and_matches_dense_trace(
                                        rtol=2e-6, atol=2e-6)
 
 
-@pytest.mark.parametrize("norm_first", (True, False))
 @pytest.mark.parametrize("activation", ("gelu", "swiglu"))
-def test_kv_cache_matches_full_forward_when_history_appends(norm_first: bool, activation: str):
-    model, full_model = _make_model_pair(norm_first=norm_first, activation=activation)
+def test_kv_cache_matches_full_forward_when_history_appends(activation: str):
+    model, full_model = _make_model_pair(activation=activation)
     model.enable_kv_cache(True)
 
     for history_length in (0, 1, 2):
@@ -366,50 +367,38 @@ def test_kv_cache_recomputes_current_state_without_rebuilding_prefix():
     assert model._kv_cache.prefix_tokens.shape[1] == 6
 
 
-@pytest.mark.parametrize("norm_first", (True, False))
-def test_kv_mixing_aligns_x0_for_prefix_append_current_and_rebuild(norm_first):
-    """不同于默认初值的真实 mix，必须对齐当前正在编码块的原始 token。"""
-    model, full_model = _make_model_pair(norm_first=norm_first, activation="swiglu")
+@pytest.mark.parametrize("precision", ("float32", "bf16"))
+def test_kv_hyper_connections_match_dense_for_prefix_append_current_and_rebuild(precision):
+    """训练后的非均匀四路混合在构建、追加、当前重算及失效重建中保持一致。"""
+    model, full_model = _make_model_pair(activation="swiglu")
     with torch.no_grad():
-        model.encoder.residual_mix.r.copy_(torch.tensor([0.7, 1.4]))
-        model.encoder.residual_mix.a.copy_(torch.tensor([0.6, -0.2]))
+        for index, module in enumerate(model.encoder.residual_mix):
+            module.scale.copy_(torch.tensor([0.4, -0.3, 0.6]))
+            module.base.add_(torch.linspace(-0.7, 0.5, 24) * (index + 1))
     full_model.load_state_dict(model.state_dict())
     model.enable_kv_cache(True)
-    captured, calls = {}, []
-    input_hook = model.input_encoder.register_forward_hook(
-        lambda module, args, output: captured.update(encoded=output))
-    mix_hook = model.encoder.residual_mix.register_forward_hook(
-        lambda module, args, output: calls.append(args))
     requests = [(0, 0.0, False), (1, 0.0, False), (1, 10.0, False),
                 (2, 0.0, False), (2, 0.0, True)]
-    previous_prefix_length = 0
-    try:
-        for step, (history_length, current_offset, rebuild) in enumerate(requests):
-            calls.clear()
-            batch = _make_batch(history_length, current_state_offset=current_offset)
-            if rebuild:
-                batch["scene_vectors"][0, 0, 0] += 7.0
+    previous_cache = None
+    previous_history_length = None
+    tolerance = 0.01 if precision == "bf16" else 2e-6
+    for history_length, current_offset, rebuild in requests:
+        batch = _make_batch(history_length, current_state_offset=current_offset)
+        if rebuild:
+            batch["scene_vectors"][0, 0, 0] += 7.0
+        with torch.no_grad(), torch.autocast("cpu", dtype=torch.bfloat16, enabled=precision == "bf16"):
             actual = model(batch)["logits"]
-            torch.testing.assert_close(actual, full_model(batch)["logits"], rtol=2e-6, atol=2e-6)
-            encoded = captured["encoded"]
-            prefix_length = encoded["prefix_length"]
-            if step == 0 or rebuild:
-                expected_blocks = [encoded["tokens"][:, :prefix_length]]
-            elif prefix_length > previous_prefix_length:
-                expected_blocks = [encoded["tokens"][:, previous_prefix_length:prefix_length]]
-            else:
-                expected_blocks = []
-            expected_blocks.append(encoded["tokens"][:, prefix_length:])
-            assert len(calls) == len(expected_blocks) * model.config.n_layers
-            for block_index, expected in enumerate(expected_blocks):
-                for layer_index in range(model.config.n_layers):
-                    args = calls[block_index * model.config.n_layers + layer_index]
-                    assert args[2] == layer_index
-                    torch.testing.assert_close(args[1], expected, rtol=0, atol=0)
-            previous_prefix_length = prefix_length
-    finally:
-        input_hook.remove()
-        mix_hook.remove()
+            expected = full_model(batch)["logits"]
+            trace = full_model.trace(batch)
+            traced = full_model.score_hidden(trace.encoded, trace.hidden, batch)
+        torch.testing.assert_close(actual, expected, rtol=tolerance, atol=tolerance)
+        torch.testing.assert_close(actual, traced, rtol=tolerance, atol=tolerance)
+        if previous_cache is not None:
+            assert (model._kv_cache is previous_cache) is (
+                history_length == previous_history_length and not rebuild
+            )
+        previous_cache = model._kv_cache
+        previous_history_length = history_length
 
 
 @pytest.mark.parametrize("full_attention_residuals", (False, True))
@@ -626,7 +615,10 @@ def test_kv_cache_matches_under_explicit_sdpa_backends():
 
 def test_causal_attention_zeroes_fully_blocked_rows():
     """全屏蔽 query 行输出必须为 0，不能是 NaN。"""
-    from common.policy.model.execution.causal_encoder import run_head_attention, split_heads
+    from common.policy.model.execution.causal_encoder import (
+        run_head_attention,
+        split_heads,
+    )
 
     model = _make_model()
     layer = model.encoder.layers[0]

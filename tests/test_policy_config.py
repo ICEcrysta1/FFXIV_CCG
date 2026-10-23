@@ -8,7 +8,7 @@ import yaml
 
 from common.policy.config import ModelConfig, load_model_config, load_policy_config
 
-_RESIDUAL_MIX_ENDPOINTS = (
+_REMOVED_RESIDUAL_MIX_FIELDS = (
     "residual_mix_r_start", "residual_mix_r_end",
     "residual_mix_a_start", "residual_mix_a_end",
 )
@@ -118,6 +118,9 @@ def test_qk_norm_scale_defaults_and_artzip_architecture():
     config = load_model_config(root / "config/models/black_mage/artzip/model.yaml")
     assert config.qk_norm_scale == 1.2
     assert config.logit_softcap == 15.0
+    assert (config.swiglu_limit, config.hc_mult, config.hc_sinkhorn_iters, config.hc_eps) == (
+        10.0, 4, 20, 1e-6,
+    )
     assert (config.n_layers, config.d_model, config.n_heads, config.num_kv_heads, config.ff_dim) == (6, 384, 6, 1, 1536)
 
 
@@ -149,17 +152,17 @@ def test_qk_norm_scale_direct_constructor_rejects_boolean():
         ModelConfig(qk_norm_scale=True)
 
 
-@pytest.mark.parametrize("field", _RESIDUAL_MIX_ENDPOINTS)
-@pytest.mark.parametrize("value", [True, False])
-def test_residual_mix_endpoints_reject_boolean_values(field, value):
-    with pytest.raises(ValueError, match=f"model.{field}.*boolean"):
+@pytest.mark.parametrize("field", _REMOVED_RESIDUAL_MIX_FIELDS)
+@pytest.mark.parametrize("value", [True, 1.15])
+def test_removed_residual_mix_fields_are_rejected(field, value):
+    with pytest.raises(ValueError, match=field):
         ModelConfig.from_mapping({field: value})
-    with pytest.raises(ValueError, match=f"model.{field}.*boolean"):
+    with pytest.raises(TypeError, match=field):
         ModelConfig(**{field: value})
 
 
 @pytest.mark.parametrize("full_attention_residuals", [False, True])
-def test_residual_mix_endpoints_reject_boolean_yaml_values(
+def test_removed_residual_mix_fields_are_rejected_from_yaml(
     tmp_path, full_attention_residuals,
 ):
     config_path = tmp_path / "model.yaml"
@@ -168,16 +171,14 @@ def test_residual_mix_endpoints_reject_boolean_yaml_values(
             "residual_mix_r_start": True, "full_attention_residuals": full_attention_residuals,
         }}), encoding="utf-8", newline="\n",
     )
-    with pytest.raises(ValueError, match="model.residual_mix_r_start.*boolean"):
+    with pytest.raises(ValueError, match="residual_mix_r_start"):
         load_model_config(config_path)
 
 
-@pytest.mark.parametrize("value", [0, -0.1, 1.15, "0", "-0.1"])
-def test_residual_mix_endpoints_preserve_finite_numeric_values_and_round_trip(value):
-    values = dict.fromkeys(_RESIDUAL_MIX_ENDPOINTS, value)
+def test_hyper_connection_and_swiglu_config_round_trip():
+    values = {"hc_mult": 4, "hc_sinkhorn_iters": 12, "hc_eps": 1e-5, "swiglu_limit": 8.0}
     config = ModelConfig.from_mapping(values)
-    assert all(getattr(config, field) == float(value) for field in _RESIDUAL_MIX_ENDPOINTS)
-    assert all(isinstance(getattr(config, field), float) for field in _RESIDUAL_MIX_ENDPOINTS)
+    assert all(getattr(config, field) == value for field, value in values.items())
     assert ModelConfig(**values) == config
     assert ModelConfig.from_mapping(yaml.safe_load(yaml.safe_dump(asdict(config)))) == config
 

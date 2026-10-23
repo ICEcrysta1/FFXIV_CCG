@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import math
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 
+from ...config import ModelConfig
 from ..encoding.normalizer import Normalizer
 from ..schema import TrainingSchema
 from .skill_vocab import SkillVocab
@@ -47,60 +47,55 @@ from .spec import DataSpec
 # 25：统一归一化入口；独立注册的技能状态按绝对三元组进入状态向量；
 #     两段状态快照移除与 MP 重复的 mp_ratio；仅时间坐标使用 DELTA，
 #     其余字段使用归一化绝对值，时间坐标与绝对时长分别保存缩放尺度。
-INPUT_CONTRACT_VERSION = 25
+# 26：SwiGLU 两支投影按保存阈值在 FP32 中裁剪；普通 r/a 残差替换为
+#     四路 Hyper-Connections，训练、trace、KV-cache 和部署共用跨子层 pre_mix。
+#     只改变模型执行语义，既有 raw bank 与 compiled cache 仍可复用。
+INPUT_CONTRACT_VERSION = 26
 
-RESIDUAL_MIX_CONFIG_FIELDS = (
-    "residual_mix_r_start", "residual_mix_r_end",
-    "residual_mix_a_start", "residual_mix_a_end",
-)
+HYPER_CONNECTION_CONFIG_FIELDS = ("hc_mult", "hc_sinkhorn_iters", "hc_eps")
 
 BACKBONE_RESIDUAL_CONTRACT = {
     "selection": "model_config.full_attention_residuals",
     "ordinary": {
-        "type": "learned_residual_mix",
-        "position": "before_each_transformer_layer",
-        "formula": "mixed = r[layer] * hidden + a[layer] * x0",
-        "attention_and_skip_input": "mixed",
-        "x0": "input_encoder.output_after_token_rmsnorm",
-        "x0_detached": False,
-        "parameters": ["encoder.residual_mix.r", "encoder.residual_mix.a"],
-        "parameter_shape": "[model_config.n_layers]",
-        "initialization": {
-            "r": "linspace(model_config.residual_mix_r_start, model_config.residual_mix_r_end)",
-            "a": "linspace(model_config.residual_mix_a_start, model_config.residual_mix_a_end)",
-        },
+        "type": "hyper_connections",
+        "position": "around_each_attention_and_ffn_sublayer",
+        "hc_mult": "model_config.hc_mult",
+        "hc_sinkhorn_iters": "model_config.hc_sinkhorn_iters",
+        "hc_eps": "model_config.hc_eps",
+        "mixing_rms_eps": 1e-20,
+        "compute_dtype": "float32",
+        "stream_initialization": "repeat_input_tokens",
+        "initial_pre_mix": "first_stream",
+        "pre_mix": "sigmoid + eps",
+        "post_mix": "2 * sigmoid",
+        "residual_mix": "row_softmax_then_column_then_alternating_row_column_sinkhorn",
+        "pre_handoff": "next_sublayer",
+        "final_collapse": "weighted_sum_last_ffn_pre_mix",
     },
     "full_attention": {
         "type": "full_attention_residual",
         "depth_sources": "initial_tokens_and_previous_sublayer_outputs",
-        "learned_residual_mix": False,
+        "hyper_connections": False,
     },
 }
 
 
 def residual_composition_contract(model_config: Mapping[str, object]) -> dict[str, object]:
-    """从保存的架构字段选择残差机制，禁止给旧 checkpoint 补初始化默认值。"""
-    missing = [key for key in RESIDUAL_MIX_CONFIG_FIELDS if key not in model_config]
+    """从保存的架构字段选择残差机制，禁止给旧 checkpoint 补 HC 默认值。"""
+    missing = [key for key in HYPER_CONNECTION_CONFIG_FIELDS if key not in model_config]
     if missing:
-        raise ValueError("model_config missing residual mix initialization fields: " + ", ".join(missing))
-    values = {}
-    for key in RESIDUAL_MIX_CONFIG_FIELDS:
-        value = model_config[key]
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-            raise ValueError(f"model_config.{key} must be a finite number")
-        values[key] = float(value)
+        raise ValueError("model_config missing hyper-connection fields: " + ", ".join(missing))
+    if isinstance(model_config["hc_eps"], bool) or not isinstance(model_config["hc_eps"], (int, float)):
+        raise ValueError("model_config.hc_eps must be a finite positive number")  # noqa: TRY004
     full_attention = model_config.get("full_attention_residuals")
     if not isinstance(full_attention, bool):
         # 与其他 checkpoint 契约格式错误统一使用 ValueError。
         raise ValueError("model_config.full_attention_residuals must be a saved boolean")  # noqa: TRY004
+    parsed = ModelConfig.from_mapping(model_config)
     if full_attention:
         return deepcopy(BACKBONE_RESIDUAL_CONTRACT["full_attention"])
     descriptor = deepcopy(BACKBONE_RESIDUAL_CONTRACT["ordinary"])
-    descriptor["initialization"] = {
-        "r": {"start": values["residual_mix_r_start"], "end": values["residual_mix_r_end"]},
-        "a": {"start": values["residual_mix_a_start"], "end": values["residual_mix_a_end"]},
-        "method": "linspace",
-    }
+    descriptor.update({key: getattr(parsed, key) for key in HYPER_CONNECTION_CONFIG_FIELDS})
     return descriptor
 
 # 描述固定的输入结构，不作为可调运行参数；d_model 仍由保存的 model_config 提供。
@@ -148,6 +143,14 @@ TOKEN_ENCODING_CONTRACT = {
         "elementwise_affine": False,
     },
     "backbone_residual": BACKBONE_RESIDUAL_CONTRACT,
+    "swiglu_clamp": {
+        "limit": "model_config.swiglu_limit",
+        "up": "clamp(up, min=-limit, max=limit)",
+        "gate": "clamp(gate, max=limit)_before_SiLU",
+        "formula": "down(SiLU(gate) * up)",
+        "compute_dtype": "float32",
+        "down_input_dtype": "projection_dtype",
+    },
     "attention_qk_normalization": {
         "type": "RMSNorm",
         "position": "after_RoPE_before_attention",

@@ -30,8 +30,8 @@ from common.policy.data import (
     Normalizer,
     SkillVocab,
 )
-from common.policy.data.encoding.context_encoding import ContextEncoder
 from common.policy.data.contracts.policy_actions import load_policy_actions
+from common.policy.data.encoding.context_encoding import ContextEncoder
 from common.policy.model import (
     CausalPolicyModel,
     repetition_config_from_checkpoint,
@@ -413,9 +413,8 @@ def _load_model_analysis_context(
         repetition=repetition_config,
     )
     model.to(device=device)
-    # 输入投影固定 FP32，主干与输出头继续使用既有参数精度。
-    model.encoder.to(dtype=parameter_dtype)
-    model.output_head.to(dtype=parameter_dtype)
+    # 输入投影与 HC 保留 FP32，主干与输出头继续使用既有参数精度。
+    model.set_compute_dtype(parameter_dtype)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
     del checkpoint

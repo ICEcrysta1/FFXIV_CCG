@@ -196,9 +196,8 @@ class PyTorchPolicyBackend(_MeasuredBackend):
         )
         self.model.load_state_dict(checkpoint["model_state_dict"], strict=True)
         self.model.to(device=self.input_device)
-        # 输入投影固定 FP32，主干与输出头继续使用既有参数精度。
-        self.model.encoder.to(dtype=parameter_dtype)
-        self.model.output_head.to(dtype=parameter_dtype)
+        # 输入投影与 HC 保留 FP32，主干与输出头继续使用既有参数精度。
+        self.model.set_compute_dtype(parameter_dtype)
         self.model.eval()
         self._bf16_float_compute = False
         self._fp16_output_quantization = False

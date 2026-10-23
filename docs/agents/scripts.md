@@ -194,7 +194,7 @@ FFXIV_CCG/
 │   └── tensorboard_server.py                         仅加载所选 BC/GRPO 阶段配置后启动监控，使用根目录 `.env` 的模型选择与端口，支持后台就绪检查、训练入口退出时回收服务和打开本机 Web 视图
 ├── ffxiv_ccg.sh                                      Bash 薄入口，调用 Python 九项工具菜单和 `--action` 分发
 ├── main.py                                           命令行入口，提供 `validate`、`list-skills`、`list-actions`、`smoke` 等最小手动验证命令；`list-actions` 和 `smoke` 共用原生多队列接口，`--queues` 可并发运行多个独立自检
-└── setup.sh                                          Linux 环境准备入口：复用 `.venv`、安装本地 Node 与锁定依赖、构建 Rust release 扩展并验证 CUDA provider，不覆盖 `.env`
+└── setup.sh                                          Linux 环境准备入口：复用 `.venv`、检查对应 Python 开发头文件、安装本地 Node 与锁定依赖、构建 Rust release 扩展并验证 CUDA provider，不覆盖 `.env`
 ```
 
 ## 回放评估与调度

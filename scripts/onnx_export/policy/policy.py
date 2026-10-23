@@ -20,7 +20,7 @@ class OnnxPolicy(nn.Module):
         super().__init__()
         self.model = model
         self.model.enable_kv_cache(False)
-        # 输入投影保持 FP32；主干和输出权重沿用部署精度。
+        # 输入投影与 HC 保持 FP32；主干和输出权重沿用部署精度。
         # BF16 影子模型沿用 FP32 计算，减少 CUDA/ORT 的逐层舍入差异。
         self.compute_model = (
             deepcopy(model).to(dtype=torch.float32)
@@ -30,11 +30,10 @@ class OnnxPolicy(nn.Module):
         super().train(False)
 
     def to(self, device=None, dtype=None, non_blocking=False):
-        # 先只移动设备，输入权重始终保持 FP32，不先降精度再转回。
+        # 先只移动设备，输入与 HC 权重始终保持 FP32，不先降精度再转回。
         result = super().to(device=device, non_blocking=non_blocking)
         if dtype is not None:
-            self.model.encoder.to(dtype=dtype)
-            self.model.output_head.to(dtype=dtype)
+            self.model.set_compute_dtype(dtype)
         return result
 
     def train(self, mode: bool = True):

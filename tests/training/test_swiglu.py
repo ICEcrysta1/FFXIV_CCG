@@ -10,11 +10,138 @@ from torch.nn import functional as F
 
 from common.policy.config import TRANSFORMER_ACTIVATIONS, ModelConfig
 from common.policy.data.contracts.spec import DataSpec
-from training.config import load_run_config
 from common.policy.model.layers.input_encoder import CausalInputEncoder
-from common.policy.model.model import CausalPolicyModel
 from common.policy.model.layers.transformer import TraceableTransformerEncoderLayer
+from common.policy.model.model import CausalPolicyModel
 from tests.training._causal_fixtures import make_checkpoint
+from training.config import load_run_config
+
+
+def test_swiglu_local_recomputation_keeps_only_low_precision_hidden_and_exact_gradients():
+    torch.manual_seed(38)
+    layer = TraceableTransformerEncoderLayer(
+        d_model=16, nhead=4, dim_feedforward=48, activation="swiglu", dropout=0.0,
+    ).train()
+    reference = deepcopy(layer).eval()
+    x = torch.randn(2, 8, 16, requires_grad=True)
+    reference_x = x.detach().clone().requires_grad_()
+
+    def forward(module, values):
+        saved = []
+
+        def pack(tensor):
+            saved.append((tuple(tensor.shape), tensor.dtype))
+            return tensor
+
+        with torch.autograd.graph.saved_tensors_hooks(pack, lambda tensor: tensor), torch.autocast("cpu", dtype=torch.bfloat16):
+            output = module._ff_block(values)
+        return output, saved
+
+    actual, saved = forward(layer, x)
+    expected, original_saved = forward(reference, reference_x)
+    hidden_shape = (2, 8, layer.linear1.out_features)
+    assert sum(shape == hidden_shape and dtype == torch.float32 for shape, dtype in original_saved) == 5
+    assert not any(shape == hidden_shape and dtype == torch.float32 for shape, dtype in saved)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    upstream = torch.randn_like(actual)
+    actual.backward(upstream)
+    expected.backward(upstream)
+    torch.testing.assert_close(x.grad, reference_x.grad, rtol=0, atol=0)
+    for projection in ("linear1", "gate_proj", "linear2"):
+        for parameter, target in zip(getattr(layer, projection).parameters(),
+                                     getattr(reference, projection).parameters(), strict=True):
+            torch.testing.assert_close(parameter.grad, target.grad, rtol=0, atol=0)
+
+
+def test_swiglu_local_recomputation_skips_outer_checkpoint_eval_no_grad_and_onnx(monkeypatch):
+    from common.policy.model.layers import transformer
+
+    original = transformer.checkpoint
+    calls = []
+
+    def record(function, *args, **kwargs):
+        calls.append(kwargs)
+        return original(function, *args, **kwargs)
+
+    monkeypatch.setattr(transformer, "checkpoint", record)
+    layer = TraceableTransformerEncoderLayer(
+        d_model=8, nhead=2, dim_feedforward=24, activation="swiglu", dropout=0.0,
+    )
+    for training, grad_enabled, outer, exporting, expected in (
+        (True, True, False, False, 1), (True, True, True, False, 1),
+        (False, True, False, False, 0), (True, False, False, False, 0),
+        (True, True, False, True, 0),
+    ):
+        calls.clear()
+        layer.train(training)
+        layer.set_activation_checkpoint_ffn(outer)
+        monkeypatch.setattr(torch.onnx, "is_in_onnx_export", lambda exporting=exporting: exporting)
+        with torch.set_grad_enabled(grad_enabled):
+            layer._ff_block(torch.randn(1, 2, 8, requires_grad=True))
+        assert len(calls) == expected
+        if expected:
+            assert calls[0]["use_reentrant"] is False
+            assert calls[0].get("preserve_rng_state", True) is outer
+
+
+@pytest.mark.parametrize("dtype", (torch.bfloat16, torch.float16))
+def test_cuda_compiled_swiglu_matches_eager_gradients_without_fp32_hidden_storage(monkeypatch, dtype):
+    if not torch.cuda.is_available():
+        pytest.skip("需要 CUDA 验证真实融合门控前后向")
+    if dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported():
+        pytest.skip("当前 CUDA 设备不支持 BF16")
+    from common.policy.model.layers import transformer
+
+    torch.manual_seed(39)
+    layer = TraceableTransformerEncoderLayer(
+        d_model=16, nhead=4, dim_feedforward=48, activation="swiglu", dropout=0.0,
+    ).cuda().train()
+    reference = deepcopy(layer).eval()
+    x = torch.randn(2, 8, 16, device="cuda", requires_grad=True)
+    reference_x = x.detach().clone().requires_grad_()
+    saved, calls = [], []
+    compiled = transformer._compiled_activation_hidden
+
+    def record(*args, **kwargs):
+        calls.append(True)
+        return compiled(*args, **kwargs)
+
+    def pack(tensor):
+        saved.append((tuple(tensor.shape), tensor.dtype))
+        return tensor
+
+    def unexpected_checkpoint(*args, **kwargs):
+        pytest.fail("CUDA 裸门控融合不应再调用局部 checkpoint")
+
+    monkeypatch.setattr(transformer, "_compiled_activation_hidden", record)
+    monkeypatch.setattr(transformer, "checkpoint", unexpected_checkpoint)
+    # 编译前后向后再统计，避免把首次图构建混入反向保存量。
+    with torch.autocast("cuda", dtype=dtype):
+        warmup = layer._ff_block(x.detach().clone().requires_grad_())
+    warmup.sum().backward()
+    layer.zero_grad(set_to_none=True)
+    calls.clear()
+    with torch.autograd.graph.saved_tensors_hooks(pack, lambda tensor: tensor), torch.autocast("cuda", dtype=dtype):
+        actual = layer._ff_block(x)
+    with torch.autocast("cuda", dtype=dtype):
+        expected = reference._ff_block(reference_x)
+    assert len(calls) == 1
+    hidden_shape = (2, 8, layer.linear1.out_features)
+    assert not any(shape == hidden_shape and saved_dtype == torch.float32 for shape, saved_dtype in saved)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    upstream = torch.randn_like(actual)
+    actual.backward(upstream)
+    expected.backward(upstream)
+    torch.testing.assert_close(x.grad, reference_x.grad, rtol=0, atol=0)
+    for projection in ("linear1", "gate_proj", "linear2"):
+        for parameter, target in zip(getattr(layer, projection).parameters(),
+                                     getattr(reference, projection).parameters(), strict=True):
+            assert parameter.grad is not None and torch.isfinite(parameter.grad).all()
+            torch.testing.assert_close(parameter.grad, target.grad, rtol=0, atol=0)
+    layer._skip_activation_checkpoint = True
+    with torch.autocast("cuda", dtype=dtype):
+        layer._ff_block(x)
+    assert len(calls) == 1
 
 
 def _activation_spec() -> DataSpec:
@@ -69,8 +196,11 @@ def test_swiglu_matches_explicit_gate_formula_and_gradients(bias):
     torch.manual_seed(37)
     layer = TraceableTransformerEncoderLayer(
         d_model=8, nhead=2, dim_feedforward=24, dropout=0.0,
-        activation="swiglu", bias=bias, dtype=torch.float32,
+        activation="swiglu", bias=bias, dtype=torch.float32, swiglu_limit=2.0,
     )
+    with torch.no_grad():
+        layer.gate_proj.weight.mul_(10)
+        layer.linear1.weight.mul_(10)
     reference = deepcopy(layer)
     x = torch.randn(2, 3, 8, dtype=torch.float32, requires_grad=True)
     reference_x = x.detach().clone().requires_grad_(True)
@@ -79,6 +209,8 @@ def test_swiglu_matches_explicit_gate_formula_and_gradients(bias):
     # 展开 sigmoid 公式，独立验证门控、逐元素乘法与三个投影的梯度。
     gate = F.linear(reference_x, reference.gate_proj.weight, reference.gate_proj.bias)
     up = F.linear(reference_x, reference.linear1.weight, reference.linear1.bias)
+    assert gate.min() < -2 and gate.max() > 2 and up.min() < -2 and up.max() > 2
+    gate, up = gate.clamp(max=2.0), up.clamp(-2.0, 2.0)
     expected = F.linear(
         (gate * torch.sigmoid(gate)) * up,
         reference.linear2.weight,
@@ -99,7 +231,7 @@ def test_swiglu_matches_explicit_gate_formula_and_gradients(bias):
 
 
 def test_swiglu_matches_gelu_matrix_parameter_budget():
-    kwargs = dict(d_model=8, nhead=2, dim_feedforward=3072)
+    kwargs = {"d_model": 8, "nhead": 2, "dim_feedforward": 3072}
     gelu = TraceableTransformerEncoderLayer(**kwargs, activation="gelu")
     swiglu = TraceableTransformerEncoderLayer(**kwargs, activation="swiglu")
 
@@ -117,11 +249,11 @@ def test_swiglu_matches_gelu_matrix_parameter_budget():
 @pytest.mark.parametrize("activation", ("gelu", "relu"))
 @pytest.mark.parametrize("norm_first", (True, False))
 def test_existing_ffn_keeps_torch_weights_forward_and_gradients(activation, norm_first):
-    kwargs = dict(
-        d_model=8, nhead=2, dim_feedforward=24, dropout=0.0,
-        activation=activation, norm_first=norm_first,
-        batch_first=True, dtype=torch.float32,
-    )
+    kwargs = {
+        "d_model": 8, "nhead": 2, "dim_feedforward": 24, "dropout": 0.0,
+        "activation": activation, "norm_first": norm_first,
+        "batch_first": True, "dtype": torch.float32,
+    }
     torch.manual_seed(41)
     original = nn.TransformerEncoderLayer(**kwargs)
     # 参考层只替换归一化；投影初始化、FFN、attention 和残差布局继续由 PyTorch 实现。

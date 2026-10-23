@@ -10,7 +10,7 @@ from torch import nn
 
 from ..config import ModelConfig
 from ..data.contracts.input_contract import (
-    RESIDUAL_MIX_CONFIG_FIELDS,
+    HYPER_CONNECTION_CONFIG_FIELDS,
     ModelInputContract,
 )
 from ..data.contracts.spec import DataSpec
@@ -20,7 +20,7 @@ from .execution.kv_cache import TransformerKVCache, encode_with_kv_cache
 from .execution.trace import ModelTrace, trace_encoder
 from .layers.attention_residual import FullAttentionResidual
 from .layers.input_encoder import CausalInputEncoder
-from .layers.residual_mix import LearnedResidualMix
+from .layers.residual_mix import HyperConnections
 from .layers.transformer import TraceableTransformerEncoderLayer
 from .repetition import RepetitionConfig, apply_repetition_penalty
 
@@ -42,10 +42,8 @@ class CausalPolicyModel(nn.Module):
             raise ValueError("num_kv_heads must be between 1 and n_heads")
         if config.n_heads % config.num_kv_heads != 0:
             raise ValueError("n_heads must be divisible by num_kv_heads")
-        if config.full_attention_residuals and not config.transformer_norm_first:
-            raise ValueError(
-                "full_attention_residuals requires transformer_norm_first=true"
-            )
+        if not config.transformer_norm_first:
+            raise ValueError("residual composition requires transformer_norm_first=true")
 
         self.data_spec = data_spec
         self.config = config
@@ -66,6 +64,7 @@ class CausalPolicyModel(nn.Module):
             dim_feedforward=config.ff_dim,
             dropout=config.dropout,
             activation=config.transformer_activation,
+            swiglu_limit=config.swiglu_limit,
             batch_first=True,
             norm_first=config.transformer_norm_first,
         )
@@ -87,13 +86,13 @@ class CausalPolicyModel(nn.Module):
                 num_queries=2 * config.n_layers + 1,
             )
         else:
-            # 普通残差独立学习逐层尺度和初始 token 注入，不与 Full AttnRes 叠加。
-            self.encoder.residual_mix = LearnedResidualMix(
-                config.n_layers,
-                r_start=config.residual_mix_r_start,
-                r_end=config.residual_mix_r_end,
-                a_start=config.residual_mix_a_start,
-                a_end=config.residual_mix_a_end,
+            # 每个 attention/FFN 子层独立生成四路残差系数，不与 Full AttnRes 叠加。
+            self.encoder.residual_mix = nn.ModuleList(
+                HyperConnections(
+                    config.d_model, hc_mult=config.hc_mult,
+                    hc_sinkhorn_iters=config.hc_sinkhorn_iters, hc_eps=config.hc_eps,
+                )
+                for _ in range(2 * config.n_layers)
             )
         self._init_weights()
         initial_weight = self.input_encoder.skill_embed.weight[self.action_to_vocab_id]
@@ -115,6 +114,15 @@ class CausalPolicyModel(nn.Module):
         attention_residual = getattr(self.encoder, "attention_residual", None)
         if attention_residual is not None:
             attention_residual.reset_parameters()
+        for residual_mix in getattr(self.encoder, "residual_mix", ()):
+            residual_mix.reset_parameters()
+
+    def set_compute_dtype(self, dtype: torch.dtype) -> None:
+        """转换主干与输出权重，保留输入投影和 HC 系数参数的 FP32 精度。"""
+        for name, module in self.encoder.named_children():
+            if name != "residual_mix":
+                module.to(dtype=dtype)
+        self.output_head.to(dtype=dtype)
 
     def train(self, mode: bool = True):
         """切换训练模式时清空推理缓存，避免缓存进入反向传播路径。"""
@@ -252,7 +260,7 @@ class CausalPolicyModel(nn.Module):
             raise TypeError("checkpoint missing model_config")
         for key in (
             "context_capacity", "history_reset_keep",
-            "qk_norm_scale", "logit_softcap", *RESIDUAL_MIX_CONFIG_FIELDS,
+            "qk_norm_scale", "logit_softcap", "swiglu_limit", *HYPER_CONNECTION_CONFIG_FIELDS,
         ):
             if key not in payload:
                 raise ValueError(f"checkpoint missing model.{key}; retrain")
