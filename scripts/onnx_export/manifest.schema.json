@@ -322,7 +322,7 @@
           ],
           "properties": {
             "version": {
-              "const": 26
+              "const": 27
             },
             "token_encoding": {
               "const": {
@@ -368,8 +368,12 @@
                     "encoder.layers[*].norm2",
                     "encoder.norm"
                   ],
-                  "eps": 1e-05,
-                  "elementwise_affine": false
+                  "eps": 1e-20,
+                  "elementwise_affine": true,
+                  "weight_initialization": 1.0,
+                  "normalization_dtype": "float32",
+                  "affine_position": "before_output_cast",
+                  "output_dtype": "input_dtype"
                 },
                 "backbone_residual": {
                   "selection": "model_config.full_attention_residuals",

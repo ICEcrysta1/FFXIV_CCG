@@ -36,7 +36,8 @@ model:
   # FFN 隐藏宽度；SwiGLU 的门控投影会按模型实现使用对应内部宽度。
   ff_dim: 1536
 
-  # Transformer 每层采用 Pre-Norm；注意力/FFN 子层之前及最终输出使用无参数 RMSNorm。
+  # Transformer 每层采用 Pre-Norm；子层及最终输出使用可学习 RMSNorm，γ 初始化为全 1、eps 为 1e-20。
+  # 在 FP32 中统计并归一化，乘 γ 后恢复输入 dtype；输入 token 与 Q/K 的归一化独立保持。
   transformer_norm_first: true
 
   # Transformer 主干 FFN 激活：gelu / relu / swiglu；

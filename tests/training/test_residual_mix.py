@@ -11,6 +11,7 @@ from common.policy.model import CausalPolicyModel
 from common.policy.model.execution import causal_encoder
 from common.policy.model.layers import residual_mix
 from common.policy.model.layers.residual_mix import HyperConnections
+from common.policy.model.layers.transformer import RMSNorm
 from tests.training._causal_fixtures import make_batch, make_data_spec
 
 
@@ -56,7 +57,9 @@ def test_cuda_compiled_hyper_connections_preserve_public_outputs_gradients_and_s
         module.scale.copy_(torch.tensor([0.7, -0.4, 0.6], device="cuda"))
         module.base.copy_(torch.linspace(-0.4, 0.7, 24, device="cuda"))
     reference = deepcopy(module).eval()
-    norm = torch.nn.RMSNorm(8).cuda()
+    norm = RMSNorm(8, dtype=torch.float32 if amp else dtype).cuda()
+    with torch.no_grad():
+        norm.weight.copy_(torch.linspace(0.6, 1.4, 8, device="cuda"))
     reference_norm = deepcopy(norm)
     saved_state = {name: value.detach().clone() for name, value in module.state_dict().items()}
     # 首个布局保留 expand 的零 stride，随后改变 batch/长度并使用普通残差流。
@@ -84,7 +87,7 @@ def test_cuda_compiled_hyper_connections_preserve_public_outputs_gradients_and_s
                 normalized = current.collapse(values, pre, current_norm) if current is module else current_norm(collapsed)
                 combined = current.combine(sublayer_output, values, post, comb)
                 assert all(value.dtype == torch.float32 for value in (pre, post, comb))
-                assert collapsed.dtype == combined.dtype == dtype
+                assert collapsed.dtype == normalized.dtype == combined.dtype == dtype
                 results.append((pre, post, comb, collapsed, normalized, combined))
         for actual, expected in zip(*results, strict=True):
             tolerance = 0.016 if actual.dtype == torch.bfloat16 else 2e-5
@@ -208,7 +211,10 @@ def test_hyper_connection_recompute_saves_original_storage_and_preserves_gradien
     torch.manual_seed(50)
     module = HyperConnections(8).train()
     reference = deepcopy(module).eval()
-    norm = torch.nn.RMSNorm(8)
+    norm = RMSNorm(8)
+    with torch.no_grad():
+        norm.weight.copy_(torch.linspace(0.6, 1.4, 8))
+    reference_norm = deepcopy(norm)
     streams = torch.randn(2, 8, 4, 8, dtype=torch.bfloat16, requires_grad=True)
     pre = torch.randn(2, 8, 4, requires_grad=True)
     output = torch.randn(2, 8, 8, dtype=torch.bfloat16, requires_grad=True)
@@ -217,7 +223,7 @@ def test_hyper_connection_recompute_saves_original_storage_and_preserves_gradien
               "combine": (output, streams, pre, comb)}[operation]
     reference_inputs = tuple(value.detach().clone().requires_grad_() for value in inputs)
     results, storage_bytes = [], []
-    for current, values in ((module, inputs), (reference, reference_inputs)):
+    for current, values, current_norm in ((module, inputs, norm), (reference, reference_inputs, reference_norm)):
         saved = {}
 
         def pack(value, saved=saved):
@@ -226,7 +232,8 @@ def test_hyper_connection_recompute_saves_original_storage_and_preserves_gradien
             return value
 
         with torch.autograd.graph.saved_tensors_hooks(pack, lambda value: value):
-            result = current.collapse(*values, norm) if operation == "collapse_norm" else getattr(current, operation)(*values)
+            result = (current.collapse(*values, current_norm) if operation == "collapse_norm"
+                      else getattr(current, operation)(*values))
         results.append(result if isinstance(result, tuple) else (result,))
         storage_bytes.append(sum(saved.values()))
     assert storage_bytes[0] < storage_bytes[1]
@@ -242,6 +249,9 @@ def test_hyper_connection_recompute_saves_original_storage_and_preserves_gradien
         for actual, expected in zip(module.parameters(), reference.parameters(), strict=True):
             assert actual.grad is not None and torch.isfinite(actual.grad).all()
             torch.testing.assert_close(actual.grad, expected.grad, rtol=1e-6, atol=1e-6)
+    if operation == "collapse_norm":
+        assert norm.weight.grad is not None and torch.isfinite(norm.weight.grad).all()
+        torch.testing.assert_close(norm.weight.grad, reference_norm.weight.grad, rtol=1e-6, atol=1e-6)
 
 
 @pytest.mark.parametrize("mode", ("eval", "no_grad", "onnx"))

@@ -21,7 +21,7 @@ from .execution.trace import ModelTrace, trace_encoder
 from .layers.attention_residual import FullAttentionResidual
 from .layers.input_encoder import CausalInputEncoder
 from .layers.residual_mix import HyperConnections
-from .layers.transformer import TraceableTransformerEncoderLayer
+from .layers.transformer import RMSNorm, TraceableTransformerEncoderLayer
 from .repetition import RepetitionConfig, apply_repetition_penalty
 
 
@@ -68,11 +68,11 @@ class CausalPolicyModel(nn.Module):
             batch_first=True,
             norm_first=config.transformer_norm_first,
         )
-        # PreNorm 支路与最终输出统一使用无参数 RMSNorm，不对残差流施加幅度上限。
+        # PreNorm 支路与最终输出统一使用可学习通道尺度的 RMSNorm。
         self.encoder = nn.TransformerEncoder(
             encoder_layer,
             config.n_layers,
-            norm=nn.RMSNorm(config.d_model, eps=1e-5, elementwise_affine=False),
+            norm=RMSNorm(config.d_model),
         )
         # 位置编码属于 attention 执行边界；输入编码器只提供逻辑 position_ids。
         self.encoder.rotary_position_encoding = RotaryPositionEncoding(

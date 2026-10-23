@@ -98,19 +98,16 @@ class HyperConnections(nn.Module):
 
     def collapse(self, streams: torch.Tensor, pre_mix: torch.Tensor, norm=None) -> torch.Tensor:
         """融合读流与可选归一化，重算时只保存原始流和 pre。"""
-        # CUDA AMP 的 RMSNorm 会提升到 FP32；保留读流先转回原 dtype 的舍入。
-        norm_dtype = torch.float32 if norm is not None and streams.is_cuda and torch.is_autocast_enabled("cuda") else streams.dtype
-        return self._recompute(self._collapse, self._compiled_collapse, streams, pre_mix, norm, norm_dtype)
+        return self._recompute(self._collapse, self._compiled_collapse, streams, pre_mix, norm)
 
     # 避免 joint graph 把 FP32→低精度→FP32 的必要舍入当作冗余转换删除。
     @torch.compile(fullgraph=True, dynamic=True,
                    options={"emulate_precision_casts": True, "use_joint_graph_passes": False})
-    def _compiled_collapse(self, streams: torch.Tensor, pre_mix: torch.Tensor, norm, norm_dtype):
-        return checkpoint(self._collapse, streams, pre_mix, norm, norm_dtype, True,
+    def _compiled_collapse(self, streams: torch.Tensor, pre_mix: torch.Tensor, norm):
+        return checkpoint(self._collapse, streams, pre_mix, norm, True,
                           use_reentrant=False, preserve_rng_state=False)
 
-    def _collapse(self, streams: torch.Tensor, pre_mix: torch.Tensor, norm=None, norm_dtype=None,
-                  fused: bool = False) -> torch.Tensor:
+    def _collapse(self, streams: torch.Tensor, pre_mix: torch.Tensor, norm=None, fused: bool = False) -> torch.Tensor:
         """使用上一子层传出的 pre 加权读取残差流。"""
         with torch.autocast(device_type=streams.device.type, enabled=False):
             if fused:
@@ -120,18 +117,7 @@ class HyperConnections(nn.Module):
             else:
                 output = (pre_mix.unsqueeze(-1) * streams.float()).sum(dim=-2)
         output = output.to(streams.dtype)
-        if norm is None:
-            return output
-        output = output.to(norm_dtype)
-        if fused:
-            # 原生融合 RMSNorm 会物化输入；展开同一公式才能与加权读流融合。
-            values = output if output.dtype == torch.float64 else output.float()
-            eps = norm.eps if norm.eps is not None else torch.finfo(values.dtype).eps
-            values = values * torch.rsqrt(values.square().mean(dim=-1, keepdim=True) + eps)
-            if norm.weight is not None:
-                values = values * norm.weight
-            return values.to(output.dtype)
-        return norm(output)
+        return norm(output) if norm is not None else output
 
     def combine(self, output: torch.Tensor, residual: torch.Tensor, post: torch.Tensor, comb: torch.Tensor) -> torch.Tensor:
         """重算 FP32 混合副本，训练只保存原始流、子层输出和系数。"""

@@ -13,6 +13,7 @@
 
 ### Breaking Changes
 
+- Transformer 子层及最终输出的 RMSNorm 改为可学习通道尺度，γ 初始化为全 1，epsilon 由 `1e-5` 改为 `1e-20`；在 FP32 中归一化并乘 γ 后恢复输入精度，输入 token 与 Q/K 归一化保持原样。checkpoint 输入契约由 `26` 升至 `27`，ONNX schema 与精度审计同步更新；旧 checkpoint 需重新训练，部署包与 GRPO 轨迹需重新生成，既有 raw bank 和 compiled cache 可复用。
 - 主干普通残差由逐层 `r*x+a*x0` 替换为四路 Hyper-Connections：attention／FFN 各自学习动态 pre、post 与 Sinkhorn 残差混合，pre 交给下一子层，末端按最后 pre 加权读出；移除四个 `residual_mix_*` 配置，保留与 Full AttnRes 的互斥选择，主干统一要求 PreNorm。SwiGLU 在 FP32 中将 up 裁剪至 `[-10, 10]`，gate 在 SiLU 前仅裁剪上界 `10`。checkpoint 输入契约一次由 `25` 升至 `26`，旧 checkpoint 需重新训练，部署包和 GRPO 轨迹需重新生成；本次不改变 raw bank、归一化或 compiled cache，可复用既有数据缓存。
 - 模型基础状态仅战斗时间保留重锚与 DELTA 编码，MP、布尔、层数、量谱及有上限的剩余时长均逐步使用归一化绝对值；场景起止时间继续相对编码，持续时长使用绝对值。相对时间与绝对时长分别保存 `time_scale`、`duration_scale`，默认均为 `270` 秒；旧归一化和输入描述不再兼容，缓存、checkpoint、GRPO 轨迹及部署包需重新生成，本分支契约版本不重复递增。
 - 模型状态移除可由 MP 与上限推导的 `mp_ratio`，黑魔基础状态及 null/reset mask 由 `82` 维缩减为 `80` 维，总状态由 `232` 维缩减为 `230` 维；旧缓存需从 raw 重建，checkpoint 需重新训练，部署包与 GRPO 轨迹需重新生成。通用 seconds/GCD 展示输出保留该比例；本分支已升级的契约版本不重复递增，需重装修改后的原生扩展。

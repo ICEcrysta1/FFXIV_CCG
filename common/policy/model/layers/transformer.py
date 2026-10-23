@@ -20,8 +20,22 @@ from .activation import (
 _compiled_activation_hidden = torch.compile(activation_hidden, fullgraph=True, dynamic=True)
 
 
+class RMSNorm(nn.RMSNorm):
+    """在 FP32 中归一化，乘可学习通道尺度后恢复输入精度。"""
+
+    def __init__(self, dim: int, eps: float = 1e-20, *, device=None, dtype=None):
+        super().__init__(dim, eps=eps, device=device, dtype=dtype)
+
+    def forward(self, values: torch.Tensor) -> torch.Tensor:
+        output_dtype = values.dtype
+        values = values.float()
+        variance = values.square().mean(dim=-1, keepdim=True)
+        values = values * torch.rsqrt(variance + self.eps)
+        return (self.weight * values).to(output_dtype)
+
+
 class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):
-    """使用无参数 RMSNorm 的 Transformer 层，同时提供逐 head attention。"""
+    """使用可学习 RMSNorm 的 Transformer 层，同时提供逐 head attention。"""
 
     def __init__(
         self,
@@ -30,7 +44,7 @@ class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):
         dim_feedforward: int = 2048,
         dropout: float = 0.1,
         activation: str = "relu",
-        layer_norm_eps: float = 1e-5,
+        layer_norm_eps: float = 1e-20,
         batch_first: bool = False,
         norm_first: bool = False,
         bias: bool = True,
@@ -77,12 +91,12 @@ class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):
         )
         # 父类融合路径固定执行 LayerNorm；所有激活都走模块调用，避免绕过 RMSNorm。
         self.activation_relu_or_gelu = 0
-        self.norm1 = nn.RMSNorm(
-            d_model, eps=layer_norm_eps, elementwise_affine=False,
+        self.norm1 = RMSNorm(
+            d_model, eps=layer_norm_eps,
             device=device, dtype=dtype,
         )
-        self.norm2 = nn.RMSNorm(
-            d_model, eps=layer_norm_eps, elementwise_affine=False,
+        self.norm2 = RMSNorm(
+            d_model, eps=layer_norm_eps,
             device=device, dtype=dtype,
         )
         if num_kv_heads is None:

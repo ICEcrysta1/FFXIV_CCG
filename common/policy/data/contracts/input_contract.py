@@ -50,7 +50,9 @@ from .spec import DataSpec
 # 26：SwiGLU 两支投影按保存阈值在 FP32 中裁剪；普通 r/a 残差替换为
 #     四路 Hyper-Connections，训练、trace、KV-cache 和部署共用跨子层 pre_mix。
 #     只改变模型执行语义，既有 raw bank 与 compiled cache 仍可复用。
-INPUT_CONTRACT_VERSION = 26
+# 27：主干子层与最终 RMSNorm 使用初始化为 1 的可学习尺度及 1e-20 epsilon；
+#     FP32 归一化后乘尺度，再转回输入 dtype；输入 token 与 Q/K 归一化不变。
+INPUT_CONTRACT_VERSION = 27
 
 HYPER_CONNECTION_CONFIG_FIELDS = ("hc_mult", "hc_sinkhorn_iters", "hc_eps")
 
@@ -139,8 +141,12 @@ TOKEN_ENCODING_CONTRACT = {
             "encoder.layers[*].norm2",
             "encoder.norm",
         ],
-        "eps": 1e-5,
-        "elementwise_affine": False,
+        "eps": 1e-20,
+        "elementwise_affine": True,
+        "weight_initialization": 1.0,
+        "normalization_dtype": "float32",
+        "affine_position": "before_output_cast",
+        "output_dtype": "input_dtype",
     },
     "backbone_residual": BACKBONE_RESIDUAL_CONTRACT,
     "swiglu_clamp": {

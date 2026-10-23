@@ -190,12 +190,16 @@ def test_manifest_schema_and_loader_reject_previous_manifest_version(tmp_path, m
         DeploymentManifest.load(path, verify_files=False)
 
 
-def test_manifest_schema_uses_authoritative_model_input_descriptor(manifest_schema):
+@pytest.mark.parametrize("legacy_backbone", (False, True))
+def test_manifest_schema_uses_authoritative_model_input_descriptor(manifest_schema, legacy_backbone):
     input_schema = manifest_schema["$defs"]["contract"]["properties"]["model_input_contract"]
     assert input_schema["properties"]["version"]["const"] == INPUT_CONTRACT_VERSION
     assert input_schema["properties"]["token_encoding"]["const"] == TOKEN_ENCODING_CONTRACT
     legacy = deepcopy(TOKEN_ENCODING_CONTRACT)
-    legacy["context_encoding"]["state"] = "first_visible_ABS_then_raw_numeric_DELTA"
+    if legacy_backbone:
+        legacy["backbone_normalization"].update({"eps": 1e-5, "elementwise_affine": False})
+    else:
+        legacy["context_encoding"]["state"] = "first_visible_ABS_then_raw_numeric_DELTA"
     jsonschema = pytest.importorskip("jsonschema")
     validator = jsonschema.Draft202012Validator(input_schema["properties"]["token_encoding"])
     with pytest.raises(jsonschema.ValidationError):
@@ -653,7 +657,7 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
     exported_model = onnx.load(output / "model.onnx")
     assert any(node.op_type == "Tanh" for node in exported_model.graph.node)
     assert not any(node.op_type == "LayerNormalization" for node in exported_model.graph.node)
-    assert not any(".norm" in tensor.name for tensor in exported_model.graph.initializer)
+    _assert_backbone_gamma_initializers(exported_model, checkpoint, torch.float32)
     assert [
         item["name"] for item in manifest["contract"]["tensor_outputs"]
     ] == ["raw_logits"]
@@ -1156,6 +1160,7 @@ def test_small_float16_model_exports_and_runs_on_strict_cuda(tmp_path, activatio
     exported_model = onnx.load(output / "model.onnx")
     assert exported_model.graph.output[0].name == "raw_logits"
     assert exported_model.graph.output[0].type.tensor_type.elem_type == onnx.TensorProto.FLOAT16
+    _assert_backbone_gamma_initializers(exported_model, checkpoint, torch.float16)
     # cap 仍在 FP32 运算；输出的最终舍入不能把 Tanh 本身降成 FP16。
     inferred = onnx.shape_inference.infer_shapes(exported_model)
     value_types = {
@@ -1252,7 +1257,7 @@ def test_small_bf16_model_exports_and_runs_on_strict_cuda(tmp_path, activation):
     exported_model = onnx.load(output / "model.onnx")
     assert any(node.op_type == "Tanh" for node in exported_model.graph.node)
     assert not any(node.op_type == "LayerNormalization" for node in exported_model.graph.node)
-    assert not any(".norm" in tensor.name for tensor in exported_model.graph.initializer)
+    _assert_backbone_gamma_initializers(exported_model, checkpoint, torch.bfloat16)
     model_metadata = {item.key: item.value for item in exported_model.metadata_props}
     assert model_metadata["ffxiv.precision"] == "bf16"
     assert model_metadata["ffxiv.compute_precision"] == "float32"
@@ -1365,6 +1370,9 @@ def test_deployment_contract_preserves_actual_residual_path(tmp_path, manifest_s
     assert payload["model_input_contract"]["token_encoding"]["logit_softcap"] == (
         TOKEN_ENCODING_CONTRACT["logit_softcap"]
     )
+    assert payload["model_input_contract"]["token_encoding"]["backbone_normalization"] == (
+        TOKEN_ENCODING_CONTRACT["backbone_normalization"]
+    )
     restored = DeploymentContract.from_dict(payload)
     assert restored.to_dict() == payload
     validator = jsonschema.Draft202012Validator({"$ref": "#/$defs/contract", "$defs": manifest_schema["$defs"]})
@@ -1374,6 +1382,12 @@ def test_deployment_contract_preserves_actual_residual_path(tmp_path, manifest_s
     with pytest.raises(jsonschema.ValidationError):
         validator.validate(wrong)
     with pytest.raises(ValueError, match="authoritative layouts"):
+        DeploymentContract.from_dict(wrong)
+    wrong = deepcopy(payload)
+    wrong["model_input_contract"]["token_encoding"]["backbone_normalization"]["elementwise_affine"] = False
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(wrong)
+    with pytest.raises(ValueError, match="token_encoding"):
         DeploymentContract.from_dict(wrong)
 
 
@@ -1719,6 +1733,26 @@ def test_load_policy_preserves_ffn_weights_and_rejects_mislabeled_activation(tmp
         export_module.load_policy(mislabeled, precision="float32")
 
 
+def _assert_backbone_gamma_initializers(exported_model, checkpoint: Path, dtype: torch.dtype) -> None:
+    """常量折叠可能重命名 gamma，按保存权重的完整形状和值验证。"""
+    from onnx import numpy_helper
+
+    payload = safe_torch_load(checkpoint)
+    state = payload["model_state_dict"]
+    gamma = {
+        name: value for name, value in state.items()
+        if name == "encoder.norm.weight" or name.endswith((".norm1.weight", ".norm2.weight"))
+    }
+    assert len(gamma) == 2 * payload["model_config"]["n_layers"] + 1
+    initializers = [numpy_helper.to_array(tensor).astype(np.float32) for tensor in exported_model.graph.initializer]
+    for name, value in gamma.items():
+        expected = value.to(dtype).float().numpy()
+        assert any(np.array_equal(actual, expected) for actual in initializers), name
+        assert name.removesuffix("weight") + "bias" not in state
+    assert not any(".norm" in tensor.name and tensor.name.endswith(".bias")
+                   for tensor in exported_model.graph.initializer)
+
+
 def _write_small_checkpoint(
     path: Path, *, activation: str = "gelu", full_attention_residuals: bool = False,
     qk_norm_scale: float = 1.2, logit_softcap: float = 15.0,
@@ -1756,6 +1790,9 @@ def _write_small_checkpoint(
         with torch.no_grad():
             # 保存独立头训练后的值，恢复时不得重新拷贝输入 embedding。
             model.output_head.weight[0].add_(0.125)
+            norms = [norm for layer in model.encoder.layers for norm in (layer.norm1, layer.norm2)]
+            for index, norm in enumerate((*norms, model.encoder.norm)):
+                norm.weight.copy_(torch.linspace(0.8, 1.2, config.d_model) + index * 0.03)
             if not full_attention_residuals:
                 for index, module in enumerate(model.encoder.residual_mix):
                     module.scale.copy_(torch.tensor([.2, .4, .3]))

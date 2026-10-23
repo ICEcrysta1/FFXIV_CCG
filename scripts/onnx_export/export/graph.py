@@ -141,7 +141,7 @@ def _store_float_compute_weights_as_bf16(model_proto, onnx, model) -> None:
             continue
         if _is_input_encoder_initializer(initializer, model, float_data_type=onnx.TensorProto.FLOAT):
             continue
-        if _is_hyper_connection_initializer(initializer, model, float_data_type=onnx.TensorProto.FLOAT):
+        if _is_fp32_backbone_initializer(initializer, model, float_data_type=onnx.TensorProto.FLOAT):
             continue
         values = torch.from_numpy(numpy_helper.to_array(initializer).copy())
         quantized = values.to(torch.bfloat16)
@@ -241,7 +241,7 @@ def model_alignment(
         and not _is_input_encoder_initializer(
             initializer, model, float_data_type=tensor_proto.FLOAT,
         )
-        and not _is_hyper_connection_initializer(
+        and not _is_fp32_backbone_initializer(
             initializer, model, float_data_type=tensor_proto.FLOAT,
         )
     ]
@@ -279,16 +279,25 @@ def model_alignment(
     }
 
 
-def _is_hyper_connection_initializer(initializer, model: torch.nn.Module, *, float_data_type: int) -> bool:
-    """只允许实际 HC 参数、投影转置和导出器折叠的 base 切片保留 FP32。"""
+def _is_fp32_backbone_initializer(initializer, model: torch.nn.Module, *, float_data_type: int) -> bool:
+    """识别 HC 参数及导出器提升到 FP32 的 FP16 归一化权重。"""
     if initializer.data_type != float_data_type:
-        return False
-    residual_mix = getattr(model.encoder, "residual_mix", None)
-    if residual_mix is None:
         return False
     from onnx import numpy_helper
 
+    from common.policy.model.layers.transformer import RMSNorm
+
     actual = torch.from_numpy(numpy_helper.to_array(initializer).copy())
+    # FP16 gamma 参与 FP32 归一化时可能被折叠成匿名 FP32 常量。
+    # BF16 计算副本仍沿原路径恢复 BF16 存储，不在这里豁免。
+    for module in model.encoder.modules():
+        if isinstance(module, RMSNorm) and module.weight.dtype == torch.float16:
+            expected = module.weight.detach().float().cpu()
+            if actual.shape == expected.shape and torch.equal(actual, expected):
+                return True
+    residual_mix = getattr(model.encoder, "residual_mix", None)
+    if residual_mix is None:
+        return False
     for connection in residual_mix.children():
         for name, parameter in connection.named_parameters(recurse=False):
             if name not in {"fn", "base", "scale"} or parameter.dtype != torch.float32:

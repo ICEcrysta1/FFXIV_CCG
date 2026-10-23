@@ -31,7 +31,10 @@ from common.policy.model.execution.trace import trace_encoder
 from common.policy.model.layers.activation import activation_hidden
 from common.policy.model.layers.attention_residual import FullAttentionResidual
 from common.policy.model.layers.input_encoder import CausalInputEncoder
-from common.policy.model.layers.transformer import TraceableTransformerEncoderLayer
+from common.policy.model.layers.transformer import (
+    RMSNorm,
+    TraceableTransformerEncoderLayer,
+)
 from common.policy.model.repetition import (
     apply_repetition_penalty,
     parse_repetition_config,
@@ -615,7 +618,7 @@ def test_model_and_trace_helpers_cover_error_and_norm_paths():
             batch_first=True,
         ),
         1,
-        norm=nn.RMSNorm(4, eps=1e-5, elementwise_affine=False),
+        norm=RMSNorm(4),
     ).eval())
     encoded = {
         "tokens": tokens,
@@ -630,27 +633,78 @@ def test_model_and_trace_helpers_cover_error_and_norm_paths():
     assert trace.attentions[0].shape[-2:] == (2, 2)
 
 
-def test_model_defaults_to_pre_norm_gelu_with_parameterless_rms():
+def test_model_defaults_to_pre_norm_gelu_with_trainable_rms():
     from torch.nn import functional as F
 
     from common.policy.model import CausalPolicyModel
 
     model = CausalPolicyModel(
-        _encoder_spec(),
-        ModelConfig(d_model=8, n_layers=2, n_heads=2, ff_dim=16),
+        make_data_spec(),
+        ModelConfig(d_model=8, n_layers=6, n_heads=2, ff_dim=16),
         vocab_size=4,
     )
 
     layer = model.encoder.layers[0]
     assert layer.norm_first is True
     assert layer.activation is F.gelu
-    for norm in (layer.norm1, layer.norm2, model.encoder.norm):
-        assert isinstance(norm, nn.RMSNorm)
-        assert norm.eps == 1e-5
-        assert norm.elementwise_affine is False
-        assert tuple(norm.parameters()) == ()
+    norms = [module for module in model.encoder.modules() if isinstance(module, RMSNorm)]
+    assert len(norms) == 13
+    for norm in norms:
+        assert norm.eps == 1e-20
+        assert norm.elementwise_affine is True
+        assert norm.weight.requires_grad and norm.weight.shape == (8,)
+        torch.testing.assert_close(norm.weight, torch.ones(8), rtol=0, atol=0)
+    norm_keys = {f"encoder.layers.{index}.norm{number}.weight"
+                 for index in range(6) for number in (1, 2)} | {"encoder.norm.weight"}
+    checkpoint = make_checkpoint(model.data_spec, model.config, model_state_dict=model.state_dict())
+    assert norm_keys <= checkpoint["model_state_dict"].keys()
+    assert all(checkpoint["model_state_dict"][key].shape == (8,) for key in norm_keys)
     assert layer.activation_checkpoint_ffn is False
     assert layer.activation_checkpoint_attention is False
+
+
+@pytest.mark.parametrize("dtype,weight_dtype,amp", (
+    (torch.float32, torch.float32, False), (torch.float32, torch.bfloat16, True),
+    (torch.float16, torch.float16, False), (torch.float16, torch.float32, True),
+    (torch.bfloat16, torch.bfloat16, False), (torch.bfloat16, torch.float32, True),
+))
+def test_trainable_rms_preserves_input_dtype_and_matches_independent_gradients(dtype, weight_dtype, amp):
+    norm = RMSNorm(4, dtype=weight_dtype)
+    with torch.no_grad():
+        norm.weight.copy_(torch.tensor([0.5, -1.5, 0.25, 2.0]))
+    # 零值、eps 主导区和大输入分别锁定除零、低精度下溢与平方溢出边界。
+    values = torch.tensor([
+        [0., 0., 0., 0.], [1e-12, -2e-12, 3e-12, -4e-12],
+        [1e-10, -2e-10, 0., 4e-10], [1., -2., 3., -4.],
+        [2000., -4000., 8000., -16000.],
+    ], dtype=dtype, requires_grad=True)
+    upstream = torch.tensor([
+        [1e-6, -2e-6, 3e-6, -1e-6], [2e-6, 1e-6, -1e-6, 3e-6],
+        [1e-6, -1e-6, 2e-6, -2e-6], [0.1, -0.2, 0.3, -0.4],
+        [-0.2, 0.4, 0.1, -0.3],
+    ], dtype=dtype)
+    with torch.autocast("cpu", dtype=torch.bfloat16, enabled=amp):
+        actual = norm(values)
+    actual.backward(upstream)
+
+    # 用 FP64 的闭式雅可比核对输入和 gamma 梯度，不复用被测模块的前向。
+    source = values.detach().double()
+    weight = norm.weight.detach().double()
+    inverse = (source.square().mean(-1, keepdim=True) + 1e-20).rsqrt()
+    normalized = source * inverse
+    weighted_gradient = upstream.double() * weight
+    expected_grad = inverse * (
+        weighted_gradient - normalized * (weighted_gradient * normalized).mean(-1, keepdim=True)
+    )
+    expected_weight_grad = (upstream.double() * normalized).sum(0)
+    assert actual.dtype == dtype
+    assert values.grad.dtype == dtype and norm.weight.grad.dtype == weight_dtype
+    assert torch.isfinite(actual).all() and torch.isfinite(values.grad).all()
+    assert torch.isfinite(norm.weight.grad).all()
+    tolerance = 8e-3 if torch.bfloat16 in (dtype, weight_dtype) else 2e-3 if dtype == torch.float16 else 3e-6
+    torch.testing.assert_close(actual, (normalized * weight).to(dtype), rtol=tolerance, atol=0)
+    torch.testing.assert_close(values.grad, expected_grad.to(dtype), rtol=tolerance, atol=0)
+    torch.testing.assert_close(norm.weight.grad, expected_weight_grad.to(weight_dtype), rtol=tolerance, atol=0)
 
 
 @pytest.mark.parametrize("dtype", (torch.float32, torch.bfloat16))
@@ -783,7 +837,7 @@ def test_attention_block_checkpoint_matches_sdpa_checkpoint():
         layer.set_activation_checkpoint_attention_block(block)
         return _attach_rope(
             nn.TransformerEncoder(
-                layer, 1, norm=nn.RMSNorm(8, eps=1e-5, elementwise_affine=False),
+                layer, 1, norm=RMSNorm(8),
             ).train()
         )
 
@@ -842,12 +896,12 @@ def test_attention_activation_checkpoint_preserves_forward_and_gradients(num_kv_
     checkpointed_layer.load_state_dict(eager_layer.state_dict())
     checkpointed_layer.set_activation_checkpoint_attention(True)
     eager = _attach_rope(nn.TransformerEncoder(
-        eager_layer, 1, norm=nn.RMSNorm(8, eps=1e-5, elementwise_affine=False),
+        eager_layer, 1, norm=RMSNorm(8),
     ).train())
     checkpointed = _attach_rope(nn.TransformerEncoder(
         checkpointed_layer,
         1,
-        norm=nn.RMSNorm(8, eps=1e-5, elementwise_affine=False),
+        norm=RMSNorm(8),
     ).train())
     checkpointed.norm.load_state_dict(eager.norm.state_dict())
 
@@ -913,12 +967,12 @@ def test_full_attention_residual_preserves_independent_sublayer_checkpoints(
     eager_layer = TraceableTransformerEncoderLayer(**layer_kwargs)
     checkpointed_layer = TraceableTransformerEncoderLayer(**layer_kwargs)
     eager = _attach_rope(nn.TransformerEncoder(
-        eager_layer, 2, norm=nn.RMSNorm(8, eps=1e-5, elementwise_affine=False),
+        eager_layer, 2, norm=RMSNorm(8),
     ).train())
     checkpointed = _attach_rope(nn.TransformerEncoder(
         checkpointed_layer,
         2,
-        norm=nn.RMSNorm(8, eps=1e-5, elementwise_affine=False),
+        norm=RMSNorm(8),
     ).train())
     eager.attention_residual = FullAttentionResidual(d_model=8, num_queries=5)
     checkpointed.attention_residual = FullAttentionResidual(d_model=8, num_queries=5)
@@ -996,7 +1050,7 @@ def test_full_attention_residual_checkpoint_preserves_partial_layer_granularity(
     encoder = _attach_rope(nn.TransformerEncoder(
         TraceableTransformerEncoderLayer(**layer_kwargs),
         2,
-        norm=nn.RMSNorm(8, eps=1e-5, elementwise_affine=False),
+        norm=RMSNorm(8),
     ).train())
     encoder.attention_residual = FullAttentionResidual(d_model=8, num_queries=5)
     with torch.no_grad():

@@ -136,8 +136,8 @@ def test_model_input_contract_describes_post_role_parameterless_rms():
     }
 
 
-def test_model_input_contract_describes_parameterless_backbone_rms():
-    """主干两处子层和最终输出固定使用同一无参数 RMS 规则。"""
+def test_model_input_contract_describes_trainable_backbone_rms():
+    """主干两处子层和最终输出保存可学习尺度及精确计算顺序。"""
     encoding = _build_contract().to_dict()["token_encoding"]
     assert encoding["backbone_normalization"] == {
         "type": "RMSNorm",
@@ -146,8 +146,12 @@ def test_model_input_contract_describes_parameterless_backbone_rms():
             "encoder.layers[*].norm2",
             "encoder.norm",
         ],
-        "eps": 1e-5,
-        "elementwise_affine": False,
+        "eps": 1e-20,
+        "elementwise_affine": True,
+        "weight_initialization": 1.0,
+        "normalization_dtype": "float32",
+        "affine_position": "before_output_cast",
+        "output_dtype": "input_dtype",
     }
 
 
@@ -246,26 +250,29 @@ def test_model_input_contract_rejects_forged_qk_normalization(field, value):
         ModelInputContract.from_checkpoint({"input_contract": payload})
 
 
-def test_model_input_contract_rejects_previous_backbone_layernorm_version():
-    """版本 16 的主干 LayerNorm 权重不能通过新版输入字段静默复用。"""
+@pytest.mark.parametrize("version", (16, 26))
+def test_model_input_contract_rejects_previous_backbone_normalization_versions(version):
+    """旧主干归一化权重不能通过新版输入字段静默复用。"""
     payload = _build_contract().to_dict()
-    payload["version"] = 16
+    payload["version"] = version
     payload["token_encoding"].pop("backbone_normalization")
     with pytest.raises(ValueError, match="unsupported input contract version"):
         ModelInputContract.from_dict(payload)
 
 
-@pytest.mark.parametrize("legacy_backbone", ["missing", "layernorm", "gamma_rms"])
-def test_model_input_contract_rejects_forged_parameterless_backbone_descriptor(legacy_backbone):
+@pytest.mark.parametrize(("field", "value"), (
+    ("missing", None), ("type", "LayerNorm"), ("elementwise_affine", False),
+    ("eps", 1e-5), ("weight_initialization", 0.0), ("normalization_dtype", "bfloat16"),
+    ("affine_position", "after_output_cast"), ("output_dtype", "float32"),
+))
+def test_model_input_contract_rejects_forged_backbone_descriptor(field, value):
     """仅把旧模型的版本号改成当前版本，不能掩盖主干归一化算法或参数差异。"""
     payload = _build_contract().to_dict()
     backbone = payload["token_encoding"]["backbone_normalization"]
-    if legacy_backbone == "missing":
+    if field == "missing":
         payload["token_encoding"].pop("backbone_normalization")
-    elif legacy_backbone == "layernorm":
-        backbone.update({"type": "LayerNorm", "elementwise_affine": True})
     else:
-        backbone["elementwise_affine"] = True
+        backbone[field] = value
     with pytest.raises(ValueError, match="token_encoding"):
         ModelInputContract.from_dict(payload)
 
