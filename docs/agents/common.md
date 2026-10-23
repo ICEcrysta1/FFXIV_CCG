@@ -59,11 +59,12 @@ FFXIV_CCG/
     │   │   │   ├── attention_utils.py                Q/K/V 投影、头维度整形与 Transformer 层收尾辅助
     │   │   │   ├── attention_variants.py             统一因果 attention 的手工/SDPA 与重算执行路径
     │   │   │   ├── grouped_attention.py              MQA/GQA 投影与按 KV 组 SDPA 适配
-    │   │   │   └── position_encoding.py              唯一 RoPE 实现
+    │   │   │   └── position_encoding.py              唯一 RoPE 实现；一次编码共享 FP32 三角函数表
     │   │   ├── layers/                               输入投影、Transformer 层、激活与残差结构
     │   │   │   ├── __init__.py                       轻量包入口
     │   │   │   ├── activation.py                     Transformer 主干 FFN 激活算法：选项校验、门控判定、隐层宽度折算与门控合成
     │   │   │   ├── attention_residual.py             Full Attention Residual 深度聚合器
+    │   │   │   ├── hyper_connections_cuda.py         CUDA 训练专用 HC 系数与 Sinkhorn 的 Triton 前后向核；由残差模块延迟导入
     │   │   │   ├── input_encoder.py                  技能、状态与 scene 独立内容投影；死亡使用独立 FP32 embedding 并按动作边界插入，content 与 role 相加后统一无参数 RMSNorm，历史/当前状态共享参数，生成交错布局和逻辑位置
     │   │   │   ├── residual_mix.py                   Hyper-Connections 多路残差、动态 pre/post 混合、Sinkhorn 归一化、CUDA 训练融合前后向与重算及 CPU 局部重算，供 attention/FFN 共用
     │   │   │   └── transformer.py                    无参数 RMSNorm Transformer 层、FFN 激活/门控、CUDA 门控前后向融合、CPU 局部重算、整块重算开关和逐层运行诊断，不依赖分析 trace
@@ -197,6 +198,6 @@ FFXIV_CCG/
 
 SwiGLU 的 up 与 gate 投影在 FP32 中裁剪：up 限制在 `[-swiglu_limit, swiglu_limit]`，gate 在 SiLU 前仅限制上界 `swiglu_limit`，再执行 `SiLU(gate)*up` 并恢复投影精度进入 down；当前阈值为 10.0。`ff_dim=1536` 仍按三投影参数预算折算为实际 1024 维隐藏层，GELU/ReLU 不执行该裁剪。SwiGLU 阈值、HC 路数、Sinkhorn 迭代数及 epsilon 均保存在模型配置与 checkpoint 中，不从本机 YAML 覆盖已保存的执行契约。checkpoint 输入契约本次仅由 25 升至 26，部署 schema 同步拒绝旧描述；旧 checkpoint 需重新训练，部署包与 GRPO 轨迹需重新生成。本次主干变化不改变输入数值、raw bank 或 compiled cache，既有数据缓存可继续复用。
 
-CUDA 训练且启用梯度时，HC 的系数生成、读流及残差合成使用独立的 `torch.compile` 入口，将局部 checkpoint 与反向一起编译；Sinkhorn 的小矩阵展开为 token 向量，以逐元素加法完成行列归一化，避免每轮归约单独启动 GPU 核。编译入口显式关闭 autocast，保证 HC 投影及反向矩阵乘仍为 FP32。残差合成融合乘加、归约与精度转换，不物化五维广播乘积。SwiGLU 使用融合前后向，只保存原始 up/gate，不再叠加 CUDA 门控局部 checkpoint；CPU 保留 HC 与 SwiGLU 局部 checkpoint，整 FFN 重算启用时不再嵌套 CPU 门控重算。局部重算均使用 `use_reentrant=False`、`preserve_rng_state=False`，确定性计算内部没有 dropout；dropout 保留在外层，验证、推理与 ONNX 导出直接执行原公式。编译对象不替换模型模块，参数名称、身份、state_dict、YAML 和契约版本保持不变。
+CUDA 训练且启用梯度时，HC 的系数生成、读流及残差合成使用独立的 `torch.compile` 入口，将局部 checkpoint 与反向一起编译；系数与 Sinkhorn 使用延迟导入的 Triton 核，在片上迭代小矩阵，前向不保存逐轮中间量，反向临时重算后解析求导。编译入口显式关闭 autocast，保证 HC 投影及反向矩阵乘仍为 FP32。加权读流与紧随的 RMSNorm 合并编译，保留读流转回原 dtype 的舍入及 CUDA AMP 的归一化精度。残差合成融合乘加、归约与精度转换，不物化五维广播乘积。RoPE 每次编码只计算一份 FP32 cos/sin，供 Q/K、所有层及重算共用；KV-cache 只计算本次新增位置的三角函数。SwiGLU 使用融合前后向，只保存原始 up/gate，不再叠加 CUDA 门控局部 checkpoint；CPU 保留 HC 与 SwiGLU 局部 checkpoint，整 FFN 重算启用时不再嵌套 CPU 门控重算。局部重算均使用 `use_reentrant=False`、`preserve_rng_state=False`，确定性计算内部没有 dropout；dropout 保留在外层，验证、推理与 ONNX 导出直接执行原公式。编译对象不替换模型模块，参数名称、身份、state_dict、YAML 和契约版本保持不变。
 
 动作读出使用独立无 bias 输出头，初始化按 `action_to_vocab_id` 顺序复制技能 embedding 的动作行，后续独立训练；以 FP32 执行 `s*tanh(logits/s)`，s 由保存的 `model.logit_softcap` 提供，黑魔 Artzip 当前为 15.0。训练、trace、KV-cache、Full AttnRes 与 ONNX 共用动作头和 softcap；ONNX 适配层在 softcap 后将输出恢复为部署目标精度，图内不包含宿主重复惩罚和合法性过滤。checkpoint 恢复已学习的独立头与保存的两种尺度，不从本机 YAML 补默认值。黑魔 Artzip 主线为 6 层、d_model 384、6 个 Q head、1 个 KV head、ff_dim 1536。此次输入归一化与状态字段修改需一次性重建 raw 双 bank cache；后续容量、保留数及随机裁剪变化复用同一 cache；time_scale 或 duration_scale 变化进入缓存签名，需重新编译 cache。旧共享头、未归一化 Q/K、旧普通相加残差、旧 LayerNorm 主干或旧输入编码的 checkpoint 和部署包拒绝复用，需重新训练、导出；旧技能时间字段或旧状态语义产物仍须重建。

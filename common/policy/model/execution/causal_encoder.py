@@ -24,6 +24,7 @@ def run_causal_layer(
     key_valid: torch.Tensor,
     position_ids: torch.Tensor,
     rotary_position_encoding,
+    rotary_cosine_sine: tuple[torch.Tensor, torch.Tensor] | None = None,
     existing_key: torch.Tensor | None = None,
     existing_value: torch.Tensor | None = None,
     existing_length: int = 0,
@@ -47,14 +48,14 @@ def run_causal_layer(
             raise ValueError("Hyper-Connections requires Pre-Norm residual streams and pre_mix")
         attn_mix, ffn_mix = residual_mix[2 * layer_index:2 * layer_index + 2]
         attn_pre, attn_post, attn_comb = attn_mix.mixes(hidden)
-        attention_hidden = attn_mix.collapse(hidden, pre_mix)
+        attention_hidden = attn_mix.collapse(hidden, pre_mix, layer.norm1)
     else:
         attention_hidden = hidden
     if attention_residual is not None and (not layer.norm_first or sources is None):
         raise ValueError("Full AttnRes requires Pre-LN layers and a source list")
 
     def attend(attention_hidden):
-        attention_input = layer.norm1(attention_hidden) if layer.norm_first else attention_hidden
+        attention_input = layer.norm1(attention_hidden) if layer.norm_first and residual_mix is None else attention_hidden
         query, key, value = project_qkv(layer.self_attn, attention_input)
         query_heads, key_heads = rotate_qk(
             rotary_position_encoding,
@@ -62,6 +63,7 @@ def run_causal_layer(
             split_heads(key, kv_head_count(layer.self_attn)),
             position_ids,
             position_ids,
+            rotary_cosine_sine,
         )
         # 只归一化本次投影的新 K；缓存已保存归一化后的 K，拼接时不再处理。
         query_heads, key_heads = normalize_qk(
@@ -112,7 +114,7 @@ def run_causal_layer(
     if residual_mix is not None:
         hidden = attn_mix.combine(layer.dropout1(attended), hidden, attn_post, attn_comb)
         pre_mix, ffn_post, ffn_comb = ffn_mix.mixes(hidden)
-        ffn_input = layer.norm2(ffn_mix.collapse(hidden, attn_pre))
+        ffn_input = ffn_mix.collapse(hidden, attn_pre, layer.norm2)
         hidden = ffn_mix.combine(layer._ff_block(ffn_input), hidden, ffn_post, ffn_comb)
     elif attention_residual is not None:
         sources.append(layer.dropout1(attended))
@@ -135,10 +137,12 @@ def initialize_encoder_state(encoder, tokens: torch.Tensor):
     return (residual(sources, 0) if residual is not None else tokens), None, sources
 
 
-def collapse_encoder_state(encoder, hidden: torch.Tensor, pre_mix: torch.Tensor | None):
+def collapse_encoder_state(encoder, hidden: torch.Tensor, pre_mix: torch.Tensor | None, norm=None):
     """按最后一个子层的 pre 读取流，保持分析和最终读出为三维 token。"""
     residual_mix = getattr(encoder, "residual_mix", None)
-    return residual_mix[0].collapse(hidden, pre_mix) if residual_mix is not None else hidden
+    if residual_mix is not None:
+        return residual_mix[0].collapse(hidden, pre_mix, norm)
+    return norm(hidden) if norm is not None else hidden
 
 
 def run_causal_encoder(
@@ -161,6 +165,7 @@ def run_causal_encoder(
     rotary = getattr(encoder, "rotary_position_encoding", None)
     if rotary is None:
         raise ValueError("encoder is missing the required RotaryPositionEncoding module")
+    rotary_cosine_sine = rotary._cos_sin(position_ids)
     # 同一 batch 的 mask 只构造一次，所有层及重算路径共用。
     mask = build_segment_mask(
         valid,
@@ -181,6 +186,7 @@ def run_causal_encoder(
             key_valid=valid,
             position_ids=position_ids,
             rotary_position_encoding=rotary,
+            rotary_cosine_sine=rotary_cosine_sine,
             attention_residual=residual,
             residual_mix=residual_mix,
             pre_mix=pre_mix,
@@ -193,7 +199,5 @@ def run_causal_encoder(
         if collect_attention:
             layer_hidden.append(collapse_encoder_state(encoder, hidden, pre_mix))
             attentions.append(attention)
-    hidden = collapse_encoder_state(encoder, hidden, pre_mix)
-    if encoder.norm is not None:
-        hidden = encoder.norm(hidden)
+    hidden = collapse_encoder_state(encoder, hidden, pre_mix, encoder.norm)
     return hidden, tuple(layer_hidden), tuple(attentions)

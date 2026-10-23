@@ -12,6 +12,7 @@ def rotate_qk(
     key_heads: torch.Tensor,
     query_position_ids: torch.Tensor,
     key_position_ids: torch.Tensor,
+    cosine_sine: tuple[torch.Tensor, torch.Tensor] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """在进入 SDPA 前统一旋转 Q/K。"""
     return rotary_position_encoding(
@@ -19,6 +20,7 @@ def rotate_qk(
         key_heads,
         query_position_ids,
         key_position_ids,
+        cosine_sine,
     )
 
 

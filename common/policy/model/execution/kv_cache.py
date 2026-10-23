@@ -41,15 +41,24 @@ def encode_with_kv_cache(encoder, encoded, cache=None):
     rotary = getattr(encoder, "rotary_position_encoding", None)
     if rotary is None:
         raise ValueError("encoder is missing the required RotaryPositionEncoding module")
-    if not _cache_matches(cache, prefix_tokens, prefix_valid, prefix_positions, scene_length):
+    cache_matches = _cache_matches(cache, prefix_tokens, prefix_valid, prefix_positions, scene_length)
+    cached_length = cache.prefix_tokens.shape[1] if cache_matches else 0
+    # 只计算本次新增位置，前缀和当前状态按 token 维切片后跨层复用。
+    cosine_sine = rotary._cos_sin(position_ids[:, cached_length:])
+    new_prefix_length = prefix_length - cached_length
+    prefix_cosine_sine = tuple(value[:, :, :new_prefix_length] for value in cosine_sine)
+    current_cosine_sine = tuple(value[:, :, new_prefix_length:] for value in cosine_sine)
+    if not cache_matches:
         cache = _build_prefix_cache(
             encoder, prefix_tokens, prefix_valid, prefix_positions, scene_length,
             attention_residual=residual, rotary_position_encoding=rotary,
+            rotary_cosine_sine=prefix_cosine_sine,
         )
     elif prefix_length > cache.prefix_tokens.shape[1]:
         cache = _append_prefix(
             encoder, cache, prefix_tokens, prefix_valid, prefix_positions,
             attention_residual=residual, rotary_position_encoding=rotary,
+            rotary_cosine_sine=prefix_cosine_sine,
         )
     hidden, pre_mix, sources = initialize_encoder_state(encoder, tokens[:, prefix_length:])
     valid = encoded["valid"]
@@ -62,15 +71,14 @@ def encode_with_kv_cache(encoder, encoded, cache=None):
             layer, hidden, key_valid=valid,
             position_ids=position_ids[:, prefix_length:],
             rotary_position_encoding=rotary,
+            rotary_cosine_sine=current_cosine_sine,
             existing_key=cache.key_cache[index], existing_value=cache.value_cache[index],
             existing_length=prefix_length,
             attention_residual=residual, sources=sources,
             residual_mix=residual_mix, pre_mix=pre_mix, layer_index=index,
             segment_mask=mask,
         )
-    hidden = collapse_encoder_state(encoder, hidden, pre_mix)
-    if encoder.norm is not None:
-        hidden = encoder.norm(hidden)
+    hidden = collapse_encoder_state(encoder, hidden, pre_mix, encoder.norm)
     return hidden, cache
 
 
@@ -104,6 +112,7 @@ def _build_prefix_cache(
     *,
     attention_residual=None,
     rotary_position_encoding,
+    rotary_cosine_sine: tuple[torch.Tensor, torch.Tensor],
 ) -> TransformerKVCache:
     hidden, pre_mix, sources = initialize_encoder_state(encoder, prefix_tokens)
     residual_mix = getattr(encoder, "residual_mix", None)
@@ -125,6 +134,7 @@ def _build_prefix_cache(
             key_valid=prefix_valid,
             position_ids=prefix_position_ids,
             rotary_position_encoding=rotary_position_encoding,
+            rotary_cosine_sine=rotary_cosine_sine,
             attention_residual=attention_residual,
             residual_mix=residual_mix,
             pre_mix=pre_mix,
@@ -153,6 +163,7 @@ def _append_prefix(
     *,
     attention_residual=None,
     rotary_position_encoding,
+    rotary_cosine_sine: tuple[torch.Tensor, torch.Tensor],
 ) -> TransformerKVCache:
     cached_length = cache.prefix_tokens.shape[1]
     new_tokens = prefix_tokens[:, cached_length:]
@@ -169,6 +180,7 @@ def _append_prefix(
             key_valid=prefix_valid,
             position_ids=new_position_ids,
             rotary_position_encoding=rotary_position_encoding,
+            rotary_cosine_sine=rotary_cosine_sine,
             existing_key=key_cache[layer_index],
             existing_value=value_cache[layer_index],
             existing_length=cached_length,

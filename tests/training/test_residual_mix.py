@@ -41,49 +41,30 @@ def _reference_mixes(module, streams):
     return pre, post, comb
 
 
-@pytest.mark.parametrize("mult", (2, 4))
-@pytest.mark.parametrize("iterations", (1, 20))
-@pytest.mark.parametrize("uniform", (False, True))
-def test_pointwise_sinkhorn_matches_canonical_values_and_tied_max_gradients(mult, iterations, uniform):
-    torch.manual_seed(51)
-    logits = torch.randn(2, 3, mult, mult) * 3.5
-    if uniform:
-        logits.fill_(1.25)
-    logits.requires_grad_()
-    reference = logits.detach().clone().requires_grad_()
-    eps = 1e-6
-    actual = residual_mix._sinkhorn_pointwise(logits, iterations, eps)
-    expected = reference.softmax(dim=-1) + eps
-    expected = expected / (expected.sum(dim=-2, keepdim=True) + eps)
-    for _ in range(iterations - 1):
-        expected = expected / (expected.sum(dim=-1, keepdim=True) + eps)
-        expected = expected / (expected.sum(dim=-2, keepdim=True) + eps)
-    torch.testing.assert_close(actual, expected, rtol=2e-6, atol=2e-6)
-    # 相同最大值时也用非均匀上游梯度，避免对总和求导掩盖最大值分配错误。
-    upstream = torch.randn_like(actual)
-    actual.backward(upstream)
-    expected.backward(upstream)
-    assert torch.isfinite(logits.grad).all()
-    torch.testing.assert_close(logits.grad, reference.grad, rtol=2e-5, atol=2e-6)
-
-
-@pytest.mark.parametrize("dtype,amp", ((torch.float32, False), (torch.float32, True), (torch.bfloat16, True)))
+@pytest.mark.parametrize("dtype,amp", ((torch.float32, False), (torch.float32, True),
+                                      (torch.bfloat16, True), (torch.bfloat16, False)))
 def test_cuda_compiled_hyper_connections_preserve_public_outputs_gradients_and_state(dtype, amp):
     if not torch.cuda.is_available():
         pytest.skip("CUDA compilation requires a CUDA device")
     if amp and not torch.cuda.is_bf16_supported():
         pytest.skip("CUDA BF16 autocast requires BF16 support")
+    # 每组精度独立验证，避免跨用例的形状/归一化组合占满编译缓存上限。
+    torch._dynamo.reset()
     torch.manual_seed(52)
     module = HyperConnections(8, hc_sinkhorn_iters=3).cuda().train()
     with torch.no_grad():
         module.scale.copy_(torch.tensor([0.7, -0.4, 0.6], device="cuda"))
         module.base.copy_(torch.linspace(-0.4, 0.7, 24, device="cuda"))
     reference = deepcopy(module).eval()
+    norm = torch.nn.RMSNorm(8).cuda()
+    reference_norm = deepcopy(norm)
     saved_state = {name: value.detach().clone() for name, value in module.state_dict().items()}
     # 首个布局保留 expand 的零 stride，随后改变 batch/长度并使用普通残差流。
     for batch_size, length, expanded in ((2, 5, True), (1, 9, False)):
         module.zero_grad(set_to_none=True)
         reference.zero_grad(set_to_none=True)
+        norm.zero_grad(set_to_none=True)
+        reference_norm.zero_grad(set_to_none=True)
         shape = (batch_size, length, 8) if expanded else (batch_size, length, 4, 8)
         source = torch.randn(shape, device="cuda", dtype=dtype, requires_grad=True)
         reference_source = source.detach().clone().requires_grad_()
@@ -95,15 +76,16 @@ def test_cuda_compiled_hyper_connections_preserve_public_outputs_gradients_and_s
         reference_output = output.detach().clone().requires_grad_()
         results = []
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=amp):
-            for current, values, sublayer_output in (
-                (module, streams, output), (reference, reference_streams, reference_output),
+            for current, values, sublayer_output, current_norm in (
+                (module, streams, output, norm), (reference, reference_streams, reference_output, reference_norm),
             ):
                 pre, post, comb = current.mixes(values)
                 collapsed = current.collapse(values, pre)
+                normalized = current.collapse(values, pre, current_norm) if current is module else current_norm(collapsed)
                 combined = current.combine(sublayer_output, values, post, comb)
                 assert all(value.dtype == torch.float32 for value in (pre, post, comb))
                 assert collapsed.dtype == combined.dtype == dtype
-                results.append((pre, post, comb, collapsed, combined))
+                results.append((pre, post, comb, collapsed, normalized, combined))
         for actual, expected in zip(*results, strict=True):
             tolerance = 0.016 if actual.dtype == torch.bfloat16 else 2e-5
             torch.testing.assert_close(actual, expected, rtol=tolerance, atol=tolerance)
@@ -112,7 +94,8 @@ def test_cuda_compiled_hyper_connections_preserve_public_outputs_gradients_and_s
             sum((value.float() * gradient.float()).sum()
                 for value, gradient in zip(values, upstream, strict=True)).backward()
         for actual, expected in ((source, reference_source), (output, reference_output),
-                                 *zip(module.parameters(), reference.parameters(), strict=True)):
+                                 *zip(module.parameters(), reference.parameters(), strict=True),
+                                 *zip(norm.parameters(), reference_norm.parameters(), strict=True)):
             assert actual.grad is not None and torch.isfinite(actual.grad).all()
             tolerance = 0.016 if dtype == torch.bfloat16 else 3e-5
             torch.testing.assert_close(actual.grad, expected.grad, rtol=tolerance, atol=tolerance)
@@ -120,6 +103,48 @@ def test_cuda_compiled_hyper_connections_preserve_public_outputs_gradients_and_s
         for name, value in module.state_dict().items():
             assert value.dtype == saved_state[name].dtype == torch.float32
             torch.testing.assert_close(value, saved_state[name], rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("mult,iterations,eps,uniform", (
+    (2, 1, 1e-6, False), (3, 20, 1e-6, False), (4, 20, 1e-6, True), (4, 20, 1e-30, False),
+))
+def test_cuda_coefficients_kernel_preserves_tied_max_and_small_eps_gradients(mult, iterations, eps, uniform):
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA compilation requires a CUDA device")
+    from common.policy.model.layers.hyper_connections_cuda import hc_coefficients
+
+    torch.manual_seed(107)
+    size = mult * (mult + 2)
+    mixes = torch.randn(2, 3, size, device="cuda", requires_grad=True)
+    scale = torch.tensor([0.7, -0.4, 3.5], device="cuda", requires_grad=True)
+    base = torch.linspace(-0.4, 0.7, size, device="cuda", requires_grad=True)
+    with torch.no_grad():
+        if uniform:
+            mixes[..., 2 * mult:] = 1.25
+            base[2 * mult:] = 0
+        elif eps < 1e-20:
+            # 制造接近零的列；合法小 eps 的反向不能引入倒数平方溢出。
+            mixes[..., 2 * mult:] = torch.arange(mult, device="cuda").repeat(mult) * -100.0
+    references = tuple(value.detach().clone().requires_grad_() for value in (mixes, scale, base))
+    actual = torch.compile(hc_coefficients, fullgraph=True, dynamic=True)(mixes, scale, base, mult, iterations, eps)
+    values, reference_scale, reference_base = references
+    pre = (values[..., :mult] * reference_scale[0] + reference_base[:mult]).sigmoid() + eps
+    post = 2 * (values[..., mult:2 * mult] * reference_scale[1] + reference_base[mult:2 * mult]).sigmoid()
+    comb = (values[..., 2 * mult:] * reference_scale[2]
+            + reference_base[2 * mult:]).unflatten(-1, (mult, mult)).softmax(-1) + eps
+    comb = comb / (comb.sum(-2, keepdim=True) + eps)
+    for _ in range(iterations - 1):
+        comb = comb / (comb.sum(-1, keepdim=True) + eps)
+        comb = comb / (comb.sum(-2, keepdim=True) + eps)
+    expected = (pre, post, comb)
+    for value, target in zip(actual, expected, strict=True):
+        torch.testing.assert_close(value, target, rtol=2e-6, atol=2e-6)
+    upstream = tuple(torch.randn_like(value) for value in actual)
+    for result in (actual, expected):
+        sum((value * gradient).sum() for value, gradient in zip(result, upstream, strict=True)).backward()
+    for value, target in zip((mixes, scale, base), references, strict=True):
+        assert value.grad is not None and torch.isfinite(value.grad).all()
+        torch.testing.assert_close(value.grad, target.grad, rtol=3e-5, atol=3e-6)
 
 
 def test_hyper_connections_match_explicit_formula_and_all_gradients():
@@ -178,16 +203,17 @@ def test_hyper_connection_mixes_keep_fp32_under_cpu_bfloat16_autocast():
         torch.testing.assert_close(value, target, rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("operation", ("mixes", "collapse", "combine"))
+@pytest.mark.parametrize("operation", ("mixes", "collapse", "collapse_norm", "combine"))
 def test_hyper_connection_recompute_saves_original_storage_and_preserves_gradients(operation):
     torch.manual_seed(50)
     module = HyperConnections(8).train()
     reference = deepcopy(module).eval()
+    norm = torch.nn.RMSNorm(8)
     streams = torch.randn(2, 8, 4, 8, dtype=torch.bfloat16, requires_grad=True)
     pre = torch.randn(2, 8, 4, requires_grad=True)
     output = torch.randn(2, 8, 8, dtype=torch.bfloat16, requires_grad=True)
     comb = torch.randn(2, 8, 4, 4, requires_grad=True)
-    inputs = {"mixes": (streams,), "collapse": (streams, pre),
+    inputs = {"mixes": (streams,), "collapse": (streams, pre), "collapse_norm": (streams, pre),
               "combine": (output, streams, pre, comb)}[operation]
     reference_inputs = tuple(value.detach().clone().requires_grad_() for value in inputs)
     results, storage_bytes = [], []
@@ -200,7 +226,7 @@ def test_hyper_connection_recompute_saves_original_storage_and_preserves_gradien
             return value
 
         with torch.autograd.graph.saved_tensors_hooks(pack, lambda value: value):
-            result = getattr(current, operation)(*values)
+            result = current.collapse(*values, norm) if operation == "collapse_norm" else getattr(current, operation)(*values)
         results.append(result if isinstance(result, tuple) else (result,))
         storage_bytes.append(sum(saved.values()))
     assert storage_bytes[0] < storage_bytes[1]

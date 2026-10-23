@@ -3,37 +3,11 @@
 from __future__ import annotations
 
 import math
-from functools import reduce
 
 import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.utils.checkpoint import checkpoint
-
-
-def _sinkhorn_pointwise(logits: torch.Tensor, iterations: int, eps: float) -> torch.Tensor:
-    """把小矩阵展开为 token 向量，减少逐轮归约启动 GPU 核的开销。"""
-    rows = []
-    for row in logits.unbind(-2):
-        values = row.unbind(-1)
-        maximum = reduce(torch.maximum, values)
-        values = tuple((value - maximum).exp() for value in values)
-        total = sum(values)
-        rows.append(tuple(value / total + eps for value in values))
-    for index in range(iterations):
-        if index:
-            normalized = []
-            for row in rows:
-                total = sum(row) + eps
-                normalized.append(tuple(value / total for value in row))
-            rows = normalized
-        columns = tuple(zip(*rows, strict=True))
-        normalized = []
-        for column in columns:
-            total = sum(column) + eps
-            normalized.append(tuple(value / total for value in column))
-        rows = list(zip(*normalized, strict=True))
-    return torch.stack(tuple(torch.stack(row, dim=-1) for row in rows), dim=-2)
 
 
 class HyperConnections(nn.Module):
@@ -80,6 +54,10 @@ class HyperConnections(nn.Module):
 
     def mixes(self, streams: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """CUDA 训练融合系数生成与反向重算，避免保存 Sinkhorn 中间量。"""
+        if streams.is_cuda and self.training and torch.is_grad_enabled() and not torch.onnx.is_in_onnx_export():
+            # 算子注册在捕获前完成，CPU 和导出路径不加载 Triton。
+            from . import hyper_connections_cuda  # noqa: F401
+
         return self._recompute(self._mixes, self._compiled_mixes, streams)
 
     def _recompute(self, operation, compiled_operation, *inputs):
@@ -102,33 +80,58 @@ class HyperConnections(nn.Module):
             flat = streams.flatten(-2).float()
             inv_rms = torch.rsqrt(flat.square().mean(dim=-1, keepdim=True) + self.norm_eps)
             mixes = F.linear(flat, self.fn.float()) * inv_rms
+            if fused:
+                from .hyper_connections_cuda import hc_coefficients
+
+                return hc_coefficients(mixes, self.scale, self.base, self.hc_mult,
+                                       self.hc_sinkhorn_iters, self.hc_eps)
             mult = self.hc_mult
             pre = torch.sigmoid(mixes[..., :mult] * self.scale[0] + self.base[:mult]) + self.hc_eps
             post = 2 * torch.sigmoid(mixes[..., mult:2 * mult] * self.scale[1] + self.base[mult:2 * mult])
             logits = (mixes[..., 2 * mult:] * self.scale[2] + self.base[2 * mult:]).unflatten(-1, (mult, mult))
-            if fused:
-                comb = _sinkhorn_pointwise(logits, self.hc_sinkhorn_iters, self.hc_eps)
-            else:
-                comb = logits.softmax(dim=-1) + self.hc_eps
+            comb = logits.softmax(dim=-1) + self.hc_eps
+            comb = comb / (comb.sum(dim=-2, keepdim=True) + self.hc_eps)
+            for _ in range(self.hc_sinkhorn_iters - 1):
+                comb = comb / (comb.sum(dim=-1, keepdim=True) + self.hc_eps)
                 comb = comb / (comb.sum(dim=-2, keepdim=True) + self.hc_eps)
-                for _ in range(self.hc_sinkhorn_iters - 1):
-                    comb = comb / (comb.sum(dim=-1, keepdim=True) + self.hc_eps)
-                    comb = comb / (comb.sum(dim=-2, keepdim=True) + self.hc_eps)
         return pre, post, comb
 
-    def collapse(self, streams: torch.Tensor, pre_mix: torch.Tensor) -> torch.Tensor:
-        """重算 FP32 读流副本，训练只保存原始流和 pre。"""
-        return self._recompute(self._collapse, self._compiled_collapse, streams, pre_mix)
+    def collapse(self, streams: torch.Tensor, pre_mix: torch.Tensor, norm=None) -> torch.Tensor:
+        """融合读流与可选归一化，重算时只保存原始流和 pre。"""
+        # CUDA AMP 的 RMSNorm 会提升到 FP32；保留读流先转回原 dtype 的舍入。
+        norm_dtype = torch.float32 if norm is not None and streams.is_cuda and torch.is_autocast_enabled("cuda") else streams.dtype
+        return self._recompute(self._collapse, self._compiled_collapse, streams, pre_mix, norm, norm_dtype)
 
-    @torch.compile(fullgraph=True, dynamic=True)
-    def _compiled_collapse(self, streams: torch.Tensor, pre_mix: torch.Tensor):
-        return checkpoint(self._collapse, streams, pre_mix, use_reentrant=False, preserve_rng_state=False)
+    # 避免 joint graph 把 FP32→低精度→FP32 的必要舍入当作冗余转换删除。
+    @torch.compile(fullgraph=True, dynamic=True,
+                   options={"emulate_precision_casts": True, "use_joint_graph_passes": False})
+    def _compiled_collapse(self, streams: torch.Tensor, pre_mix: torch.Tensor, norm, norm_dtype):
+        return checkpoint(self._collapse, streams, pre_mix, norm, norm_dtype, True,
+                          use_reentrant=False, preserve_rng_state=False)
 
-    def _collapse(self, streams: torch.Tensor, pre_mix: torch.Tensor) -> torch.Tensor:
+    def _collapse(self, streams: torch.Tensor, pre_mix: torch.Tensor, norm=None, norm_dtype=None,
+                  fused: bool = False) -> torch.Tensor:
         """使用上一子层传出的 pre 加权读取残差流。"""
         with torch.autocast(device_type=streams.device.type, enabled=False):
-            output = (pre_mix.unsqueeze(-1) * streams.float()).sum(dim=-2)
-        return output.to(streams.dtype)
+            if fused:
+                # 小流轴展开成逐元素乘加，读流可直接进入同一核的特征维归约。
+                output = sum(weight.unsqueeze(-1) * stream.float() for weight, stream in
+                             zip(pre_mix.unbind(-1), streams.unbind(-2), strict=True))
+            else:
+                output = (pre_mix.unsqueeze(-1) * streams.float()).sum(dim=-2)
+        output = output.to(streams.dtype)
+        if norm is None:
+            return output
+        output = output.to(norm_dtype)
+        if fused:
+            # 原生融合 RMSNorm 会物化输入；展开同一公式才能与加权读流融合。
+            values = output if output.dtype == torch.float64 else output.float()
+            eps = norm.eps if norm.eps is not None else torch.finfo(values.dtype).eps
+            values = values * torch.rsqrt(values.square().mean(dim=-1, keepdim=True) + eps)
+            if norm.weight is not None:
+                values = values * norm.weight
+            return values.to(output.dtype)
+        return norm(output)
 
     def combine(self, output: torch.Tensor, residual: torch.Tensor, post: torch.Tensor, comb: torch.Tensor) -> torch.Tensor:
         """重算 FP32 混合副本，训练只保存原始流、子层输出和系数。"""

@@ -35,14 +35,35 @@ class RotaryPositionEncoding(nn.Module):
         key: torch.Tensor,
         query_position_ids: torch.Tensor,
         key_position_ids: torch.Tensor,
+        cosine_sine: tuple[torch.Tensor, torch.Tensor] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """返回按各自逻辑位置旋转后的 Q/K。"""
+        if cosine_sine is None:
+            cosine_sine = self._cos_sin(query_position_ids)
+        key_cosine_sine = cosine_sine if key_position_ids is query_position_ids else None
+        cosine_sine = tuple(value.to(dtype=query.dtype) for value in cosine_sine)
+        if key_cosine_sine is not None and key.dtype == query.dtype:
+            key_cosine_sine = cosine_sine
         return (
-            self.apply(query, query_position_ids),
-            self.apply(key, key_position_ids),
+            self.apply(query, query_position_ids, cosine_sine),
+            self.apply(key, key_position_ids, key_cosine_sine),
         )
 
-    def apply(self, values: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
+    def _cos_sin(self, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """同一次编码共享 FP32 三角函数表，旋转时再按实际 activation dtype 转换。"""
+        if position_ids.ndim != 2:
+            raise ValueError("RoPE position_ids must have shape [batch, tokens]")
+        position_values = position_ids.to(dtype=torch.float32).unsqueeze(-1)
+        inv_freq = self.inv_freq.to(device=position_ids.device, dtype=torch.float32)
+        frequencies = position_values * inv_freq.view(1, 1, -1)
+        return frequencies.cos().unsqueeze(1), frequencies.sin().unsqueeze(1)
+
+    def apply(
+        self,
+        values: torch.Tensor,
+        position_ids: torch.Tensor,
+        cosine_sine: tuple[torch.Tensor, torch.Tensor] | None = None,
+    ) -> torch.Tensor:
         """对 ``[batch, heads, tokens, head_dim]`` 张量应用 RoPE。"""
         if values.ndim != 4:
             raise ValueError("RoPE values must have shape [batch, heads, tokens, head_dim]")
@@ -61,11 +82,9 @@ class RotaryPositionEncoding(nn.Module):
 
         # 模型可以整体转换为 BF16/FP16，但三角函数在 ONNX/ORT 中必须
         # 保持 FP32；只把最终 cos/sin 结果转换到 activation dtype。
-        position_values = position_ids.to(dtype=torch.float32).unsqueeze(-1)
-        inv_freq = self.inv_freq.to(device=position_ids.device, dtype=torch.float32)
-        frequencies = position_values * inv_freq.view(1, 1, -1)
-        cosine = frequencies.cos().to(dtype=values.dtype).unsqueeze(1)
-        sine = frequencies.sin().to(dtype=values.dtype).unsqueeze(1)
+        if cosine_sine is None:
+            cosine_sine = self._cos_sin(position_ids)
+        cosine, sine = (value.to(dtype=values.dtype) for value in cosine_sine)
         half = self.head_dim // 2
         first, second = values[..., :half], values[..., half:]
         # 标准正旋转 R(+θ)：out_first = first*cos - second*sin，
