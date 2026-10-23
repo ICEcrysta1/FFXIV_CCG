@@ -14,7 +14,14 @@ from common.policy.config import ModelConfig
 from common.policy.data import DataSpec
 from common.policy.model import CausalPolicyModel
 from common.training.optimizer import build_optimizer
-from common.training.optimizer_config import OptimizerConfig
+from common.training.optimizer_config import (
+    AdamWConfig,
+    MuonConfig,
+    OptimizerConfig,
+    SinkhornConfig,
+    parse_optimizer_settings,
+)
+from common.training.sinkhorn import Sinkhorn
 
 
 def _config(name="muon") -> OptimizerConfig:
@@ -60,27 +67,99 @@ def _assert_models_equal(first: nn.Module, second: nn.Module) -> None:
         )
 
 
-def _native_pair(model: nn.Module, config: OptimizerConfig, parameter_names):
+def _native_pair(model: nn.Module, config: OptimizerConfig, parameter_groups):
     named = dict(model.named_parameters())
+    groups = [{
+        "params": [named[name] for name in group["param_names"]],
+        "weight_decay": group["weight_decay"],
+        "lr": group["lr"],
+        "optimizer_name": group["optimizer_name"],
+    } for group in parameter_groups]
     muon = torch.optim.Muon(
-        [named[name] for name in parameter_names[0]], lr=0.02,
-        weight_decay=0.03, momentum=config.momentum,
-        nesterov=config.nesterov, ns_steps=config.ns_steps,
-        adjust_lr_fn=config.adjust_lr_fn,
+        [group for group in groups if group["optimizer_name"] == "muon"], lr=0.02,
+        weight_decay=0.03, momentum=config.muon.momentum,
+        nesterov=config.muon.nesterov, ns_steps=config.muon.ns_steps,
+        adjust_lr_fn=config.muon.adjust_lr_fn, eps=config.muon.eps,
+        ns_coefficients=config.muon.ns_coefficients,
     )
     adamw = torch.optim.AdamW(
-        [named[name] for name in parameter_names[1]],
-        lr=0.02, weight_decay=0.03,
+        [group for group in groups if group["optimizer_name"] == "adamw"],
+        lr=0.02, weight_decay=0.03, betas=config.adamw.betas,
+        eps=config.adamw.eps, amsgrad=config.adamw.amsgrad,
     )
-    return muon, adamw
+    sinkhorn = Sinkhorn(
+        [group for group in groups if group["optimizer_name"] == "sinkhorn"], lr=0.02,
+        momentum=config.sinkhorn.momentum, nesterov=config.sinkhorn.nesterov,
+        steps=config.sinkhorn.iters, threshold=config.sinkhorn.threshold,
+        eps=config.sinkhorn.eps, lr_scale=config.sinkhorn.lr_scale,
+    )
+    return muon, adamw, sinkhorn
+
+
+@pytest.mark.parametrize("nesterov", (False, True))
+def test_sinkhorn_momentum_masks_near_zero_rows_and_balances_l2(nesterov):
+    parameter = nn.Parameter(torch.ones(3, 3))
+    optimizer = Sinkhorn([parameter], lr=0.02, momentum=0.8, nesterov=nesterov, steps=3)
+    expected = parameter.detach().clone()
+    momentum = torch.zeros_like(parameter)
+    for gradient in (
+        torch.tensor([[3.0, -4.0, 2.0], [1.0, 2.0, -2.0], [1e-9, -1e-9, 0.0]]),
+        torch.tensor([[-2.0, 1.0, 4.0], [4.0, -3.0, 1.0], [0.0, 0.0, 0.0]]),
+    ):
+        momentum = 0.8 * momentum + 0.2 * gradient
+        update = 0.8 * momentum + 0.2 * gradient if nesterov else momentum.clone()
+        row_norm = update.square().sum(dim=1, keepdim=True).sqrt()
+        update[row_norm.squeeze(1) <= 1e-3 * row_norm.mean()] = 0.0
+        # 三次迭代依次做行、列、行的 L2 归一化，末行被屏蔽后不能恢复。
+        update = nn.functional.normalize(update, dim=1, eps=1e-20)
+        update = nn.functional.normalize(update, dim=0, eps=1e-20)
+        update = nn.functional.normalize(update, dim=1, eps=1e-20)
+        expected -= 0.02 * 0.2 * math.sqrt(3) * update
+        parameter.grad = gradient
+        optimizer.step()
+        torch.testing.assert_close(parameter, expected, rtol=0, atol=1e-7)
+        torch.testing.assert_close(optimizer.state[parameter]["momentum_buffer"], momentum)
+        torch.testing.assert_close(parameter[2], torch.ones(3), rtol=0, atol=0)
+
+
+def test_sinkhorn_zero_and_missing_gradients_do_not_change_weights():
+    parameter = nn.Parameter(torch.ones(2, 3))
+    missing = nn.Parameter(torch.ones(2, 3))
+    optimizer = Sinkhorn([parameter, missing], lr=0.02)
+    parameter.grad = torch.zeros_like(parameter)
+    optimizer.step()
+    torch.testing.assert_close(parameter, torch.ones_like(parameter), rtol=0, atol=0)
+    torch.testing.assert_close(missing, torch.ones_like(missing), rtol=0, atol=0)
+    assert torch.isfinite(parameter).all()
+    assert missing not in optimizer.state
+
+
+@pytest.mark.parametrize("central", (False, True))
+def test_auxiliary_learning_rates_keep_stage_ratio_after_primary_override(central):
+    algorithm = {"name": "muon", "adamw": {"learning_rate": 2e-4}}
+    policy = {"optimizers": {"bc": {"learning_rate": 1e-4, **algorithm}}} if central else {}
+    legacy = {} if central else {"learning_rate": 1e-4, "optimizer": algorithm}
+    settings = parse_optimizer_settings(
+        policy, stage="bc", legacy=legacy,
+        default_learning_rate=0.02, default_weight_decay=0.03, default_warmup_steps=0,
+    )
+    optimizer = build_optimizer(
+        _model(), settings["optimizer"], learning_rate=2e-4, weight_decay=settings["weight_decay"],
+    )
+    rates = {group["optimizer_name"]: group["lr"] for group in optimizer.param_groups}
+    assert rates == pytest.approx({"muon": 2e-4, "adamw": 4e-4, "sinkhorn": 2e-4})
 
 
 @pytest.mark.parametrize("num_kv_heads", (1, 2))
-def test_muon_groups_only_transformer_projection_matrices(num_kv_heads):
-    model = _model(num_kv_heads=num_kv_heads)
-    optimizer = _build_optimizer(model)
-    groups = {group["optimizer_name"]: group for group in optimizer.param_groups}
-    muon_names = set(groups["muon"]["param_names"])
+@pytest.mark.parametrize("full_attention_residuals", (False, True))
+@pytest.mark.parametrize("name", ("muon", "adamw"))
+def test_optimizer_groups_projection_matrices_and_weight_decay(num_kv_heads, full_attention_residuals, name):
+    model = _model(num_kv_heads=num_kv_heads, full_attention_residuals=full_attention_residuals)
+    optimizer = _build_optimizer(model, _config(name))
+    owners = {parameter_name: group for group in optimizer.param_groups
+              for parameter_name in group["param_names"]}
+    muon_names = {parameter_name for parameter_name, group in owners.items()
+                  if group["optimizer_name"] == "muon"}
     attention = (
         {f"encoder.layers.0.self_attn.{name}.weight" for name in (
             "q_proj", "k_proj", "v_proj", "out_proj",
@@ -90,24 +169,46 @@ def test_muon_groups_only_transformer_projection_matrices(num_kv_heads):
             "encoder.layers.0.self_attn.out_proj.weight",
         }
     )
-    assert muon_names == attention | {
+    matrix_names = attention | {
         f"encoder.layers.0.{name}.weight" for name in ("linear1", "linear2", "gate_proj")
+    } | {
+        f"input_encoder.{projection}.weight" for projection in (
+            "skill_feat_proj", "state_proj", "state_null_proj", "state_reset_proj", "scene_proj.0",
+        )
     }
+    if not full_attention_residuals:
+        matrix_names |= {f"encoder.residual_mix.{index}.fn" for index in range(2)}
+    assert muon_names == (matrix_names if name == "muon" else set())
     grouped = [parameter for group in optimizer.param_groups for parameter in group["params"]]
     assert len(grouped) == len({id(parameter) for parameter in grouped})
     assert {id(parameter) for parameter in grouped} == {id(parameter) for parameter in model.parameters()}
-    adamw_names = set(groups["adamw"]["param_names"])
-    assert "output_head.weight" in adamw_names
-    assert "output_head.weight" not in muon_names
-    assert "encoder.attention_residual.pseudo_queries" in adamw_names
-    assert "encoder.attention_residual.key_norms.0.weight" in adamw_names
-    # 主干 RMSNorm 无参数；Full AttnRes 路由自身的尺度仍归 AdamW 管理。
-    assert all(not name.startswith((
-        "encoder.layers.0.norm1.", "encoder.layers.0.norm2.", "encoder.norm.",
-    )) for name in muon_names | adamw_names)
-    assert all(name in adamw_names for name, _ in model.named_parameters() if (
-        name.startswith("input_encoder.") or name.endswith(".bias")
-    ))
+    embedding_names = {"input_encoder.skill_embed.weight", "input_encoder.dead_embed.weight",
+                       "input_encoder.role_embed.weight", "output_head.weight"}
+    exempt_names = set(embedding_names)
+    exempt_names |= {parameter_name for parameter_name in owners if parameter_name.endswith("bias")}
+    if full_attention_residuals:
+        assert owners["encoder.attention_residual.pseudo_queries"]["optimizer_name"] == "adamw"
+        assert owners["encoder.attention_residual.key_norms.0.weight"]["weight_decay"] == 0.03
+    else:
+        exempt_names |= {f"encoder.residual_mix.{index}.{field}"
+                         for index in range(2) for field in ("base", "scale")}
+    for parameter_name in exempt_names:
+        assert owners[parameter_name]["optimizer_name"] == (
+            "sinkhorn" if name == "muon" and parameter_name in embedding_names else "adamw"
+        )
+    for parameter_name in ("encoder.layers.0.norm1.weight", "encoder.layers.0.norm2.weight",
+                           "encoder.norm.weight"):
+        assert owners[parameter_name]["optimizer_name"] == "adamw"
+        assert owners[parameter_name]["weight_decay"] == 0.03
+    before = {parameter_name: parameter.detach().clone() for parameter_name, parameter in model.named_parameters()}
+    for parameter_name, parameter in model.named_parameters():
+        expected_decay = 0.0 if parameter_name in exempt_names else 0.03
+        assert owners[parameter_name]["weight_decay"] == expected_decay
+        parameter.grad = torch.zeros_like(parameter)
+    optimizer.step()
+    for parameter_name, parameter in model.named_parameters():
+        expected_decay = 0.0 if parameter_name in exempt_names else 0.03
+        torch.testing.assert_close(parameter, before[parameter_name] * (1 - 0.02 * expected_decay), rtol=0, atol=0)
 
 
 @pytest.mark.parametrize("dtype", (torch.float32, torch.bfloat16))
@@ -116,10 +217,27 @@ def test_muon_step_and_scheduler_match_independent_native_optimizers(dtype):
     actual = _model(dtype=dtype)
     # 低精度前向权重应等于独立 FP32 优化器权重的舍入结果。
     expected = deepcopy(actual).float()
-    config = _config()
+    config = OptimizerConfig(
+        name="muon",
+        muon=MuonConfig(learning_rate=0.01, momentum=0.8, nesterov=False,
+                        ns_steps=3, adjust_lr_fn="original", eps=0.02,
+                        ns_coefficients=(2.0, -1.5, 0.5)),
+        adamw=AdamWConfig(learning_rate=0.003, weight_decay=0.07,
+                          betas=(0.8, 0.9), eps=0.02, amsgrad=True),
+        sinkhorn=SinkhornConfig(learning_rate=0.006, momentum=0.7, nesterov=False,
+                               iters=3, threshold=1e-4, eps=1e-12, lr_scale=0.15),
+    )
     optimizer = _build_optimizer(actual, config)
+    expected_rates = {"muon": 0.02, "adamw": 0.006, "sinkhorn": 0.012}
+    for group in optimizer.param_groups:
+        assert group["lr"] == pytest.approx(expected_rates[group["optimizer_name"]])
+        if group["optimizer_name"] == "adamw":
+            assert group["weight_decay"] == (0.0 if any(name.endswith("bias") for name in group["param_names"]) else 0.07)
+            assert group["betas"] == (0.8, 0.9)
+            assert group["eps"] == 0.02
+            assert group["amsgrad"] is True
     native_optimizers = _native_pair(
-        expected, config, [group["param_names"] for group in optimizer.param_groups],
+        expected, config, optimizer.param_groups,
     )
     schedule = lambda step: 1.0 / (step + 1)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, schedule)
@@ -138,7 +256,7 @@ def test_muon_step_and_scheduler_match_independent_native_optimizers(dtype):
             native_scheduler.step()
         _assert_models_equal(actual, expected)
         assert [group["lr"] for group in optimizer.param_groups] == [
-            native.param_groups[0]["lr"] for native in native_optimizers
+            group["lr"] for native in native_optimizers for group in native.param_groups
         ]
     optimizer.zero_grad(set_to_none=True)
     assert all(parameter.grad is None for parameter in actual.parameters())
@@ -148,7 +266,13 @@ def test_muon_step_and_scheduler_match_independent_native_optimizers(dtype):
 def test_muon_restore_continues_both_states_and_scheduler(dtype):
     torch.manual_seed(72)
     original = _model(dtype=dtype)
-    optimizer = _build_optimizer(original)
+    config = OptimizerConfig(
+        name="muon", muon=MuonConfig(learning_rate=0.01),
+        adamw=AdamWConfig(learning_rate=0.003, weight_decay=0.05,
+                          betas=(0.8, 0.95), eps=1e-6, amsgrad=True),
+        sinkhorn=SinkhornConfig(learning_rate=0.006, momentum=0.8, nesterov=False, iters=3),
+    )
+    optimizer = _build_optimizer(original, config)
     schedule = lambda step: 1.0 / (step + 1)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, schedule)
     for step in range(2):
@@ -164,7 +288,7 @@ def test_muon_restore_continues_both_states_and_scheduler(dtype):
     saved = torch.load(buffer, weights_only=True)
     restored = _model(dtype=dtype)
     restored.load_state_dict(saved["model"])
-    restored_optimizer = _build_optimizer(restored)
+    restored_optimizer = _build_optimizer(restored, config)
     restored_scheduler = torch.optim.lr_scheduler.LambdaLR(restored_optimizer, schedule)
     restored_optimizer.load_state_dict(saved["optimizer"])
     restored_scheduler.load_state_dict(saved["scheduler"])
@@ -183,9 +307,21 @@ def test_muon_restore_continues_both_states_and_scheduler(dtype):
 def test_adamw_retains_native_optimizer_and_checkpoint_format():
     original = _model()
     expected = deepcopy(original)
-    optimizer = _build_optimizer(original, _config("adamw"))
-    native = torch.optim.AdamW(expected.parameters(), lr=0.02, weight_decay=0.03)
+    config = OptimizerConfig(name="adamw", adamw=AdamWConfig(
+        learning_rate=0.01, weight_decay=0.05, betas=(0.8, 0.95), eps=0.05, amsgrad=True,
+    ))
+    optimizer = _build_optimizer(original, config)
+    expected_names = dict(expected.named_parameters())
+    native = torch.optim.AdamW([{
+        "params": [expected_names[name] for name in group["param_names"]],
+        "weight_decay": group["weight_decay"],
+    } for group in optimizer.param_groups], lr=0.02, weight_decay=0.03,
+        betas=(0.8, 0.95), eps=0.05, amsgrad=True)
     assert type(optimizer) is torch.optim.AdamW
+    assert all(group["lr"] == 0.02 for group in optimizer.param_groups)
+    owners = {name: group for group in optimizer.param_groups for name in group["param_names"]}
+    assert owners["encoder.layers.0.linear1.weight"]["weight_decay"] == 0.03
+    assert owners["output_head.weight"]["weight_decay"] == 0.0
     assert set(optimizer.state_dict()) == {"state", "param_groups"}
     _set_gradients(original, 1)
     _set_gradients(expected, 1)
@@ -200,7 +336,7 @@ def test_adamw_retains_native_optimizer_and_checkpoint_format():
     _assert_models_equal(original, expected)
 
 
-@pytest.mark.parametrize("corruption", ("contract_name", "contract_shape", "native_names", "legacy"))
+@pytest.mark.parametrize("corruption", ("contract_name", "contract_shape", "native_names", "native_groups", "legacy"))
 def test_muon_rejects_incompatible_optimizer_groups(corruption):
     optimizer = _build_optimizer(_model())
     state = deepcopy(optimizer.state_dict())
@@ -210,24 +346,34 @@ def test_muon_rejects_incompatible_optimizer_groups(corruption):
         state["parameter_contract"][0]["parameters"][0]["shape"] = [1, 1]
     elif corruption == "native_names":
         state["adamw"]["param_groups"][0]["param_names"].reverse()
+    elif corruption == "native_groups":
+        state["adamw"]["param_groups"].reverse()
     else:
         state = torch.optim.AdamW(_model().parameters()).state_dict()
     with pytest.raises(ValueError, match="mismatch"):
         optimizer.load_state_dict(state)
 
 
-def test_muon_keeps_weights_shared_with_input_encoder_in_adamw():
+@pytest.mark.parametrize("alias", ("projection", "embedding", "head"))
+def test_muon_deduplicates_shared_projections_and_exempts_embedding_or_head(alias):
     model = _model()
-    model.input_encoder.shared_projection = model.encoder.layers[0].linear1
-    optimizer = _build_optimizer(model)
     target = model.encoder.layers[0].linear1.weight
-    owners = [group["optimizer_name"] for group in optimizer.param_groups if any(
+    if alias == "projection":
+        model.input_encoder.shared_projection = model.encoder.layers[0].linear1
+    elif alias == "embedding":
+        model.input_encoder.skill_embed.weight = target
+    else:
+        model.output_head.weight = target
+    optimizer = _build_optimizer(model)
+    owners = [group for group in optimizer.param_groups if any(
         parameter is target for parameter in group["params"]
     )]
-    assert owners == ["adamw"]
+    assert len(owners) == 1
+    assert owners[0]["optimizer_name"] == ("muon" if alias == "projection" else "sinkhorn")
+    assert owners[0]["weight_decay"] == (0.03 if alias == "projection" else 0.0)
 
 
-def test_input_and_output_gradients_update_independent_adamw_parameters():
+def test_input_and_output_gradients_update_independent_sinkhorn_parameters():
     model = _model()
     weight = model.input_encoder.skill_embed.weight
     head = model.output_head.weight
@@ -243,7 +389,7 @@ def test_input_and_output_gradients_update_independent_adamw_parameters():
     for parameter in (weight, head):
         assert sum(candidate is parameter for group in optimizer.param_groups for candidate in group["params"]) == 1
         assert next(group["optimizer_name"] for group in optimizer.param_groups
-                    if any(candidate is parameter for candidate in group["params"])) == "adamw"
+                    if any(candidate is parameter for candidate in group["params"])) == "sinkhorn"
 
 
 @pytest.mark.parametrize("name", ["adamw", "muon"])
@@ -357,7 +503,7 @@ def test_train_epoch_updates_both_parameter_groups_with_real_gradients(
         assert parameter.grad is not None and parameter.grad.abs().sum() > 0
         assert torch.isfinite(parameter.grad).all()
         assert not torch.equal(original, parameter)
-    assert scheduler.get_last_lr() == [0.02 * 0.8] * (2 if name == "muon" else 1)
+    assert scheduler.get_last_lr() == [0.02 * 0.8] * len(optimizer.param_groups)
     if precision == "bf16" and not fp32_gradients:
         assert all(parameter.dtype == (
             torch.float32 if parameter_name.startswith(('input_encoder.', 'encoder.residual_mix.')) else torch.bfloat16
@@ -381,12 +527,13 @@ def test_hyper_connection_coefficients_keep_fp32_updates_across_bf16_resume(name
     )
     expected_names = {f"encoder.residual_mix.{index}.{field}"
                       for index in range(2) for field in ("fn", "base", "scale")}
-    scalar_groups = [group for group in optimizer.param_groups
-                     if expected_names.intersection(group["param_names"])]
-    assert len(scalar_groups) == 1
-    assert scalar_groups[0]["optimizer_name"] == "adamw"
-    assert expected_names <= set(scalar_groups[0]["param_names"])
-    assert scalar_groups[0]["lr"] == 1e-4
+    owners = {parameter_name: group for group in optimizer.param_groups
+              for parameter_name in group["param_names"]}
+    for parameter_name in expected_names:
+        assert owners[parameter_name]["optimizer_name"] == (
+            "muon" if name == "muon" and parameter_name.endswith(".fn") else "adamw"
+        )
+        assert owners[parameter_name]["lr"] == 1e-4
     assert all(parameter.dtype == torch.float32 for parameter in mix.parameters())
     original_scale = mix[0].scale.detach().clone()
 

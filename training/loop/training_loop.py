@@ -223,9 +223,10 @@ def run_training(
         start_epoch = 1
         if resume_checkpoint is not None:
             model.load_state_dict(resume_checkpoint["model_state_dict"])
+            weight_decays = [group["weight_decay"] for group in optimizer.param_groups]
             optimizer.load_state_dict(resume_checkpoint["optimizer_state_dict"])
-            for group in optimizer.param_groups:
-                group["weight_decay"] = config.weight_decay
+            for group, weight_decay in zip(optimizer.param_groups, weight_decays, strict=True):
+                group["weight_decay"] = weight_decay
             _restore_scheduler_state(
                 scheduler,
                 resume_checkpoint,

@@ -33,7 +33,8 @@
 - 公共配置、模型输入、compiled cache 和优化器配置的 48 处独立类型校验改为抛出 `TypeError`，原错误消息、值范围和契约兼容性检查保持不变；缓存读取失败与 TensorBoard 图诊断失败仍保留原有容错行为。
 - BC 配置、过采样规则和 checkpoint 的 20 处显式类型校验改为抛出 `TypeError`，原错误消息保持不变；值范围与契约不匹配仍使用 `ValueError`。训练 CLI 的两条运行日志改用模块 logger，便于按模块设置日志级别和过滤器。
 - 直接构造 `RunConfig` 时，运行时调试、重复惩罚和模型配置分别创建默认实例；模型配置不再加载归一化 YAML，公共尺度由 normalizer 管理。正式 `load_run_config` 仍显式传入解析后的配置，checkpoint 格式及模型输入契约保持不变。
-- 黑魔 Artzip BC 的权重衰减由 `0.01` 调整为 `0.125`；Muon 与 AdamW 参数组共用该配置，后续训练权重会发生变化。
+- 黑魔 Artzip BC 的权重衰减由 `0.01` 调整为 `0.1`，用于线性矩阵与归一化尺度；bias、缩放参数、embedding 和输出头免衰减。
+- BC 与 GRPO 均启用混合优化器并按职责分组：输入投影、attention／FFN 和 HC 投影矩阵使用 Muon，归一化尺度及其他非矩阵参数使用 AdamW，embedding 与输出头使用无衰减的 Sinkhorn 动量更新。`optimizer.yaml` 按阶段及 `muon`／`adamw`／`sinkhorn` 分类，各算法独立配置学习率和更新参数，Muon 与 AdamW 独立配置衰减，warmup 与调度比例由阶段统一管理；AdamW 显式提供 betas、epsilon 和 AMSGrad，既有生效数值保持不变。Sinkhorn 使用 11 次交替归一化、`1e-3` 近零行阈值、`1e-20` epsilon 和 `0.2` 更新尺度。续训保留当前各组的衰减规则并校验生效算法参数，旧分组优化器状态不再兼容；可选的纯 AdamW 模式采用相同免衰减规则。
 - 黑魔 Artzip BC 的训练历史随机截断触发概率由 `0.33` 降至 `0.1`，最少保留的最近历史由 `4` 条增至 `16` 条（包含等待动作）；场景和当前状态保持完整，验证与回放不启用随机截断。
 - 模型分析的逐层 2D／3D PCA 与范数图在原图中将 `state` 拆为历史状态和最新请求状态，沿用普通 token 的圆点样式，并按原有 magma 配色统一生成五类角色颜色。
 - 模型分析移除 `fight_id` 和 `label_legal` 染色的 2D PCA 图，改为新增标签技能基础威力连续染色图 `02_layers_pca_2d_potency.png` 与 GCD/oGCD 分类图 `02_layers_pca_2d_gcd_type.png`。威力读取正式技能配置，策略等待动作记为 0；分类沿用保存的动作契约，继续只投影最新状态 hidden。

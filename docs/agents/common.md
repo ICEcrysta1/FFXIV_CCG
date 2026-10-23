@@ -89,8 +89,9 @@ FFXIV_CCG/
     │   ├── __init__.py                               轻量包入口，不隐式加载计算或监控依赖
     │   ├── master_weights.py                         低精度模型的 FP32 主权重与优化器状态，保留小更新、兼容旧状态迁移并完整保存恢复累计值
     │   ├── metrics.py                                设备端指标累积与集中 CPU 读取
-    │   ├── optimizer.py                              BC/GRPO 共用的 AdamW 或主干 Muon + 辅助 AdamW 装配，统一参数分组、调度与状态保存恢复
-    │   ├── optimizer_config.py                       BC/GRPO 独立优化器配置解析，集中读取 optimizer.yaml 的方法与超参数并拒绝重复配置
+    │   ├── optimizer.py                              BC/GRPO 共用优化器装配；线性矩阵、归一化、bias/scale、embedding/输出头按职责分组，组合 Muon/AdamW/Sinkhorn，统一调度与状态保存恢复
+    │   ├── optimizer_config.py                       BC/GRPO 的 Muon、AdamW、Sinkhorn 独立配置与数值校验，解析各组学习率、衰减及算法参数，拒绝重复配置权威
+    │   ├── sinkhorn.py                               embedding 与输出头的动量、近零行屏蔽及交替行列 L2 归一化更新，不施加权重衰减
     │   ├── tensorboard.py                            BC 与 GRPO 共用的监控配置与可选 SummaryWriter，按模型变体共享 `<variant>_tensorboard` 事件根目录并写入有限数值标量；配置读取不加载 PyTorch 或模型诊断
     │   ├── tensorboard_labels.py                     BC/GRPO 共用的中文展示标签；按实际参数路径动态生成层号，保留原始参数路径与动作标识，不修改训练指标键
     │   └── tensorboard_monitor.py                    BC/GRPO 模型诊断：真实输入结构图、确定性有界权重/梯度分布、输入技能/独立输出头 Projector、配置 Text/HParams 和 BC 验证混淆矩阵/PR 曲线
@@ -126,7 +127,7 @@ FFXIV_CCG/
 │   │   ├── batch.yaml                                批量下载时验证集目标占训练集目标的比例
 │   │   └── encounters.yaml                           副本代号到 Zone/Encounter ID 的映射：FRU、M1s～M11s、M12sI/II 与 DancingMad
 │   ├── models/                                       训练与推理共用的策略模型配置，按 `.env` 的 `FFXIV_JOB_TAG` 与 `FFXIV_MODEL_VARIANT` 选择职业目录下的模型变体
-│   │   └── <job_tag>/<variant>/                      模型变体配置目录；`action_quality.yaml` 定义动作质量监督的轻微/中等/严重等级权重，由 `config.yaml` 的 `action_quality_config` 引用并合并，与 `training.yaml` 的排名衰减曲线共同生成 BC 主交叉熵和价值辅助损失的逐样本学习权重；`config.yaml` 是清单，`model.yaml` 提供模型架构、输入数据阶段/output 与统一 precision（黑魔 Artzip 默认使用 annotated），`training.yaml` 提供预训练/DataLoader/增强/序列过采样，`optimizer.yaml` 由清单的 `optimizer_config` 引用，通过 `optimizers.bc` / `optimizers.grpo` 独立选择方法并集中维护学习率、权重衰减、warmup 和 Muon 参数；`grpo.yaml` 提供 GRPO rollout 与更新参数（当前 Artzip 每场 16 条样本、仅按 1200 秒时间上限终止），固定动作顺序由启用技能和 policy 配置生成并写入 cache/checkpoint
+│   │   └── <job_tag>/<variant>/                      模型变体配置目录；`action_quality.yaml` 定义动作质量监督的轻微/中等/严重等级权重，由 `config.yaml` 的 `action_quality_config` 引用并合并，与 `training.yaml` 的排名衰减曲线共同生成 BC 主交叉熵和价值辅助损失的逐样本学习权重；`config.yaml` 是清单，`model.yaml` 提供模型架构、输入数据阶段/output 与统一 precision（黑魔 Artzip 默认使用 annotated），`training.yaml` 提供预训练/DataLoader/增强/序列过采样，`optimizer.yaml` 由清单的 `optimizer_config` 引用，通过 `optimizers.bc` / `optimizers.grpo` 独立选择方法，阶段内按 `muon`／`adamw`／`sinkhorn` 分类维护各组学习率、衰减和算法参数，warmup 由阶段统一管理；`grpo.yaml` 提供 GRPO rollout 与更新参数（当前 Artzip 每场 16 条样本、仅按 1200 秒时间上限终止），固定动作顺序由启用技能和 policy 配置生成并写入 cache/checkpoint
 │   ├── policy/                                       跨训练与策略运行时共享的策略输入配置
 │   │   └── normalizer.yaml                           训练、回放和部署共用的归一化尺度：MP 10000、相对时间与绝对时长分别为 270 秒、目标数 5、单次威力 2000
 │   ├── skills/                                       职业配置目录，每个职业一个 YAML，只写该职业自己的静态定义

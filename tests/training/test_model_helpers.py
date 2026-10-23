@@ -1754,7 +1754,11 @@ def test_run_training_orchestrates_checkpoint_saving(
             expected_dtype if name.startswith(('encoder.', 'output_head.')) else torch.float32
         ) for name, parameter in args[0].named_parameters())
         assert ("master_weights" in args[2].state_dict()) == (expected_dtype != torch.float32)
-        assert all(group["weight_decay"] == config.weight_decay for group in args[2].param_groups)
+        owners = {parameter_name: group for group in args[2].param_groups
+                  for parameter_name in group["param_names"]}
+        assert owners["output_head.weight"]["weight_decay"] == 0.0
+        assert owners["input_encoder.weight"]["weight_decay"] == config.weight_decay
+        assert owners["encoder.weight"]["weight_decay"] == config.weight_decay
         if "resume_optimizer" in calls:
             assert all(group["lr"] == 0.02 for group in args[2].param_groups)
             for saved_state, current_state in zip(

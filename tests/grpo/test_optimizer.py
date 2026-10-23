@@ -13,9 +13,14 @@ from torch import nn
 import grpo.trainer as trainer_module
 from common.policy.config import ModelConfig
 from common.training.optimizer import build_optimizer
-from common.training.optimizer_config import OptimizerConfig
-from grpo.config import GrpoConfig, GrpoRunConfig
+from common.training.optimizer_config import (
+    AdamWConfig,
+    MuonConfig,
+    OptimizerConfig,
+    SinkhornConfig,
+)
 from grpo.checkpoint import _restore_grpo_rollback_state, _snapshot_optimizer_state
+from grpo.config import GrpoConfig, GrpoRunConfig
 
 
 class _TinyPolicy(nn.Module):
@@ -27,10 +32,10 @@ class _TinyPolicy(nn.Module):
             d_model=4, nhead=2, dim_feedforward=8, dropout=0.0, batch_first=True,
         )
         self.encoder = nn.TransformerEncoder(layer, 1, enable_nested_tensor=False)
-        self.scorer = nn.Linear(4, 2)
+        self.output_head = nn.Linear(4, 2)
 
     def forward(self, inputs):
-        return self.scorer(self.encoder(inputs))
+        return self.output_head(self.encoder(inputs))
 
 
 @pytest.mark.parametrize("name", ["adamw", "muon"])
@@ -44,7 +49,7 @@ def test_grpo_training_builds_its_own_optimizer_and_closes_engine(tmp_path, monk
         model=ModelConfig(d_model=4, n_heads=2, n_layers=1, ff_dim=8),
     )
     grpo = GrpoConfig(
-        optimizer=OptimizerConfig(name=name, momentum=0.8, ns_steps=3),
+        optimizer=OptimizerConfig(name=name, muon=MuonConfig(momentum=0.8, ns_steps=3)),
         learning_rate=3e-5,
         weight_decay=0.04,
     )
@@ -106,16 +111,24 @@ def test_grpo_training_builds_its_own_optimizer_and_closes_engine(tmp_path, monk
     optimizer = captured["optimizer"]
     assert captured["close_count"] == 1
     assert all(group["lr"] == grpo.learning_rate for group in optimizer.param_groups)
-    assert all(group["weight_decay"] == grpo.weight_decay for group in optimizer.param_groups)
+    owners = {parameter_name: group for group in optimizer.param_groups
+              for parameter_name in group["param_names"]}
+    for parameter_name, group in owners.items():
+        expected_decay = 0.0 if parameter_name.endswith("bias") or parameter_name == "output_head.weight" else grpo.weight_decay
+        assert group["weight_decay"] == expected_decay
     if dtype == torch.bfloat16:
         assert optimizer.state_dict()["format"] == "fp32_master_v1"
         assert all(parameter.dtype == torch.float32 for group in optimizer.param_groups for parameter in group["params"])
     elif name == "adamw":
         assert type(optimizer) is torch.optim.AdamW
     if name == "muon":
-        assert [group["optimizer_name"] for group in optimizer.param_groups] == ["muon", "adamw"]
-        assert optimizer.param_groups[0]["momentum"] == grpo.optimizer.momentum
-        assert optimizer.param_groups[0]["ns_steps"] == grpo.optimizer.ns_steps
+        assert {group["optimizer_name"] for group in optimizer.param_groups} == {"muon", "adamw", "sinkhorn"}
+        muon_group = next(group for group in optimizer.param_groups if group["optimizer_name"] == "muon")
+        assert muon_group["momentum"] == grpo.optimizer.muon.momentum
+        assert muon_group["ns_steps"] == grpo.optimizer.muon.ns_steps
+        assert owners["output_head.weight"]["optimizer_name"] == "sinkhorn"
+    else:
+        assert {group["optimizer_name"] for group in optimizer.param_groups} == {"adamw"}
 
 
 def _step(model, optimizer, scheduler, seed):
@@ -147,8 +160,8 @@ def _assert_state_equal(actual, expected):
 
 def _native_states(state):
     native = state.get("optimizer", state)
-    if native.get("format") == "muon_adamw_v1":
-        return [native[name]["state"] for name in ("muon", "adamw")]
+    if native.get("format") == "muon_adamw_sinkhorn_v1":
+        return [native[name]["state"] for name in ("muon", "adamw", "sinkhorn")]
     return [native["state"]]
 
 
@@ -160,7 +173,12 @@ def test_grpo_rollback_restores_optimizer_and_next_update(tmp_path, source, dtyp
     model = _TinyPolicy().to(dtype=dtype)
     baseline = deepcopy(model)
     grpo = GrpoConfig(
-        optimizer=OptimizerConfig(name=name),
+        optimizer=OptimizerConfig(
+            name=name, muon=MuonConfig(learning_rate=0.01),
+            adamw=AdamWConfig(learning_rate=0.003, weight_decay=0.04,
+                              betas=(0.8, 0.95), eps=1e-6, amsgrad=True),
+            sinkhorn=SinkhornConfig(learning_rate=0.006, momentum=0.8, nesterov=False, iters=3),
+        ),
         learning_rate=0.01,
         weight_decay=0.02,
         warmup_steps=0,
