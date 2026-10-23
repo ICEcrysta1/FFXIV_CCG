@@ -66,7 +66,7 @@ FFXIV_CCG/
     │   │   │   ├── attention_residual.py             Full Attention Residual 深度聚合器
     │   │   │   ├── hyper_connections_cuda.py         CUDA 训练专用 HC 系数与 Sinkhorn 的 Triton 前后向核；由残差模块延迟导入
     │   │   │   ├── input_encoder.py                  技能、状态与 scene 独立内容投影；死亡使用独立 FP32 embedding 并按动作边界插入，content 与 role 相加后统一无参数 RMSNorm，历史/当前状态共享参数，生成交错布局和逻辑位置
-    │   │   │   ├── residual_mix.py                   Hyper-Connections 多路残差、动态 pre/post 混合、Sinkhorn 归一化、CUDA 训练融合前后向与重算及 CPU 局部重算，供 attention/FFN 共用
+    │   │   │   ├── residual_mix.py                   Hyper-Connections 多路残差、动态 pre/post 混合、Sinkhorn 归一化；CUDA 合并 batch/序列轴进行融合前后向与重算，CPU 保留局部重算，供 attention/FFN 共用
     │   │   │   └── transformer.py                    可学习 RMSNorm 及 Transformer 层、FFN 激活/门控、CUDA 门控前后向融合、CPU 局部重算、整块重算开关和逐层运行诊断，不依赖分析 trace
     │   │   ├── execution/                            训练、KV-cache 与分析共用的模型执行组件
     │   │   │   ├── __init__.py                       轻量包入口

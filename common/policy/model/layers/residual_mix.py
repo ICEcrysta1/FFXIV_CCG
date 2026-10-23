@@ -63,9 +63,16 @@ class HyperConnections(nn.Module):
     def _recompute(self, operation, compiled_operation, *inputs):
         if self.training and torch.is_grad_enabled() and not torch.onnx.is_in_onnx_export():
             if inputs[0].is_cuda:
+                # HC 逐 token 独立；合并 batch/序列轴，避免单例与 shard 尾批次组合耗尽编译缓存。
+                token_shape = inputs[0].shape[:2]
+                flat_inputs = tuple(value.flatten(0, 1) if isinstance(value, torch.Tensor) else value
+                                    for value in inputs)
                 # 编译入口也关闭 AMP，确保 AOT 反向的投影矩阵乘继续使用 FP32。
                 with torch.autocast(device_type=inputs[0].device.type, enabled=False):
-                    return compiled_operation(*inputs)
+                    output = compiled_operation(*flat_inputs)
+                if isinstance(output, torch.Tensor):
+                    return output.unflatten(0, token_shape)
+                return tuple(value.unflatten(0, token_shape) for value in output)
             return checkpoint(operation, *inputs, use_reentrant=False, preserve_rng_state=False)
         return operation(*inputs)
 
