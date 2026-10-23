@@ -13,6 +13,7 @@ import torch
 from common.policy.data import DataSpec, ModelInputContract
 from common.policy.model import CausalPolicyModel
 from common.pytorch.serialization import safe_torch_load, stringify_paths
+from common.training.optimizer_config import OptimizerConfig
 
 from ..config import RunConfig
 
@@ -171,16 +172,20 @@ def _validate_resume_optimizer(checkpoint: Mapping[str, object], config: RunConf
             f"checkpoint={saved_name!r} != current={current_optimizer['name']!r}; "
             f"{new_training_message}"
         )
-    # AdamW 不使用 Muon 参数；BC 恢复历史学习率与状态，权重衰减取当前配置。
-    if saved_name == "adamw":
-        return
-    for field, current_value in current_optimizer.items():
-        if field not in saved_optimizer or saved_optimizer[field] != current_value:
-            raise ValueError(
-                "resume checkpoint optimizer config mismatch: "
-                f"{field}: checkpoint={saved_optimizer.get(field)!r} "
-                f"!= current={current_value!r}; {new_training_message}"
-            )
+    saved_optimizer = asdict(OptimizerConfig.from_mapping(saved_optimizer))
+    active_groups = ("muon", "adamw", "sinkhorn") if saved_name == "muon" else ("adamw",)
+    # 学习率随 checkpoint 恢复，衰减取当前分组；其余生效算法参数必须一致。
+    for group in active_groups:
+        for field, current_value in current_optimizer[group].items():
+            if field in {"learning_rate", "weight_decay"}:
+                continue
+            saved_value = saved_optimizer[group][field]
+            if saved_value != current_value:
+                raise ValueError(
+                    "resume checkpoint optimizer config mismatch: "
+                    f"{group}.{field}: checkpoint={saved_value!r} "
+                    f"!= current={current_value!r}; {new_training_message}"
+                )
 
 
 def read_checkpoint_epoch(path: Path) -> int:
@@ -213,7 +218,7 @@ def collect_checkpoint_candidates(
                 max_files=_checkpoint_max_files(payload),
                 validation_files=_checkpoint_validation_files(payload),
             )
-        except Exception as exc:  # 单个损坏/非法 `.pt` 不应让整个清单不可用。
+        except Exception as exc:  # noqa: BLE001 - 单个损坏/非法 `.pt` 不应让整个清单不可用。
             logger.warning("跳过无法读取的 checkpoint: %s (%s)", path, exc)
             skipped.append(SkippedCheckpoint(path=path, error=str(exc)))
             continue

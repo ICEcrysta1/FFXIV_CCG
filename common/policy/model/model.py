@@ -21,7 +21,7 @@ from .execution.trace import ModelTrace, trace_encoder
 from .layers.attention_residual import FullAttentionResidual
 from .layers.input_encoder import CausalInputEncoder
 from .layers.residual_mix import HyperConnections
-from .layers.transformer import TraceableTransformerEncoderLayer
+from .layers.transformer import RMSNorm, TraceableTransformerEncoderLayer
 from .repetition import RepetitionConfig, apply_repetition_penalty
 
 
@@ -60,7 +60,7 @@ class CausalPolicyModel(nn.Module):
             d_model=config.d_model,
             nhead=config.n_heads,
             num_kv_heads=config.num_kv_heads,
-            qk_norm_scale=config.qk_norm_scale,
+            q_lora_rank=config.q_lora_rank,
             dim_feedforward=config.ff_dim,
             dropout=config.dropout,
             activation=config.transformer_activation,
@@ -68,11 +68,11 @@ class CausalPolicyModel(nn.Module):
             batch_first=True,
             norm_first=config.transformer_norm_first,
         )
-        # PreNorm 支路与最终输出统一使用无参数 RMSNorm，不对残差流施加幅度上限。
+        # PreNorm 支路与最终输出统一使用可学习通道尺度的 RMSNorm。
         self.encoder = nn.TransformerEncoder(
             encoder_layer,
             config.n_layers,
-            norm=nn.RMSNorm(config.d_model, eps=1e-5, elementwise_affine=False),
+            norm=RMSNorm(config.d_model),
         )
         # 位置编码属于 attention 执行边界；输入编码器只提供逻辑 position_ids。
         self.encoder.rotary_position_encoding = RotaryPositionEncoding(
@@ -260,7 +260,7 @@ class CausalPolicyModel(nn.Module):
             raise TypeError("checkpoint missing model_config")
         for key in (
             "context_capacity", "history_reset_keep",
-            "qk_norm_scale", "logit_softcap", "swiglu_limit", *HYPER_CONNECTION_CONFIG_FIELDS,
+            "q_lora_rank", "logit_softcap", "swiglu_limit", *HYPER_CONNECTION_CONFIG_FIELDS,
         ):
             if key not in payload:
                 raise ValueError(f"checkpoint missing model.{key}; retrain")

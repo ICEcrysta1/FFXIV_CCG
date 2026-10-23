@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import torch
-import torch.nn.functional as F
 
 
 def rotate_qk(
@@ -24,32 +23,9 @@ def rotate_qk(
     )
 
 
-def normalize_qk(
-    query_heads: torch.Tensor,
-    key_heads: torch.Tensor,
-    *,
-    scale: float,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """对 RoPE 后的 Q/K 逐 head 做无参数 RMSNorm，再乘同一个固定尺度。"""
-    return (
-        F.rms_norm(query_heads, (query_heads.shape[-1],), eps=None) * scale,
-        F.rms_norm(key_heads, (key_heads.shape[-1],), eps=None) * scale,
-    )
-
-
 def project_qkv(attention, values: torch.Tensor):
-    """按 MHA 或 grouped-query attention 的权重投影 Q/K/V。"""
-    project = getattr(attention, "project_qkv", None)
-    if project is not None:
-        return project(values)
-    if attention.in_proj_weight is None:
-        raise RuntimeError("split attention requires packed self-attention projections")
-    weights = attention.in_proj_weight.chunk(3, dim=0)
-    if attention.in_proj_bias is None:
-        biases = (None, None, None)
-    else:
-        biases = attention.in_proj_bias.chunk(3, dim=0)
-    return tuple(F.linear(values, weight, bias) for weight, bias in zip(weights, biases))
+    """复用低秩 Q 与共享 KV 的唯一投影入口。"""
+    return attention.project_qkv(values)
 
 
 def kv_head_count(attention) -> int:

@@ -15,6 +15,7 @@ from common.policy.model import (
     RepetitionConfig,
 )
 from common.policy.model.attention.attention_variants import run_head_attention
+from common.policy.model.attention.position_encoding import RotaryPositionEncoding
 from scripts.onnx_export import CapacityContract, OnnxPolicy
 from scripts.onnx_export.runtime.validation import (
     _assert_padding_keys_blocked,
@@ -429,6 +430,8 @@ def test_policy_attention_returns_zero_for_fully_blocked_rows(collect_attention)
     value = torch.ones_like(key)
     output, weights = run_head_attention(
         layer, query, key, value,
+        rotary_position_encoding=RotaryPositionEncoding(attention.head_dim),
+        position_ids=torch.zeros((2, 1), dtype=torch.long),
         key_valid=torch.tensor([[False, False], [True, False]]),
         causal=False,
         collect_attention=collect_attention,

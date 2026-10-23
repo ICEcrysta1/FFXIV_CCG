@@ -53,6 +53,7 @@ from .deployment_profile import stable_sha256
 # 28：增加独立死亡事件输入与 embedding，所有事件纳入共用 token 预算。
 # 29：统一归一化入口，独立注册的技能绝对三元组替代可用性尾表；
 #     仅战斗与场景时间坐标使用相对编码，其余状态及绝对时长使用 ABS。
+#     低秩 Q 与共享 KV 使用可学习 RMSNorm，注意力输出逆旋转后投影。
 DEPLOYMENT_CONTRACT_VERSION = 29
 DEPLOYMENT_MANIFEST_VERSION = 17
 MANIFEST_SCHEMA_FILENAME = "manifest.schema.json"
@@ -212,8 +213,8 @@ class DeploymentContract:
 
     def validate(self, *, embedding_vocab_size: int) -> None:
         residual_composition_contract(self.model_config)
-        if "qk_norm_scale" not in self.model_config:
-            raise ValueError("deployment model_config missing qk_norm_scale; re-export the package")
+        if "q_lora_rank" not in self.model_config:
+            raise ValueError("deployment model_config missing q_lora_rank; re-export the package")
         if "logit_softcap" not in self.model_config:
             raise ValueError("deployment model_config missing logit_softcap; re-export the package")
         if "swiglu_limit" not in self.model_config:

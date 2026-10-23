@@ -1,4 +1,4 @@
-"""支持独立 Q/K/V 投影的 grouped-query attention。"""
+"""支持低秩 Q 和共享 KV 投影的 grouped-query attention。"""
 
 from __future__ import annotations
 
@@ -6,11 +6,12 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from ..layers.transformer import RMSNorm
 from .attention_utils import merge_heads, split_heads
 
 
 class GroupedQueryAttention(nn.Module):
-    """Q 头与 K/V 头数量可不同的 self-attention 投影模块。
+    """低秩 Q 与共享 KV 的 self-attention 投影模块。
 
     该模块只负责投影和提供与 ``MultiheadAttention`` 兼容的基础属性；
     split encoder 的正式路径会直接调用 ``project_qkv``；两条路径共用按 KV 组
@@ -23,6 +24,7 @@ class GroupedQueryAttention(nn.Module):
         num_heads: int,
         num_kv_heads: int,
         *,
+        q_lora_rank: int | None = None,
         dropout: float = 0.0,
         bias: bool = True,
         batch_first: bool = False,
@@ -47,15 +49,22 @@ class GroupedQueryAttention(nn.Module):
         self.num_heads = int(num_heads)
         self.num_kv_heads = int(num_kv_heads)
         self.head_dim = self.embed_dim // self.num_heads
+        self.q_lora_rank = max(1, self.embed_dim // 4) if q_lora_rank is None else q_lora_rank
+        if isinstance(self.q_lora_rank, bool) or not isinstance(self.q_lora_rank, int):
+            raise TypeError("q_lora_rank must be an integer")
+        if not 1 <= self.q_lora_rank <= self.embed_dim:
+            raise ValueError("q_lora_rank must be between 1 and embed_dim")
         self.dropout = float(dropout)
         self.batch_first = bool(batch_first)
 
-        self.q_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=bias, **factory_kwargs)
+        self.q_a = nn.Linear(self.embed_dim, self.q_lora_rank, bias=bias, **factory_kwargs)
+        self.q_norm = RMSNorm(self.q_lora_rank, **factory_kwargs)
+        self.q_b = nn.Linear(self.q_lora_rank, self.embed_dim, bias=bias, **factory_kwargs)
         kv_dim = self.num_kv_heads * self.head_dim
-        self.k_proj = nn.Linear(self.embed_dim, kv_dim, bias=bias, **factory_kwargs)
-        self.v_proj = nn.Linear(self.embed_dim, kv_dim, bias=bias, **factory_kwargs)
+        self.kv_proj = nn.Linear(self.embed_dim, kv_dim, bias=bias, **factory_kwargs)
+        self.kv_norm = RMSNorm(self.head_dim, **factory_kwargs)
         self.out_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=bias, **factory_kwargs)
-        for projection in (self.q_proj, self.k_proj, self.v_proj, self.out_proj):
+        for projection in (self.q_a, self.q_b, self.kv_proj, self.out_proj):
             if projection.bias is not None:
                 nn.init.zeros_(projection.bias)
 
@@ -71,8 +80,11 @@ class GroupedQueryAttention(nn.Module):
         self,
         values: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """分别投影 Q、K、V，其中 K/V 只保留配置的头数。"""
-        return self.q_proj(values), self.k_proj(values), self.v_proj(values)
+        """在 Q 低秩表示与共享 KV 上归一化，K/V 返回同一个张量。"""
+        query = self.q_b(self.q_norm(self.q_a(values)))
+        kv = self.kv_proj(values)
+        kv = self.kv_norm(kv.unflatten(-1, (self.num_kv_heads, self.head_dim))).flatten(-2)
+        return query, kv, kv
 
     def forward(
         self,

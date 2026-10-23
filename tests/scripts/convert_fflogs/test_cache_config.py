@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 import yaml
 
+from common.configuration.yaml import load_yaml_mapping
 from common.game import config as project_config
 from common.policy.data.cache.compiled_cache import changed_config_dependencies
-from common.configuration.yaml import load_yaml_mapping
 from scripts.convert_fflogs.cache import cache_config
 from scripts.convert_fflogs.config import config as convert_config
 
@@ -130,7 +130,7 @@ def test_read_side_training_settings_and_other_job_routing_are_excluded(config_r
     model_path = config_root / "config/models/black_mage/artzip/model.yaml"
     rewrite(model_path, ("model", "context_capacity"), 17)
     rewrite(model_path, ("model", "history_reset_keep"), 1)
-    rewrite(model_path, ("model", "qk_norm_scale"), 1.7)
+    rewrite(model_path, ("model", "q_lora_rank"), 48)
     training_path = config_root / "config/models/black_mage/artzip/training.yaml"
     rewrite(training_path, ("training", "max_files"), 1)
     monkeypatch.setenv("CONVERT_FFLOGS_WORKERS", "99")
@@ -206,9 +206,9 @@ def test_policy_action_order_requires_rebuild(config_root):
 
 def test_normalizer_and_precision_are_checked_by_existing_cache_signature(config_root):
     """精度和归一化仍由正式签名校验，配置快照不重复保存第二份。"""
-    from common.pytorch.precision import load_precision_config
     from common.policy.data.cache.compiled_cache import build_cache_signature
     from common.policy.data.encoding.normalizer import Normalizer
+    from common.pytorch.precision import load_precision_config
 
     saved = dependencies()
     source = config_root / "source.json.br"

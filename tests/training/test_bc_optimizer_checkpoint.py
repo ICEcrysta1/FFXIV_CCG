@@ -12,7 +12,7 @@ from common.policy.config import ModelConfig
 from common.policy.data import DataSpec, ModelInputContract, Normalizer, SkillVocab
 from common.policy.data.schema import TrainingSchema
 from common.pytorch.serialization import safe_torch_load
-from common.training.optimizer_config import OptimizerConfig
+from common.training.optimizer_config import MuonConfig, OptimizerConfig, SinkhornConfig
 from tests.training._causal_fixtures import make_state_groups
 from training.config import RunConfig
 from training.loop.checkpoint import _save_checkpoint, _validate_resume_checkpoint
@@ -120,7 +120,7 @@ def test_resume_rejects_legacy_input_encoding_even_when_forcing_data_mismatch(
 
 
 @pytest.mark.parametrize("force", [False, True])
-@pytest.mark.parametrize("legacy_backbone", ["version_16", "missing", "layernorm", "gamma_rms"])
+@pytest.mark.parametrize("legacy_backbone", ["version_16", "missing", "layernorm", "no_gamma_rms"])
 def test_resume_rejects_legacy_backbone_even_when_forcing_data_mismatch(
     resume_context, force, legacy_backbone
 ):
@@ -135,7 +135,7 @@ def test_resume_rejects_legacy_backbone_even_when_forcing_data_mismatch(
         message = "token_encoding"
     else:
         backbone = payload["token_encoding"]["backbone_normalization"]
-        backbone["elementwise_affine"] = True
+        backbone["elementwise_affine"] = legacy_backbone == "layernorm"
         if legacy_backbone == "layernorm":
             backbone["type"] = "LayerNorm"
         message = "token_encoding"
@@ -145,26 +145,26 @@ def test_resume_rejects_legacy_backbone_even_when_forcing_data_mismatch(
 
 
 @pytest.mark.parametrize("force", [False, True])
-@pytest.mark.parametrize("incompatible", ["version_18", "missing_scale", "scale_mismatch"])
+@pytest.mark.parametrize("incompatible", ["version_26", "missing_rank", "rank_mismatch"])
 def test_resume_cannot_bypass_qk_normalization_contract(resume_context, force, incompatible):
-    """数据规模豁免不能绕过 Q/K 算法版本、已保存尺度或架构一致性。"""
-    if incompatible == "version_18":
-        resume_context.checkpoint["input_contract"]["version"] = 18
+    """数据规模豁免不能绕过潜在 Q/KV 算法版本或低秩投影架构。"""
+    if incompatible == "version_26":
+        resume_context.checkpoint["input_contract"]["version"] = 26
         message = "unsupported input contract version"
-    elif incompatible == "missing_scale":
-        resume_context.checkpoint["model_config"].pop("qk_norm_scale")
-        message = "missing model.qk_norm_scale"
+    elif incompatible == "missing_rank":
+        resume_context.checkpoint["model_config"].pop("q_lora_rank")
+        message = "missing model.q_lora_rank"
     else:
-        resume_context.checkpoint["model_config"]["qk_norm_scale"] = 0.7
+        resume_context.checkpoint["model_config"]["q_lora_rank"] = 1
         message = "model config mismatch"
     resume_context.checkpoint["run_config"]["max_files"] = 10
     with pytest.raises(ValueError, match=message):
         _validate(resume_context, force=force)
 
 
-def test_resume_preserves_matching_nondefault_qk_scale(resume_context):
-    """合法续训沿用 checkpoint 尺度，不补回正式配置的默认 1.2。"""
-    model_config = replace(resume_context.config.model, qk_norm_scale=1.7)
+def test_resume_preserves_matching_nondefault_query_rank(resume_context):
+    """合法续训沿用 checkpoint 低秩宽度，不补回本机默认值。"""
+    model_config = replace(resume_context.config.model, q_lora_rank=7)
     resume_context.config = replace(resume_context.config, model=model_config)
     resume_context.checkpoint["model_config"] = asdict(model_config)
     assert _validate(resume_context) == 1
@@ -249,37 +249,55 @@ def test_muon_checkpoint_accepts_identical_optimizer_config(resume_context):
     assert _validate(resume_context, optimizer=optimizer) == 1
 
 
+@pytest.mark.parametrize("name", ["muon", "adamw"])
 @pytest.mark.parametrize(
-    "changed",
+    "group,changed",
     [
-        {"momentum": 0.9},
-        {"nesterov": False},
-        {"ns_steps": 6},
-        {"adjust_lr_fn": "original"},
+        ("muon", {"momentum": 0.9}),
+        ("muon", {"nesterov": False}),
+        ("muon", {"ns_steps": 6}),
+        ("muon", {"adjust_lr_fn": "original"}),
+        ("muon", {"eps": 1e-6}),
+        ("muon", {"ns_coefficients": (2.0, -1.5, 0.5)}),
+        ("adamw", {"betas": (0.8, 0.95)}),
+        ("adamw", {"eps": 1e-6}),
+        ("adamw", {"amsgrad": True}),
+        ("sinkhorn", {"momentum": 0.9}),
+        ("sinkhorn", {"nesterov": False}),
+        ("sinkhorn", {"iters": 3}),
+        ("sinkhorn", {"threshold": 1e-4}),
+        ("sinkhorn", {"eps": 1e-12}),
+        ("sinkhorn", {"lr_scale": 0.18}),
     ],
 )
-def test_muon_checkpoint_rejects_changed_hyperparameters(resume_context, changed):
-    optimizer = OptimizerConfig(name="muon")
+def test_optimizer_checkpoint_checks_active_hyperparameters(resume_context, name, group, changed):
+    optimizer = OptimizerConfig(name=name)
     resume_context.checkpoint["run_config"]["optimizer"] = asdict(optimizer)
+    changed_optimizer = replace(optimizer, **{
+        group: replace(getattr(optimizer, group), **changed),
+    })
+    if name == "adamw" and group != "adamw":
+        assert _validate(resume_context, optimizer=changed_optimizer, force=True) == 1
+        return
 
     with pytest.raises(ValueError, match="optimizer config mismatch.*新训练"):
-        _validate(resume_context, optimizer=replace(optimizer, **changed), force=True)
+        _validate(resume_context, optimizer=changed_optimizer, force=True)
 
 
-@pytest.mark.parametrize("missing_field", ["momentum", "nesterov", "ns_steps", "adjust_lr_fn"])
-def test_muon_checkpoint_rejects_missing_hyperparameters(resume_context, missing_field):
+@pytest.mark.parametrize("group", ["muon", "adamw", "sinkhorn"])
+def test_muon_checkpoint_restores_omitted_group_defaults(resume_context, group):
     optimizer = OptimizerConfig(name="muon")
     saved_optimizer = asdict(optimizer)
-    saved_optimizer.pop(missing_field)
+    saved_optimizer.pop(group)
     resume_context.checkpoint["run_config"]["optimizer"] = saved_optimizer
 
-    with pytest.raises(ValueError, match=f"optimizer config mismatch: {missing_field}"):
-        _validate(resume_context, optimizer=optimizer)
+    assert _validate(resume_context, optimizer=optimizer) == 1
 
 
 def test_adamw_resume_ignores_unused_muon_settings(resume_context):
     optimizer = OptimizerConfig(
-        name="adamw", momentum=0.8, nesterov=False, ns_steps=3, adjust_lr_fn="original"
+        name="adamw", muon=MuonConfig(momentum=0.8, nesterov=False, ns_steps=3, adjust_lr_fn="original"),
+        sinkhorn=SinkhornConfig(momentum=0.8, nesterov=False, iters=3),
     )
 
     assert _validate(resume_context, optimizer=optimizer) == 1

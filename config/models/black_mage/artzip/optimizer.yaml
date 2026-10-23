@@ -1,35 +1,58 @@
-# 黑魔 Artzip 优化器配置；BC 与 GRPO 独立选择算法和超参数。
-# name: adamw 表示全部参数使用 AdamW。
-# name: muon 表示 Transformer 主干矩阵使用 Muon，其余参数使用 AdamW；
-# 两组共用所属阶段的基础学习率、权重衰减与调度。
-# BF16/FP16 模型统一使用 FP32 主权重和优化器状态累计更新；模型前向精度不变。
+# 黑魔 Artzip 优化器配置；各算法独立设置学习率，共用阶段的调度比例。
+# bias/scale 及 Sinkhorn 参数不施加权重衰减。
+# BF16/FP16 模型使用 FP32 主权重和优化器状态累计更新，前向精度不变。
 
-optimizers:
-  bc:
-    name: muon
-    # BC 基础学习率与权重衰减系数。
-    learning_rate: 0.0001
-    weight_decay: 0.125
-    # warmup 更新步数；结束后沿用 BC 的 cosine 调度。
-    warmup_steps: 500
-    # 以下参数仅在 name: muon 时生效。
-    # 动量系数必须位于 [0, 1)；nesterov 控制 Nesterov 动量更新。
-    momentum: 0.95
-    nesterov: true
-    # Newton-Schulz 正交化迭代次数，允许 1 至 99。
-    ns_steps: 5
-    # 按矩阵形状匹配 AdamW 更新的 RMS，使用上述基础学习率。
-    adjust_lr_fn: match_rms_adamw
+optimizers: # 按训练阶段独立管理优化器。
+  bc: # 行为克隆训练阶段。
+    name: muon # muon 组合三种算法；adamw 则全部参数使用 AdamW。
+    warmup_steps: 500 # 线性预热更新步数，结束后使用 BC 的 cosine 调度。
+    muon: # 负责输入、主干线性矩阵及 HC 投影矩阵。
+      learning_rate: 0.0001 # 本组基础学习率，随阶段调度按比例缩放。
+      weight_decay: 0.1 # 矩阵参数的解耦权重衰减系数。
+      momentum: 0.95 # 一阶动量衰减系数，范围为 [0, 1)。
+      nesterov: true # 是否使用 Nesterov 动量更新方向。
+      ns_steps: 5 # Newton-Schulz 正交化迭代次数，允许 1 至 99。
+      adjust_lr_fn: match_rms_adamw # 按矩阵形状匹配 AdamW 更新 RMS 的学习率缩放方式。
+      eps: 1.0e-7 # 正交化前范数归一化的数值稳定下限。
+      ns_coefficients: [3.4445, -4.775, 2.0315] # 每次正交化迭代所用三项矩阵多项式的系数。
+    adamw: # 负责 RMSNorm 权重、偏置、缩放及其他非矩阵参数。
+      learning_rate: 0.0001 # 本组基础学习率，随阶段调度按比例缩放。
+      weight_decay: 0.1 # RMSNorm 等衰减组的系数；bias/scale 分组固定为零。
+      betas: [0.9, 0.999] # 梯度一阶、二阶矩估计的指数衰减系数。
+      eps: 1.0e-8 # 自适应更新分母的数值稳定常数。
+      amsgrad: false # 是否使用历史最大二阶矩估计的 AMSGrad 变体。
+    sinkhorn: # 负责 embedding 和输出头矩阵，算法固定不施加权重衰减。
+      learning_rate: 0.0001 # 本组基础学习率，随阶段调度按比例缩放。
+      momentum: 0.95 # 一阶动量衰减系数，独立于 Muon 设置。
+      nesterov: true # 是否使用 Nesterov 动量更新方向。
+      iters: 11 # 交替行列 L2 归一化次数，必须为正奇数并以行归一化结束。
+      threshold: 0.001 # 行范数不超过平均行范数此比例时，屏蔽该行更新。
+      eps: 1.0e-20 # 行列归一化分母的数值稳定常数。
+      lr_scale: 0.2 # 平衡后更新幅度的学习率修正系数。
 
-  grpo:
-    name: adamw
-    # GRPO 独立的基础学习率与权重衰减系数。
-    learning_rate: 0.000001
-    weight_decay: 0.0
-    # warmup 更新步数；结束后保持基础学习率。
-    warmup_steps: 20
-    # 切换为 muon 时采用以下独立参数，不影响 BC。
-    momentum: 0.95
-    nesterov: true
-    ns_steps: 5
-    adjust_lr_fn: match_rms_adamw
+  grpo: # 策略优化训练阶段，与 BC 的设置相互独立。
+    name: muon # muon 组合三种算法；adamw 则全部参数使用 AdamW。
+    warmup_steps: 20 # 线性预热更新步数，结束后保持各组基础学习率。
+    muon: # 负责输入、主干线性矩阵及 HC 投影矩阵。
+      learning_rate: 0.000001 # 本组基础学习率，随阶段调度按比例缩放。
+      weight_decay: 0.0 # 矩阵参数的解耦权重衰减系数。
+      momentum: 0.95 # 一阶动量衰减系数，范围为 [0, 1)。
+      nesterov: true # 是否使用 Nesterov 动量更新方向。
+      ns_steps: 5 # Newton-Schulz 正交化迭代次数，允许 1 至 99。
+      adjust_lr_fn: match_rms_adamw # 按矩阵形状匹配 AdamW 更新 RMS 的学习率缩放方式。
+      eps: 1.0e-7 # 正交化前范数归一化的数值稳定下限。
+      ns_coefficients: [3.4445, -4.775, 2.0315] # 每次正交化迭代所用三项矩阵多项式的系数。
+    adamw: # 负责 RMSNorm 权重、偏置、缩放及其他非矩阵参数。
+      learning_rate: 0.000001 # 本组基础学习率，随阶段调度按比例缩放。
+      weight_decay: 0.0 # RMSNorm 等衰减组的系数；bias/scale 分组固定为零。
+      betas: [0.9, 0.999] # 梯度一阶、二阶矩估计的指数衰减系数。
+      eps: 1.0e-8 # 自适应更新分母的数值稳定常数。
+      amsgrad: false # 是否使用历史最大二阶矩估计的 AMSGrad 变体。
+    sinkhorn: # 负责 embedding 和输出头矩阵，算法固定不施加权重衰减。
+      learning_rate: 0.000001 # 本组基础学习率，随阶段调度按比例缩放。
+      momentum: 0.95 # 一阶动量衰减系数，独立于 Muon 设置。
+      nesterov: true # 是否使用 Nesterov 动量更新方向。
+      iters: 11 # 交替行列 L2 归一化次数，必须为正奇数并以行归一化结束。
+      threshold: 0.001 # 行范数不超过平均行范数此比例时，屏蔽该行更新。
+      eps: 1.0e-20 # 行列归一化分母的数值稳定常数。
+      lr_scale: 0.2 # 平衡后更新幅度的学习率修正系数。

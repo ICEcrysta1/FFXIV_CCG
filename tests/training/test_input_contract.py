@@ -136,8 +136,8 @@ def test_model_input_contract_describes_post_role_parameterless_rms():
     }
 
 
-def test_model_input_contract_describes_parameterless_backbone_rms():
-    """主干两处子层和最终输出固定使用同一无参数 RMS 规则。"""
+def test_model_input_contract_describes_trainable_backbone_rms():
+    """主干两处子层和最终输出保存可学习尺度及精确计算顺序。"""
     encoding = _build_contract().to_dict()["token_encoding"]
     assert encoding["backbone_normalization"] == {
         "type": "RMSNorm",
@@ -146,23 +146,33 @@ def test_model_input_contract_describes_parameterless_backbone_rms():
             "encoder.layers[*].norm2",
             "encoder.norm",
         ],
-        "eps": 1e-5,
-        "elementwise_affine": False,
+        "eps": 1e-20,
+        "elementwise_affine": True,
+        "weight_initialization": 1.0,
+        "normalization_dtype": "float32",
+        "affine_position": "before_output_cast",
+        "output_dtype": "input_dtype",
     }
 
 
-def test_model_input_contract_describes_post_rope_per_head_qk_rms():
-    """Q/K 共用保存的尺度，缓存仅归一化新 K，不固定 autocast 的张量 dtype。"""
+def test_model_input_contract_describes_latent_query_and_shared_rotary_key_value():
+    """保存两处可学习归一化、共享旋转 KV 及注意力输出逆旋转的精确语义。"""
     encoding = _build_contract().to_dict()["token_encoding"]
     assert encoding["attention_qk_normalization"] == {
         "type": "RMSNorm",
-        "position": "after_RoPE_before_attention",
-        "normalized_shape": "head_dim",
-        "eps": None,
-        "elementwise_affine": False,
-        "scale": "model_config.qk_norm_scale",
-        "applies_to": ["query", "key"],
-        "key_cache": "normalize_new_keys_once_before_append",
+        "query_position": "after_q_a_before_q_b_and_RoPE",
+        "query_normalized_shape": "model_config.q_lora_rank",
+        "key_value_position": "after_kv_proj_and_split_heads_before_RoPE",
+        "key_value_normalized_shape": "head_dim",
+        "eps": 1e-20,
+        "elementwise_affine": True,
+        "weight_initialization": 1.0,
+        "normalization_dtype": "float32",
+        "affine_position": "before_output_cast",
+        "output_dtype": "input_dtype",
+        "shared_key_value": "same_RoPE_tensor_for_key_and_value",
+        "attention_output": "inverse_RoPE_before_output_projection",
+        "key_cache": "normalize_and_rotate_new_shared_key_value_once_before_append",
     }
 
 
@@ -222,21 +232,34 @@ def test_model_input_contract_rejects_forged_logit_softcap(field, value):
         ModelInputContract.from_checkpoint({"input_contract": payload})
 
 
-def test_model_input_contract_rejects_previous_unnormalized_qk_version():
+@pytest.mark.parametrize("legacy", ("version", "fixed_scale"))
+def test_model_input_contract_rejects_previous_qk_contract(legacy):
     payload = _build_contract().to_dict()
-    payload["version"] = 18
-    payload["token_encoding"].pop("attention_qk_normalization")
-    with pytest.raises(ValueError, match="unsupported input contract version"):
+    if legacy == "version":
+        payload["version"] = 18
+        payload["token_encoding"].pop("attention_qk_normalization")
+        message = "unsupported input contract version"
+    else:
+        payload["token_encoding"]["attention_qk_normalization"] = {
+            "type": "RMSNorm", "position": "after_RoPE_before_attention",
+            "normalized_shape": "head_dim", "eps": None, "elementwise_affine": False,
+            "scale": "model_config.qk_norm_scale", "applies_to": ["query", "key"],
+            "key_cache": "normalize_new_keys_once_before_append",
+        }
+        message = "token_encoding"
+    with pytest.raises(ValueError, match=message):
         ModelInputContract.from_checkpoint({"input_contract": payload})
 
 
 @pytest.mark.parametrize("field,value", [
-    ("position", "before_RoPE"),
-    ("normalized_shape", "d_model"),
+    ("query_position", "after_RoPE_before_attention"),
+    ("query_normalized_shape", "head_dim"),
+    ("key_value_position", "after_RoPE_before_attention"),
+    ("key_value_normalized_shape", "d_model"),
     ("eps", 1e-5),
-    ("elementwise_affine", True),
-    ("scale", 1.2),
-    ("applies_to", ["query"]),
+    ("elementwise_affine", False),
+    ("shared_key_value", "independent_key_and_value"),
+    ("attention_output", "direct_output_projection"),
     ("key_cache", "normalize_all_cached_keys"),
 ])
 def test_model_input_contract_rejects_forged_qk_normalization(field, value):
@@ -246,26 +269,29 @@ def test_model_input_contract_rejects_forged_qk_normalization(field, value):
         ModelInputContract.from_checkpoint({"input_contract": payload})
 
 
-def test_model_input_contract_rejects_previous_backbone_layernorm_version():
-    """版本 16 的主干 LayerNorm 权重不能通过新版输入字段静默复用。"""
+@pytest.mark.parametrize("version", (16, 26))
+def test_model_input_contract_rejects_previous_backbone_normalization_versions(version):
+    """旧主干归一化权重不能通过新版输入字段静默复用。"""
     payload = _build_contract().to_dict()
-    payload["version"] = 16
+    payload["version"] = version
     payload["token_encoding"].pop("backbone_normalization")
     with pytest.raises(ValueError, match="unsupported input contract version"):
         ModelInputContract.from_dict(payload)
 
 
-@pytest.mark.parametrize("legacy_backbone", ["missing", "layernorm", "gamma_rms"])
-def test_model_input_contract_rejects_forged_parameterless_backbone_descriptor(legacy_backbone):
+@pytest.mark.parametrize(("field", "value"), (
+    ("missing", None), ("type", "LayerNorm"), ("elementwise_affine", False),
+    ("eps", 1e-5), ("weight_initialization", 0.0), ("normalization_dtype", "bfloat16"),
+    ("affine_position", "after_output_cast"), ("output_dtype", "float32"),
+))
+def test_model_input_contract_rejects_forged_backbone_descriptor(field, value):
     """仅把旧模型的版本号改成当前版本，不能掩盖主干归一化算法或参数差异。"""
     payload = _build_contract().to_dict()
     backbone = payload["token_encoding"]["backbone_normalization"]
-    if legacy_backbone == "missing":
+    if field == "missing":
         payload["token_encoding"].pop("backbone_normalization")
-    elif legacy_backbone == "layernorm":
-        backbone.update({"type": "LayerNorm", "elementwise_affine": True})
     else:
-        backbone["elementwise_affine"] = True
+        backbone[field] = value
     with pytest.raises(ValueError, match="token_encoding"):
         ModelInputContract.from_dict(payload)
 

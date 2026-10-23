@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import math
 from contextlib import nullcontext
 
 import torch
 from torch import nn
 from torch.utils.checkpoint import checkpoint
 
-from ..attention.grouped_attention import GroupedQueryAttention
 from .activation import (
     activation_hidden,
     gated_hidden_dim,
@@ -20,8 +18,22 @@ from .activation import (
 _compiled_activation_hidden = torch.compile(activation_hidden, fullgraph=True, dynamic=True)
 
 
+class RMSNorm(nn.RMSNorm):
+    """在 FP32 中归一化，乘可学习通道尺度后恢复输入精度。"""
+
+    def __init__(self, dim: int, eps: float = 1e-20, *, device=None, dtype=None):
+        super().__init__(dim, eps=eps, device=device, dtype=dtype)
+
+    def forward(self, values: torch.Tensor) -> torch.Tensor:
+        output_dtype = values.dtype
+        values = values.float()
+        variance = values.square().mean(dim=-1, keepdim=True)
+        values = values * torch.rsqrt(variance + self.eps)
+        return (self.weight * values).to(output_dtype)
+
+
 class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):
-    """使用无参数 RMSNorm 的 Transformer 层，同时提供逐 head attention。"""
+    """使用可学习 RMSNorm 的 Transformer 层，同时提供逐 head attention。"""
 
     def __init__(
         self,
@@ -30,7 +42,7 @@ class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):
         dim_feedforward: int = 2048,
         dropout: float = 0.1,
         activation: str = "relu",
-        layer_norm_eps: float = 1e-5,
+        layer_norm_eps: float = 1e-20,
         batch_first: bool = False,
         norm_first: bool = False,
         bias: bool = True,
@@ -38,19 +50,11 @@ class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):
         dtype=None,
         *,
         num_kv_heads: int | None = None,
-        qk_norm_scale: float = 1.2,
+        q_lora_rank: int | None = None,
         swiglu_limit: float = 10.0,
     ):
         if dim_feedforward < 1:
             raise ValueError("dim_feedforward must be positive")
-        if (
-            isinstance(qk_norm_scale, bool)
-            or not isinstance(qk_norm_scale, (int, float))
-            or not math.isfinite(qk_norm_scale)
-            or qk_norm_scale <= 0
-        ):
-            raise ValueError("qk_norm_scale must be a finite positive number")
-        self.qk_norm_scale = float(qk_norm_scale)
         self.swiglu_limit = swiglu_limit
         use_swiglu = uses_gate(activation)
         # 三个投影取代两个投影；保持同一 ff_dim 配置下矩阵参数量近似相等。
@@ -77,12 +81,12 @@ class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):
         )
         # 父类融合路径固定执行 LayerNorm；所有激活都走模块调用，避免绕过 RMSNorm。
         self.activation_relu_or_gelu = 0
-        self.norm1 = nn.RMSNorm(
-            d_model, eps=layer_norm_eps, elementwise_affine=False,
+        self.norm1 = RMSNorm(
+            d_model, eps=layer_norm_eps,
             device=device, dtype=dtype,
         )
-        self.norm2 = nn.RMSNorm(
-            d_model, eps=layer_norm_eps, elementwise_affine=False,
+        self.norm2 = RMSNorm(
+            d_model, eps=layer_norm_eps,
             device=device, dtype=dtype,
         )
         if num_kv_heads is None:
@@ -93,18 +97,13 @@ class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):
         if self.self_attn.num_heads % num_kv_heads != 0:
             raise ValueError("nhead must be divisible by num_kv_heads")
         self.num_kv_heads = num_kv_heads
-        if num_kv_heads != self.self_attn.num_heads:
-            original_attention = self.self_attn
-            self.self_attn = GroupedQueryAttention(
-                embed_dim=original_attention.embed_dim,
-                num_heads=original_attention.num_heads,
-                num_kv_heads=num_kv_heads,
-                dropout=original_attention.dropout,
-                bias=original_attention.in_proj_bias is not None,
-                batch_first=original_attention.batch_first,
-                device=original_attention.out_proj.weight.device,
-                dtype=original_attention.out_proj.weight.dtype,
-            )
+        from ..attention.grouped_attention import GroupedQueryAttention
+
+        self.self_attn = GroupedQueryAttention(
+            embed_dim=d_model, num_heads=nhead, num_kv_heads=num_kv_heads,
+            q_lora_rank=q_lora_rank, dropout=dropout, bias=bias,
+            batch_first=batch_first, device=device, dtype=dtype,
+        )
         # GELU/ReLU 沿用原有 linear1/linear2 和 state_dict 键，不增加参数。
         self.gate_proj = (
             nn.Linear(d_model, hidden_dim, bias=bias, device=device, dtype=dtype)

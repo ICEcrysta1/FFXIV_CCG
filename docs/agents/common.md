@@ -58,16 +58,16 @@ FFXIV_CCG/
     │   │   │   ├── attention_masks.py                因果可见性、padding、cache 后缀 mask 与分析矩阵构建
     │   │   │   ├── attention_utils.py                Q/K/V 投影、头维度整形与 Transformer 层收尾辅助
     │   │   │   ├── attention_variants.py             统一因果 attention 的手工/SDPA 与重算执行路径
-    │   │   │   ├── grouped_attention.py              MQA/GQA 投影与按 KV 组 SDPA 适配
-    │   │   │   └── position_encoding.py              唯一 RoPE 实现；一次编码共享 FP32 三角函数表
+    │   │   │   ├── grouped_attention.py              低秩 Q 与共享 KV 投影、可学习归一化及按 KV 组 SDPA 适配
+    │   │   │   └── position_encoding.py              唯一 RoPE 正／逆旋转实现；一次编码共享 FP32 三角函数表
     │   │   ├── layers/                               输入投影、Transformer 层、激活与残差结构
     │   │   │   ├── __init__.py                       轻量包入口
     │   │   │   ├── activation.py                     Transformer 主干 FFN 激活算法：选项校验、门控判定、隐层宽度折算与门控合成
     │   │   │   ├── attention_residual.py             Full Attention Residual 深度聚合器
     │   │   │   ├── hyper_connections_cuda.py         CUDA 训练专用 HC 系数与 Sinkhorn 的 Triton 前后向核；由残差模块延迟导入
     │   │   │   ├── input_encoder.py                  技能、状态与 scene 独立内容投影；死亡使用独立 FP32 embedding 并按动作边界插入，content 与 role 相加后统一无参数 RMSNorm，历史/当前状态共享参数，生成交错布局和逻辑位置
-    │   │   │   ├── residual_mix.py                   Hyper-Connections 多路残差、动态 pre/post 混合、Sinkhorn 归一化、CUDA 训练融合前后向与重算及 CPU 局部重算，供 attention/FFN 共用
-    │   │   │   └── transformer.py                    无参数 RMSNorm Transformer 层、FFN 激活/门控、CUDA 门控前后向融合、CPU 局部重算、整块重算开关和逐层运行诊断，不依赖分析 trace
+    │   │   │   ├── residual_mix.py                   Hyper-Connections 多路残差、动态 pre/post 混合、Sinkhorn 归一化；CUDA 合并 batch/序列轴进行融合前后向与重算，CPU 保留局部重算，供 attention/FFN 共用
+    │   │   │   └── transformer.py                    可学习 RMSNorm 及 Transformer 层、FFN 激活/门控、CUDA 门控前后向融合、CPU 局部重算、整块重算开关和逐层运行诊断，不依赖分析 trace
     │   │   ├── execution/                            训练、KV-cache 与分析共用的模型执行组件
     │   │   │   ├── __init__.py                       轻量包入口
     │   │   │   ├── causal_encoder.py                 单一因果层/encoder 执行、Hyper-Connections 多路残差与跨子层 pre 传递、激活重算及 Full AttnRes；训练、cache 与 trace 共用
@@ -89,8 +89,9 @@ FFXIV_CCG/
     │   ├── __init__.py                               轻量包入口，不隐式加载计算或监控依赖
     │   ├── master_weights.py                         低精度模型的 FP32 主权重与优化器状态，保留小更新、兼容旧状态迁移并完整保存恢复累计值
     │   ├── metrics.py                                设备端指标累积与集中 CPU 读取
-    │   ├── optimizer.py                              BC/GRPO 共用的 AdamW 或主干 Muon + 辅助 AdamW 装配，统一参数分组、调度与状态保存恢复
-    │   ├── optimizer_config.py                       BC/GRPO 独立优化器配置解析，集中读取 optimizer.yaml 的方法与超参数并拒绝重复配置
+    │   ├── optimizer.py                              BC/GRPO 共用优化器装配；线性矩阵、归一化、bias/scale、embedding/输出头按职责分组，组合 Muon/AdamW/Sinkhorn，统一调度与状态保存恢复
+    │   ├── optimizer_config.py                       BC/GRPO 的 Muon、AdamW、Sinkhorn 独立配置与数值校验，解析各组学习率、衰减及算法参数，拒绝重复配置权威
+    │   ├── sinkhorn.py                               embedding 与输出头的动量、近零行屏蔽及交替行列 L2 归一化更新，不施加权重衰减
     │   ├── tensorboard.py                            BC 与 GRPO 共用的监控配置与可选 SummaryWriter，按模型变体共享 `<variant>_tensorboard` 事件根目录并写入有限数值标量；配置读取不加载 PyTorch 或模型诊断
     │   ├── tensorboard_labels.py                     BC/GRPO 共用的中文展示标签；按实际参数路径动态生成层号，保留原始参数路径与动作标识，不修改训练指标键
     │   └── tensorboard_monitor.py                    BC/GRPO 模型诊断：真实输入结构图、确定性有界权重/梯度分布、输入技能/独立输出头 Projector、配置 Text/HParams 和 BC 验证混淆矩阵/PR 曲线
@@ -126,7 +127,7 @@ FFXIV_CCG/
 │   │   ├── batch.yaml                                批量下载时验证集目标占训练集目标的比例
 │   │   └── encounters.yaml                           副本代号到 Zone/Encounter ID 的映射：FRU、M1s～M11s、M12sI/II 与 DancingMad
 │   ├── models/                                       训练与推理共用的策略模型配置，按 `.env` 的 `FFXIV_JOB_TAG` 与 `FFXIV_MODEL_VARIANT` 选择职业目录下的模型变体
-│   │   └── <job_tag>/<variant>/                      模型变体配置目录；`action_quality.yaml` 定义动作质量监督的轻微/中等/严重等级权重，由 `config.yaml` 的 `action_quality_config` 引用并合并，与 `training.yaml` 的排名衰减曲线共同生成 BC 主交叉熵和价值辅助损失的逐样本学习权重；`config.yaml` 是清单，`model.yaml` 提供模型架构、输入数据阶段/output 与统一 precision（黑魔 Artzip 默认使用 annotated），`training.yaml` 提供预训练/DataLoader/增强/序列过采样，`optimizer.yaml` 由清单的 `optimizer_config` 引用，通过 `optimizers.bc` / `optimizers.grpo` 独立选择方法并集中维护学习率、权重衰减、warmup 和 Muon 参数；`grpo.yaml` 提供 GRPO rollout 与更新参数（当前 Artzip 每场 16 条样本、仅按 1200 秒时间上限终止），固定动作顺序由启用技能和 policy 配置生成并写入 cache/checkpoint
+│   │   └── <job_tag>/<variant>/                      模型变体配置目录；`action_quality.yaml` 定义动作质量监督的轻微/中等/严重等级权重，由 `config.yaml` 的 `action_quality_config` 引用并合并，与 `training.yaml` 的排名衰减曲线共同生成 BC 主交叉熵和价值辅助损失的逐样本学习权重；`config.yaml` 是清单，`model.yaml` 提供模型架构、输入数据阶段/output 与统一 precision（黑魔 Artzip 默认使用 annotated），`training.yaml` 提供预训练/DataLoader/增强/序列过采样，`optimizer.yaml` 由清单的 `optimizer_config` 引用，通过 `optimizers.bc` / `optimizers.grpo` 独立选择方法，阶段内按 `muon`／`adamw`／`sinkhorn` 分类维护各组学习率、衰减和算法参数，warmup 由阶段统一管理；`grpo.yaml` 提供 GRPO rollout 与更新参数（当前 Artzip 每场 16 条样本、仅按 1200 秒时间上限终止），固定动作顺序由启用技能和 policy 配置生成并写入 cache/checkpoint
 │   ├── policy/                                       跨训练与策略运行时共享的策略输入配置
 │   │   └── normalizer.yaml                           训练、回放和部署共用的归一化尺度：MP 10000、相对时间与绝对时长分别为 270 秒、目标数 5、单次威力 2000
 │   ├── skills/                                       职业配置目录，每个职业一个 YAML，只写该职业自己的静态定义
@@ -186,7 +187,7 @@ FFXIV_CCG/
 
 ## 上下文与缓存契约
 
-内部推进与公开 `AdvanceTo` 共用同一个事件内核。阶段 3 的历史和最新状态统一为上一动作后与当前请求快照，按请求身份关联并冻结；wait 的动作后状态来自决策落实时，历史裁剪不丢失已知前序快照。真实动作前后统计与模型状态独立保存。阶段 4 已删除技能绝对时间 `time_seconds`，技能数值特征为 16 维，两段基础状态继续保留时间，移除两段累计威力及冗余 mp_ratio 后共 80 维；独立技能状态注册表按两段快照、固定动作顺序、可用性／当前层数／恢复时间展开，使当前黑魔 25 个动作的状态值为 80 + 25 × 2 × 3 = 230 维，null/reset 为 80 维；在线历史身份从当前请求状态获取时间，并逐字段确认复用。阶段 5 编码顺序为场景、状态、技能交错、最新状态，所有有效场景、历史状态/动作、死亡事件及最新状态共用 model.context_capacity token 总预算，默认 1024；每条死亡标记占一个 token，各样本有效前缀压紧后统一补齐，物理序列也不超过预算。窗口重置和额外裁剪保留所选动作窗口首尾边界的死亡标记，同边界多次死亡保持原顺序，零动作历史也可包含死亡 token；历史游标仍只统计动作。当前 canonical 17、桥接 20、checkpoint 输入 26、样本 schema 12、cache v26/转换 v29、部署 29/manifest 17、GRPO rollout 7；字段归一化契约为 4。
+内部推进与公开 `AdvanceTo` 共用同一个事件内核。阶段 3 的历史和最新状态统一为上一动作后与当前请求快照，按请求身份关联并冻结；wait 的动作后状态来自决策落实时，历史裁剪不丢失已知前序快照。真实动作前后统计与模型状态独立保存。阶段 4 已删除技能绝对时间 `time_seconds`，技能数值特征为 16 维，两段基础状态继续保留时间，移除两段累计威力及冗余 mp_ratio 后共 80 维；独立技能状态注册表按两段快照、固定动作顺序、可用性／当前层数／恢复时间展开，使当前黑魔 25 个动作的状态值为 80 + 25 × 2 × 3 = 230 维，null/reset 为 80 维；在线历史身份从当前请求状态获取时间，并逐字段确认复用。阶段 5 编码顺序为场景、状态、技能交错、最新状态，所有有效场景、历史状态/动作、死亡事件及最新状态共用 model.context_capacity token 总预算，默认 1024；每条死亡标记占一个 token，各样本有效前缀压紧后统一补齐，物理序列也不超过预算。窗口重置和额外裁剪保留所选动作窗口首尾边界的死亡标记，同边界多次死亡保持原顺序，零动作历史也可包含死亡 token；历史游标仍只统计动作。当前 canonical 17、桥接 20、checkpoint 输入 27、样本 schema 12、cache v26/转换 v29、部署 29/manifest 17、GRPO rollout 7；字段归一化契约为 4。
 
 完整历史 bank 保存原始 FP32 ABS、相邻 DELTA、null 和 reset；当前状态也保存 raw ABS/DELTA，场景保存完整绝对时间。ContextEncoder 在模型外统一进行窗口 gather、ABS 重锚、场景裁剪排序及有符号归一化，数值输入保持 FP32。基础状态只有 time_seconds 以首个可见 request_state.time_seconds 为原点，首条使用偏移、后续使用 DELTA，缺失恢复和重锚仅为时间列设置 ABS reset；MP、布尔、层数、量谱和有上限的剩余时长逐步使用归一化绝对值，技能三元组也保持绝对值。战斗时间和场景起止坐标使用保存的 normalizer 契约 time_scale，GCD、冷却、Buff/DoT 剩余时间、明确声明秒单位的量谱及场景持续时长使用 duration_scale，两者默认均为 270 秒；时间坐标和场景持续时长不 clipping。MP/耗蓝除以 10000，计数资源和已注册 Buff 层数除以各自上限；场景目标数截断到 0～5 后除以 5，单次威力截断到 0～2000 后除以 2000。状态中的当前层数除以保存的技能注册上限，可用性保持 0/1，下一层恢复秒数除以 duration_scale；历史技能移除充能与恢复时间两列，保留的 max_charges 仍除以冻结记录中的自身原值，累计威力不进入模型，只在真实执行 metadata 中用于 PPG。模型新增零初始化的 state_reset_proj；超过共享 token 预算时保留 K=8 条完整状态/动作记录并重新累积；每次重置按新历史锚点重新计算有效场景，离线随机读取和实时回放共用确定性的分块窗口规则，真实引擎时间、伤害与 PPG 分母不重置。ONNX 宿主执行同一编码，图接收已编码的 14 个输入，包含独立的 `history_dead_positions`／`history_dead_mask`；重锚后 KV prefix 必须重建。
 
@@ -194,10 +195,10 @@ FFXIV_CCG/
 
 ## 模型结构与产物兼容性
 
-输入编码取消各类独立 LayerNorm，在 content 与 role 相加后统一执行一次无参数 RMSNorm，epsilon 为 1e-5；Transformer 主干统一要求 PreNorm，两处子层归一化及最终读出也采用无参数 RMSNorm，epsilon 为 1e-5。`full_attention_residuals=false` 使用 Hyper-Connections：初始 token 复制成 `hc_mult` 路（当前 4 路），每层 attention 与 FFN 各有一组 `fn/base/scale`，在 FP32 中由展平残差流动态计算 pre、post 与残差混合矩阵；混合投影的 RMS 统计固定使用 1e-20，pre 为 sigmoid 加 `hc_eps`，post 为两倍 sigmoid，矩阵先逐行 softmax 再按列及交替行列做 Sinkhorn 归一化，当前 `hc_sinkhorn_iters=20`、`hc_eps=1e-6`。首个 attention 选择第一路，之后每个子层使用前一子层给出的 pre，末端按最后 FFN 的 pre 加权求和后执行最终 RMSNorm；四个旧 `residual_mix_*` 配置已删除。新训练的 fn 使用 Xavier 随机初始化，scale 为 0.01，pre base 为 logit(1/hc_mult)，post base 为 0，残差混合 base 对角为 4、其余为 0；这些是本项目从头训练的初始化选择。Full AttnRes 使用独立深度聚合路径，不创建 HC 参数。Q/K 在 RoPE 后逐 head 执行无参数 RMSNorm（`eps=None`），各自乘以保存的 `model.qk_norm_scale`（黑魔 Artzip 当前为 1.2）；KV-cache 只对新 K 归一化一次，缓存仍为单组 MQA K/V。
+输入编码取消各类独立 LayerNorm，在 content 与 role 相加后统一执行一次无参数 RMSNorm，epsilon 为 1e-5；Transformer 主干统一要求 PreNorm，两处子层归一化及最终读出采用可学习 RMSNorm，epsilon 固定为 1e-20，在 FP32 中统计并归一化，乘通道尺度 γ 后恢复输入 dtype。γ 初始化为全 1，保存在各层 `norm1.weight`、`norm2.weight` 及 `encoder.norm.weight`；当前 6 层、384 维共 13 组、4992 个参数。`full_attention_residuals=false` 使用 Hyper-Connections：初始 token 复制成 `hc_mult` 路（当前 4 路），每层 attention 与 FFN 各有一组 `fn/base/scale`，在 FP32 中由展平残差流动态计算 pre、post 与残差混合矩阵；混合投影的 RMS 统计固定使用 1e-20，pre 为 sigmoid 加 `hc_eps`，post 为两倍 sigmoid，矩阵先逐行 softmax 再按列及交替行列做 Sinkhorn 归一化，当前 `hc_sinkhorn_iters=20`、`hc_eps=1e-6`。首个 attention 选择第一路，之后每个子层使用前一子层给出的 pre，末端按最后 FFN 的 pre 加权求和后执行最终 RMSNorm；四个旧 `residual_mix_*` 配置已删除。新训练的 fn 使用 Xavier 随机初始化，scale 为 0.01，pre base 为 logit(1/hc_mult)，post base 为 0，残差混合 base 对角为 4、其余为 0；这些是本项目从头训练的初始化选择。Full AttnRes 使用独立深度聚合路径，不创建 HC 参数。注意力统一使用低秩 Q 与共享 KV 投影：Q 经 `self_attn.q_a`、可学习 `q_norm` 和 `q_b` 后分头并执行 RoPE，KV 经 `kv_proj`、逐头共享的可学习 `kv_norm` 后执行 RoPE；旋转后的同一表示同时用于 K 和 V，注意力输出按 query 位置执行逆 RoPE 后再输出投影。两处归一化复用主干 RMSNorm 的 FP32、可学习 γ 和 `1e-20` epsilon；移除 `qk_norm_scale`，黑魔 Artzip 的 `q_lora_rank=96`、KV 宽度为 64。训练、trace 与 KV-cache 共用该路径，仅对新 KV 归一化一次，缓存中的 K/V 复用同一表示。
 
-SwiGLU 的 up 与 gate 投影在 FP32 中裁剪：up 限制在 `[-swiglu_limit, swiglu_limit]`，gate 在 SiLU 前仅限制上界 `swiglu_limit`，再执行 `SiLU(gate)*up` 并恢复投影精度进入 down；当前阈值为 10.0。`ff_dim=1536` 仍按三投影参数预算折算为实际 1024 维隐藏层，GELU/ReLU 不执行该裁剪。SwiGLU 阈值、HC 路数、Sinkhorn 迭代数及 epsilon 均保存在模型配置与 checkpoint 中，不从本机 YAML 覆盖已保存的执行契约。checkpoint 输入契约本次仅由 25 升至 26，部署 schema 同步拒绝旧描述；旧 checkpoint 需重新训练，部署包与 GRPO 轨迹需重新生成。本次主干变化不改变输入数值、raw bank 或 compiled cache，既有数据缓存可继续复用。
+SwiGLU 的 up 与 gate 投影在 FP32 中裁剪：up 限制在 `[-swiglu_limit, swiglu_limit]`，gate 在 SiLU 前仅限制上界 `swiglu_limit`，再执行 `SiLU(gate)*up` 并恢复投影精度进入 down；当前阈值为 10.0。`ff_dim=1536` 仍按三投影参数预算折算为实际 1024 维隐藏层，GELU/ReLU 不执行该裁剪。SwiGLU 阈值、HC 路数、Sinkhorn 迭代数及 epsilon 均保存在模型配置与 checkpoint 中，不从本机 YAML 覆盖已保存的执行契约。可学习 RMSNorm、低秩 Q 与共享 KV 的投影、正／逆 RoPE 及计算精度纳入输入契约，本分支已提升的契约版本保持不变，部署 schema 同步拒绝旧描述；旧注意力结构的 checkpoint 需重新训练，部署包与 GRPO 轨迹需重新生成。本次主干变化不改变输入数值、raw bank 或 compiled cache，既有数据缓存可继续复用。
 
-CUDA 训练且启用梯度时，HC 的系数生成、读流及残差合成使用独立的 `torch.compile` 入口，将局部 checkpoint 与反向一起编译；系数与 Sinkhorn 使用延迟导入的 Triton 核，在片上迭代小矩阵，前向不保存逐轮中间量，反向临时重算后解析求导。编译入口显式关闭 autocast，保证 HC 投影及反向矩阵乘仍为 FP32。加权读流与紧随的 RMSNorm 合并编译，保留读流转回原 dtype 的舍入及 CUDA AMP 的归一化精度。残差合成融合乘加、归约与精度转换，不物化五维广播乘积。RoPE 每次编码只计算一份 FP32 cos/sin，供 Q/K、所有层及重算共用；KV-cache 只计算本次新增位置的三角函数。SwiGLU 使用融合前后向，只保存原始 up/gate，不再叠加 CUDA 门控局部 checkpoint；CPU 保留 HC 与 SwiGLU 局部 checkpoint，整 FFN 重算启用时不再嵌套 CPU 门控重算。局部重算均使用 `use_reentrant=False`、`preserve_rng_state=False`，确定性计算内部没有 dropout；dropout 保留在外层，验证、推理与 ONNX 导出直接执行原公式。编译对象不替换模型模块，参数名称、身份、state_dict、YAML 和契约版本保持不变。
+CUDA 训练且启用梯度时，HC 的系数生成、读流及残差合成使用独立的 `torch.compile` 入口，将局部 checkpoint 与反向一起编译；系数与 Sinkhorn 使用延迟导入的 Triton 核，在片上迭代小矩阵，前向不保存逐轮中间量，反向临时重算后解析求导。编译入口显式关闭 autocast，保证 HC 投影及反向矩阵乘仍为 FP32。加权读流与紧随的 RMSNorm 合并编译，保留读流转回原 dtype 的舍入，并按统一公式在 FP32 中归一化、乘 γ 后恢复输入 dtype。残差合成融合乘加、归约与精度转换，不物化五维广播乘积。RoPE 每次编码只计算一份 FP32 cos/sin，供 Q/K、所有层及重算共用；KV-cache 只计算本次新增位置的三角函数。SwiGLU 使用融合前后向，只保存原始 up/gate，不再叠加 CUDA 门控局部 checkpoint；CPU 保留 HC 与 SwiGLU 局部 checkpoint，整 FFN 重算启用时不再嵌套 CPU 门控重算。局部重算均使用 `use_reentrant=False`、`preserve_rng_state=False`，确定性计算内部没有 dropout；dropout 保留在外层，验证、推理与 ONNX 导出直接执行原公式。上述训练融合不替换模型模块，不额外改变参数身份或已声明的模型契约。
 
-动作读出使用独立无 bias 输出头，初始化按 `action_to_vocab_id` 顺序复制技能 embedding 的动作行，后续独立训练；以 FP32 执行 `s*tanh(logits/s)`，s 由保存的 `model.logit_softcap` 提供，黑魔 Artzip 当前为 15.0。训练、trace、KV-cache、Full AttnRes 与 ONNX 共用动作头和 softcap；ONNX 适配层在 softcap 后将输出恢复为部署目标精度，图内不包含宿主重复惩罚和合法性过滤。checkpoint 恢复已学习的独立头与保存的两种尺度，不从本机 YAML 补默认值。黑魔 Artzip 主线为 6 层、d_model 384、6 个 Q head、1 个 KV head、ff_dim 1536。此次输入归一化与状态字段修改需一次性重建 raw 双 bank cache；后续容量、保留数及随机裁剪变化复用同一 cache；time_scale 或 duration_scale 变化进入缓存签名，需重新编译 cache。旧共享头、未归一化 Q/K、旧普通相加残差、旧 LayerNorm 主干或旧输入编码的 checkpoint 和部署包拒绝复用，需重新训练、导出；旧技能时间字段或旧状态语义产物仍须重建。
+动作读出使用独立无 bias 输出头，初始化按 `action_to_vocab_id` 顺序复制技能 embedding 的动作行，后续独立训练；以 FP32 执行 `s*tanh(logits/s)`，s 由保存的 `model.logit_softcap` 提供，黑魔 Artzip 当前为 15.0。训练、trace、KV-cache、Full AttnRes 与 ONNX 共用动作头和 softcap；ONNX 适配层在 softcap 后将输出恢复为部署目标精度，图内不包含宿主重复惩罚和合法性过滤。checkpoint 恢复已学习的独立头、Q 低秩宽度与保存的 softcap，不从本机 YAML 补默认值。黑魔 Artzip 主线为 6 层、d_model 384、6 个 Q head、1 个 KV head、ff_dim 1536。此次输入归一化与状态字段修改需一次性重建 raw 双 bank cache；后续容量、保留数及随机裁剪变化复用同一 cache；time_scale 或 duration_scale 变化进入缓存签名，需重新编译 cache。旧共享头、未归一化 Q/K、旧普通相加残差、旧 LayerNorm 主干或旧输入编码的 checkpoint 和部署包拒绝复用，需重新训练、导出；旧技能时间字段或旧状态语义产物仍须重建。

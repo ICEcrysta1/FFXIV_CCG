@@ -11,6 +11,7 @@ from common.policy.model import CausalPolicyModel
 from common.policy.model.execution import causal_encoder
 from common.policy.model.layers import residual_mix
 from common.policy.model.layers.residual_mix import HyperConnections
+from common.policy.model.layers.transformer import RMSNorm
 from tests.training._causal_fixtures import make_batch, make_data_spec
 
 
@@ -56,7 +57,9 @@ def test_cuda_compiled_hyper_connections_preserve_public_outputs_gradients_and_s
         module.scale.copy_(torch.tensor([0.7, -0.4, 0.6], device="cuda"))
         module.base.copy_(torch.linspace(-0.4, 0.7, 24, device="cuda"))
     reference = deepcopy(module).eval()
-    norm = torch.nn.RMSNorm(8).cuda()
+    norm = RMSNorm(8, dtype=torch.float32 if amp else dtype).cuda()
+    with torch.no_grad():
+        norm.weight.copy_(torch.linspace(0.6, 1.4, 8, device="cuda"))
     reference_norm = deepcopy(norm)
     saved_state = {name: value.detach().clone() for name, value in module.state_dict().items()}
     # 首个布局保留 expand 的零 stride，随后改变 batch/长度并使用普通残差流。
@@ -84,7 +87,7 @@ def test_cuda_compiled_hyper_connections_preserve_public_outputs_gradients_and_s
                 normalized = current.collapse(values, pre, current_norm) if current is module else current_norm(collapsed)
                 combined = current.combine(sublayer_output, values, post, comb)
                 assert all(value.dtype == torch.float32 for value in (pre, post, comb))
-                assert collapsed.dtype == combined.dtype == dtype
+                assert collapsed.dtype == normalized.dtype == combined.dtype == dtype
                 results.append((pre, post, comb, collapsed, normalized, combined))
         for actual, expected in zip(*results, strict=True):
             tolerance = 0.016 if actual.dtype == torch.bfloat16 else 2e-5
@@ -103,6 +106,112 @@ def test_cuda_compiled_hyper_connections_preserve_public_outputs_gradients_and_s
         for name, value in module.state_dict().items():
             assert value.dtype == saved_state[name].dtype == torch.float32
             torch.testing.assert_close(value, saved_state[name], rtol=0, atol=0)
+
+
+def test_cuda_warmed_model_keeps_default_compile_limit_across_shapes_and_gradient_states(tmp_path):
+    if not torch.cuda.is_available():
+        pytest.skip("需要 CUDA 验证完整模型的编译缓存与普通反向")
+    if not torch.cuda.is_bf16_supported():
+        pytest.skip("需要 CUDA BF16 autocast 支持")
+    from training.config import RunConfig
+    from training.loop.training_loop import _warmup_compiled_training
+
+    # 只在开始重置一次，保留预热、不同层和正式反向共享的编译缓存。
+    torch._dynamo.reset()
+    model = _model(d_model=8, n_layers=6, n_heads=2, ff_dim=16, context_capacity=32).cuda().train()
+    reference = deepcopy(model).eval()
+    config = RunConfig(
+        raw_data_dir=tmp_path / "raw", output_dir=tmp_path / "output", job_tag="black_mage",
+        model_variant="artzip", model=model.config, batch_size=2, precision="bf16", fp32_gradients=True,
+    )
+    assert all(parameter.dtype == torch.float32 and parameter.grad is None for parameter in model.parameters())
+    _warmup_compiled_training(model, config)
+    assert all(parameter.grad is None for parameter in model.parameters())
+
+    norm_weights = [module.weight for module in model.modules() if isinstance(module, RMSNorm)]
+    assert len(norm_weights) == 4 * model.config.n_layers + 1
+    checked_parameters = [*norm_weights, *model.encoder.residual_mix.parameters()]
+    shapes = ((2, 0, 0), (1, 1, 1), (2, 3, 2), (1, 5, 1), (2, 2, 0), (2, 0, 1), (2, 0, 1))
+    for index, (batch_size, history_length, scene_length) in enumerate(shapes):
+        # 最后一批保留已有梯度，同时验证 None→Tensor 与 Tensor 上的梯度累加。
+        if index < len(shapes) - 1:
+            model.zero_grad(set_to_none=True)
+            reference.zero_grad(set_to_none=True)
+            assert all(parameter.grad is None for parameter in model.parameters())
+        else:
+            assert all(parameter.grad is not None for parameter in checked_parameters)
+        batch = make_batch(batch_size=batch_size, history_length=history_length, scene_length=scene_length)
+        batch = {name: value.cuda() if isinstance(value, torch.Tensor) else value for name, value in batch.items()}
+        batch["current_state_vectors"] = torch.randn_like(batch["current_state_vectors"], requires_grad=True)
+        reference_batch = deepcopy(batch)
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            actual = model(batch)["logits"]
+            expected = reference(reference_batch)["logits"]
+        assert torch.isfinite(actual).all()
+        torch.testing.assert_close(actual, expected, rtol=0.016, atol=0.016)
+        actual.float().square().mean().backward()
+        expected.float().square().mean().backward()
+        torch.testing.assert_close(
+            batch["current_state_vectors"].grad, reference_batch["current_state_vectors"].grad,
+            rtol=0.025, atol=2e-4,
+        )
+        for (name, parameter), (expected_name, target) in zip(
+            model.named_parameters(), reference.named_parameters(), strict=True,
+        ):
+            assert name == expected_name
+            if target.grad is None:
+                assert parameter.grad is None
+                continue
+            assert parameter.grad is not None and torch.isfinite(parameter.grad).all(), name
+            torch.testing.assert_close(parameter.grad, target.grad, rtol=0.025, atol=2e-4, msg=name)
+        assert all(parameter.grad is not None and torch.isfinite(parameter.grad).all()
+                   for parameter in checked_parameters)
+
+
+def test_cuda_collapse_keeps_compile_cache_across_warmup_and_partial_batches():
+    if not torch.cuda.is_available():
+        pytest.skip("需要 CUDA 验证预热与尾批跨越归约尺寸阈值")
+    if not torch.cuda.is_bf16_supported():
+        pytest.skip("需要 CUDA BF16 autocast 支持")
+    torch._dynamo.reset()
+    torch.manual_seed(109)
+    module = HyperConnections(384).cuda().train()
+    reference = deepcopy(module).eval()
+    norm = RMSNorm(384).cuda()
+    reference_norm = deepcopy(norm)
+
+    def check_shape(batch_size, length, expanded):
+        shape = (batch_size, length, 384) if expanded else (batch_size, length, 4, 384)
+        source = torch.randn(shape, device="cuda", dtype=torch.float32 if expanded else torch.bfloat16,
+                             requires_grad=True)
+        if expanded:
+            streams, pre = module.expand(source)
+            inputs = (source,)
+        else:
+            streams = source
+            pre = torch.rand(batch_size, length, 4, device="cuda", requires_grad=True)
+            inputs = (source, pre)
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            actual = module.collapse(streams, pre, norm)
+        upstream = torch.randn_like(actual)
+        actual_gradients = torch.autograd.grad(actual, (*inputs, norm.weight), grad_outputs=upstream)
+        # 先释放编译路径的反向图，再构造独立 eager 图，限制大形状的同时驻留量。
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            expected = reference.collapse(streams, pre, reference_norm)
+        expected_gradients = torch.autograd.grad(expected, (*inputs, reference_norm.weight), grad_outputs=upstream)
+        tolerance = 3e-5 if expanded else 0.016
+        torch.testing.assert_close(actual, expected, rtol=tolerance, atol=tolerance)
+        for index, (actual_gradient, expected_gradient) in enumerate(zip(actual_gradients, expected_gradients, strict=True)):
+            assert torch.isfinite(actual_gradient).all()
+            # γ 在约两万个 token 上做 FP32 归约，融合核的求和顺序允许少量绝对舍入误差。
+            absolute_tolerance = 2e-4 if expanded and index == len(actual_gradients) - 1 else tolerance
+            torch.testing.assert_close(actual_gradient, expected_gradient, rtol=tolerance, atol=absolute_tolerance)
+        assert norm.weight.grad is None and reference_norm.weight.grad is None
+
+    # 保持生产预热顺序；固定首层与可学习后续流各覆盖四种 batch/token 特化。
+    for batch_size, length in ((20, 1023), (20, 1), (1, 1023), (1, 1), (10, 946), (20, 32)):
+        for expanded in (True, False):
+            check_shape(batch_size, length, expanded)
 
 
 @pytest.mark.parametrize("mult,iterations,eps,uniform", (
@@ -208,7 +317,10 @@ def test_hyper_connection_recompute_saves_original_storage_and_preserves_gradien
     torch.manual_seed(50)
     module = HyperConnections(8).train()
     reference = deepcopy(module).eval()
-    norm = torch.nn.RMSNorm(8)
+    norm = RMSNorm(8)
+    with torch.no_grad():
+        norm.weight.copy_(torch.linspace(0.6, 1.4, 8))
+    reference_norm = deepcopy(norm)
     streams = torch.randn(2, 8, 4, 8, dtype=torch.bfloat16, requires_grad=True)
     pre = torch.randn(2, 8, 4, requires_grad=True)
     output = torch.randn(2, 8, 8, dtype=torch.bfloat16, requires_grad=True)
@@ -217,7 +329,7 @@ def test_hyper_connection_recompute_saves_original_storage_and_preserves_gradien
               "combine": (output, streams, pre, comb)}[operation]
     reference_inputs = tuple(value.detach().clone().requires_grad_() for value in inputs)
     results, storage_bytes = [], []
-    for current, values in ((module, inputs), (reference, reference_inputs)):
+    for current, values, current_norm in ((module, inputs, norm), (reference, reference_inputs, reference_norm)):
         saved = {}
 
         def pack(value, saved=saved):
@@ -226,7 +338,8 @@ def test_hyper_connection_recompute_saves_original_storage_and_preserves_gradien
             return value
 
         with torch.autograd.graph.saved_tensors_hooks(pack, lambda value: value):
-            result = current.collapse(*values, norm) if operation == "collapse_norm" else getattr(current, operation)(*values)
+            result = (current.collapse(*values, current_norm) if operation == "collapse_norm"
+                      else getattr(current, operation)(*values))
         results.append(result if isinstance(result, tuple) else (result,))
         storage_bytes.append(sum(saved.values()))
     assert storage_bytes[0] < storage_bytes[1]
@@ -242,6 +355,9 @@ def test_hyper_connection_recompute_saves_original_storage_and_preserves_gradien
         for actual, expected in zip(module.parameters(), reference.parameters(), strict=True):
             assert actual.grad is not None and torch.isfinite(actual.grad).all()
             torch.testing.assert_close(actual.grad, expected.grad, rtol=1e-6, atol=1e-6)
+    if operation == "collapse_norm":
+        assert norm.weight.grad is not None and torch.isfinite(norm.weight.grad).all()
+        torch.testing.assert_close(norm.weight.grad, reference_norm.weight.grad, rtol=1e-6, atol=1e-6)
 
 
 @pytest.mark.parametrize("mode", ("eval", "no_grad", "onnx"))

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import pytest
 import torch
+import torch.nn.functional as F
 from torch import nn
 
+from common.policy.model.attention.attention_variants import manual_attention
 from common.policy.model.attention.grouped_attention import (
     GroupedQueryAttention,
     scaled_dot_product_attention,
 )
-from common.policy.model.attention.attention_variants import manual_attention
 from common.policy.model.attention.position_encoding import RotaryPositionEncoding
 from common.policy.model.execution.causal_encoder import (
     project_qkv,
@@ -62,6 +63,10 @@ def test_mqa_uses_small_kv_projections_and_runs_layer_forward():
     assert query.shape == (2, 5, 8)
     assert key.shape == (2, 5, 2)
     assert value.shape == (2, 5, 2)
+    assert key is value
+    assert layer.self_attn.q_a.weight.shape == (2, 8)
+    assert layer.self_attn.q_b.weight.shape == (8, 2)
+    assert layer.self_attn.q_norm.eps == layer.self_attn.kv_norm.eps == 1e-20
 
     output = layer(values)
     output.square().mean().backward()
@@ -69,6 +74,56 @@ def test_mqa_uses_small_kv_projections_and_runs_layer_forward():
     assert output.shape == values.shape
     assert values.grad is not None
     assert torch.isfinite(values.grad).all()
+
+
+@pytest.mark.parametrize("num_kv_heads", (1, 2, 4))
+def test_low_rank_query_shared_kv_and_inverse_rotation_match_formula(num_kv_heads):
+    """独立公式覆盖归一化位置、共享旋转 KV、输出逆旋转及全部投影梯度。"""
+    torch.manual_seed(27)
+    encoder = _make_encoder(num_kv_heads=num_kv_heads)
+    layer = encoder.layers[0]
+    attention = layer.self_attn
+    with torch.no_grad():
+        attention.q_norm.weight.copy_(torch.linspace(0.6, 1.4, attention.q_lora_rank))
+        attention.kv_norm.weight.copy_(torch.linspace(0.7, 1.3, attention.head_dim))
+    tokens = torch.randn(2, 5, 8, requires_grad=True)
+    positions = torch.tensor([[0, 1, 2, 3, 4], [0, 0, 1, 2, 3]])
+    encoded = {**_make_encoded(tokens), "position_ids": positions}
+    actual, _, _ = run_causal_encoder(encoder, encoded)
+
+    values = layer.norm1(tokens)
+    latent = F.linear(values, attention.q_a.weight, attention.q_a.bias)
+    latent = latent.float() * torch.rsqrt(latent.float().square().mean(-1, keepdim=True) + 1e-20)
+    query = F.linear(latent * attention.q_norm.weight, attention.q_b.weight, attention.q_b.bias)
+    kv = F.linear(values, attention.kv_proj.weight, attention.kv_proj.bias)
+    kv = kv.reshape(2, 5, num_kv_heads, attention.head_dim)
+    kv = kv.float() * torch.rsqrt(kv.float().square().mean(-1, keepdim=True) + 1e-20)
+    kv = (kv * attention.kv_norm.weight).transpose(1, 2)
+    query = query.reshape(2, 5, attention.num_heads, attention.head_dim).transpose(1, 2)
+    frequencies = positions.float()[..., None] * encoder.rotary_position_encoding.inv_freq
+    cosine, sine = frequencies.cos()[:, None], frequencies.sin()[:, None]
+
+    def rotate(values, inverse=False):
+        first, second = values.chunk(2, dim=-1)
+        direction = -1 if inverse else 1
+        return torch.cat((first * cosine - direction * second * sine,
+                          direction * first * sine + second * cosine), dim=-1)
+
+    query, kv = rotate(query), rotate(kv)
+    kv = kv.repeat_interleave(attention.num_heads // num_kv_heads, dim=1)
+    scores = query @ kv.transpose(-1, -2) / attention.head_dim**0.5
+    allowed = torch.ones(5, 5, dtype=torch.bool).tril()
+    weights = scores.masked_fill(~allowed, float("-inf")).softmax(-1)
+    attended = rotate(weights @ kv, inverse=True).transpose(1, 2).reshape(2, 5, 8)
+    hidden = tokens + F.linear(attended, attention.out_proj.weight, attention.out_proj.bias)
+    expected = encoder.norm(hidden + layer._ff_block(layer.norm2(hidden)))
+    upstream = torch.randn_like(actual)
+    parameters = (tokens, *attention.parameters())
+    actual_gradients = torch.autograd.grad(actual, parameters, upstream)
+    expected_gradients = torch.autograd.grad(expected, parameters, upstream)
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-5)
+    for actual_gradient, expected_gradient in zip(actual_gradients, expected_gradients, strict=True):
+        torch.testing.assert_close(actual_gradient, expected_gradient, rtol=1e-4, atol=1e-5)
 
 
 def test_non_batch_first_keeps_attention_weights_batch_first():
@@ -201,7 +256,7 @@ def test_grouped_sdpa_matches_explicit_kv_forward_and_gradients(
         if mask_kind == "head_bias":
             mask = torch.randn(2, head_count, 5, 7, device=device, dtype=dtype)
             mask = mask.masked_fill(~allowed, float("-inf"))
-    kwargs = dict(attn_mask=mask, dropout_p=0.0, is_causal=mask_kind == "causal")
+    kwargs = {"attn_mask": mask, "dropout_p": 0.0, "is_causal": mask_kind == "causal"}
     actual = scaled_dot_product_attention(query, key, value, **kwargs)
     expected = torch.nn.functional.scaled_dot_product_attention(
         query,

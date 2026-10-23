@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -10,7 +9,12 @@ import pytest
 import yaml
 
 from common.policy.config import ModelConfig
-from common.training.optimizer_config import OptimizerConfig
+from common.training.optimizer_config import (
+    AdamWConfig,
+    MuonConfig,
+    OptimizerConfig,
+    SinkhornConfig,
+)
 from grpo.config import GrpoConfig, load_grpo_config, load_grpo_run_config
 from training.config import RunConfig, load_run_config
 
@@ -98,13 +102,19 @@ def test_bc_fp32_gradients_rejects_non_boolean_yaml(tmp_path, value):
         load_run_config(path)
 
 
-def test_bc_optimizer_reads_explicit_muon_parameters(tmp_path):
+def test_bc_optimizer_reads_explicit_algorithm_parameters(tmp_path):
     optimizer = {
         "name": "muon",
-        "momentum": 0.9,
-        "nesterov": False,
-        "ns_steps": 3,
-        "adjust_lr_fn": "original",
+        "muon": {
+            "momentum": 0.9, "nesterov": False, "ns_steps": 3,
+            "adjust_lr_fn": "original", "eps": 1e-6,
+            "ns_coefficients": [3.0, -4.0, 2.0],
+        },
+        "adamw": {"betas": [0.8, 0.99], "eps": 1e-7, "amsgrad": True},
+        "sinkhorn": {
+            "momentum": 0.8, "nesterov": False, "iters": 7,
+            "threshold": 0.002, "eps": 1e-15, "lr_scale": 0.3,
+        },
     }
     loaded = load_run_config(
         _write_config(
@@ -113,7 +123,14 @@ def test_bc_optimizer_reads_explicit_muon_parameters(tmp_path):
         )
     )
 
-    assert asdict(loaded.optimizer) == optimizer
+    assert loaded.optimizer == OptimizerConfig(
+        name="muon",
+        muon=MuonConfig(momentum=0.9, nesterov=False, ns_steps=3, adjust_lr_fn="original",
+                        eps=1e-6, ns_coefficients=(3.0, -4.0, 2.0)),
+        adamw=AdamWConfig(betas=(0.8, 0.99), eps=1e-7, amsgrad=True),
+        sinkhorn=SinkhornConfig(momentum=0.8, nesterov=False, iters=7, threshold=0.002,
+                               eps=1e-15, lr_scale=0.3),
+    )
     assert loaded.learning_rate == 2e-4
     assert loaded.weight_decay == 0.02
 
@@ -125,76 +142,148 @@ def test_bc_optimizer_partial_mapping_uses_explicit_algorithm_defaults(tmp_path,
     )
 
     assert loaded.optimizer == OptimizerConfig(name=name)
-    assert loaded.optimizer.adjust_lr_fn == "match_rms_adamw"
+    assert loaded.optimizer.muon.adjust_lr_fn == "match_rms_adamw"
 
 
+@pytest.mark.parametrize("group", [None, "muon", "adamw", "sinkhorn"])
 @pytest.mark.parametrize("raw", [None, False, 0, "muon", [], ["muon"]])
-def test_bc_optimizer_rejects_non_mapping_sections(tmp_path, raw):
-    path = _write_config(tmp_path, {"training": {"optimizer": raw}})
-    with pytest.raises(TypeError, match="optimizer must be a mapping"):
+def test_bc_optimizer_rejects_non_mapping_sections(tmp_path, group, raw):
+    values = raw if group is None else {group: raw}
+    path = _write_config(tmp_path, {"training": {"optimizer": values}})
+    label = "optimizer" if group is None else f"optimizer.{group}"
+    with pytest.raises(TypeError, match=f"{label} must be a mapping"):
         load_run_config(path)
 
 
-def test_bc_optimizer_rejects_unknown_fields(tmp_path):
-    path = _write_config(
-        tmp_path,
-        {"training": {"optimizer": {"name": "muon", "momentun": 0.9}}},
-    )
+@pytest.mark.parametrize("group", [None, "muon", "adamw", "sinkhorn"])
+def test_bc_optimizer_rejects_unknown_fields(tmp_path, group):
+    values = {"momentun": 0.9} if group is None else {group: {"momentun": 0.9}}
+    path = _write_config(tmp_path, {"training": {"optimizer": values}})
     with pytest.raises(ValueError, match="unknown fields: momentun"):
         load_run_config(path)
 
 
 @pytest.mark.parametrize(
-    ("field_name", "value", "error_type"),
+    ("group", "field_name", "value", "error_type"),
     [
-        ("name", "sgd", ValueError),
-        ("name", "Muon", ValueError),
-        ("name", None, ValueError),
-        ("name", True, ValueError),
-        ("name", [], ValueError),
-        ("momentum", -0.1, ValueError),
-        ("momentum", 1.0, ValueError),
-        ("momentum", float("nan"), ValueError),
-        ("momentum", float("inf"), ValueError),
-        ("momentum", float("-inf"), ValueError),
-        ("momentum", "0.95", TypeError),
-        ("momentum", True, TypeError),
-        ("momentum", None, TypeError),
-        ("nesterov", "false", TypeError),
-        ("nesterov", 0, TypeError),
-        ("nesterov", 1, TypeError),
-        ("nesterov", None, TypeError),
-        ("ns_steps", 0, ValueError),
-        ("ns_steps", 100, ValueError),
-        ("ns_steps", 5.0, TypeError),
-        ("ns_steps", "5", TypeError),
-        ("ns_steps", True, TypeError),
-        ("ns_steps", float("nan"), TypeError),
-        ("ns_steps", float("inf"), TypeError),
-        ("adjust_lr_fn", "auto", ValueError),
-        ("adjust_lr_fn", None, ValueError),
-        ("adjust_lr_fn", True, ValueError),
-        ("adjust_lr_fn", [], ValueError),
+        (None, "name", "sgd", ValueError),
+        (None, "name", "Muon", ValueError),
+        (None, "name", None, ValueError),
+        (None, "name", True, ValueError),
+        (None, "name", [], ValueError),
+        ("muon", "momentum", -0.1, ValueError),
+        ("muon", "momentum", 1.0, ValueError),
+        ("muon", "momentum", float("nan"), ValueError),
+        ("muon", "momentum", float("inf"), ValueError),
+        ("muon", "momentum", float("-inf"), ValueError),
+        ("muon", "momentum", "0.95", TypeError),
+        ("muon", "momentum", True, TypeError),
+        ("muon", "momentum", None, TypeError),
+        ("muon", "nesterov", "false", TypeError),
+        ("muon", "nesterov", 0, TypeError),
+        ("muon", "nesterov", 1, TypeError),
+        ("muon", "nesterov", None, TypeError),
+        ("muon", "ns_steps", 0, ValueError),
+        ("muon", "ns_steps", 100, ValueError),
+        ("muon", "ns_steps", 5.0, TypeError),
+        ("muon", "ns_steps", "5", TypeError),
+        ("muon", "ns_steps", True, TypeError),
+        ("muon", "ns_steps", float("nan"), TypeError),
+        ("muon", "ns_steps", float("inf"), TypeError),
+        ("muon", "adjust_lr_fn", "auto", ValueError),
+        ("muon", "adjust_lr_fn", None, ValueError),
+        ("muon", "adjust_lr_fn", True, ValueError),
+        ("muon", "adjust_lr_fn", [], ValueError),
+        ("muon", "eps", 0.0, ValueError),
+        ("muon", "ns_coefficients", [1.0, 2.0], ValueError),
+        ("muon", "ns_coefficients", [1.0, True, 2.0], TypeError),
+        ("muon", "ns_coefficients", [1.0, float("inf"), 2.0], ValueError),
+        ("adamw", "betas", "0.9,0.999", TypeError),
+        ("adamw", "betas", [0.9], ValueError),
+        ("adamw", "betas", [True, 0.999], TypeError),
+        ("adamw", "betas", [0.9, 1.0], ValueError),
+        ("adamw", "betas", [-0.1, 0.999], ValueError),
+        ("adamw", "betas", [0.9, float("nan")], ValueError),
+        ("adamw", "eps", "1e-8", TypeError),
+        ("adamw", "eps", 0.0, ValueError),
+        ("adamw", "amsgrad", 1, TypeError),
+        ("sinkhorn", "momentum", 1.0, ValueError),
+        ("sinkhorn", "nesterov", 1, TypeError),
+        ("sinkhorn", "iters", 0, ValueError),
+        ("sinkhorn", "iters", 2, ValueError),
+        ("sinkhorn", "iters", 3.0, TypeError),
+        ("sinkhorn", "iters", True, TypeError),
+        ("sinkhorn", "threshold", -0.001, ValueError),
+        ("sinkhorn", "threshold", float("nan"), ValueError),
+        ("sinkhorn", "threshold", True, TypeError),
+        ("sinkhorn", "eps", 0.0, ValueError),
+        ("sinkhorn", "eps", float("inf"), ValueError),
+        ("sinkhorn", "eps", "1e-20", TypeError),
+        ("sinkhorn", "lr_scale", 0.0, ValueError),
+        ("sinkhorn", "lr_scale", -0.2, ValueError),
+        ("sinkhorn", "lr_scale", None, TypeError),
     ],
 )
 def test_bc_optimizer_rejects_invalid_parameters_in_yaml_and_direct_construction(
-    tmp_path, field_name, value, error_type
+    tmp_path, group, field_name, value, error_type,
 ):
-    values = {"name": "muon", field_name: value}
+    values = {field_name: value} if group is None else {group: {field_name: value}}
     path = _write_config(tmp_path, {"training": {"optimizer": values}})
+    label = f"optimizer.{field_name}" if group is None else f"optimizer.{group}.{field_name}"
+    config_type = {None: OptimizerConfig, "muon": MuonConfig, "adamw": AdamWConfig, "sinkhorn": SinkhornConfig}[group]
 
-    with pytest.raises(error_type, match=f"optimizer.{field_name}"):
+    with pytest.raises(error_type, match=label):
         load_run_config(path)
-    with pytest.raises(error_type, match=f"optimizer.{field_name}"):
-        OptimizerConfig(**values)
+    with pytest.raises(error_type, match=label):
+        config_type(**{field_name: value})
 
 
 @pytest.mark.parametrize("momentum", [0, 0.999])
 @pytest.mark.parametrize("ns_steps", [1, 99])
 def test_bc_optimizer_accepts_boundary_values(momentum, ns_steps):
-    config = OptimizerConfig(name="muon", momentum=momentum, ns_steps=ns_steps)
-    assert config.momentum == momentum
-    assert config.ns_steps == ns_steps
+    config = OptimizerConfig(name="muon", muon=MuonConfig(momentum=momentum, ns_steps=ns_steps))
+    assert config.muon.momentum == momentum
+    assert config.muon.ns_steps == ns_steps
+
+
+@pytest.mark.parametrize("group", ["muon", "adamw", "sinkhorn"])
+@pytest.mark.parametrize("value,error_type", [(0, ValueError), (-0.1, ValueError), (True, TypeError), (float("inf"), ValueError)])
+def test_algorithm_learning_rates_reject_invalid_values(group, value, error_type):
+    with pytest.raises(error_type, match=f"optimizer.{group}.learning_rate"):
+        OptimizerConfig.from_mapping({group: {"learning_rate": value}})
+
+
+@pytest.mark.parametrize("name", ["muon", "adamw"])
+@pytest.mark.parametrize("stage", ["bc", "grpo"])
+def test_nested_primary_rates_supply_phase_configuration(tmp_path, name, stage):
+    values = {"name": name, name: {"learning_rate": 2e-4, "weight_decay": 0.02}}
+    config = (load_run_config if stage == "bc" else load_grpo_config)(
+        _write_config(tmp_path, {"optimizers": {stage: values}}),
+    )
+    assert (config.learning_rate, config.weight_decay) == (2e-4, 0.02)
+
+
+@pytest.mark.parametrize("name", ["muon", "adamw"])
+@pytest.mark.parametrize("field,value", [("learning_rate", 1e-4), ("weight_decay", 0.1)])
+def test_nested_primary_rejects_duplicate_phase_rates(tmp_path, name, field, value):
+    path = _write_config(tmp_path, {"optimizers": {"bc": {
+        "name": name, field: value, name: {field: value},
+    }}})
+    with pytest.raises(ValueError, match=f"{field} conflicts"):
+        load_run_config(path)
+
+
+@pytest.mark.parametrize("name,reference_rate", [("muon", 2e-4), ("adamw", None)])
+def test_primary_inherited_rate_is_preserved_for_active_auxiliary_groups(tmp_path, name, reference_rate):
+    path = _write_config(tmp_path, {"optimizers": {"bc": {
+        "name": name, "learning_rate": 2e-4,
+        "sinkhorn": {"learning_rate": 1e-4},
+    }}})
+    config = load_run_config(path)
+
+    assert config.learning_rate == 2e-4
+    assert getattr(config.optimizer, name).learning_rate == reference_rate
+    assert config.optimizer.sinkhorn.learning_rate == 1e-4
 
 
 def test_bc_optimizer_does_not_change_grpo_configuration(tmp_path):
@@ -231,20 +320,16 @@ def test_central_optimizer_stages_choose_algorithms_independently(tmp_path, bc_n
                     "learning_rate": 2e-4,
                     "weight_decay": 0.02,
                     "warmup_steps": 7,
-                    "momentum": 0.9,
-                    "nesterov": False,
-                    "ns_steps": 3,
-                    "adjust_lr_fn": "original",
+                    "muon": {"momentum": 0.9, "nesterov": False,
+                             "ns_steps": 3, "adjust_lr_fn": "original"},
                 },
                 "grpo": {
                     "name": grpo_name,
                     "learning_rate": 3e-6,
                     "weight_decay": 0.03,
                     "warmup_steps": 2,
-                    "momentum": 0.8,
-                    "nesterov": True,
-                    "ns_steps": 6,
-                    "adjust_lr_fn": "match_rms_adamw",
+                    "muon": {"momentum": 0.8, "nesterov": True,
+                             "ns_steps": 6, "adjust_lr_fn": "match_rms_adamw"},
                 },
             },
         },
@@ -253,9 +338,9 @@ def test_central_optimizer_stages_choose_algorithms_independently(tmp_path, bc_n
     grpo = load_grpo_config(path)
 
     assert bc.optimizer == OptimizerConfig(
-        name=bc_name, momentum=0.9, nesterov=False, ns_steps=3, adjust_lr_fn="original"
+        name=bc_name, muon=MuonConfig(momentum=0.9, nesterov=False, ns_steps=3, adjust_lr_fn="original"),
     )
-    assert grpo.optimizer == OptimizerConfig(name=grpo_name, momentum=0.8, ns_steps=6)
+    assert grpo.optimizer == OptimizerConfig(name=grpo_name, muon=MuonConfig(momentum=0.8, ns_steps=6))
     assert (bc.learning_rate, bc.weight_decay, bc.warmup_steps) == (2e-4, 0.02, 7)
     assert (grpo.learning_rate, grpo.weight_decay, grpo.warmup_steps) == (3e-6, 0.03, 2)
     assert bc.batch_size == 8
@@ -264,7 +349,7 @@ def test_central_optimizer_stages_choose_algorithms_independently(tmp_path, bc_n
 
 def test_legacy_grpo_optimizer_and_nested_grpo_remain_supported(tmp_path):
     values = {
-        "optimizer": {"name": "muon", "momentum": 0.8},
+        "optimizer": {"name": "muon", "muon": {"momentum": 0.8}},
         "learning_rate": 3e-6,
         "weight_decay": 0.02,
         "warmup_steps": 6,
@@ -272,7 +357,7 @@ def test_legacy_grpo_optimizer_and_nested_grpo_remain_supported(tmp_path):
     loaded = load_grpo_config(_write_config(tmp_path, {"training": {"grpo": values}}))
 
     assert loaded == GrpoConfig.from_mapping(values)
-    assert loaded.optimizer == OptimizerConfig(name="muon", momentum=0.8)
+    assert loaded.optimizer == OptimizerConfig(name="muon", muon=MuonConfig(momentum=0.8))
     assert (loaded.learning_rate, loaded.weight_decay, loaded.warmup_steps) == (3e-6, 0.02, 6)
 
 
@@ -308,8 +393,8 @@ def test_central_optimizer_rejects_duplicate_legacy_authority(tmp_path, stage, l
     "values,field,error_type",
     [
         ({"name": "sgd"}, "name", ValueError),
-        ({"momentum": float("nan")}, "momentum", ValueError),
-        ({"ns_steps": True}, "ns_steps", TypeError),
+        ({"muon": {"momentum": float("nan")}}, "momentum", ValueError),
+        ({"muon": {"ns_steps": True}}, "ns_steps", TypeError),
         ({"learning_rate": float("nan")}, "learning_rate", ValueError),
         ({"learning_rate": float("inf")}, "learning_rate", ValueError),
         ({"learning_rate": 0.0}, "learning_rate", ValueError),
@@ -352,7 +437,15 @@ def test_artzip_optimizer_settings_are_centralized():
 
     bc = load_run_config(model_dir / "config.yaml")
     grpo = load_grpo_config(model_dir / "config.yaml")
-    assert bc.optimizer == OptimizerConfig(name="muon")
-    assert grpo.optimizer == OptimizerConfig(name="adamw")
-    assert (bc.learning_rate, bc.weight_decay, bc.warmup_steps) == (1e-4, 0.125, 500)
+    assert bc.optimizer == OptimizerConfig(
+        name="muon", muon=MuonConfig(learning_rate=1e-4, weight_decay=0.1),
+        adamw=AdamWConfig(learning_rate=1e-4, weight_decay=0.1),
+        sinkhorn=SinkhornConfig(learning_rate=1e-4),
+    )
+    assert grpo.optimizer == OptimizerConfig(
+        name="muon", muon=MuonConfig(learning_rate=1e-6, weight_decay=0.0),
+        adamw=AdamWConfig(learning_rate=1e-6, weight_decay=0.0),
+        sinkhorn=SinkhornConfig(learning_rate=1e-6),
+    )
+    assert (bc.learning_rate, bc.weight_decay, bc.warmup_steps) == (1e-4, 0.1, 500)
     assert (grpo.learning_rate, grpo.weight_decay, grpo.warmup_steps) == (1e-6, 0.0, 20)

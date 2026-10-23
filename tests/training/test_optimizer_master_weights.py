@@ -7,8 +7,13 @@ import torch
 from torch import nn
 
 from common.training.master_weights import FP32MasterOptimizer
-from common.training.optimizer import _MuonAdamW, _parameter_groups, build_optimizer
+from common.training.optimizer import (
+    _HybridOptimizer,
+    _parameter_groups,
+    build_optimizer,
+)
 from common.training.optimizer_config import OptimizerConfig
+from common.training.sinkhorn import Sinkhorn
 
 
 class _TinyModel(nn.Module):
@@ -18,7 +23,7 @@ class _TinyModel(nn.Module):
         layer.linear1 = nn.Linear(2, 2, bias=False, dtype=dtype, device=device)
         self.encoder = nn.Module()
         self.encoder.layers = nn.ModuleList([layer])
-        self.scorer = nn.Linear(2, 1, bias=False, dtype=dtype, device=device)
+        self.output_head = nn.Linear(2, 1, bias=False, dtype=dtype, device=device)
         with torch.no_grad():
             for parameter in self.parameters():
                 parameter.fill_(0.02)
@@ -32,12 +37,15 @@ def _build(model, name, *, lr=1e-5, weight_decay=0.0):
 
 def _native(model, name, *, lr=1e-5, weight_decay=0.0):
     """独立构造修复前的原生优化器，分别充当舍入复现和 FP32 参考。"""
+    groups = _parameter_groups(model, weight_decay, use_muon=name == "muon")
     if name == "adamw":
-        return torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
-    muon, adamw = _parameter_groups(model)
-    return _MuonAdamW(
-        torch.optim.Muon([muon], lr=lr, weight_decay=weight_decay, adjust_lr_fn="match_rms_adamw"),
-        torch.optim.AdamW([adamw], lr=lr, weight_decay=weight_decay),
+        return torch.optim.AdamW(groups, lr=lr, weight_decay=weight_decay)
+    return _HybridOptimizer(
+        torch.optim.Muon([group for group in groups if group["optimizer_name"] == "muon"],
+                         lr=lr, weight_decay=weight_decay, adjust_lr_fn="match_rms_adamw"),
+        torch.optim.AdamW([group for group in groups if group["optimizer_name"] == "adamw"],
+                          lr=lr, weight_decay=weight_decay),
+        Sinkhorn([group for group in groups if group["optimizer_name"] == "sinkhorn"], lr=lr),
     )
 
 
@@ -143,21 +151,21 @@ def test_legacy_state_migrates_from_restored_weights_and_upcasts_moments(name, c
 @pytest.mark.parametrize("set_to_none", [False, True])
 def test_zero_grad_closure_and_missing_gradient_preserve_native_semantics(set_to_none):
     model = _TinyModel()
-    model.scorer.float()  # 同时覆盖原本为 FP32 的参数，不能重复建立主权重。
+    model.output_head.float()  # 同时覆盖原本为 FP32 的参数，不能重复建立主权重。
     optimizer = _build(model, "adamw", weight_decay=0.1)
     before = deepcopy(model)
     calls = []
 
     def closure():
         calls.append(1)
-        loss = model.scorer.weight.square().sum()
+        loss = model.output_head.weight.square().sum()
         loss.backward()
         return loss
 
     loss = optimizer.step(closure)
     assert calls == [1] and loss is not None
     assert torch.equal(model.encoder.layers[0].linear1.weight, before.encoder.layers[0].linear1.weight)
-    assert not torch.equal(model.scorer.weight, before.scorer.weight)
+    assert not torch.equal(model.output_head.weight, before.output_head.weight)
     assert len(optimizer.state_dict()["master_weights"]) == 1
     _step(model, optimizer)
     optimizer.zero_grad(set_to_none=set_to_none)

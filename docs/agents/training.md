@@ -4,7 +4,7 @@
 
 `training/` 负责 BC 预训练的数据读取、损失、训练循环与 checkpoint 生命周期。跨 BC、GRPO、回放和部署共用的策略模型、输入编码、优化器及监控组件见[公共](./common.md)。
 
-BC 续训恢复 checkpoint 的学习率、优化器状态和 scheduler 步号，权重衰减使用当前训练配置的 `weight_decay`，使 `optimizer.yaml` 中的调整在续训时生效。
+BC 续训恢复 checkpoint 的各组学习率、优化器状态和 scheduler 步号，权重衰减使用当前构建的各参数组设置：线性矩阵取 `muon.weight_decay`，归一化尺度取 `adamw.weight_decay`，bias、缩放参数、embedding 和输出头保持免衰减。生效组的动量、betas、epsilon 等算法参数必须与 checkpoint 一致；旧参数分组的优化器状态明确拒绝恢复。
 
 ## 目录与职责
 
