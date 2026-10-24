@@ -18,6 +18,21 @@ from .activation import (
 _compiled_activation_hidden = torch.compile(activation_hidden, fullgraph=True, dynamic=True)
 
 
+def _rms_norm(values: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tensor:
+    """保留 FP32 归一化、乘通道尺度后再恢复输入精度的计算顺序。"""
+    output_dtype = values.dtype
+    values = values.float()
+    variance = values.square().mean(dim=-1, keepdim=True)
+    values = values * torch.rsqrt(variance + eps)
+    return (weight * values).to(output_dtype)
+
+
+_compiled_rms_norm = torch.compile(
+    _rms_norm, fullgraph=True, dynamic=True,
+    options={"emulate_precision_casts": True, "use_joint_graph_passes": False},
+)
+
+
 class RMSNorm(nn.RMSNorm):
     """在 FP32 中归一化，乘可学习通道尺度后恢复输入精度。"""
 
@@ -25,11 +40,15 @@ class RMSNorm(nn.RMSNorm):
         super().__init__(dim, eps=eps, device=device, dtype=dtype)
 
     def forward(self, values: torch.Tensor) -> torch.Tensor:
-        output_dtype = values.dtype
-        values = values.float()
-        variance = values.square().mean(dim=-1, keepdim=True)
-        values = values * torch.rsqrt(variance + self.eps)
-        return (self.weight * values).to(output_dtype)
+        if (
+            values.is_cuda and self.training and torch.is_grad_enabled()
+            and not torch.compiler.is_compiling()
+            and not torch.jit.is_tracing() and not torch.onnx.is_in_onnx_export()
+        ):
+            # 统一 Q、KV 与单 token 的维度布局；已有 HC 编译图直接内联原式。
+            flattened = values.reshape(-1, values.shape[-1])
+            return _compiled_rms_norm(flattened, self.weight, self.eps).reshape_as(values)
+        return _rms_norm(values, self.weight, self.eps)
 
 
 class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):
@@ -51,6 +70,7 @@ class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):
         *,
         num_kv_heads: int | None = None,
         q_lora_rank: int | None = None,
+        head_dim: int | None = None,
         swiglu_limit: float = 10.0,
     ):
         if dim_feedforward < 1:
@@ -66,7 +86,8 @@ class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):
         )
         super().__init__(
             d_model=d_model,
-            nhead=nhead,
+            # 父类的临时 MHA 随后被替换；单头初始化解除主干宽度与 Q 头数的约束。
+            nhead=1,
             dim_feedforward=hidden_dim,
             dropout=dropout,
             activation=(
@@ -92,16 +113,16 @@ class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):
         if num_kv_heads is None:
             num_kv_heads = int(nhead)
         num_kv_heads = int(num_kv_heads)
-        if num_kv_heads <= 0 or num_kv_heads > self.self_attn.num_heads:
+        if num_kv_heads <= 0 or num_kv_heads > nhead:
             raise ValueError("num_kv_heads must be between 1 and nhead")
-        if self.self_attn.num_heads % num_kv_heads != 0:
+        if nhead % num_kv_heads != 0:
             raise ValueError("nhead must be divisible by num_kv_heads")
         self.num_kv_heads = num_kv_heads
         from ..attention.grouped_attention import GroupedQueryAttention
 
         self.self_attn = GroupedQueryAttention(
             embed_dim=d_model, num_heads=nhead, num_kv_heads=num_kv_heads,
-            q_lora_rank=q_lora_rank, dropout=dropout, bias=bias,
+            q_lora_rank=q_lora_rank, head_dim=head_dim, dropout=dropout, bias=bias,
             batch_first=batch_first, device=device, dtype=dtype,
         )
         # GELU/ReLU 沿用原有 linear1/linear2 和 state_dict 键，不增加参数。

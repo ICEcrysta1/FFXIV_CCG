@@ -145,26 +145,40 @@ def test_resume_rejects_legacy_backbone_even_when_forcing_data_mismatch(
 
 
 @pytest.mark.parametrize("force", [False, True])
-@pytest.mark.parametrize("incompatible", ["version_26", "missing_rank", "rank_mismatch"])
+@pytest.mark.parametrize("incompatible", [
+    "version_26", "missing_rank", "rank_mismatch", "legacy_rope",
+    "missing_head_dim", "head_dim_mismatch", "missing_rope_head_dim", "rope_head_dim_mismatch",
+])
 def test_resume_cannot_bypass_qk_normalization_contract(resume_context, force, incompatible):
-    """数据规模豁免不能绕过潜在 Q/KV 算法版本或低秩投影架构。"""
+    """数据规模豁免不能绕过 Q/KV、头宽或部分旋转的架构契约。"""
     if incompatible == "version_26":
         resume_context.checkpoint["input_contract"]["version"] = 26
         message = "unsupported input contract version"
     elif incompatible == "missing_rank":
         resume_context.checkpoint["model_config"].pop("q_lora_rank")
         message = "missing model.q_lora_rank"
-    else:
+    elif incompatible == "rank_mismatch":
         resume_context.checkpoint["model_config"]["q_lora_rank"] = 1
         message = "model config mismatch"
+    elif incompatible == "legacy_rope":
+        resume_context.checkpoint["input_contract"]["token_encoding"].pop("rotary_position_encoding")
+        message = "token_encoding"
+    else:
+        field = "rope_head_dim" if "rope_head_dim" in incompatible else "head_dim"
+        if incompatible.startswith("missing_"):
+            resume_context.checkpoint["model_config"].pop(field)
+            message = f"missing model.{field}"
+        else:
+            resume_context.checkpoint["model_config"][field] = 2 if field == "rope_head_dim" else 6
+            message = "model config mismatch"
     resume_context.checkpoint["run_config"]["max_files"] = 10
     with pytest.raises(ValueError, match=message):
         _validate(resume_context, force=force)
 
 
 def test_resume_preserves_matching_nondefault_query_rank(resume_context):
-    """合法续训沿用 checkpoint 低秩宽度，不补回本机默认值。"""
-    model_config = replace(resume_context.config.model, q_lora_rank=7)
+    """合法续训沿用 checkpoint 的低秩、每头及旋转宽度。"""
+    model_config = replace(resume_context.config.model, q_lora_rank=7, head_dim=12, rope_head_dim=4)
     resume_context.config = replace(resume_context.config, model=model_config)
     resume_context.checkpoint["model_config"] = asdict(model_config)
     assert _validate(resume_context) == 1

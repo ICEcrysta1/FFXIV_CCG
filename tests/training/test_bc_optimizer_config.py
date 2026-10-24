@@ -438,14 +438,14 @@ def test_artzip_optimizer_settings_are_centralized():
     bc = load_run_config(model_dir / "config.yaml")
     grpo = load_grpo_config(model_dir / "config.yaml")
     assert bc.optimizer == OptimizerConfig(
-        name="muon", muon=MuonConfig(learning_rate=1e-4, weight_decay=0.1),
-        adamw=AdamWConfig(learning_rate=1e-4, weight_decay=0.1),
-        sinkhorn=SinkhornConfig(learning_rate=1e-4),
+        name="muon", muon=MuonConfig(learning_rate=2.6e-4, weight_decay=0.1),
+        adamw=AdamWConfig(learning_rate=2.6e-4, weight_decay=0.1, betas=(0.9, 0.95)),
+        sinkhorn=SinkhornConfig(learning_rate=2.6e-4),
     )
     assert grpo.optimizer == OptimizerConfig(
         name="muon", muon=MuonConfig(learning_rate=1e-6, weight_decay=0.0),
         adamw=AdamWConfig(learning_rate=1e-6, weight_decay=0.0),
         sinkhorn=SinkhornConfig(learning_rate=1e-6),
     )
-    assert (bc.learning_rate, bc.weight_decay, bc.warmup_steps) == (1e-4, 0.1, 500)
+    assert (bc.learning_rate, bc.weight_decay, bc.warmup_steps) == (2.6e-4, 0.1, 500)
     assert (grpo.learning_rate, grpo.weight_decay, grpo.warmup_steps) == (1e-6, 0.0, 20)

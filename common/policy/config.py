@@ -94,6 +94,8 @@ class ModelConfig:
     d_model: int = 256
     n_layers: int = 4
     n_heads: int = 4
+    head_dim: int | None = None
+    rope_head_dim: int | None = None
     num_kv_heads: int = 1
     q_lora_rank: int | None = None
     ff_dim: int = 1024
@@ -132,6 +134,20 @@ class ModelConfig:
             raise ValueError("model.num_kv_heads must be between 1 and model.n_heads")
         if self.n_heads % self.num_kv_heads != 0:
             raise ValueError("model.n_heads must be divisible by model.num_kv_heads")
+        head_dim = self.head_dim
+        if head_dim is None:
+            if self.d_model % self.n_heads:
+                raise ValueError("model.d_model must be divisible by model.n_heads when head_dim is omitted")
+            head_dim = self.d_model // self.n_heads
+        _parse_history_integer(head_dim, field_name="model.head_dim")
+        if head_dim < 1:
+            raise ValueError("model.head_dim must be positive")
+        object.__setattr__(self, "head_dim", head_dim)
+        rope_head_dim = head_dim if self.rope_head_dim is None else self.rope_head_dim
+        _parse_history_integer(rope_head_dim, field_name="model.rope_head_dim")
+        if not 1 <= rope_head_dim <= head_dim or rope_head_dim % 2:
+            raise ValueError("model.rope_head_dim must be a positive even integer <= model.head_dim")
+        object.__setattr__(self, "rope_head_dim", rope_head_dim)
         if self.rope_theta <= 1.0:
             raise ValueError("model.rope_theta must be greater than 1")
         object.__setattr__(self, "logit_softcap", _parse_logit_softcap(self.logit_softcap))
@@ -193,6 +209,14 @@ class ModelConfig:
             d_model=int(values.get("d_model", cls.d_model)),
             n_layers=int(values.get("n_layers", cls.n_layers)),
             n_heads=int(values.get("n_heads", cls.n_heads)),
+            head_dim=(
+                _parse_history_integer(values["head_dim"], field_name="model.head_dim")
+                if "head_dim" in values else cls.head_dim
+            ),
+            rope_head_dim=(
+                _parse_history_integer(values["rope_head_dim"], field_name="model.rope_head_dim")
+                if "rope_head_dim" in values else cls.rope_head_dim
+            ),
             num_kv_heads=int(values.get("num_kv_heads", cls.num_kv_heads)),
             q_lora_rank=(
                 _parse_history_integer(values["q_lora_rank"], field_name="model.q_lora_rank")

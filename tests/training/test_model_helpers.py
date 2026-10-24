@@ -671,8 +671,13 @@ def test_model_defaults_to_pre_norm_gelu_with_trainable_rms():
     (torch.float16, torch.float16, False), (torch.float16, torch.float32, True),
     (torch.bfloat16, torch.bfloat16, False), (torch.bfloat16, torch.float32, True),
 ))
-def test_trainable_rms_preserves_input_dtype_and_matches_independent_gradients(dtype, weight_dtype, amp):
-    norm = RMSNorm(4, dtype=weight_dtype)
+@pytest.mark.parametrize("device", ("cpu", "cuda"))
+def test_trainable_rms_preserves_input_dtype_and_matches_independent_gradients(dtype, weight_dtype, amp, device):
+    if device == "cuda":
+        if not torch.cuda.is_available():
+            pytest.skip("编译测试需要 CUDA 设备")
+        torch._dynamo.reset()
+    norm = RMSNorm(4, dtype=weight_dtype, device=device)
     with torch.no_grad():
         norm.weight.copy_(torch.tensor([0.5, -1.5, 0.25, 2.0]))
     # 零值、eps 主导区和大输入分别锁定除零、低精度下溢与平方溢出边界。
@@ -680,13 +685,13 @@ def test_trainable_rms_preserves_input_dtype_and_matches_independent_gradients(d
         [0., 0., 0., 0.], [1e-12, -2e-12, 3e-12, -4e-12],
         [1e-10, -2e-10, 0., 4e-10], [1., -2., 3., -4.],
         [2000., -4000., 8000., -16000.],
-    ], dtype=dtype, requires_grad=True)
+    ], dtype=dtype, device=device, requires_grad=True)
     upstream = torch.tensor([
         [1e-6, -2e-6, 3e-6, -1e-6], [2e-6, 1e-6, -1e-6, 3e-6],
         [1e-6, -1e-6, 2e-6, -2e-6], [0.1, -0.2, 0.3, -0.4],
         [-0.2, 0.4, 0.1, -0.3],
-    ], dtype=dtype)
-    with torch.autocast("cpu", dtype=torch.bfloat16, enabled=amp):
+    ], dtype=dtype, device=device)
+    with torch.autocast(device, dtype=torch.bfloat16, enabled=amp):
         actual = norm(values)
     actual.backward(upstream)
 
@@ -704,7 +709,9 @@ def test_trainable_rms_preserves_input_dtype_and_matches_independent_gradients(d
     assert values.grad.dtype == dtype and norm.weight.grad.dtype == weight_dtype
     assert torch.isfinite(actual).all() and torch.isfinite(values.grad).all()
     assert torch.isfinite(norm.weight.grad).all()
-    tolerance = 8e-3 if torch.bfloat16 in (dtype, weight_dtype) else 2e-3 if dtype == torch.float16 else 3e-6
+    # CUDA 原式在 eps 主导区的近抵消梯度也有约 1.3e-5 相对舍入误差。
+    float_tolerance = 2e-5 if device == "cuda" else 3e-6
+    tolerance = 8e-3 if torch.bfloat16 in (dtype, weight_dtype) else 2e-3 if dtype == torch.float16 else float_tolerance
     torch.testing.assert_close(actual, (normalized * weight).to(dtype), rtol=tolerance, atol=0)
     torch.testing.assert_close(values.grad, expected_grad.to(dtype), rtol=tolerance, atol=0)
     torch.testing.assert_close(norm.weight.grad, expected_weight_grad.to(weight_dtype), rtol=tolerance, atol=0)

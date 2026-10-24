@@ -41,35 +41,105 @@ def test_rope_uses_independent_query_and_key_positions():
     assert not torch.equal(rotated_key, key)
 
 
-@pytest.mark.parametrize("dtype", (torch.float32, torch.bfloat16))
-def test_rope_matches_mainstream_half_split_formula(dtype):
-    """与 LLaMA/HF/GPT-NeoX 的 half-split 正旋转公式逐元素一致。"""
-    rope = RotaryPositionEncoding(head_dim=4, theta=2.0)
-    values = torch.tensor([[[[0.3, 0.7, 0.2, 0.8]]]], dtype=dtype, requires_grad=True)
+@pytest.mark.parametrize("dtype", (torch.float32, torch.bfloat16, torch.float16))
+@pytest.mark.parametrize(("head_dim", "rope_head_dim"), ((4, 4), (512, 64)))
+def test_rope_matches_adjacent_complex_rotation_and_gradients(dtype, head_dim, rope_head_dim):
+    """以独立的复数乘法核对相邻配对、局部旋转及其梯度。"""
+    rope = RotaryPositionEncoding(head_dim, rope_head_dim=rope_head_dim, theta=2.0)
+    values = torch.linspace(0.1, 0.9, head_dim, dtype=dtype).reshape(1, 1, 1, head_dim)
+    values.requires_grad_()
     reference = values.detach().clone().requires_grad_()
     positions = torch.tensor([[1]])
 
     rotated = rope.apply(values, positions)
 
-    half = 2
-    inv_freq = 1.0 / (2.0 ** (torch.arange(0, 4, 2, dtype=torch.float32) / 4.0))
-    phase = torch.tensor(1.0) * inv_freq
-    cosine = phase.cos().to(dtype).view(1, 1, 1, half)
-    sine = phase.sin().to(dtype).view(1, 1, 1, half)
-    first, second = reference[..., :half], reference[..., half:]
+    inv_freq = 1.0 / (2.0 ** (torch.arange(0, rope_head_dim, 2, dtype=torch.float32) / rope_head_dim))
+    phase = positions.float()[..., None] * inv_freq
+    rotation = torch.polar(torch.ones_like(phase), phase).unsqueeze(1)
+    pairs = torch.view_as_complex(reference[..., -rope_head_dim:].float().unflatten(-1, (-1, 2)))
+    expected_tail = torch.view_as_real(pairs * rotation).flatten(-2).to(dtype)
     expected = torch.cat(
-        (
-            first * cosine - second * sine,
-            first * sine + second * cosine,
-        ),
-        dim=-1,
+        (reference[..., :-rope_head_dim], expected_tail), dim=-1,
     )
 
     torch.testing.assert_close(rotated, expected)
-    probe = torch.tensor([[[[0.2, -0.7, 0.5, 0.9]]]], dtype=dtype)
+    probe = torch.linspace(-0.7, 0.9, head_dim, dtype=dtype).reshape(1, 1, 1, head_dim)
     (rotated * probe).sum().backward()
     (expected * probe).sum().backward()
     torch.testing.assert_close(values.grad, reference.grad)
+
+
+@pytest.mark.parametrize(("head_dim", "rope_head_dim"), ((512, 64), (5, 4)))
+@pytest.mark.parametrize("merge_heads", (False, True))
+def test_partial_rope_preserves_prefix_and_inverse_restores_input(head_dim, rope_head_dim, merge_heads):
+    rope = RotaryPositionEncoding(head_dim=head_dim, rope_head_dim=rope_head_dim)
+    values = torch.randn(2, 3, 5, head_dim, requires_grad=True)
+    positions = torch.tensor([[0, 1, 3, 9, 50], [2, 4, 7, 12, 17]])
+    cosine_sine = rope._cos_sin(positions)
+
+    rotated = rope.apply(values, positions, cosine_sine)
+    restored = rope.apply(rotated, positions, cosine_sine, inverse=True, merge_heads=merge_heads)
+
+    torch.testing.assert_close(rotated[..., :-rope_head_dim], values[..., :-rope_head_dim], rtol=0, atol=0)
+    expected = values.transpose(1, 2).flatten(2) if merge_heads else values
+    torch.testing.assert_close(restored, expected)
+    assert not torch.equal(rotated[..., -rope_head_dim:], values[..., -rope_head_dim:])
+    restored.sum().backward()
+    torch.testing.assert_close(values.grad, torch.ones_like(values))
+
+
+@pytest.mark.parametrize("dtype", (torch.float32, torch.bfloat16, torch.float16))
+@pytest.mark.parametrize("inverse", (False, True))
+@pytest.mark.parametrize("merge_heads", (False, True))
+@pytest.mark.parametrize(("batch", "tokens", "heads"), ((2, 7, 6), (1, 1, 1)))
+@pytest.mark.parametrize("head_dim", (256, 512))
+def test_cuda_rope_preserves_strided_input_outputs_and_gradients(dtype, inverse, merge_heads, batch, tokens, heads, head_dim):
+    if not torch.cuda.is_available():
+        pytest.skip("需要 CUDA")
+    rope = RotaryPositionEncoding(head_dim, rope_head_dim=64).cuda().train()
+    reference_rope = deepcopy(rope).eval()
+    values = torch.randn(batch, tokens, heads, head_dim, device="cuda", dtype=dtype).transpose(1, 2).requires_grad_()
+    reference = values.detach().clone().requires_grad_()
+    original = values.detach().clone()
+    positions = torch.arange(batch * tokens, device="cuda").reshape(batch, tokens) * 17 + 1
+    cosine_sine = rope._cos_sin(positions)
+    if merge_heads:
+        # 外部共享频表允许 batch 广播，并保留不同于连续表的通道/位置 stride。
+        cosine_sine = tuple(value[:1].transpose(-1, -2).contiguous().transpose(-1, -2) for value in cosine_sine)
+
+    actual = rope.apply(values, positions, cosine_sine, inverse=inverse, merge_heads=merge_heads)
+    expected = reference_rope.apply(reference, positions, cosine_sine, inverse=inverse, merge_heads=merge_heads)
+    probe = torch.randn_like(actual)
+    (actual * probe).sum().backward()
+    (expected * probe).sum().backward()
+
+    torch.testing.assert_close(actual, expected)
+    torch.testing.assert_close(values.grad, reference.grad)
+    torch.testing.assert_close(values, original, rtol=0, atol=0)
+    assert actual.is_contiguous()
+
+
+@pytest.mark.parametrize("dtype", (torch.bfloat16, torch.float16))
+def test_rope_keeps_exact_float32_frequencies_and_rotation_after_dtype_conversion(dtype):
+    rope = RotaryPositionEncoding(head_dim=512, rope_head_dim=64, theta=160_000.0)
+    reference = deepcopy(rope)
+    rope.to(dtype=dtype)
+    values = torch.randn(1, 2, 3, 512, dtype=dtype)
+    positions = torch.tensor([[1, 12345, 50000]])
+
+    query, key = rope(values, values, positions, positions)
+    expected = reference.apply(values.float(), positions).to(dtype)
+
+    assert rope.inv_freq.dtype == torch.float32
+    torch.testing.assert_close(rope.inv_freq, reference.inv_freq, rtol=0, atol=0)
+    torch.testing.assert_close(query, expected, rtol=0, atol=0)
+    torch.testing.assert_close(key, expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("rope_head_dim", (0, -2, 3, 10))
+def test_rope_rejects_invalid_rotary_dimensions(rope_head_dim):
+    with pytest.raises(ValueError, match="rope_head_dim"):
+        RotaryPositionEncoding(head_dim=8, rope_head_dim=rope_head_dim)
 
 
 @pytest.mark.parametrize(

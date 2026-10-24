@@ -116,15 +116,54 @@ def test_query_rank_defaults_and_artzip_architecture():
     assert ModelConfig.from_mapping({}).q_lora_rank == 64
     assert ModelConfig(d_model=16).q_lora_rank == 4
     assert ModelConfig.from_mapping({"d_model": 16}).q_lora_rank == 4
-    assert ModelConfig(d_model=2).q_lora_rank == 1
+    assert ModelConfig(d_model=2, n_heads=1).q_lora_rank == 1
     root = Path(__file__).resolve().parents[1]
     config = load_model_config(root / "config/models/black_mage/artzip/model.yaml")
     assert config.q_lora_rank == 96
+    assert (config.head_dim, config.rope_head_dim) == (256, 64)
     assert config.logit_softcap == 15.0
     assert (config.swiglu_limit, config.hc_mult, config.hc_sinkhorn_iters, config.hc_eps) == (
         10.0, 4, 20, 1e-6,
     )
     assert (config.n_layers, config.d_model, config.n_heads, config.num_kv_heads, config.ff_dim) == (6, 384, 6, 1, 1536)
+
+
+def test_attention_head_dimensions_resolve_defaults_and_preserve_independent_width():
+    default = ModelConfig()
+    assert (default.head_dim, default.rope_head_dim) == (64, 64)
+    assert ModelConfig.from_mapping({}) == default
+    config = ModelConfig.from_mapping({
+        "d_model": 10, "n_heads": 3, "head_dim": 7, "rope_head_dim": 6,
+    })
+    assert (config.head_dim, config.rope_head_dim) == (7, 6)
+    assert ModelConfig.from_mapping(yaml.safe_load(yaml.safe_dump(asdict(config)))) == config
+    with pytest.raises(ValueError, match="divisible"):
+        ModelConfig(d_model=10, n_heads=3)
+    with pytest.raises(ValueError, match="divisible"):
+        ModelConfig.from_mapping({"d_model": 10, "n_heads": 3})
+
+
+@pytest.mark.parametrize("field", ("head_dim", "rope_head_dim"))
+@pytest.mark.parametrize("value", (True, False, 0, -1, 1.5, "8", float("nan"), float("inf"), [], {}))
+def test_attention_head_dimensions_reject_invalid_values(field, value):
+    with pytest.raises(ValueError, match=f"model.{field}"):
+        ModelConfig.from_mapping({field: value})
+    with pytest.raises(ValueError, match=f"model.{field}"):
+        ModelConfig(**{field: value})
+
+
+@pytest.mark.parametrize("field", ("head_dim", "rope_head_dim"))
+def test_attention_head_dimensions_reject_explicit_mapping_null(field):
+    with pytest.raises(ValueError, match=f"model.{field}"):
+        ModelConfig.from_mapping({field: None})
+
+
+@pytest.mark.parametrize("value", (1, 3, 65, 66))
+def test_rotary_width_requires_even_dimension_within_head(value):
+    with pytest.raises(ValueError, match="model.rope_head_dim"):
+        ModelConfig.from_mapping({"rope_head_dim": value})
+    with pytest.raises(ValueError, match="model.rope_head_dim"):
+        ModelConfig(rope_head_dim=value)
 
 
 @pytest.mark.parametrize("value", [1, 8, 64, 256])

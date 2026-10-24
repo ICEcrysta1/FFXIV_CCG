@@ -34,14 +34,14 @@ def kv_head_count(attention) -> int:
 
 
 def split_heads(values: torch.Tensor, head_count: int) -> torch.Tensor:
-    """将 [batch, tokens, model] 变换为 [batch, heads, tokens, head_dim]。"""
+    """将投影宽度按头数拆分；每头宽度独立于主干维度。"""
     batch_size, sequence_length, model_dim = values.shape
     head_dim = model_dim // head_count
     return values.reshape(batch_size, sequence_length, head_count, head_dim).transpose(1, 2)
 
 
 def merge_heads(values: torch.Tensor) -> torch.Tensor:
-    """将 [batch, heads, tokens, head_dim] 合并回模型维度。"""
+    """将各头合并为投影宽度，交给输出投影恢复主干维度。"""
     return values.transpose(1, 2).contiguous().reshape(
         values.shape[0],
         values.shape[2],
