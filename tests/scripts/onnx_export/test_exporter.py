@@ -309,6 +309,12 @@ def test_low_precision_export_keeps_fp32_input_values_and_weights(tmp_path, prec
     assert artifacts.alignment["onnx_float_initializer_dtype_counts"]["float32"] > 1
     assert artifacts.alignment["onnx_requested_precision_initializer_count"] > 1
     assert artifacts.alignment["onnx_other_float_initializer_max_elements"] <= 1
+    expected_frequency = contracts.policy.model.encoder.rotary_position_encoding.inv_freq.cpu()
+    assert any(
+        initializer.data_type == onnx.TensorProto.FLOAT
+        and torch.equal(torch.from_numpy(numpy_helper.to_array(initializer).copy()).flatten(), expected_frequency)
+        for initializer in model_proto.graph.initializer
+    )
     expected_dead = contracts.policy.model.input_encoder.dead_embed.weight.detach().cpu()
     assert any(
         initializer.data_type == onnx.TensorProto.FLOAT
@@ -638,6 +644,8 @@ def test_small_model_exports_checker_and_ort_validated_package(tmp_path, activat
     assert manifest["contract"]["model_config"]["d_model"] == 16
     assert manifest["contract"]["model_config"]["transformer_activation"] == activation
     assert manifest["contract"]["model_config"]["q_lora_rank"] == 6
+    assert manifest["contract"]["model_config"]["head_dim"] == 12
+    assert manifest["contract"]["model_config"]["rope_head_dim"] == 4
     assert manifest["contract"]["model_config"]["logit_softcap"] == 7.5
     assert manifest["contract"]["model_input_contract"]["token_encoding"]["output_projection"] == (
         TOKEN_ENCODING_CONTRACT["output_projection"]
@@ -1360,6 +1368,8 @@ def test_deployment_contract_preserves_actual_residual_path(tmp_path, manifest_s
     expected = "full_attention_residual" if full_attention_residuals else "hyper_connections"
     assert payload["residual_composition"]["type"] == expected
     assert payload["model_config"]["q_lora_rank"] == 6
+    assert payload["model_config"]["head_dim"] == 12
+    assert payload["model_config"]["rope_head_dim"] == 4
     assert payload["model_config"]["logit_softcap"] == 7.5
     assert payload["model_input_contract"]["token_encoding"]["attention_qk_normalization"] == (
         TOKEN_ENCODING_CONTRACT["attention_qk_normalization"]
@@ -1472,6 +1482,8 @@ def test_load_policy_preserves_saved_readout_and_query_rank_without_project_yaml
     )
     policy, _, _, _, payload = export_module.load_policy(checkpoint, precision="float32")
     assert policy.model.config.q_lora_rank == 6
+    assert policy.model.config.head_dim == 12
+    assert policy.model.config.rope_head_dim == 4
     assert all(layer.self_attn.q_norm.weight.shape == (6,) for layer in policy.model.encoder.layers)
     assert policy.model.config.logit_softcap == 7.5
     assert policy.model.output_head.bias is None
@@ -1484,7 +1496,7 @@ def test_load_policy_preserves_saved_readout_and_query_rank_without_project_yaml
         torch.testing.assert_close(tensor, payload["model_state_dict"][name], atol=0, rtol=0)
 
 
-@pytest.mark.parametrize("field", ["q_lora_rank", "logit_softcap"])
+@pytest.mark.parametrize("field", ["q_lora_rank", "head_dim", "rope_head_dim", "logit_softcap"])
 @pytest.mark.parametrize("value", ["missing", 0])
 def test_checkpoint_and_deployment_reject_missing_or_invalid_model_scale(tmp_path, field, value):
     from scripts.onnx_export.export.checkpoint import load_policy_contracts
@@ -1512,6 +1524,8 @@ def test_checkpoint_and_deployment_reject_missing_or_invalid_model_scale(tmp_pat
     (field, value)
     for field, values in (
         ("q_lora_rank", [None, True, False, "4", 0, -1, 1.5]),
+        ("head_dim", [None, True, False, "12", 0, -1, 1.5]),
+        ("rope_head_dim", [None, True, False, "4", 0, -1, 1.5, 3]),
         ("qk_norm_scale", [1.2]),
         ("logit_softcap", [None, True, False, "15.0", 0, -1, 1e-46, 1e39]),
     )
@@ -1532,6 +1546,8 @@ def test_manifest_schema_rejects_missing_or_invalid_model_scale(manifest_schema,
 
 @pytest.mark.parametrize(("field", "saved", "forged"), [
     ("q_lora_rank", 6, 4),
+    ("head_dim", 12, 8),
+    ("rope_head_dim", 4, 2),
     ("logit_softcap", 7.5, 15.0),
 ])
 def test_deployment_model_scale_is_bound_by_saved_config_signature(tmp_path, field, saved, forged):
@@ -1759,7 +1775,8 @@ def _assert_backbone_gamma_initializers(exported_model, checkpoint: Path, dtype:
 
 def _write_small_checkpoint(
     path: Path, *, activation: str = "gelu", full_attention_residuals: bool = False,
-    q_lora_rank: int = 4, logit_softcap: float = 15.0,
+    q_lora_rank: int = 4, head_dim: int = 12, rope_head_dim: int = 4,
+    logit_softcap: float = 15.0,
 ) -> tuple[DataSpec, ModelInputContract]:
     data_spec = DataSpec(
         job_tag="black_mage",
@@ -1785,6 +1802,7 @@ def _write_small_checkpoint(
         transformer_activation=activation,
         full_attention_residuals=full_attention_residuals,
         q_lora_rank=q_lora_rank,
+        head_dim=head_dim, rope_head_dim=rope_head_dim,
         logit_softcap=logit_softcap,
     )
     with torch.random.fork_rng(devices=[]):

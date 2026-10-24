@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ffxiv-ccg.local/schemas/onnx-manifest-v17.json",
+  "$id": "https://ffxiv-ccg.local/schemas/onnx-manifest-v18.json",
   "title": "FFXIV_CCG ONNX Deployment Manifest",
   "type": "object",
   "additionalProperties": false,
@@ -21,7 +21,7 @@
       "const": "manifest.schema.json"
     },
     "manifest_version": {
-      "const": 17
+      "const": 18
     },
     "format": {
       "const": "onnx"
@@ -273,7 +273,7 @@
       ],
       "properties": {
         "contract_version": {
-          "const": 29
+          "const": 30
         },
         "job_tag": {
           "type": "string",
@@ -322,7 +322,7 @@
           ],
           "properties": {
             "version": {
-              "const": 27
+              "const": 28
             },
             "token_encoding": {
               "const": {
@@ -423,6 +423,17 @@
                   "attention_output": "inverse_RoPE_before_output_projection",
                   "key_cache": "normalize_and_rotate_new_shared_key_value_once_before_append"
                 },
+                "rotary_position_encoding": {
+                  "head_dim": "model_config.head_dim",
+                  "rotary_dim": "model_config.rope_head_dim",
+                  "theta": "model_config.rope_theta",
+                  "rotary_channels": "trailing_channels",
+                  "pairing": "adjacent_pairs",
+                  "non_rotary_prefix": "unchanged",
+                  "trigonometry_dtype": "float32",
+                  "rotation_dtype": "float32",
+                  "output_dtype": "input_dtype"
+                },
                 "role_ids": {
                   "scene": 0,
                   "state": 1,
@@ -491,6 +502,8 @@
             "swiglu_limit",
             "transformer_norm_first",
             "full_attention_residuals",
+            "head_dim",
+            "rope_head_dim",
             "q_lora_rank",
             "logit_softcap",
             "context_capacity",
@@ -520,6 +533,15 @@
             },
             "full_attention_residuals": {
               "type": "boolean"
+            },
+            "head_dim": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "rope_head_dim": {
+              "type": "integer",
+              "minimum": 2,
+              "multipleOf": 2
             },
             "q_lora_rank": {
               "type": "integer",

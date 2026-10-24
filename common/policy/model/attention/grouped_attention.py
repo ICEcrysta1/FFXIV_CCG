@@ -25,6 +25,7 @@ class GroupedQueryAttention(nn.Module):
         num_kv_heads: int,
         *,
         q_lora_rank: int | None = None,
+        head_dim: int | None = None,
         dropout: float = 0.0,
         bias: bool = True,
         batch_first: bool = False,
@@ -34,7 +35,7 @@ class GroupedQueryAttention(nn.Module):
         super().__init__()
         if embed_dim <= 0 or num_heads <= 0:
             raise ValueError("embed_dim and num_heads must be positive")
-        if embed_dim % num_heads != 0:
+        if head_dim is None and embed_dim % num_heads != 0:
             raise ValueError("embed_dim must be divisible by num_heads")
         if num_kv_heads <= 0 or num_kv_heads > num_heads:
             raise ValueError("num_kv_heads must be between 1 and num_heads")
@@ -48,7 +49,11 @@ class GroupedQueryAttention(nn.Module):
         self._qkv_same_embed_dim = False
         self.num_heads = int(num_heads)
         self.num_kv_heads = int(num_kv_heads)
-        self.head_dim = self.embed_dim // self.num_heads
+        self.head_dim = self.embed_dim // self.num_heads if head_dim is None else head_dim
+        if isinstance(self.head_dim, bool) or not isinstance(self.head_dim, int):
+            raise TypeError("head_dim must be an integer")
+        if self.head_dim <= 0:
+            raise ValueError("head_dim must be positive")
         self.q_lora_rank = max(1, self.embed_dim // 4) if q_lora_rank is None else q_lora_rank
         if isinstance(self.q_lora_rank, bool) or not isinstance(self.q_lora_rank, int):
             raise TypeError("q_lora_rank must be an integer")
@@ -59,11 +64,12 @@ class GroupedQueryAttention(nn.Module):
 
         self.q_a = nn.Linear(self.embed_dim, self.q_lora_rank, bias=bias, **factory_kwargs)
         self.q_norm = RMSNorm(self.q_lora_rank, **factory_kwargs)
-        self.q_b = nn.Linear(self.q_lora_rank, self.embed_dim, bias=bias, **factory_kwargs)
+        query_dim = self.num_heads * self.head_dim
+        self.q_b = nn.Linear(self.q_lora_rank, query_dim, bias=bias, **factory_kwargs)
         kv_dim = self.num_kv_heads * self.head_dim
         self.kv_proj = nn.Linear(self.embed_dim, kv_dim, bias=bias, **factory_kwargs)
         self.kv_norm = RMSNorm(self.head_dim, **factory_kwargs)
-        self.out_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=bias, **factory_kwargs)
+        self.out_proj = nn.Linear(query_dim, self.embed_dim, bias=bias, **factory_kwargs)
         for projection in (self.q_a, self.q_b, self.kv_proj, self.out_proj):
             if projection.bias is not None:
                 nn.init.zeros_(projection.bias)

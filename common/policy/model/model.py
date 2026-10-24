@@ -36,8 +36,6 @@ class CausalPolicyModel(nn.Module):
         repetition: RepetitionConfig | None = None,
     ):
         super().__init__()
-        if config.n_heads <= 0 or config.d_model % config.n_heads != 0:
-            raise ValueError("d_model must be divisible by n_heads")
         if config.num_kv_heads <= 0 or config.num_kv_heads > config.n_heads:
             raise ValueError("num_kv_heads must be between 1 and n_heads")
         if config.n_heads % config.num_kv_heads != 0:
@@ -61,6 +59,7 @@ class CausalPolicyModel(nn.Module):
             nhead=config.n_heads,
             num_kv_heads=config.num_kv_heads,
             q_lora_rank=config.q_lora_rank,
+            head_dim=config.head_dim,
             dim_feedforward=config.ff_dim,
             dropout=config.dropout,
             activation=config.transformer_activation,
@@ -76,7 +75,8 @@ class CausalPolicyModel(nn.Module):
         )
         # 位置编码属于 attention 执行边界；输入编码器只提供逻辑 position_ids。
         self.encoder.rotary_position_encoding = RotaryPositionEncoding(
-            config.d_model // config.n_heads,
+            config.head_dim,
+            rope_head_dim=config.rope_head_dim,
             theta=config.rope_theta,
         )
         if config.full_attention_residuals:
@@ -260,7 +260,8 @@ class CausalPolicyModel(nn.Module):
             raise TypeError("checkpoint missing model_config")
         for key in (
             "context_capacity", "history_reset_keep",
-            "q_lora_rank", "logit_softcap", "swiglu_limit", *HYPER_CONNECTION_CONFIG_FIELDS,
+            "q_lora_rank", "head_dim", "rope_head_dim", "logit_softcap", "swiglu_limit",
+            *HYPER_CONNECTION_CONFIG_FIELDS,
         ):
             if key not in payload:
                 raise ValueError(f"checkpoint missing model.{key}; retrain")

@@ -132,7 +132,7 @@ def export_and_stamp(
 
 
 def _store_float_compute_weights_as_bf16(model_proto, onnx, model) -> None:
-    """主干还原为 BF16 存储，输入编码器与 HC 的 FP32 权重保持精度。"""
+    """主干还原为 BF16 存储，输入编码器、HC 与 RoPE 频率保持 FP32。"""
     from onnx import numpy_helper
 
     casts = []
@@ -142,6 +142,8 @@ def _store_float_compute_weights_as_bf16(model_proto, onnx, model) -> None:
         if _is_input_encoder_initializer(initializer, model, float_data_type=onnx.TensorProto.FLOAT):
             continue
         if _is_fp32_backbone_initializer(initializer, model, float_data_type=onnx.TensorProto.FLOAT):
+            continue
+        if _is_rope_frequency_initializer(initializer, model, float_data_type=onnx.TensorProto.FLOAT):
             continue
         values = torch.from_numpy(numpy_helper.to_array(initializer).copy())
         quantized = values.to(torch.bfloat16)

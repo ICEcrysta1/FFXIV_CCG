@@ -21,14 +21,20 @@ precision: bf16
 # ------------------------------
 
 model:
-  # Transformer token 的主维度；必须能被 n_heads 整除。
+  # Transformer token 的主维度，与注意力投影总宽度独立。
   d_model: 384
 
   # Transformer 编码层数。
   n_layers: 6
 
-  # 注意力头数量；d_model 必须能被该值整除。
+  # Q 注意力头数量；总投影宽度为 n_heads * head_dim。
   n_heads: 6
+
+  # 每个 Q/K/V 头的宽度；与 d_model、q_lora_rank 分别控制不同维度。
+  head_dim: 512
+
+  # 每头末尾参与 RoPE 的维度数；必须为正偶数且不超过 head_dim，前缀保持不变。
+  rope_head_dim: 64
 
   # K/V 头数量；1 表示 MQA，可改为 n_heads 的合法因数做 GQA。
   num_kv_heads: 1
@@ -63,7 +69,7 @@ model:
   # Transformer 的 dropout 概率。
   dropout: 0.1
 
-  # RoPE 的基础频率参数。
+  # RoPE 的基础频率；相邻通道成对，在 FP32 中旋转后恢复模型精度。
   rope_theta: 10000.0
 
   # 独立无 bias 动作输出头；初始化复制技能 embedding 的动作行，后续独立训练。

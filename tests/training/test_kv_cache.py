@@ -19,6 +19,8 @@ def _make_model(
     n_heads: int = 2,
     num_kv_heads: int = 1,
     q_lora_rank: int = 4,
+    head_dim: int | None = None,
+    rope_head_dim: int | None = None,
 ) -> CausalPolicyModel:
     data_spec = DataSpec(
         job_tag="black_mage",
@@ -39,6 +41,8 @@ def _make_model(
             n_heads=n_heads,
             num_kv_heads=num_kv_heads,
             q_lora_rank=q_lora_rank,
+            head_dim=head_dim,
+            rope_head_dim=rope_head_dim,
             ff_dim=32,
             dropout=0.0,
             transformer_norm_first=norm_first,
@@ -58,18 +62,22 @@ def _make_model_pair(
     n_heads: int = 2,
     num_kv_heads: int = 1,
     q_lora_rank: int = 4,
+    head_dim: int | None = None,
+    rope_head_dim: int | None = None,
 ):
     cached_model = _make_model(
         activation=activation,
         norm_first=norm_first,
         full_attention_residuals=full_attention_residuals,
         n_heads=n_heads, num_kv_heads=num_kv_heads, q_lora_rank=q_lora_rank,
+        head_dim=head_dim, rope_head_dim=rope_head_dim,
     )
     full_model = _make_model(
         activation=activation,
         norm_first=norm_first,
         full_attention_residuals=full_attention_residuals,
         n_heads=n_heads, num_kv_heads=num_kv_heads, q_lora_rank=q_lora_rank,
+        head_dim=head_dim, rope_head_dim=rope_head_dim,
     )
     if full_attention_residuals:
         # 模拟已训练的不同深度权重，避免零 query 的均匀平均掩盖缓存聚合错误。
@@ -221,19 +229,21 @@ def test_shared_context_reanchor_and_scene_clip_rebuild_kv(full_attention_residu
 
 @pytest.mark.parametrize("num_kv_heads", (4, 2, 1))
 @pytest.mark.parametrize("full_attention_residuals", (False, True))
+@pytest.mark.parametrize("head_dim,rope_head_dim", ((4, 4), (12, 4)))
 def test_qk_normalized_kv_reuses_old_keys_once_and_matches_dense_trace(
-    monkeypatch, num_kv_heads, full_attention_residuals,
+    monkeypatch, num_kv_heads, full_attention_residuals, head_dim, rope_head_dim,
 ):
     """仅归一化新增共享 KV；非均匀 gamma 下缓存、dense 与 trace 一致。"""
     torch.manual_seed(823)
     model, dense = _make_model_pair(
         n_heads=4, num_kv_heads=num_kv_heads, q_lora_rank=4,
+        head_dim=head_dim, rope_head_dim=rope_head_dim,
         full_attention_residuals=full_attention_residuals, activation="swiglu",
     )
     with torch.no_grad():
         for layer in model.encoder.layers:
             layer.self_attn.q_norm.weight.copy_(torch.linspace(0.4, 1.7, 4))
-            layer.self_attn.kv_norm.weight.copy_(torch.linspace(1.6, 0.3, 4))
+            layer.self_attn.kv_norm.weight.copy_(torch.linspace(1.6, 0.3, head_dim))
     dense.load_state_dict(model.state_dict())
     model.enable_kv_cache(True)
     calls = []
@@ -254,6 +264,7 @@ def test_qk_normalized_kv_reuses_old_keys_once_and_matches_dense_trace(
                 for key, value in zip(keys, model._kv_cache.value_cache):
                     assert key is value
                     assert key.shape[1] == num_kv_heads
+                    assert key.shape[-1] == head_dim
                 if previous_keys is not None:
                     for old, current in zip(previous_keys, keys):
                         torch.testing.assert_close(current[:, :, :old.shape[2]], old, rtol=0, atol=0)

@@ -13,6 +13,7 @@
 
 ### Breaking Changes
 
+- 注意力头宽与主干宽度解耦，新增 `head_dim` 和 `rope_head_dim`；黑魔 Artzip 设为每头 512 维、末尾 64 维参与 RoPE，6 个 Q 头合并为 3072 维后投影回 384 维。RoPE 改为尾部相邻通道配对，在 FP32 中旋转后恢复输入精度，注意力输出仅逆旋转相同尾部，频率常量在模型精度转换后仍保持 FP32。输入契约与部署 schema 同步保存精确语义及两个宽度；checkpoint 输入契约由 `27` 升至 `28`，ONNX 部署契约由 `29` 升至 `30`、manifest 由 `17` 升至 `18`；旧 checkpoint 需重新训练，部署包及 GRPO 轨迹需重新生成，raw bank 与 compiled cache 可继续复用。
 - 注意力改用两段低秩 Q 投影及共享 K/V 表示：Q 在低秩投影之间、KV 在共享投影后使用可学习 RMSNorm，γ 初始化为全 1、epsilon 为 `1e-20`；旋转后的共享 KV 同时用于键和值，注意力输出执行逆 RoPE 后再投影。移除 `qk_norm_scale` 及固定 `1.2` 缩放，新增 `q_lora_rank`，黑魔 Artzip 配置为 `96`。沿用本分支已提升的契约版本，同步更新输入描述与部署 schema；旧 checkpoint 需重新训练，部署包和 GRPO 轨迹需重新生成，既有 raw bank 与 compiled cache 可复用。
 - Transformer 子层及最终输出的 RMSNorm 改为可学习通道尺度，γ 初始化为全 1，epsilon 由 `1e-5` 改为 `1e-20`；在 FP32 中归一化并乘 γ 后恢复输入精度，输入 token 与 Q/K 归一化保持原样。checkpoint 输入契约由 `26` 升至 `27`，ONNX schema 与精度审计同步更新；旧 checkpoint 需重新训练，部署包与 GRPO 轨迹需重新生成，既有 raw bank 和 compiled cache 可复用。
 - 主干普通残差由逐层 `r*x+a*x0` 替换为四路 Hyper-Connections：attention／FFN 各自学习动态 pre、post 与 Sinkhorn 残差混合，pre 交给下一子层，末端按最后 pre 加权读出；移除四个 `residual_mix_*` 配置，保留与 Full AttnRes 的互斥选择，主干统一要求 PreNorm。SwiGLU 在 FP32 中将 up 裁剪至 `[-10, 10]`，gate 在 SiLU 前仅裁剪上界 `10`。checkpoint 输入契约一次由 `25` 升至 `26`，旧 checkpoint 需重新训练，部署包和 GRPO 轨迹需重新生成；本次不改变 raw bank、归一化或 compiled cache，可复用既有数据缓存。

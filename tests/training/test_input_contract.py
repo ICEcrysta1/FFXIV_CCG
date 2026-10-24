@@ -174,6 +174,17 @@ def test_model_input_contract_describes_latent_query_and_shared_rotary_key_value
         "attention_output": "inverse_RoPE_before_output_projection",
         "key_cache": "normalize_and_rotate_new_shared_key_value_once_before_append",
     }
+    assert encoding["rotary_position_encoding"] == {
+        "head_dim": "model_config.head_dim",
+        "rotary_dim": "model_config.rope_head_dim",
+        "theta": "model_config.rope_theta",
+        "rotary_channels": "trailing_channels",
+        "pairing": "adjacent_pairs",
+        "non_rotary_prefix": "unchanged",
+        "trigonometry_dtype": "float32",
+        "rotation_dtype": "float32",
+        "output_dtype": "input_dtype",
+    }
 
 
 def test_model_input_contract_describes_independent_output_head_and_fp32_softcap():
@@ -266,6 +277,32 @@ def test_model_input_contract_rejects_forged_qk_normalization(field, value):
     payload = _build_contract().to_dict()
     payload["token_encoding"]["attention_qk_normalization"][field] = value
     with pytest.raises(ValueError, match="token_encoding"):
+        ModelInputContract.from_checkpoint({"input_contract": payload})
+
+
+@pytest.mark.parametrize("field,value", [
+    ("version", 27),
+    ("missing", None),
+    ("head_dim", "d_model // n_heads"),
+    ("rotary_dim", "head_dim"),
+    ("theta", 10_000.0),
+    ("rotary_channels", "all_channels"),
+    ("pairing", "half_split"),
+    ("non_rotary_prefix", "rotated"),
+    ("trigonometry_dtype", "bfloat16"),
+    ("rotation_dtype", "bfloat16"),
+    ("output_dtype", "float32"),
+])
+def test_model_input_contract_rejects_previous_or_forged_rotary_layout(field, value):
+    payload = _build_contract().to_dict()
+    if field == "version":
+        payload["version"] = value
+    elif field == "missing":
+        payload["token_encoding"].pop("rotary_position_encoding")
+    else:
+        payload["token_encoding"]["rotary_position_encoding"][field] = value
+    message = "unsupported input contract version" if field == "version" else "token_encoding"
+    with pytest.raises(ValueError, match=message):
         ModelInputContract.from_checkpoint({"input_contract": payload})
 
 

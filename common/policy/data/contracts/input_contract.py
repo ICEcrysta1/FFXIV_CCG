@@ -54,7 +54,9 @@ from .spec import DataSpec
 #     FP32 归一化后乘尺度，再转回输入 dtype；输入 token 归一化不变。
 #     Q 使用低秩投影间的可学习 RMSNorm，KV 共用逐 head 归一化后的旋转张量；
 #     注意力输出逆旋转后再投影，不再使用固定 Q/K 尺度；原始数据缓存仍可复用。
-INPUT_CONTRACT_VERSION = 27
+# 28：注意力头宽与主干宽度解耦，保存每头及 RoPE 宽度；仅对尾部相邻通道
+#     在 FP32 中执行正／逆旋转，旧头宽与旋转布局的 checkpoint 必须重新训练。
+INPUT_CONTRACT_VERSION = 28
 
 HYPER_CONNECTION_CONFIG_FIELDS = ("hc_mult", "hc_sinkhorn_iters", "hc_eps")
 
@@ -174,6 +176,17 @@ TOKEN_ENCODING_CONTRACT = {
         "shared_key_value": "same_RoPE_tensor_for_key_and_value",
         "attention_output": "inverse_RoPE_before_output_projection",
         "key_cache": "normalize_and_rotate_new_shared_key_value_once_before_append",
+    },
+    "rotary_position_encoding": {
+        "head_dim": "model_config.head_dim",
+        "rotary_dim": "model_config.rope_head_dim",
+        "theta": "model_config.rope_theta",
+        "rotary_channels": "trailing_channels",
+        "pairing": "adjacent_pairs",
+        "non_rotary_prefix": "unchanged",
+        "trigonometry_dtype": "float32",
+        "rotation_dtype": "float32",
+        "output_dtype": "input_dtype",
     },
     "role_ids": {"scene": 0, "state": 1, "skill": 2, "dead": 3},
     "current_state_encoder": "shared_with_history_state",

@@ -12,22 +12,41 @@ class RotaryPositionEncoding(nn.Module):
     位置编号由输入编码器按样本生成；本模块只负责频率表和 Q/K 旋转，
     不感知场景、历史与当前状态等业务分区。
 
-    旋转采用与 LLaMA/Hugging Face/GPT-NeoX 一致的标准正旋转 R(+θ)，
-    外部复刻（C# 推理、独立参考实现）可直接套用主流 rotate_half 公式。
+    仅旋转每个头的末尾通道，相邻两个通道组成一个正旋转 R(+θ) 平面。
+    三角函数和旋转乘加均使用 FP32，输出恢复为输入 dtype。
     """
 
-    def __init__(self, head_dim: int, *, theta: float = 10_000.0):
+    def __init__(
+        self,
+        head_dim: int,
+        *,
+        rope_head_dim: int | None = None,
+        theta: float = 10_000.0,
+    ):
         super().__init__()
-        if head_dim <= 0 or head_dim % 2:
-            raise ValueError("RoPE head_dim must be a positive even number")
+        if isinstance(head_dim, bool) or not isinstance(head_dim, int) or head_dim <= 0:
+            raise ValueError("RoPE head_dim must be a positive integer")
+        rope_head_dim = head_dim if rope_head_dim is None else rope_head_dim
+        if rope_head_dim <= 0 or rope_head_dim % 2 or rope_head_dim > head_dim:
+            raise ValueError("RoPE rope_head_dim must be a positive even number not exceeding head_dim")
         if theta <= 1.0:
             raise ValueError("RoPE theta must be greater than 1")
 
         self.head_dim = int(head_dim)
+        self.rope_head_dim = int(rope_head_dim)
         self.theta = float(theta)
-        channel_range = torch.arange(0, head_dim, 2, dtype=torch.float32)
-        inv_freq = 1.0 / (self.theta ** (channel_range / head_dim))
+        channel_range = torch.arange(0, self.rope_head_dim, 2, dtype=torch.float32)
+        inv_freq = 1.0 / (self.theta ** (channel_range / self.rope_head_dim))
         self.register_buffer("inv_freq", inv_freq, persistent=False)
+
+    def _apply(self, fn, recurse=True):
+        super()._apply(fn, recurse=recurse)
+        # 整体转换 dtype 后重新生成频率，避免低精度量化后再转 FP32 丢失精度。
+        channel_range = torch.arange(
+            0, self.rope_head_dim, 2, device=self.inv_freq.device, dtype=torch.float32,
+        )
+        self.inv_freq = 1.0 / (self.theta ** (channel_range / self.rope_head_dim))
+        return self
 
     def forward(
         self,
@@ -41,16 +60,13 @@ class RotaryPositionEncoding(nn.Module):
         if cosine_sine is None:
             cosine_sine = self._cos_sin(query_position_ids)
         key_cosine_sine = cosine_sine if key_position_ids is query_position_ids else None
-        cosine_sine = tuple(value.to(dtype=query.dtype) for value in cosine_sine)
-        if key_cosine_sine is not None and key.dtype == query.dtype:
-            key_cosine_sine = cosine_sine
         return (
             self.apply(query, query_position_ids, cosine_sine),
             self.apply(key, key_position_ids, key_cosine_sine),
         )
 
     def _cos_sin(self, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """同一次编码共享 FP32 三角函数表，旋转时再按实际 activation dtype 转换。"""
+        """同一次编码共享 FP32 三角函数表。"""
         if position_ids.ndim != 2:
             raise ValueError("RoPE position_ids must have shape [batch, tokens]")
         position_values = position_ids.to(dtype=torch.float32).unsqueeze(-1)
@@ -82,22 +98,20 @@ class RotaryPositionEncoding(nn.Module):
                 f"{tuple(position_ids.shape)} != {(values.shape[0], values.shape[2])}"
             )
 
-        # 模型可以整体转换为 BF16/FP16，但三角函数在 ONNX/ORT 中必须
-        # 保持 FP32；只把最终 cos/sin 结果转换到 activation dtype。
         if cosine_sine is None:
             cosine_sine = self._cos_sin(position_ids)
-        cosine, sine = (value.to(dtype=values.dtype) for value in cosine_sine)
+        cosine, sine = (value.to(dtype=torch.float32) for value in cosine_sine)
         if inverse:
             sine = -sine
-        half = self.head_dim // 2
-        first, second = values[..., :half], values[..., half:]
+        pairs = values[..., -self.rope_head_dim:].float().unflatten(-1, (-1, 2))
+        first, second = pairs[..., 0], pairs[..., 1]
         # 标准正旋转 R(+θ)：out_first = first*cos - second*sin，
-        # out_second = first*sin + second*cos（负旋转会让 sin 项反号，
-        # 与主流实现形成镜像差异）。
-        return torch.cat(
+        # out_second = first*sin + second*cos；inverse 仅改变 sin 的符号。
+        rotated = torch.stack(
             (
                 first * cosine - second * sine,
                 first * sine + second * cosine,
             ),
             dim=-1,
-        )
+        ).flatten(-2).to(dtype=values.dtype)
+        return torch.cat((values[..., :-self.rope_head_dim], rotated), dim=-1)

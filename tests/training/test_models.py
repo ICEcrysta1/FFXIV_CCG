@@ -33,7 +33,8 @@ from training.loop.losses.value_preference import (
 
 
 @pytest.mark.parametrize("num_kv_heads", (4, 2, 1))
-def test_latent_qkv_projection_matches_formula_and_learnable_gamma_gradients(num_kv_heads):
+@pytest.mark.parametrize("head_dim", (8, 12))
+def test_latent_qkv_projection_matches_formula_and_learnable_gamma_gradients(num_kv_heads, head_dim):
     """独立公式锁定低秩 Q 与每头共享 KV 的归一化位置、FP32 统计及梯度。"""
     torch = pytest.importorskip("torch")
     from copy import deepcopy
@@ -41,13 +42,13 @@ def test_latent_qkv_projection_matches_formula_and_learnable_gamma_gradients(num
     from common.policy.model.attention.grouped_attention import GroupedQueryAttention
 
     torch.manual_seed(819)
-    attention = GroupedQueryAttention(32, 4, num_kv_heads, q_lora_rank=8, bias=False)
+    attention = GroupedQueryAttention(32, 4, num_kv_heads, q_lora_rank=8, head_dim=head_dim, bias=False)
     assert attention.q_norm.eps == attention.kv_norm.eps == 1e-20
     torch.testing.assert_close(attention.q_norm.weight, torch.ones(8))
-    torch.testing.assert_close(attention.kv_norm.weight, torch.ones(8))
+    torch.testing.assert_close(attention.kv_norm.weight, torch.ones(head_dim))
     with torch.no_grad():
         attention.q_norm.weight.copy_(torch.linspace(0.4, 1.7, 8))
-        attention.kv_norm.weight.copy_(torch.linspace(1.6, 0.3, 8))
+        attention.kv_norm.weight.copy_(torch.linspace(1.6, 0.3, head_dim))
     reference = deepcopy(attention)
     inputs = torch.randn(2, 4, 32)
     inputs[:, 0] = 0
@@ -65,7 +66,7 @@ def test_latent_qkv_projection_matches_formula_and_learnable_gamma_gradients(num
     q_latent = torch.nn.functional.linear(reference_inputs, reference.q_a.weight)
     query = torch.nn.functional.linear(normalize(q_latent, reference.q_norm.weight), reference.q_b.weight)
     kv_latent = torch.nn.functional.linear(reference_inputs, reference.kv_proj.weight)
-    kv = normalize(kv_latent.unflatten(-1, (num_kv_heads, 8)), reference.kv_norm.weight).flatten(-2)
+    kv = normalize(kv_latent.unflatten(-1, (num_kv_heads, head_dim)), reference.kv_norm.weight).flatten(-2)
     expected = (query, kv, kv)
     for output, target in zip(actual, expected):
         assert torch.isfinite(output).all()
@@ -85,8 +86,9 @@ def test_latent_qkv_projection_matches_formula_and_learnable_gamma_gradients(num
 @pytest.mark.parametrize("num_kv_heads,full_attention_residuals", [
     (4, False), (2, False), (1, False), (1, True),
 ])
+@pytest.mark.parametrize("head_dim,rope_head_dim", ((8, 8), (12, 4)))
 def test_shared_rotated_kv_and_inverse_rope_match_trace_attention(
-    monkeypatch, num_kv_heads, full_attention_residuals,
+    monkeypatch, num_kv_heads, full_attention_residuals, head_dim, rope_head_dim,
 ):
     """非均匀 gamma 下验证共享旋转 KV、输出逆旋转及 trace 权重。"""
     torch = pytest.importorskip("torch")
@@ -97,14 +99,15 @@ def test_shared_rotated_kv_and_inverse_rope_match_trace_attention(
     model = CausalPolicyModel(
         spec, ModelConfig(
             d_model=32, n_layers=2, n_heads=4, num_kv_heads=num_kv_heads,
-            q_lora_rank=8, ff_dim=48, dropout=0.0, transformer_activation="swiglu",
+            q_lora_rank=8, head_dim=head_dim, rope_head_dim=rope_head_dim,
+            ff_dim=48, dropout=0.0, transformer_activation="swiglu",
             full_attention_residuals=full_attention_residuals,
         ), vocab_size=3,
     ).eval()
     with torch.no_grad():
         for layer in model.encoder.layers:
             layer.self_attn.q_norm.weight.copy_(torch.linspace(0.4, 1.7, 8))
-            layer.self_attn.kv_norm.weight.copy_(torch.linspace(1.6, 0.3, 8))
+            layer.self_attn.kv_norm.weight.copy_(torch.linspace(1.6, 0.3, head_dim))
     batch = make_batch(spec, batch_size=2, history_length=2, scene_length=2,
                        dtype=torch.float32)
     batch["scene_mask"][1, -1] = False
@@ -124,11 +127,15 @@ def test_shared_rotated_kv_and_inverse_rope_match_trace_attention(
         expected_weights = scores.masked_fill(~allowed, -torch.inf).softmax(-1)
         attended = expected_weights @ expanded_key
         positions = kwargs["position_ids"].float()
-        frequencies = positions[..., None] / (10000 ** (torch.arange(0, 8, 2).float() / 8))
+        frequencies = positions[..., None] / (
+            10000 ** (torch.arange(0, rope_head_dim, 2).float() / rope_head_dim)
+        )
         cosine, sine = frequencies.cos()[:, None], frequencies.sin()[:, None]
-        first, second = attended.chunk(2, dim=-1)
-        unrotated = torch.cat((first * cosine + second * sine,
-                              second * cosine - first * sine), dim=-1)
+        pairs = attended[..., -rope_head_dim:].float().unflatten(-1, (-1, 2))
+        first, second = pairs[..., 0], pairs[..., 1]
+        rotated = torch.stack((first * cosine + second * sine,
+                               second * cosine - first * sine), dim=-1).flatten(-2)
+        unrotated = torch.cat((attended[..., :-rope_head_dim], rotated.to(attended.dtype)), dim=-1)
         expected_output = layer.self_attn.out_proj(unrotated.transpose(1, 2).flatten(-2))
         output, weights = original_attention(layer, query, key, value, **kwargs)
         torch.testing.assert_close(output, expected_output, rtol=3e-6, atol=3e-6)
@@ -162,12 +169,13 @@ def test_qk_normalization_preserves_recomputed_forward_and_gradients(
         d_model=16, n_layers=2, n_heads=4, num_kv_heads=num_kv_heads,
         ff_dim=32, dropout=0.1, transformer_activation="swiglu",
         full_attention_residuals=full_attention_residuals, q_lora_rank=4,
+        head_dim=12, rope_head_dim=4,
     )
     eager = CausalPolicyModel(spec, config, vocab_size=3).float().train()
     with torch.no_grad():
         for layer in eager.encoder.layers:
             layer.self_attn.q_norm.weight.copy_(torch.linspace(0.5, 1.5, 4))
-            layer.self_attn.kv_norm.weight.copy_(torch.linspace(1.5, 0.5, 4))
+            layer.self_attn.kv_norm.weight.copy_(torch.linspace(1.5, 0.5, 12))
     recomputed = CausalPolicyModel(spec, config, vocab_size=3).float().train()
     recomputed.load_state_dict(eager.state_dict())
     recomputed.enable_activation_checkpoint_attention(True, block=attention_block)

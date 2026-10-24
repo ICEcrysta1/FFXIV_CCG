@@ -22,24 +22,30 @@ from common.policy.model.layers.transformer import TraceableTransformerEncoderLa
 
 def _make_encoder(
     *,
+    d_model: int = 8,
     num_heads: int = 4,
     num_kv_heads: int = 1,
+    head_dim: int | None = None,
+    rope_head_dim: int | None = None,
     batch_first: bool = True,
 ):
     encoder = nn.TransformerEncoder(
         TraceableTransformerEncoderLayer(
-            d_model=8,
+            d_model=d_model,
             nhead=num_heads,
             num_kv_heads=num_kv_heads,
+            head_dim=head_dim,
             dim_feedforward=16,
             dropout=0.0,
             batch_first=batch_first,
             norm_first=True,
         ),
         1,
-        norm=nn.RMSNorm(8, eps=1e-5, elementwise_affine=False),
+        norm=nn.RMSNorm(d_model, eps=1e-5, elementwise_affine=False),
     ).eval()
-    encoder.rotary_position_encoding = RotaryPositionEncoding(8 // num_heads)
+    encoder.rotary_position_encoding = RotaryPositionEncoding(
+        encoder.layers[0].self_attn.head_dim, rope_head_dim=rope_head_dim,
+    )
     return encoder
 
 
@@ -50,22 +56,24 @@ def _make_encoded(tokens: torch.Tensor) -> dict[str, torch.Tensor | int]:
     }
 
 
-def test_mqa_uses_small_kv_projections_and_runs_layer_forward():
+@pytest.mark.parametrize("d_model,head_dim", ((8, 2), (8, 6), (9, 6)))
+def test_mqa_uses_small_kv_projections_and_runs_layer_forward(d_model, head_dim):
     torch.manual_seed(7)
-    encoder = _make_encoder()
+    encoder = _make_encoder(d_model=d_model, head_dim=head_dim)
     layer = encoder.layers[0]
-    values = torch.randn(2, 5, 8, requires_grad=True)
+    values = torch.randn(2, 5, d_model, requires_grad=True)
 
     query, key, value = project_qkv(layer.self_attn, values)
 
     assert layer.self_attn.num_heads == 4
     assert layer.self_attn.num_kv_heads == 1
-    assert query.shape == (2, 5, 8)
-    assert key.shape == (2, 5, 2)
-    assert value.shape == (2, 5, 2)
+    assert query.shape == (2, 5, 4 * head_dim)
+    assert key.shape == (2, 5, head_dim)
+    assert value.shape == (2, 5, head_dim)
     assert key is value
-    assert layer.self_attn.q_a.weight.shape == (2, 8)
-    assert layer.self_attn.q_b.weight.shape == (8, 2)
+    assert layer.self_attn.q_a.weight.shape == (2, d_model)
+    assert layer.self_attn.q_b.weight.shape == (4 * head_dim, 2)
+    assert layer.self_attn.out_proj.weight.shape == (d_model, 4 * head_dim)
     assert layer.self_attn.q_norm.eps == layer.self_attn.kv_norm.eps == 1e-20
 
     output = layer(values)
@@ -77,10 +85,15 @@ def test_mqa_uses_small_kv_projections_and_runs_layer_forward():
 
 
 @pytest.mark.parametrize("num_kv_heads", (1, 2, 4))
-def test_low_rank_query_shared_kv_and_inverse_rotation_match_formula(num_kv_heads):
+@pytest.mark.parametrize("head_dim,rope_head_dim", ((2, 2), (6, 4)))
+def test_low_rank_query_shared_kv_and_inverse_rotation_match_formula(
+    num_kv_heads, head_dim, rope_head_dim,
+):
     """独立公式覆盖归一化位置、共享旋转 KV、输出逆旋转及全部投影梯度。"""
     torch.manual_seed(27)
-    encoder = _make_encoder(num_kv_heads=num_kv_heads)
+    encoder = _make_encoder(
+        num_kv_heads=num_kv_heads, head_dim=head_dim, rope_head_dim=rope_head_dim,
+    )
     layer = encoder.layers[0]
     attention = layer.self_attn
     with torch.no_grad():
@@ -104,17 +117,19 @@ def test_low_rank_query_shared_kv_and_inverse_rotation_match_formula(num_kv_head
     cosine, sine = frequencies.cos()[:, None], frequencies.sin()[:, None]
 
     def rotate(values, inverse=False):
-        first, second = values.chunk(2, dim=-1)
+        pairs = values[..., -rope_head_dim:].float().reshape(*values.shape[:-1], -1, 2)
+        first, second = pairs[..., 0], pairs[..., 1]
         direction = -1 if inverse else 1
-        return torch.cat((first * cosine - direction * second * sine,
-                          direction * first * sine + second * cosine), dim=-1)
+        rotated = torch.stack((first * cosine - direction * second * sine,
+                               direction * first * sine + second * cosine), dim=-1).flatten(-2)
+        return torch.cat((values[..., :-rope_head_dim], rotated.to(values.dtype)), dim=-1)
 
     query, kv = rotate(query), rotate(kv)
     kv = kv.repeat_interleave(attention.num_heads // num_kv_heads, dim=1)
     scores = query @ kv.transpose(-1, -2) / attention.head_dim**0.5
     allowed = torch.ones(5, 5, dtype=torch.bool).tril()
     weights = scores.masked_fill(~allowed, float("-inf")).softmax(-1)
-    attended = rotate(weights @ kv, inverse=True).transpose(1, 2).reshape(2, 5, 8)
+    attended = rotate(weights @ kv, inverse=True).transpose(1, 2).reshape(2, 5, 4 * head_dim)
     hidden = tokens + F.linear(attended, attention.out_proj.weight, attention.out_proj.bias)
     expected = encoder.norm(hidden + layer._ff_block(layer.norm2(hidden)))
     upstream = torch.randn_like(actual)

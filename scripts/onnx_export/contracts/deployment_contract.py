@@ -54,8 +54,10 @@ from .deployment_profile import stable_sha256
 # 29：统一归一化入口，独立注册的技能绝对三元组替代可用性尾表；
 #     仅战斗与场景时间坐标使用相对编码，其余状态及绝对时长使用 ABS。
 #     低秩 Q 与共享 KV 使用可学习 RMSNorm，注意力输出逆旋转后投影。
-DEPLOYMENT_CONTRACT_VERSION = 29
-DEPLOYMENT_MANIFEST_VERSION = 17
+# 30：保存独立注意力头宽与部分 RoPE 宽度，尾部相邻配对及 FP32 正／逆旋转
+#     纳入精确输入描述；拒绝旧头宽和旋转布局的部署包，manifest 同步升至 18。
+DEPLOYMENT_CONTRACT_VERSION = 30
+DEPLOYMENT_MANIFEST_VERSION = 18
 MANIFEST_SCHEMA_FILENAME = "manifest.schema.json"
 
 
@@ -213,6 +215,9 @@ class DeploymentContract:
 
     def validate(self, *, embedding_vocab_size: int) -> None:
         residual_composition_contract(self.model_config)
+        for field in ("head_dim", "rope_head_dim"):
+            if field not in self.model_config:
+                raise ValueError(f"deployment model_config missing {field}; re-export the package")
         if "q_lora_rank" not in self.model_config:
             raise ValueError("deployment model_config missing q_lora_rank; re-export the package")
         if "logit_softcap" not in self.model_config:
