@@ -433,8 +433,6 @@ def run_training(
 
 def _warmup_compiled_training(model: CausalPolicyModel, config: RunConfig) -> None:
     """正式计时前预热真实 encoder 的前后向，不读取数据或改写参数梯度。"""
-    if config.model.full_attention_residuals and config.model.transformer_activation != "swiglu":
-        return
     device = next(model.parameters()).device
     started = time.perf_counter()
     batch_sizes = (config.batch_size, 1) if config.batch_size > 1 else (1,)

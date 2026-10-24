@@ -18,6 +18,21 @@ from .activation import (
 _compiled_activation_hidden = torch.compile(activation_hidden, fullgraph=True, dynamic=True)
 
 
+def _rms_norm(values: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tensor:
+    """保留 FP32 归一化、乘通道尺度后再恢复输入精度的计算顺序。"""
+    output_dtype = values.dtype
+    values = values.float()
+    variance = values.square().mean(dim=-1, keepdim=True)
+    values = values * torch.rsqrt(variance + eps)
+    return (weight * values).to(output_dtype)
+
+
+_compiled_rms_norm = torch.compile(
+    _rms_norm, fullgraph=True, dynamic=True,
+    options={"emulate_precision_casts": True, "use_joint_graph_passes": False},
+)
+
+
 class RMSNorm(nn.RMSNorm):
     """在 FP32 中归一化，乘可学习通道尺度后恢复输入精度。"""
 
@@ -25,11 +40,15 @@ class RMSNorm(nn.RMSNorm):
         super().__init__(dim, eps=eps, device=device, dtype=dtype)
 
     def forward(self, values: torch.Tensor) -> torch.Tensor:
-        output_dtype = values.dtype
-        values = values.float()
-        variance = values.square().mean(dim=-1, keepdim=True)
-        values = values * torch.rsqrt(variance + self.eps)
-        return (self.weight * values).to(output_dtype)
+        if (
+            values.is_cuda and self.training and torch.is_grad_enabled()
+            and not torch.compiler.is_compiling()
+            and not torch.jit.is_tracing() and not torch.onnx.is_in_onnx_export()
+        ):
+            # 统一 Q、KV 与单 token 的维度布局；已有 HC 编译图直接内联原式。
+            flattened = values.reshape(-1, values.shape[-1])
+            return _compiled_rms_norm(flattened, self.weight, self.eps).reshape_as(values)
+        return _rms_norm(values, self.weight, self.eps)
 
 
 class TraceableTransformerEncoderLayer(nn.TransformerEncoderLayer):

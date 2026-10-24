@@ -120,7 +120,7 @@ def test_query_rank_defaults_and_artzip_architecture():
     root = Path(__file__).resolve().parents[1]
     config = load_model_config(root / "config/models/black_mage/artzip/model.yaml")
     assert config.q_lora_rank == 96
-    assert (config.head_dim, config.rope_head_dim) == (512, 64)
+    assert (config.head_dim, config.rope_head_dim) == (256, 64)
     assert config.logit_softcap == 15.0
     assert (config.swiglu_limit, config.hc_mult, config.hc_sinkhorn_iters, config.hc_eps) == (
         10.0, 4, 20, 1e-6,

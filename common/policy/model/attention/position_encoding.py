@@ -81,6 +81,7 @@ class RotaryPositionEncoding(nn.Module):
         cosine_sine: tuple[torch.Tensor, torch.Tensor] | None = None,
         *,
         inverse: bool = False,
+        merge_heads: bool = False,
     ) -> torch.Tensor:
         """对 head 张量应用 RoPE；输出聚合通过 inverse 恢复到 query 位置坐标。"""
         if values.ndim != 4:
@@ -101,6 +102,12 @@ class RotaryPositionEncoding(nn.Module):
         if cosine_sine is None:
             cosine_sine = self._cos_sin(position_ids)
         cosine, sine = (value.to(dtype=torch.float32) for value in cosine_sine)
+        if (values.is_cuda and self.training and torch.is_grad_enabled()
+                and not torch.onnx.is_in_onnx_export() and not torch.jit.is_tracing()
+                and not cosine.requires_grad and not sine.requires_grad):
+            from .rotary_cuda import rotary_transform
+
+            return rotary_transform(values, cosine, sine, inverse, merge_heads)
         if inverse:
             sine = -sine
         pairs = values[..., -self.rope_head_dim:].float().unflatten(-1, (-1, 2))
@@ -114,4 +121,7 @@ class RotaryPositionEncoding(nn.Module):
             ),
             dim=-1,
         ).flatten(-2).to(dtype=values.dtype)
-        return torch.cat((values[..., :-self.rope_head_dim], rotated), dim=-1)
+        output = torch.cat((values[..., :-self.rope_head_dim], rotated), dim=-1)
+        if merge_heads:
+            return output.transpose(1, 2).contiguous().flatten(2)
+        return output

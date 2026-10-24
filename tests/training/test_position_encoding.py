@@ -70,20 +70,53 @@ def test_rope_matches_adjacent_complex_rotation_and_gradients(dtype, head_dim, r
 
 
 @pytest.mark.parametrize(("head_dim", "rope_head_dim"), ((512, 64), (5, 4)))
-def test_partial_rope_preserves_prefix_and_inverse_restores_input(head_dim, rope_head_dim):
+@pytest.mark.parametrize("merge_heads", (False, True))
+def test_partial_rope_preserves_prefix_and_inverse_restores_input(head_dim, rope_head_dim, merge_heads):
     rope = RotaryPositionEncoding(head_dim=head_dim, rope_head_dim=rope_head_dim)
     values = torch.randn(2, 3, 5, head_dim, requires_grad=True)
     positions = torch.tensor([[0, 1, 3, 9, 50], [2, 4, 7, 12, 17]])
     cosine_sine = rope._cos_sin(positions)
 
     rotated = rope.apply(values, positions, cosine_sine)
-    restored = rope.apply(rotated, positions, cosine_sine, inverse=True)
+    restored = rope.apply(rotated, positions, cosine_sine, inverse=True, merge_heads=merge_heads)
 
     torch.testing.assert_close(rotated[..., :-rope_head_dim], values[..., :-rope_head_dim], rtol=0, atol=0)
-    torch.testing.assert_close(restored, values)
+    expected = values.transpose(1, 2).flatten(2) if merge_heads else values
+    torch.testing.assert_close(restored, expected)
     assert not torch.equal(rotated[..., -rope_head_dim:], values[..., -rope_head_dim:])
     restored.sum().backward()
     torch.testing.assert_close(values.grad, torch.ones_like(values))
+
+
+@pytest.mark.parametrize("dtype", (torch.float32, torch.bfloat16, torch.float16))
+@pytest.mark.parametrize("inverse", (False, True))
+@pytest.mark.parametrize("merge_heads", (False, True))
+@pytest.mark.parametrize(("batch", "tokens", "heads"), ((2, 7, 6), (1, 1, 1)))
+@pytest.mark.parametrize("head_dim", (256, 512))
+def test_cuda_rope_preserves_strided_input_outputs_and_gradients(dtype, inverse, merge_heads, batch, tokens, heads, head_dim):
+    if not torch.cuda.is_available():
+        pytest.skip("需要 CUDA")
+    rope = RotaryPositionEncoding(head_dim, rope_head_dim=64).cuda().train()
+    reference_rope = deepcopy(rope).eval()
+    values = torch.randn(batch, tokens, heads, head_dim, device="cuda", dtype=dtype).transpose(1, 2).requires_grad_()
+    reference = values.detach().clone().requires_grad_()
+    original = values.detach().clone()
+    positions = torch.arange(batch * tokens, device="cuda").reshape(batch, tokens) * 17 + 1
+    cosine_sine = rope._cos_sin(positions)
+    if merge_heads:
+        # 外部共享频表允许 batch 广播，并保留不同于连续表的通道/位置 stride。
+        cosine_sine = tuple(value[:1].transpose(-1, -2).contiguous().transpose(-1, -2) for value in cosine_sine)
+
+    actual = rope.apply(values, positions, cosine_sine, inverse=inverse, merge_heads=merge_heads)
+    expected = reference_rope.apply(reference, positions, cosine_sine, inverse=inverse, merge_heads=merge_heads)
+    probe = torch.randn_like(actual)
+    (actual * probe).sum().backward()
+    (expected * probe).sum().backward()
+
+    torch.testing.assert_close(actual, expected)
+    torch.testing.assert_close(values.grad, reference.grad)
+    torch.testing.assert_close(values, original, rtol=0, atol=0)
+    assert actual.is_contiguous()
 
 
 @pytest.mark.parametrize("dtype", (torch.bfloat16, torch.float16))

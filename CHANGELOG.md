@@ -13,7 +13,7 @@
 
 ### Breaking Changes
 
-- 注意力头宽与主干宽度解耦，新增 `head_dim` 和 `rope_head_dim`；黑魔 Artzip 设为每头 512 维、末尾 64 维参与 RoPE，6 个 Q 头合并为 3072 维后投影回 384 维。RoPE 改为尾部相邻通道配对，在 FP32 中旋转后恢复输入精度，注意力输出仅逆旋转相同尾部，频率常量在模型精度转换后仍保持 FP32。输入契约与部署 schema 同步保存精确语义及两个宽度；checkpoint 输入契约由 `27` 升至 `28`，ONNX 部署契约由 `29` 升至 `30`、manifest 由 `17` 升至 `18`；旧 checkpoint 需重新训练，部署包及 GRPO 轨迹需重新生成，raw bank 与 compiled cache 可继续复用。
+- 注意力头宽与主干宽度解耦，新增 `head_dim` 和 `rope_head_dim`；黑魔 Artzip 设为每头 256 维、末尾 64 维参与 RoPE，6 个 Q 头合并为 1536 维后投影回 384 维。RoPE 改为尾部相邻通道配对，在 FP32 中旋转后恢复输入精度，注意力输出仅逆旋转相同尾部，频率常量在模型精度转换后仍保持 FP32。输入契约与部署 schema 同步保存精确语义及两个宽度；checkpoint 输入契约由 `27` 升至 `28`，ONNX 部署契约由 `29` 升至 `30`、manifest 由 `17` 升至 `18`；旧 checkpoint 需重新训练，部署包及 GRPO 轨迹需重新生成，raw bank 与 compiled cache 可继续复用。
 - 注意力改用两段低秩 Q 投影及共享 K/V 表示：Q 在低秩投影之间、KV 在共享投影后使用可学习 RMSNorm，γ 初始化为全 1、epsilon 为 `1e-20`；旋转后的共享 KV 同时用于键和值，注意力输出执行逆 RoPE 后再投影。移除 `qk_norm_scale` 及固定 `1.2` 缩放，新增 `q_lora_rank`，黑魔 Artzip 配置为 `96`。沿用本分支已提升的契约版本，同步更新输入描述与部署 schema；旧 checkpoint 需重新训练，部署包和 GRPO 轨迹需重新生成，既有 raw bank 与 compiled cache 可复用。
 - Transformer 子层及最终输出的 RMSNorm 改为可学习通道尺度，γ 初始化为全 1，epsilon 由 `1e-5` 改为 `1e-20`；在 FP32 中归一化并乘 γ 后恢复输入精度，输入 token 与 Q/K 归一化保持原样。checkpoint 输入契约由 `26` 升至 `27`，ONNX schema 与精度审计同步更新；旧 checkpoint 需重新训练，部署包与 GRPO 轨迹需重新生成，既有 raw bank 和 compiled cache 可复用。
 - 主干普通残差由逐层 `r*x+a*x0` 替换为四路 Hyper-Connections：attention／FFN 各自学习动态 pre、post 与 Sinkhorn 残差混合，pre 交给下一子层，末端按最后 pre 加权读出；移除四个 `residual_mix_*` 配置，保留与 Full AttnRes 的互斥选择，主干统一要求 PreNorm。SwiGLU 在 FP32 中将 up 裁剪至 `[-10, 10]`，gate 在 SiLU 前仅裁剪上界 `10`。checkpoint 输入契约一次由 `25` 升至 `26`，旧 checkpoint 需重新训练，部署包和 GRPO 轨迹需重新生成；本次不改变 raw bank、归一化或 compiled cache，可复用既有数据缓存。
@@ -26,6 +26,7 @@
 
 ### Changed
 
+- CUDA 训练将独立 RMSNorm 的归一化、通道缩放和反向归约融合编译；RoPE 用单个训练核完成尾部旋转及前缀拷贝，逆旋转直接写入输出投影使用的合并头布局，反向只保留共享频表。启动 encoder 预热覆盖这些前后向，CPU、分析及 ONNX 沿用原公式，融合计算不改变归一化与旋转公式，契约版本保持不变。
 - Rust 核心、黑魔、机工及 Python 绑定 crate 统一提升至 `0.2.0`，同步原生扩展包版本和各 crate 的锁文件。
 - FightEngine GPLv3 链接例外由 `1.0` 升至 `1.1`，范围更新为 Rust 核心、黑魔和机工库源码及其编译代码部分，替换旧 C#／.NET 描述；明确独立模块不因组合而负有源码披露义务、分发者可按 GPLv3 第 7 节删除全部或部分例外，专利保留条款限定于第 11 节。Python 绑定、测试、工具及第三方依赖不自动适用例外，组合原生扩展也不整体适用。同步 README 与源码许可引用，三个库 crate 打包时携带 GPLv3 和例外全文。
 - 状态机由 C# 迁移至 Rust／PyO3 原生扩展，保留 Python 接口、YAML 配置及输出、多队列、回放与快照能力；黑魔、机工分别由独立 crate 实现，原生执行释放 GIL，并以 C# 冻结 JSON 基线验证。移除旧 `Combat.Sim/` 工程及 .NET／Python.NET 运行依赖。
@@ -40,7 +41,7 @@
 - 黑魔 Artzip BC 的训练历史随机截断触发概率由 `0.33` 降至 `0.1`，最少保留的最近历史由 `4` 条增至 `16` 条（包含等待动作）；场景和当前状态保持完整，验证与回放不启用随机截断。
 - 模型分析的逐层 2D／3D PCA 与范数图在原图中将 `state` 拆为历史状态和最新请求状态，沿用普通 token 的圆点样式，并按原有 magma 配色统一生成五类角色颜色。
 - 模型分析移除 `fight_id` 和 `label_legal` 染色的 2D PCA 图，改为新增标签技能基础威力连续染色图 `02_layers_pca_2d_potency.png` 与 GCD/oGCD 分类图 `02_layers_pca_2d_gcd_type.png`。威力读取正式技能配置，策略等待动作记为 0；分类沿用保存的动作契约，继续只投影最新状态 hidden。
-- 训练、回放、PPG、GRPO、KV cache 与 ONNX 统一使用场景、历史状态／动作、死亡事件及当前状态的 token 总预算，黑魔 Artzip 默认总容量由 `801` 调整为 `1024`。每条死亡标记占一个 token；超限时保留最近 `history_reset_keep` 条完整状态／动作记录（默认 `8` 条），清除更早上下文后重新累积；按历史锚点重新计算有效场景，消融和随机截窗也需满足总预算，并保留所选动作窗口首尾边界上的死亡事件。原始 PT 保留完整历史、场景及独立死亡标记，动作历史游标仍只统计动作。
+- 训练、回放、PPG、GRPO、KV cache 与 ONNX 统一使用场景、历史状态／动作、死亡事件及当前状态的 token 总预算，黑魔 Artzip 默认总容量由 `801` 调整为 `768`。每条死亡标记占一个 token；超限时保留最近 `history_reset_keep` 条完整状态／动作记录（默认 `8` 条），清除更早上下文后重新累积；按历史锚点重新计算有效场景，消融和随机截窗也需满足总预算，并保留所选动作窗口首尾边界上的死亡事件。原始 PT 保留完整历史、场景及独立死亡标记，动作历史游标仍只统计动作。
 - 混合 batch 进入 Transformer 前按各样本的有效顺序压紧场景和历史 token，物理序列长度也受共享容量约束；位置编号排除 padding，KV cache 同步适配压紧与上下文重置。
 - 动作输出头与 ABS reset 投影改用原生 `nn.Linear`；显式调用这两层的 `reset_parameters()` 时改为标准随机初始化，分别替代原动作头的空操作与 reset 投影的清零。模块打印、TensorBoard／JIT 图中的类名随之变化，重新导出的 ONNX 诊断元数据及文件哈希可能变化；旧私有层类路径不再提供，外部依赖这些类的整模型 pickle 无法直接反序列化。
 - 统一训练、回放和部署的输入归一化配置：MP 与实际耗蓝除以 `10000`，相对时间与绝对时长尺度分别配置、默认均为 `270` 秒，场景目标数截断到 `0～5` 后除以 `5`，单次技能威力及状态绝对威力截断到 `0～2000` 后除以 `2000`。状态、技能和场景时间统一读取冻结 normalizer 契约中的对应尺度；取消独立模型时间尺度，公共尺度变化进入 compiled cache 签名；仅时间坐标的 DELTA 保留符号且不截断。

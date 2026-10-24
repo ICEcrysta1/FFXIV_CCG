@@ -9,9 +9,6 @@ from .attention_masks import (
     SegmentAttentionMask,
     build_segment_mask,
 )
-from .attention_utils import (
-    merge_heads,
-)
 from .grouped_attention import expand_kv_heads, scaled_dot_product_attention
 
 
@@ -105,9 +102,9 @@ def run_head_attention(
         weights = None
 
     attended = rotary_position_encoding.apply(
-        attended, position_ids, rotary_cosine_sine, inverse=True,
+        attended, position_ids, rotary_cosine_sine, inverse=True, merge_heads=True,
     )
-    return layer.self_attn.out_proj(merge_heads(attended)), weights
+    return layer.self_attn.out_proj(attended), weights
 
 
 def manual_attention(

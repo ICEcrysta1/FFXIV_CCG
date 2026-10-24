@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from dataclasses import asdict, replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import torch
 
-from common.policy.data import ActionSpace, DataSpec
 from common.policy.config import load_model_config
+from common.policy.data import ActionSpace, DataSpec
 from scripts.autoregressive_replay import config as replay_config_module
 from scripts.autoregressive_replay.config import load_replay_config
 from scripts.common.json_io import atomic_write_json
@@ -35,13 +35,13 @@ def test_replay_scene_defaults_to_prepared_cache(monkeypatch, tmp_path):
         lambda _payload: SimpleNamespace(data_spec=asdict(spec), create_normalizer=lambda: normalizer,
                                         create_skill_vocab=lambda: vocab),
     )
-    kwargs = dict(raw_root=tmp_path, cache_dir=tmp_path / ".cache",
-                  job_tag="black_mage", cache_shard_size=768, input_contract_payload={})
+    kwargs = {"raw_root": tmp_path, "cache_dir": tmp_path / ".cache",
+              "job_tag": "black_mage", "cache_shard_size": 768, "input_contract_payload": {}}
     assert replay_config_module._resolve_scene_json(None, **kwargs) == scene
-    assert calls == [(tmp_path, dict(cache_dir=tmp_path / ".cache",
-                                   job_tag="black_mage", cache_shard_size=768,
-                                   normalizer=normalizer, expected_action_space=ActionSpace.from_data_spec(spec),
-                                   expected_skill_vocab=vocab))]
+    assert calls == [(tmp_path, {"cache_dir": tmp_path / ".cache",
+                                "job_tag": "black_mage", "cache_shard_size": 768,
+                                "normalizer": normalizer, "expected_action_space": ActionSpace.from_data_spec(spec),
+                                "expected_skill_vocab": vocab})]
 
     explicit = tmp_path / "explicit.json.br"
     atomic_write_json(explicit, {})
@@ -124,7 +124,7 @@ def test_replay_capacity_follows_checkpoint_without_default_history_limit(prepar
     payload = torch.load(checkpoint, weights_only=False)
     assert load_model_config(
         replay_config_module.resolve_policy_model_config_path(),
-    ).context_capacity == 1024
+    ).context_capacity == 768
     payload["model_config"]["context_capacity"] = 2048
     torch.save(payload, checkpoint)
 

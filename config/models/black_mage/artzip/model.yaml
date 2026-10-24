@@ -31,7 +31,7 @@ model:
   n_heads: 6
 
   # 每个 Q/K/V 头的宽度；与 d_model、q_lora_rank 分别控制不同维度。
-  head_dim: 512
+  head_dim: 256
 
   # 每头末尾参与 RoPE 的维度数；必须为正偶数且不超过 head_dim，前缀保持不变。
   rope_head_dim: 64
@@ -77,7 +77,7 @@ model:
   logit_softcap: 15.0
 
   # 场景、历史状态/动作和当前状态共用的 token 总容量。
-  context_capacity: 1024
+  context_capacity: 768
 
   # 历史超出容量时保留最近这些动作，再重新累积；仅影响读取，不改变完整 raw bank。
   history_reset_keep: 8

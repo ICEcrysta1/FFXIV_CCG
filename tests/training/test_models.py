@@ -594,7 +594,7 @@ def test_black_mage_artzip_uses_current_mainline_architecture():
     assert config.model.ff_dim == 1536
     assert config.model.transformer_norm_first is True
     assert config.model.transformer_activation == "swiglu"
-    assert config.model.context_capacity == 1024
+    assert config.model.context_capacity == 768
     assert config.model.full_attention_residuals is False
     assert "candidate_shuffle_enabled" not in config.__dict__
     assert "candidate_order_file" not in config.__dict__
